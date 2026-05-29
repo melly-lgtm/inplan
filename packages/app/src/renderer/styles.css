@@ -1,0 +1,76 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+:root {
+  --bg: #ffffff;
+  --fg: #1c1c1e;
+  --muted: #8a8a8e;
+  --line: #e2e2e6;
+  --accent: #2f6feb;
+  --accent-soft: #eaf1ff;
+  --danger: #c0392b;
+}
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+.ap-app { display: flex; flex-direction: column; height: 100%; }
+.ap-loading { padding: 2rem; color: var(--muted); }
+
+/* top bar */
+.ap-topbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.ap-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.ap-seg button { border: 0; background: var(--bg); padding: 4px 10px; cursor: pointer; border-right: 1px solid var(--line); }
+.ap-seg button:last-child { border-right: 0; }
+.ap-seg button.active { background: var(--accent); color: #fff; }
+.ap-spacer { flex: 1; }
+.ap-topbar button, .ap-tabs button { font: inherit; }
+.ap-topbar > button { border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+.ap-primary { background: var(--accent) !important; color: #fff; border-color: var(--accent) !important; }
+
+/* banner */
+.ap-banner { background: var(--accent-soft); border-bottom: 1px solid var(--line); padding: 8px 12px; display: flex; gap: 10px; align-items: center; }
+
+/* main layout */
+.ap-main { flex: 1; display: flex; min-height: 0; }
+.ap-preview { flex: 1; overflow: auto; padding: 24px 32px; border-right: 1px solid var(--line); }
+.ap-rendered { max-width: 760px; }
+.ap-rendered .ap-anchor { background: #fff3b0; border-bottom: 2px solid #e6c200; color: inherit; text-decoration: none; cursor: pointer; border-radius: 2px; }
+.ap-pane { width: 380px; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
+.ap-pane:last-child { border-right: 0; }
+.ap-source { flex: 1; overflow: auto; }
+
+.ap-tabs { display: flex; border-bottom: 1px solid var(--line); }
+.ap-tabs button { flex: 1; border: 0; background: var(--bg); padding: 6px; cursor: pointer; }
+.ap-tabs button.active { border-bottom: 2px solid var(--accent); font-weight: 600; }
+
+/* rail */
+.ap-rail { overflow: auto; }
+.ap-rail-head { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.ap-composer { padding: 10px; border-bottom: 1px solid var(--line); }
+.ap-composer textarea { width: 100%; min-height: 48px; resize: vertical; }
+.ap-quote { font-size: 12px; color: var(--accent); margin-bottom: 4px; }
+.ap-muted { color: var(--muted); }
+.ap-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+
+.ap-thread { padding: 10px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.ap-thread.focused { background: var(--accent-soft); }
+.ap-thread.resolved { opacity: 0.55; }
+.ap-thread-quote { font-size: 12px; color: var(--accent); }
+.ap-meta { font-size: 11px; color: var(--muted); margin: 2px 0; }
+.ap-text { white-space: pre-wrap; }
+.ap-reply { margin: 6px 0 0 10px; padding-left: 8px; border-left: 2px solid var(--line); }
+.ap-selected { font-weight: 600; }
+.ap-reply-box input, .ap-other { width: 100%; }
+.ap-actions { gap: 12px; }
+.ap-link { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; }
+.ap-danger { color: var(--danger); }
+
+/* question chips */
+.ap-question { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+.ap-chip { border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; cursor: pointer; }
+.ap-chip.on { border-color: var(--accent); background: var(--accent-soft); }
+
+/* status bar */
+.ap-statusbar { display: flex; gap: 8px; padding: 4px 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }

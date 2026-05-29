@@ -2,6 +2,7 @@
 node_modules/
 dist/
 build/
+out/
 *.tsbuildinfo
 
 # agent-planner runtime sidecars (per-document logs, backups, proposals)

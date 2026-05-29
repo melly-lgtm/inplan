@@ -1,0 +1,33 @@
+{
+  "name": "@agent-planner/app",
+  "version": "0.0.0",
+  "description": "agent-planner Electron editor for human/agent collaboration on planning documents.",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agent-planner/core": "0.0.0"
+  },
+  "devDependencies": {
+    "@codemirror/lang-markdown": "^6.3.0",
+    "@codemirror/state": "^6.4.1",
+    "@codemirror/view": "^6.34.1",
+    "@types/markdown-it": "^14.1.2",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "codemirror": "^6.0.1",
+    "electron": "^31.4.0",
+    "electron-vite": "^2.3.0",
+    "markdown-it": "^14.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.4.0"
+  }
+}

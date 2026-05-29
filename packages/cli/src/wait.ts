@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { readLogSince, type LogEntry } from "@agent-planner/core";
+import { readLogSince, type LogEntry } from "@agent-planner/core/node";
 
 export interface WaitResult {
   entries: LogEntry[];

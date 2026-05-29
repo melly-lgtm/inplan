@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { appendLog, LogEventType, parseLog, readLog, readLogSince, serializeLogEntry } from "../src/controlLog";
+import { appendLog, LogEventType, parseLog, readLog, readLogSince, serializeLogEntry } from "../src/node";
 
 let dir: string;
 let logPath: string;

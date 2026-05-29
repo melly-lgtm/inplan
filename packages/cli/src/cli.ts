@@ -3,7 +3,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { appendLog, LogEventType } from "@agent-planner/core";
+import { appendLog, LogEventType } from "@agent-planner/core/node";
 import { evaluateAgentEdit } from "./gate";
 import { docPaths } from "./paths";
 import { waitForActions } from "./wait";
