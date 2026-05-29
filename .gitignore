@@ -1,0 +1,12 @@
+# Dependencies & build output
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# agent-planner runtime sidecars (per-document logs, backups, proposals)
+.agent-planner/
+
+# OS / editor cruft
+.DS_Store
+*.log

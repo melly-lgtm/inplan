@@ -25,6 +25,14 @@ Example comment [on here](#cmt-abfdb1)
   "author": "User Name <email@email.com>",
   "date": "2026-05-28T14:34:00Z",
   "resolved": false
+},
+{
+  "id": "cmt-1e2lef",
+  "parent-id": "#root",
+  "text": "A document level comment",
+  "author": "User Name <email@email.com>",
+  "date": "2026-05-28T14:34:00Z",
+  "resolved": false
 }
 ]
 !-->

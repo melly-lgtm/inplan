@@ -1,0 +1,20 @@
+{
+  "name": "@agent-planner/core",
+  "version": "0.0.0",
+  "description": "Pure-TypeScript core for agent-planner: document model, parser, integrity, diff, control log.",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "typecheck": "tsc --noEmit"
+  }
+}

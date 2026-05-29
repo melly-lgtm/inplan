@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+/** A selectable option presented inside a question comment. */
+export interface Choice {
+  label: string;
+  description?: string;
+}
+
+/** Structured question payload attached to a comment (agent -> human). */
+export interface Question {
+  /**
+   * false = multiple choice (radio, exactly one).
+   * true  = multiple selection (checkbox, any number).
+   */
+  multiSelect: boolean;
+  choices: Choice[];
+}
+
+/** A single comment / reply / answer, stored in the document's data block. */
+export interface Comment {
+  /** `cmt-` + 6 base36 chars. */
+  id: string;
+  /** Present on replies/answers: id of the parent comment. */
+  parentId?: string;
+  /** "doc" = document-level (no body anchor link). Absent = span comment (exactly one body link). */
+  anchor?: "doc";
+  /** Comment body / free-text / "Other" note. */
+  text: string;
+  /** "Name <email>"; the agent uses "Agent <agent@agent-planner>". */
+  author: string;
+  /** ISO-8601 timestamp. */
+  date: string;
+  resolved: boolean;
+  /** Choice-based question (agent -> human). */
+  question?: Question;
+  /** Answer replies: the chosen choice labels (length 1 for multiple choice, 0..n for multiple selection). */
+  selected?: string[];
+}
+
+/** A parsed document: the Markdown body plus the structured comments. */
+export interface ParsedDocument {
+  /** The Markdown body, with the agent-planner data block removed. */
+  body: string;
+  /** Comments parsed from the data block. */
+  comments: Comment[];
+}
+
+/** A reply/answer carries a parentId. */
+export function isReply(c: Comment): boolean {
+  return c.parentId !== undefined;
+}
+
+/** A document-level comment is anchored to the whole document, not a span. */
+export function isDocComment(c: Comment): boolean {
+  return c.anchor === "doc";
+}
+
+/** A span comment is anchored to a body span via exactly one in-body link. */
+export function isSpanComment(c: Comment): boolean {
+  return !isReply(c) && !isDocComment(c);
+}
