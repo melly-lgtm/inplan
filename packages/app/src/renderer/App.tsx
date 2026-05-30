@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { parse, serialize, type ParsedDocument, type Question } from "@agent-planner/core";
+import { parse, serialize, type Comment, type ParsedDocument, type Question } from "@agent-planner/core";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Acceptance, Cadence } from "../shared/api";
 import {
@@ -638,8 +638,8 @@ export function App(): JSX.Element {
                   onReply={(text) => apply(addReply(docRef.current, o.thread.root.id, text, USER_AUTHOR).doc, { type: "comment_created", payload: { parentId: o.thread.root.id } })}
                   onAnswer={(selected, text) => apply(addAnswer(docRef.current, o.thread.root.id, selected, text, USER_AUTHOR).doc, { type: "comment_answered", payload: { parentId: o.thread.root.id, selected } })}
                   onResolve={(r) => apply(setResolved(docRef.current, o.thread.root.id, r), { type: "comment_resolved", payload: { id: o.thread.root.id, resolved: r } })}
-                  onEdit={(text) => apply(editCommentText(docRef.current, o.thread.root.id, text), { type: "comment_modified", payload: { id: o.thread.root.id } })}
-                  onDelete={() => apply(deleteComment(docRef.current, o.thread.root.id), { type: "comment_deleted", payload: { id: o.thread.root.id } })}
+                  onEdit={(id, text) => apply(editCommentText(docRef.current, id, text), { type: "comment_modified", payload: { id } })}
+                  onDelete={(id) => apply(deleteComment(docRef.current, id), { type: "comment_deleted", payload: { id } })}
                 />
               </Fragment>
             ))}
@@ -1164,15 +1164,76 @@ function ThreadCard(props: {
   onReply: (text: string) => void;
   onAnswer: (selected: string[], text: string) => void;
   onResolve: (resolved: boolean) => void;
-  onEdit: (text: string) => void;
-  onDelete: () => void;
+  onEdit: (id: string, text: string) => void;
+  onDelete: (id: string) => void;
 }): JSX.Element {
   const { thread, body, disabled, orphaned } = props;
   const root = thread.root;
-  const quote = root.anchor === "doc" ? "· document" : orphaned ? "⚠ anchor removed (orphaned)" : anchoredText(body, root.id);
+  const isDoc = root.anchor === "doc";
+  // Doc comments carry no anchor, so skip the anchor/quote line entirely.
+  const quote = isDoc ? null : orphaned ? "⚠ anchor removed (orphaned)" : (anchoredText(body, root.id) ?? "(anchor missing)");
   const [replyText, setReplyText] = useState("");
-  const [editing, setEditing] = useState(false);
-  const [editText, setEditText] = useState(root.text);
+  const [replying, setReplying] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
+
+  // One comment (the root or a reply): its text, with per-comment Modify/Delete.
+  const renderComment = (c: Comment, isReply: boolean): JSX.Element => (
+    <div className={isReply ? "ap-reply" : "ap-comment"} key={c.id}>
+      <div className="ap-meta">
+        {isReply ? "↳ " : ""}
+        {c.author} · {c.date.slice(0, 16).replace("T", " ")}
+      </div>
+      {c.selected && c.selected.length > 0 && <div className="ap-selected">▶ {c.selected.join(", ")}</div>}
+      {editingId === c.id ? (
+        <div className="ap-edit">
+          <textarea
+            className="ap-grow"
+            value={editText}
+            autoFocus
+            onChange={(e) => setEditText(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                props.onEdit(c.id, editText);
+                setEditingId(null);
+              }
+            }}
+          />
+          <div className="ap-row">
+            <button
+              onClick={() => {
+                props.onEdit(c.id, editText);
+                setEditingId(null);
+              }}
+            >
+              Save
+            </button>
+            <button className="ap-link" onClick={() => setEditingId(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        c.text && <div className="ap-text">{c.text}</div>
+      )}
+      {!disabled && editingId !== c.id && (
+        <div className="ap-row ap-actions">
+          <button
+            className="ap-link"
+            onClick={() => {
+              setEditingId(c.id);
+              setEditText(c.text);
+            }}
+          >
+            Modify
+          </button>
+          <button className="ap-link ap-danger" onClick={() => props.onDelete(c.id)}>
+            Delete
+          </button>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <article
@@ -1180,63 +1241,62 @@ function ThreadCard(props: {
       className={`ap-thread${props.focused ? " focused" : ""}${props.synced ? " synced" : ""}${root.resolved ? " resolved" : ""}${orphaned ? " orphaned" : ""}`}
       onClick={props.onFocus}
     >
-      <div className="ap-thread-quote">{quote ?? "(anchor missing)"}</div>
-      <div className="ap-meta">
-        {root.author} · {root.date.slice(0, 16).replace("T", " ")}
-      </div>
-      {editing ? (
-        <div className="ap-row">
-          <textarea value={editText} onChange={(e) => setEditText(e.target.value)} />
-          <button
-            onClick={() => {
-              props.onEdit(editText);
-              setEditing(false);
-            }}
-          >
-            Save
-          </button>
-        </div>
-      ) : (
-        <div className="ap-text">{root.text}</div>
-      )}
-
+      {quote && <div className="ap-thread-quote">{quote}</div>}
+      {renderComment(root, false)}
       {root.question && <QuestionChips question={root.question} disabled={disabled} onAnswer={props.onAnswer} />}
+      {thread.replies.map((r) => renderComment(r, true))}
 
-      {thread.replies.map((r) => (
-        <div className="ap-reply" key={r.id}>
-          <div className="ap-meta">
-            ↳ {r.author} · {r.date.slice(0, 16).replace("T", " ")}
-          </div>
-          {r.selected && r.selected.length > 0 && <div className="ap-selected">▶ {r.selected.join(", ")}</div>}
-          {r.text && <div className="ap-text">{r.text}</div>}
-        </div>
-      ))}
-
-      <div className="ap-row ap-reply-box">
-        <input
-          placeholder="Reply…"
-          value={replyText}
-          disabled={disabled}
-          onChange={(e) => setReplyText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && replyText.trim()) {
-              props.onReply(replyText.trim());
-              setReplyText("");
-            }
-          }}
-        />
-      </div>
-      <div className="ap-row ap-actions">
+      {/* Resolve is per thread; Reply opens a box with explicit Comment / Cancel. */}
+      <div className="ap-row ap-thread-actions">
         <button className="ap-link" disabled={disabled} onClick={() => props.onResolve(!root.resolved)}>
-          {root.resolved ? "Reopen" : "Resolve"}
+          {root.resolved ? "Reopen thread" : "Resolve thread"}
         </button>
-        <button className="ap-link" disabled={disabled} onClick={() => setEditing((v) => !v)}>
-          Modify
-        </button>
-        <button className="ap-link ap-danger" disabled={disabled} onClick={props.onDelete}>
-          Delete
-        </button>
+        {!replying && (
+          <button className="ap-link" disabled={disabled} onClick={() => setReplying(true)}>
+            Reply
+          </button>
+        )}
       </div>
+      {replying && (
+        <div className="ap-reply-box">
+          <textarea
+            className="ap-grow"
+            placeholder="Reply…"
+            value={replyText}
+            disabled={disabled}
+            autoFocus
+            onChange={(e) => setReplyText(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && replyText.trim()) {
+                props.onReply(replyText.trim());
+                setReplyText("");
+                setReplying(false);
+              }
+            }}
+          />
+          <div className="ap-row">
+            <button
+              disabled={disabled || !replyText.trim()}
+              onClick={() => {
+                props.onReply(replyText.trim());
+                setReplyText("");
+                setReplying(false);
+              }}
+            >
+              Comment
+            </button>
+            <button
+              className="ap-link"
+              onClick={() => {
+                setReplyText("");
+                setReplying(false);
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </article>
   );
 }

@@ -76,8 +76,13 @@ body {
 .ap-text { white-space: pre-wrap; }
 .ap-reply { margin: 6px 0 0 10px; padding-left: 8px; border-left: 2px solid var(--line); }
 .ap-selected { font-weight: 600; }
-.ap-reply-box input, .ap-other { width: 100%; }
-.ap-actions { gap: 12px; }
+.ap-other { width: 100%; }
+.ap-reply-box { margin-top: 8px; }
+.ap-edit { margin: 4px 0; }
+.ap-comment + .ap-reply, .ap-reply + .ap-reply { margin-top: 8px; }
+/* per-comment actions are quieter than the per-thread actions */
+.ap-comment > .ap-actions, .ap-reply > .ap-actions { gap: 10px; margin-top: 2px; font-size: 11px; }
+.ap-thread-actions { gap: 12px; margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line); }
 .ap-link { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; }
 .ap-danger { color: var(--danger); }
 
