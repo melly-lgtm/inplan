@@ -119,12 +119,32 @@ async function waitCycle(file: string, explicitCursor: number | null, confirmed:
   appendLog(p.logPath, { actor: "agent", type: LogEventType.AgentRevised });
 
   // Mode-aware wake: Turn mode wakes only on turn-end / session-close; Instant on any user action.
-  const isActionable = wakePredicate(currentCadence(p.logPath));
+  const cadence = currentCadence(p.logPath);
+  const isActionable = wakePredicate(cadence);
   const result = await waitForActions({ logPath: p.logPath, cursor, debounceMs, pollMs, isActionable });
   writeCursor(p, result.cursor); // advance the persisted cursor so the next call continues here
   const closed = result.entries.some((e) => e.type === LogEventType.SessionClosed);
-  const status = result.editorGone ? "editor_closed" : closed ? "closed" : "actions";
-  output({ status, cursor: result.cursor, closed: closed || !!result.editorGone, editorGone: !!result.editorGone, entries: result.entries });
+  // Distinct control message per regime so the agent knows how to behave:
+  //   your_turn  — Turn mode: the human finished their turn and is LOCKED; revise as
+  //                needed, then call wait to hand control back (unlocks them).
+  //   activity   — Instant mode: the human is editing LIVE and is NOT blocked; react
+  //                by appending to comment threads only (do not rewrite the body).
+  const status = result.editorGone
+    ? "editor_closed"
+    : closed
+      ? "closed"
+      : cadence === "turn"
+        ? "your_turn"
+        : "activity";
+  output({
+    status,
+    mode: cadence,
+    humanLocked: status === "your_turn",
+    cursor: result.cursor,
+    closed: closed || !!result.editorGone,
+    editorGone: !!result.editorGone,
+    entries: result.entries,
+  });
 }
 
 async function main(): Promise<void> {

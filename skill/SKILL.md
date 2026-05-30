@@ -81,9 +81,14 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
 
    It opens the editor and blocks until the human acts, then prints one JSON
    line to stdout and exits. Re-invoke yourself when it returns.
-3. Read the printed JSON `status`:
-   - `actions` — the human acted. Re-read the `.md` for current state and use
-     `entries` to see what changed; note the `cursor`.
+3. Read the printed JSON `status` (it also carries `mode` and `humanLocked`):
+   - `your_turn` — **Turn mode**: the human finished their turn and their editor
+     is **locked**; the turn is yours. Re-read the `.md`, act, then **call `wait`
+     to hand control back** (this unlocks them). `humanLocked: true`.
+   - `activity` — **Instant mode**: the human acted but is **editing live and is
+     not blocked**. React by **appending to comment threads only** (reply/resolve/
+     answer) — do **not** rewrite the body — then call `wait` again to keep
+     listening. `humanLocked: false`.
    - `confirm_required` — your edit removed an anchored comment (`lost`). If
      intentional, re-run with `--confirmed-comment-deletion=<ids>`; otherwise
      restore the anchor link and try again.
@@ -91,8 +96,8 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
      Fix it and wait again.
    - `editor_closed` — the editor window went away. The session is over; stop.
    - `closed` — the human ended the session (Complete & quit). Stop.
-4. **It is now your turn; the human is locked, waiting.** Act on the changes,
-   **respecting the mode**:
+4. Act on what changed (`your_turn` → the human is locked and waiting; `activity`
+   → they're still editing live), **respecting the mode**:
    - **Turn mode**: you may revise the document body and reply/resolve comments.
    - **Instant mode**: only add to comment threads (reply/resolve/answer); do
      **not** rewrite the body.
