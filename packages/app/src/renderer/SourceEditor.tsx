@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { markdown } from "@codemirror/lang-markdown";
-import { Compartment, EditorState, StateEffect, StateField } from "@codemirror/state";
-import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
+import { Compartment, EditorState, Prec, StateEffect, StateField } from "@codemirror/state";
+import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 
@@ -33,8 +33,8 @@ const activeLineField = StateField.define<DecorationSet>({
 
 export const SourceEditor = forwardRef<
   SourceEditorHandle,
-  { value: string; editable: boolean; onChange: (v: string) => void; onCursorLine?: (line: number) => void }
->(function SourceEditor({ value, editable, onChange, onCursorLine }, ref): JSX.Element {
+  { value: string; editable: boolean; onChange: (v: string) => void; onCursorLine?: (line: number) => void; onFind?: () => void }
+>(function SourceEditor({ value, editable, onChange, onCursorLine, onFind }, ref): JSX.Element {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const editableComp = useRef(new Compartment());
@@ -42,6 +42,8 @@ export const SourceEditor = forwardRef<
   onChangeRef.current = onChange;
   const onCursorLineRef = useRef(onCursorLine);
   onCursorLineRef.current = onCursorLine;
+  const onFindRef = useRef(onFind);
+  onFindRef.current = onFind;
 
   useImperativeHandle(ref, () => ({
     scrollToLine(line: number) {
@@ -69,6 +71,18 @@ export const SourceEditor = forwardRef<
       state: EditorState.create({
         doc: value,
         extensions: [
+          // ⌘F should open the app's find bar, not CodeMirror's own search panel.
+          Prec.highest(
+            keymap.of([
+              {
+                key: "Mod-f",
+                run: () => {
+                  onFindRef.current?.();
+                  return true; // handled — suppress CodeMirror's search panel
+                },
+              },
+            ]),
+          ),
           basicSetup,
           markdown(),
           activeLineField,

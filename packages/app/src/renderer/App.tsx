@@ -189,9 +189,11 @@ export function App(): JSX.Element {
         e.preventDefault();
         if (e.shiftKey) redo();
         else undo();
-      } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "f" || e.key === "F")) {
+      } else if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "f" || e.key === "F")) {
+        // ⌘F opens the find bar. (Inside the source editor, CodeMirror's own ⌘F is
+        // overridden in SourceEditor to call this instead of its search panel.)
         e.preventDefault();
-        setFindOpen((v) => !v);
+        setFindOpen(true);
       } else if (e.key === "Escape") {
         if (composer) setComposer(null);
         else if (findOpen) setFindOpen(false);
@@ -632,6 +634,7 @@ export function App(): JSX.Element {
                   setDirty(serialize(nd) !== savedRef.current);
                 }}
                 onCursorLine={(line) => setActivePreviewLine(line)}
+                onFind={() => setFindOpen(true)}
               />
             )}
           </section>
