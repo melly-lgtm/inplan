@@ -277,14 +277,30 @@ export function App(): JSX.Element {
   }, [activePreviewLine, doc.body, doc.comments]);
 
   // --- mutate helpers ---
-  const apply = useCallback((next: ParsedDocument, action?: { type: string; payload?: unknown }) => {
-    history.current.push(docRef.current); // snapshot for undo
-    if (history.current.length > 200) history.current.shift();
-    future.current = [];
-    setDoc(next);
-    setDirty(serialize(next) !== savedRef.current);
-    if (action) void window.api.logAction(action.type, action.payload);
-  }, []);
+  const apply = useCallback(
+    (next: ParsedDocument, action?: { type: string; payload?: unknown }) => {
+      history.current.push(docRef.current); // snapshot for undo
+      if (history.current.length > 200) history.current.shift();
+      future.current = [];
+      const commentOnly = next.body === docRef.current.body; // body unchanged ⇒ a comment-thread change
+      setDoc(next);
+      if (action) void window.api.logAction(action.type, action.payload);
+      // Comment-thread changes are "always applied" — persist them immediately so
+      // they survive reloads and proposals (incl. during review). In Instant mode
+      // that's a canonical save (the agent reacts live); in Turn/Review it's a
+      // *silent* save (no turn-end / no wake — comments don't end your turn).
+      // Body edits (find/replace) keep the normal save flow.
+      if (commentOnly) {
+        const s = serialize(next);
+        savedRef.current = s;
+        setDirty(false);
+        void window.api.save(s, { kind: cadence === "instant" ? "canonical" : "apply", cadence });
+      } else {
+        setDirty(serialize(next) !== savedRef.current);
+      }
+    },
+    [cadence],
+  );
 
   const onModeChange = useCallback((c: Cadence, a: Acceptance) => {
     setCadence(c);
@@ -410,7 +426,14 @@ export function App(): JSX.Element {
     (segs: DiffSegment[], accepted: boolean[]) => {
       if (!proposal) return;
       const body = applySegments(segs, accepted);
-      const finalDoc: ParsedDocument = { body, comments: proposal.next.comments };
+      // Merge comments rather than overwrite with the proposal's stale snapshot:
+      // keep everything in the live doc (incl. comments the human added during
+      // review) and append any agent-proposed comments not already present, so
+      // accepting a proposal never discards review-time comments.
+      const live = docRef.current.comments;
+      const have = new Set(live.map((c) => c.id));
+      const comments = [...live, ...proposal.next.comments.filter((c) => !have.has(c.id))];
+      const finalDoc: ParsedDocument = { body, comments };
       setDoc(finalDoc);
       setProposal(null);
       setReviewOpen(false);
