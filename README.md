@@ -36,3 +36,15 @@ Example comment [on here](#cmt-abfdb1)
 }
 ]
 !-->
+
+## License
+
+agent-planner is **dual-licensed**:
+
+- **Open source:** [AGPL-3.0-or-later](./LICENSE).
+- **Commercial:** a separate license from CrazyIdeaStudio, Inc. for
+  proprietary or SaaS use without the AGPL's copyleft — see
+  [`LICENSING.md`](./LICENSING.md), contact **licensing@crazyideastudio.com**.
+
+Contributions require signing the [CLA](./CLA.md). See
+[`CONTRIBUTING.md`](./CONTRIBUTING.md).
