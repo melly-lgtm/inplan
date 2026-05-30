@@ -57,6 +57,33 @@ describe("parse / serialize", () => {
     expect(parse(serialize(doc))).toEqual(doc);
   });
 
+  it("ignores an agent-planner block inside a fenced code example and uses the real one", () => {
+    const md = [
+      "# Doc that documents its own format",
+      "",
+      "Example:",
+      "",
+      "```markdown",
+      "<!--agent-planner",
+      '[ { "id": "cmt-examp1", "author": "x", "date": "d", "resolved": false, "text": "example only" } ]',
+      "-->",
+      "```",
+      "",
+      "## Real content below the example",
+      "Body text with [a span](#cmt-real01).",
+      "",
+      "<!--agent-planner",
+      '[ { "id": "cmt-real01", "author": "Tim", "date": "d", "resolved": false, "text": "the real comment" } ]',
+      "-->",
+      "",
+    ].join("\n");
+    const doc = parse(md);
+    expect(doc.comments.map((c) => c.id)).toEqual(["cmt-real01"]);
+    // The fenced example must be preserved in the body, not consumed.
+    expect(doc.body).toContain("```markdown");
+    expect(doc.body).toContain("## Real content below the example");
+  });
+
   it("throws on an unterminated data block", () => {
     expect(() => parse("text\n<!--agent-planner\n[]")).toThrow(ParseError);
   });

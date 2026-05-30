@@ -74,6 +74,16 @@ describe("checkIntegrity", () => {
     expect(codes(doc)).toContain("missing_parent");
   });
 
+  it("ignores anchor links inside fenced code examples", () => {
+    const doc: ParsedDocument = {
+      body: ["Real [span](#cmt-abc123).", "", "```markdown", "Example [x](#cmt-zzzzzz) inside a fence.", "```"].join("\n"),
+      comments: [{ id: "cmt-abc123", author: "a", date: "d", resolved: false, text: "?" }],
+    };
+    // cmt-zzzzzz is only inside the fence, so it must NOT be flagged as dangling.
+    const r = checkIntegrity(doc);
+    expect(r.ok).toBe(true);
+  });
+
   it("rejects a malformed id", () => {
     const doc: ParsedDocument = {
       body: "",

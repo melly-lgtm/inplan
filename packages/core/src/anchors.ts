@@ -11,10 +11,28 @@
  */
 const ANCHOR_LINK_RE = /\]\(#(cmt-[0-9a-z]+)\)/gi;
 
-/** Every comment id referenced by an in-body anchor link, in document order (may contain duplicates). */
+/** Blank out fenced blocks and inline code spans so example anchors inside code aren't treated as real. */
+function stripCode(body: string): string {
+  let inFence = false;
+  const out: string[] = [];
+  for (const line of body.split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      out.push("");
+    } else if (inFence) {
+      out.push("");
+    } else {
+      out.push(line.replace(/`[^`]*`/g, "")); // drop inline `code` spans
+    }
+  }
+  return out.join("\n");
+}
+
+/** Every comment id referenced by an in-body anchor link, in document order (may contain duplicates).
+ *  Anchors inside fenced blocks or inline code are ignored (they're documentation examples). */
 export function extractAnchorIdList(body: string): string[] {
   const ids: string[] = [];
-  for (const m of body.matchAll(ANCHOR_LINK_RE)) {
+  for (const m of stripCode(body).matchAll(ANCHOR_LINK_RE)) {
     ids.push(m[1]!.toLowerCase());
   }
   return ids;

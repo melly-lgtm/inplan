@@ -19,8 +19,30 @@ export const BLOCK_CLOSE = "-->";
  * The returned `body` has the block removed and trailing whitespace trimmed.
  * A document with no block parses to an empty `comments` array.
  */
+/**
+ * Index of the first `BLOCK_OPEN` that is NOT inside a fenced code block, or -1.
+ * This lets a plan document its own comment-block format in a fenced example
+ * without that example being mistaken for the real data block.
+ */
+function findBlockOpen(markdown: string): number {
+  let inFence = false;
+  let offset = 0;
+  for (const line of markdown.split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+    } else if (!inFence) {
+      // The real data block's delimiter is always at the start of a line; this
+      // ignores the marker when it appears mid-line in inline code/prose.
+      const trimmed = line.trimStart();
+      if (trimmed.startsWith(BLOCK_OPEN)) return offset + (line.length - trimmed.length);
+    }
+    offset += line.length + 1; // account for the split-out "\n"
+  }
+  return -1;
+}
+
 export function parse(markdown: string): ParsedDocument {
-  const openIdx = markdown.indexOf(BLOCK_OPEN);
+  const openIdx = findBlockOpen(markdown);
   if (openIdx === -1) {
     return { body: markdown.replace(/\s+$/, ""), comments: [] };
   }
