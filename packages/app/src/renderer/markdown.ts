@@ -34,6 +34,15 @@ for (const name of BLOCK_RULES) {
     return orig ? orig(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options);
   };
 }
+// Fenced/indented code render as full HTML strings; inject data-line on the <pre>.
+for (const name of ["fence", "code_block"]) {
+  const orig = md.renderer.rules[name];
+  md.renderer.rules[name] = (tokens, idx, options, env, self) => {
+    const html = orig ? orig(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options);
+    const tok = tokens[idx]!;
+    return tok.map ? html.replace(/^<pre/, `<pre data-line="${tok.map[0]}"`) : html;
+  };
+}
 
 /**
  * Render Markdown body to HTML, with comment anchors tagged for the UI and

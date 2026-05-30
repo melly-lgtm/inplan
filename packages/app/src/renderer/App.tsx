@@ -130,6 +130,22 @@ export function App(): JSX.Element {
     return () => document.removeEventListener("selectionchange", onSel);
   }, []);
 
+  // --- keyboard ergonomics ---
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "f" || e.key === "F")) {
+        e.preventDefault();
+        setFindOpen((v) => !v);
+      } else if (e.key === "Escape") {
+        if (composer) setComposer(null);
+        else if (findOpen) setFindOpen(false);
+        else if (proposal) setProposal(null);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [composer, findOpen, proposal]);
+
   const editingLocked = cadence === "turn" && agentThinking;
 
   // --- autosave ---
@@ -522,28 +538,60 @@ function TopBar(props: {
   );
 }
 
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 function FindReplaceBar({ doc, onApply, onClose }: { doc: ParsedDocument; onApply: (next: ParsedDocument, action?: { type: string; payload?: unknown }) => void; onClose: () => void }): JSX.Element {
   const [find, setFind] = useState("");
   const [replace, setReplace] = useState("");
   const [inPreview, setInPreview] = useState(true);
   const [inEditor, setInEditor] = useState(true);
   const [inComments, setInComments] = useState(false);
+  const [ci, setCi] = useState(false);
 
   const inBody = inPreview || inEditor; // preview & editor are both views of the body
+  const re = (flags: string) => (find ? new RegExp(escapeRegExp(find), flags + (ci ? "i" : "")) : null);
+
   const count = useMemo(() => {
-    if (!find) return 0;
-    const occ = (s: string) => (find ? s.split(find).length - 1 : 0);
+    const r = re("g");
+    if (!r) return 0;
     let n = 0;
-    if (inBody) n += occ(doc.body);
-    if (inComments) for (const c of doc.comments) n += occ(c.text);
+    if (inBody) n += doc.body.match(r)?.length ?? 0;
+    if (inComments) for (const c of doc.comments) n += c.text.match(r)?.length ?? 0;
     return n;
-  }, [find, doc, inBody, inComments]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [find, doc, inBody, inComments, ci]);
 
   const replaceAll = () => {
-    if (!find) return;
-    const body = inBody ? doc.body.split(find).join(replace) : doc.body;
-    const comments = inComments ? doc.comments.map((c) => ({ ...c, text: c.text.split(find).join(replace) })) : doc.comments;
-    onApply({ body, comments }, { type: "document_edited", payload: { findReplace: true } });
+    const r = re("g");
+    if (!r) return;
+    const body = inBody ? doc.body.replace(r, replace) : doc.body;
+    const comments = inComments ? doc.comments.map((c) => ({ ...c, text: c.text.replace(r, replace) })) : doc.comments;
+    onApply({ body, comments }, { type: "document_edited", payload: { findReplace: "all" } });
+  };
+
+  const replaceNext = () => {
+    const r = re("");
+    if (!r) return;
+    if (inBody) {
+      const m = r.exec(doc.body);
+      if (m) {
+        const body = doc.body.slice(0, m.index) + replace + doc.body.slice(m.index + m[0].length);
+        onApply({ ...doc, body }, { type: "document_edited", payload: { findReplace: "next" } });
+        return;
+      }
+    }
+    if (inComments) {
+      for (let k = 0; k < doc.comments.length; k++) {
+        const c = doc.comments[k]!;
+        const m = r.exec(c.text);
+        if (m) {
+          const comments = [...doc.comments];
+          comments[k] = { ...c, text: c.text.slice(0, m.index) + replace + c.text.slice(m.index + m[0].length) };
+          onApply({ ...doc, comments }, { type: "document_edited", payload: { findReplace: "next" } });
+          return;
+        }
+      }
+    }
   };
 
   return (
@@ -560,8 +608,14 @@ function FindReplaceBar({ doc, onApply, onClose }: { doc: ParsedDocument; onAppl
         <label>
           <input type="checkbox" checked={inComments} onChange={(e) => setInComments(e.target.checked)} /> comments
         </label>
+        <label title="case-insensitive">
+          <input type="checkbox" checked={ci} onChange={(e) => setCi(e.target.checked)} /> Aa
+        </label>
       </span>
       <span className="ap-muted">{count} match{count === 1 ? "" : "es"}</span>
+      <button onClick={replaceNext} disabled={!find || count === 0}>
+        Replace next
+      </button>
       <button onClick={replaceAll} disabled={!find || count === 0}>
         Replace all
       </button>
