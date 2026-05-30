@@ -81,7 +81,8 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
 
    It opens the editor and blocks until the human acts, then prints one JSON
    line to stdout and exits. Re-invoke yourself when it returns.
-3. Read the printed JSON `status` (it also carries `mode` and `humanLocked`):
+3. Read the printed JSON `status` (it also carries `mode`, `humanLocked`, and
+   `settings` — the current materialized user settings, e.g. `autoResolve`):
    - `your_turn` — **Turn mode**: the human finished their turn and their editor
      is **locked**; the turn is yours. Re-read the `.md`, act, then **call `wait`
      to hand control back** (this unlocks them). `humanLocked: true`.
@@ -106,9 +107,10 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
    answers. If nothing needs changing, that's fine — you still take your (empty)
    turn and proceed to step 5.
    **Resolving:** by default, set `"resolved": true` once you've incorporated a
-   comment. But honor the latest `settings_changed.autoResolve` in the control
-   log: if it's `false`, do **not** auto-resolve — instead reply that the thread
-   can be resolved and leave it `resolved: false` for the human to resolve.
+   comment. But honor `settings.autoResolve` from the wait result (it is always
+   present — the current value, no log-scanning needed): if it's `false`, do
+   **not** auto-resolve — instead reply that the thread can be resolved and leave
+   it `resolved: false` for the human to resolve.
 5. **Hand control back: call `wait` again** (no `--cursor` — it self-manages),
    then loop to step 3. This unlocks the human's editor and blocks until their
    next turn. Do this after *every* turn, even an empty one:

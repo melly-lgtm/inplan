@@ -3,7 +3,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { appendLog, LogEventType, readLog } from "@agent-planner/core/node";
+import { appendLog, currentSettings, LogEventType, readLog } from "@agent-planner/core/node";
 import { runningEditorPid } from "./editorProcess";
 import { evaluateAgentEdit } from "./gate";
 import { docPaths, type DocPaths } from "./paths";
@@ -147,6 +147,9 @@ async function waitCycle(file: string, explicitCursor: number | null, confirmed:
     status,
     mode: cadence,
     humanLocked: status === "your_turn",
+    // Materialized current settings (global file + this session's settings_changed),
+    // so the agent always has them without scanning the log history.
+    settings: currentSettings(p.logPath),
     ...(reason ? { reason } : {}),
     cursor: result.cursor,
     closed: status === "closed",

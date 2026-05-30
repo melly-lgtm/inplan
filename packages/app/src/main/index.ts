@@ -4,7 +4,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import type { Acceptance, Cadence, SaveOptions } from "../shared/api";
+import type { Acceptance, Cadence, SaveOptions, Settings } from "../shared/api";
 import { Session } from "./session";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -114,6 +114,10 @@ function registerIpc(): void {
   });
   ipcMain.handle("doc:set-mode", (_e, cadence: Cadence, acceptance: Acceptance) => {
     session?.setMode(cadence, acceptance);
+  });
+  ipcMain.handle("settings:get", () => session?.getSettings());
+  ipcMain.handle("settings:set", (_e, settings: Settings) => {
+    session?.setSettings(settings);
   });
   ipcMain.handle("doc:complete", (_e, content: string) => {
     session?.complete(content);

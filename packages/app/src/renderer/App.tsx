@@ -96,14 +96,19 @@ export function App(): JSX.Element {
       if (typeof s.showResolvedOrphaned === "boolean") setShowResolvedOrphaned(s.showResolvedOrphaned);
       if (s.cadence === "turn" || s.cadence === "instant") setCadence(s.cadence);
       if (s.acceptance === "auto" || s.acceptance === "review") setAcceptance(s.acceptance);
-      if (typeof s.autoResolve === "boolean") setAutoResolve(s.autoResolve);
     } catch {
       /* ignore */
     }
   }, []);
   useEffect(() => {
-    localStorage.setItem("ap-layout", JSON.stringify({ panes, rightTab, zoom, showResolvedOrphaned, cadence, acceptance, autoResolve }));
-  }, [panes, rightTab, zoom, showResolvedOrphaned, cadence, acceptance, autoResolve]);
+    localStorage.setItem("ap-layout", JSON.stringify({ panes, rightTab, zoom, showResolvedOrphaned, cadence, acceptance }));
+  }, [panes, rightTab, zoom, showResolvedOrphaned, cadence, acceptance]);
+
+  // autoResolve is a global, cross-session user setting (affects agent behavior),
+  // loaded from ~/.agent-planner/settings.json on launch — not localStorage.
+  useEffect(() => {
+    void window.api.getSettings().then((s) => setAutoResolve(s.autoResolve));
+  }, []);
 
   // --- load + agent signals ---
   useEffect(() => {
@@ -274,10 +279,11 @@ export function App(): JSX.Element {
     void window.api.setMode(c, a);
   }, []);
 
-  // Auto-resolve is a directive to the agent — log it so the agent can honor it.
+  // Auto-resolve is a global directive to the agent: persist it to the settings
+  // file and log the change (main does both) so the agent wakes and can honor it.
   const onAutoResolve = useCallback((v: boolean) => {
     setAutoResolve(v);
-    void window.api.logAction("settings_changed", { autoResolve: v });
+    void window.api.setSettings({ autoResolve: v });
   }, []);
 
   const onZoom = useCallback((dir: -1 | 0 | 1) => {

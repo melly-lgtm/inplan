@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { appendLog, LogEventType, readLog } from "@agent-planner/core/node";
+import { appendLog, LogEventType, readGlobalSettings, readLog, writeGlobalSettings } from "@agent-planner/core/node";
+import type { Settings } from "../shared/api";
 import { existsSync, mkdirSync, readFileSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Acceptance, Cadence, SaveOptions } from "../shared/api";
@@ -72,6 +73,17 @@ export class Session {
 
   setMode(cadence: Cadence, acceptance: Acceptance): void {
     appendLog(this.paths.logPath, { actor: "user", type: LogEventType.ModeChanged, payload: { cadence, acceptance } });
+  }
+
+  /** Global, cross-session settings (loaded by the renderer on launch). */
+  getSettings(): Settings {
+    return readGlobalSettings();
+  }
+
+  /** Persist global settings AND log the change so the agent wakes and the trail records it. */
+  setSettings(settings: Settings): void {
+    writeGlobalSettings(settings);
+    appendLog(this.paths.logPath, { actor: "user", type: LogEventType.SettingsChanged, payload: settings });
   }
 
   complete(content: string): void {

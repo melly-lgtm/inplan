@@ -6,3 +6,4 @@
 
 export * from "./index";
 export * from "./controlLogFs";
+export * from "./settings";

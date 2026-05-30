@@ -16,6 +16,12 @@ export interface SaveOptions {
   cadence: Cadence;
 }
 
+/** Global user settings that affect agent behavior (persisted in ~/.agent-planner/settings.json). */
+export interface Settings {
+  /** Agent resolves a thread after incorporating it (true), or leaves it for the human (false). */
+  autoResolve: boolean;
+}
+
 /** The API exposed to the renderer via the preload contextBridge (`window.api`). */
 export interface Api {
   /** Load the document this window was opened with. */
@@ -28,6 +34,10 @@ export interface Api {
   reportState(dirty: boolean, content: string): Promise<void>;
   /** Record a mode change (cadence/acceptance) to the control log. */
   setMode(cadence: Cadence, acceptance: Acceptance): Promise<void>;
+  /** Read global user settings (loaded on launch). */
+  getSettings(): Promise<Settings>;
+  /** Persist global user settings and log the change to this doc's control log. */
+  setSettings(settings: Settings): Promise<void>;
   /** Write canonical, log session_closed, and quit. */
   complete(content: string): Promise<void>;
   /** The agent rewrote the document on disk. */

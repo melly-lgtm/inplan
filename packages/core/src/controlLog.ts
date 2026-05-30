@@ -25,6 +25,7 @@ export const LogEventType = {
   RevisionHunkRejected: "revision_hunk_rejected",
   RevisionAcceptedAll: "revision_accepted_all",
   RevisionRejectedAll: "revision_rejected_all",
+  SettingsChanged: "settings_changed",
   AgentDoneSuggested: "agent_done_suggested",
   SessionClosed: "session_closed",
 } as const;
