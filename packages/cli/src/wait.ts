@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { readFileSync } from "node:fs";
 import { LogEventType, readLogSince, type LogEntry } from "@agent-planner/core/node";
 import { isProcessAlive, latestEditorPid } from "./editorProcess";
 
@@ -8,6 +9,8 @@ export interface WaitResult {
   cursor: number;
   /** True when the wait ended because the editor process went away (not via a turn/close action). */
   editorGone?: boolean;
+  /** True when a newer waiter claimed the doc's wait-lock and this one stepped down. */
+  superseded?: boolean;
 }
 
 export interface WaitOptions {
@@ -22,6 +25,10 @@ export interface WaitOptions {
   isActionable?: (e: LogEntry) => boolean;
   /** Watch the editor pid and resolve (editorGone) if a once-alive editor dies. Default true. */
   watchEditor?: boolean;
+  /** Single-waiter lock file; if its contents stop matching `lockToken`, step down (superseded). */
+  lockPath?: string;
+  /** This waiter's token, written into `lockPath` when it claimed the doc. */
+  lockToken?: string;
   /** Abort the wait (e.g. on shutdown). */
   signal?: AbortSignal;
 }
@@ -68,6 +75,21 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
 
     const tick = () => {
       const { entries, cursor } = readLogSince(opts.logPath, opts.cursor);
+
+      // Single-waiter lock: if a newer waiter claimed the doc, step down so only
+      // one waiter is ever live (no racing / double-firing). A missing or
+      // unreadable lock is treated as "still ours" (don't step down on a blip).
+      if (opts.lockPath && opts.lockToken) {
+        try {
+          if (readFileSync(opts.lockPath, "utf8").trim() !== opts.lockToken) {
+            cleanup();
+            resolve({ entries, cursor, superseded: true });
+            return;
+          }
+        } catch {
+          /* lock unreadable — keep waiting */
+        }
+      }
 
       // Editor liveness: once we've seen the editor alive, exit if it goes away —
       // so a wait never lingers as a zombie after the window is gone.

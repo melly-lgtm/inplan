@@ -18,6 +18,10 @@ export interface DocPaths {
   proposedPath: string;
   /** Persisted wait cursor (the seq the agent has consumed) — so the agent never hand-manages it. */
   cursorPath: string;
+  /** Single-waiter lock: holds the token of the waiter that currently owns this doc. */
+  waitLockPath: string;
+  /** Append-only record of why each waiter exited (normal / superseded / signal) — for debugging. */
+  waitDebugPath: string;
 }
 
 /** Compute the sidecar paths for a plan document. */
@@ -33,5 +37,7 @@ export function docPaths(file: string): DocPaths {
     backupsDir: join(controlDir, `${base}.backups`),
     proposedPath: join(controlDir, `${base}.proposed.md`),
     cursorPath: join(controlDir, `${base}.cursor`),
+    waitLockPath: join(controlDir, `${base}.waitlock`),
+    waitDebugPath: join(controlDir, `${base}.wait-debug.log`),
   };
 }

@@ -2,7 +2,7 @@
 
 import { appendLog, LogEventType } from "@agent-planner/core/node";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -49,6 +49,24 @@ describe("waitForActions", () => {
     const ac = new AbortController();
     const pending = waitForActions({ logPath, cursor: 0, debounceMs: 40, pollMs: 10, watchEditor: true, signal: ac.signal });
     setTimeout(() => ac.abort(), 60); // it should still be blocking; we abort to end the test
+    await expect(pending).rejects.toThrow(/aborted/);
+  });
+
+  it("steps down (superseded) when the wait-lock token changes", async () => {
+    const lockPath = join(dir, "doc.waitlock");
+    writeFileSync(lockPath, "waiter-A"); // we own it
+    const pending = waitForActions({ logPath, cursor: 0, debounceMs: 40, pollMs: 5, watchEditor: false, lockPath, lockToken: "waiter-A" });
+    setTimeout(() => writeFileSync(lockPath, "waiter-B"), 15); // a newer waiter claims it
+    const result = await pending;
+    expect(result.superseded).toBe(true);
+  });
+
+  it("keeps waiting while it still holds the lock", async () => {
+    const lockPath = join(dir, "doc.waitlock");
+    writeFileSync(lockPath, "waiter-A");
+    const ac = new AbortController();
+    const pending = waitForActions({ logPath, cursor: 0, debounceMs: 40, pollMs: 5, watchEditor: false, lockPath, lockToken: "waiter-A", signal: ac.signal });
+    setTimeout(() => ac.abort(), 40); // never superseded → still blocking → abort to end
     await expect(pending).rejects.toThrow(/aborted/);
   });
 

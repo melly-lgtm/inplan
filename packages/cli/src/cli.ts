@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { appendLog, currentSettings, LogEventType, parse, readLog } from "@agent-planner/core/node";
 import { runningEditorPid } from "./editorProcess";
 import { evaluateAgentEdit } from "./gate";
@@ -87,6 +87,24 @@ function clearProposed(p: DocPaths): void {
   if (existsSync(p.proposedPath)) unlinkSync(p.proposedPath);
 }
 
+/** Record why a waiter exited (normal status / superseded / OS signal), for debugging
+ *  the "waiter vanished" reports — a reaped process leaves a `signal:*` line here. */
+function logWaitExit(p: DocPaths, reason: string): void {
+  try {
+    appendFileSync(p.waitDebugPath, `${new Date().toISOString()} pid=${process.pid} ${reason}\n`);
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Claim the single-waiter lock for this doc; returns this waiter's token. Last
+ *  writer wins — any older waiter sees the token change and steps down. */
+function claimWaitLock(p: DocPaths): string {
+  const token = `${process.pid}-${Date.now()}`;
+  writeFileSync(p.waitLockPath, token);
+  return token;
+}
+
 /**
  * Evaluate the agent's edit (gate), accept it as canonical, then block for user
  * actions. The cursor is self-managed: an explicit override, else the persisted
@@ -152,10 +170,30 @@ async function waitCycle(file: string, explicitCursor: number | null, confirmed:
   // "Agent is thinking…" indicator even when the agent made no body change.
   appendLog(p.logPath, { actor: "agent", type: LogEventType.AgentRevised });
 
+  // Single-waiter lock: claim the doc so any older waiter steps down (no racing
+  // double-waiters). Log the exit reason — including OS signals — so a reaped
+  // waiter is diagnosable instead of "vanishing" silently.
+  const lockToken = claimWaitLock(p);
+  for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"] as const) {
+    process.on(sig, () => {
+      logWaitExit(p, `signal:${sig}`);
+      process.exit(0);
+    });
+  }
+
   // Mode-aware wake: Turn mode wakes only on turn-end / session-close; Instant on any user action.
   const cadence = currentCadence(p.logPath);
   const isActionable = wakePredicate(cadence);
-  const result = await waitForActions({ logPath: p.logPath, cursor, debounceMs, pollMs, isActionable });
+  const result = await waitForActions({ logPath: p.logPath, cursor, debounceMs, pollMs, isActionable, lockPath: p.waitLockPath, lockToken });
+
+  // Superseded: a newer waiter owns the doc now. Step down quietly without
+  // advancing the cursor (the live waiter handles it).
+  if (result.superseded) {
+    logWaitExit(p, "superseded");
+    output({ status: "superseded" });
+    return;
+  }
+
   writeCursor(p, result.cursor); // advance the persisted cursor so the next call continues here
 
   // The editor logs WHY it closed (completed / window_closed); a crash logs nothing.
@@ -177,6 +215,7 @@ async function waitCycle(file: string, explicitCursor: number | null, confirmed:
   } else {
     status = cadence === "turn" ? "your_turn" : "activity";
   }
+  logWaitExit(p, `status:${status}${reason ? `/${reason}` : ""}`);
   output({
     status,
     mode: cadence,
