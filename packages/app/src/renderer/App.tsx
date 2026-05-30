@@ -15,26 +15,38 @@ import {
   type Thread,
 } from "./docOps";
 import { renderMarkdown } from "./markdown";
-import { SourceEditor } from "./SourceEditor";
+import { SourceEditor, type SourceEditorHandle } from "./SourceEditor";
+import { applySegments, isChange, lineSegments, type DiffSegment } from "./textdiff";
 
 const USER_AUTHOR = "You";
 const EMPTY: ParsedDocument = { body: "", comments: [] };
 const ZOOM_MIN = 0.6;
 const ZOOM_MAX = 1.8;
 
-/** The anchored label for a span comment, recovered from the body link. */
 function anchoredText(body: string, id: string): string | null {
   const m = new RegExp(`\\[([^\\]]*)\\]\\(#${id}\\)`).exec(body);
   return m ? m[1]! : null;
+}
+
+/** 0-based source line of a comment's anchor link, or null. */
+function anchorLine(body: string, id: string): number | null {
+  const idx = body.indexOf(`](#${id})`);
+  if (idx < 0) return null;
+  return body.slice(0, idx).split("\n").length - 1;
 }
 
 const liveSelection = (): string => window.getSelection()?.toString().trim() ?? "";
 
 interface OrderedThread {
   thread: Thread;
-  group: 0 | 1; // 0 = document-level, 1 = text-anchored
-  pos: number; // source index of the anchor (MAX for orphaned)
+  group: 0 | 1;
+  pos: number;
   orphaned: boolean;
+}
+
+interface Proposal {
+  baseBody: string;
+  next: ParsedDocument;
 }
 
 export function App(): JSX.Element {
@@ -53,10 +65,16 @@ export function App(): JSX.Element {
   const [selectionText, setSelectionText] = useState("");
   const [composer, setComposer] = useState<{ target: string | null; pos: { x: number; y: number } } | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
+  const [activePreviewLine, setActivePreviewLine] = useState<number | null>(null);
+  const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [findOpen, setFindOpen] = useState(false);
 
   const docRef = useRef(doc);
   docRef.current = doc;
+  const acceptanceRef = useRef(acceptance);
+  acceptanceRef.current = acceptance;
   const previewRef = useRef<HTMLElement>(null);
+  const editorRef = useRef<SourceEditorHandle>(null);
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // --- persisted layout ---
@@ -88,10 +106,18 @@ export function App(): JSX.Element {
       .catch(() => setLoaded(true));
 
     window.api.onExternalChange(({ content }) => {
-      setDoc(parse(content));
-      setDirty(false);
+      const next = parse(content);
       setAgentThinking(false);
-      setStatus("agent updated the document");
+      // Review mode: agent body edits arrive as a reviewable proposal (comment
+      // additions still apply). Auto-accept adopts the change directly.
+      if (acceptanceRef.current === "review" && docRef.current.body !== next.body) {
+        setProposal({ baseBody: docRef.current.body, next });
+        setStatus("agent proposed changes — review below");
+      } else {
+        setDoc(next);
+        setDirty(false);
+        setStatus("agent updated the document");
+      }
     });
     window.api.onAgentDone(() => setAgentDone(true));
     window.api.onAgentActive(() => {
@@ -126,6 +152,27 @@ export function App(): JSX.Element {
       if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
     };
   }, [doc, dirty, loaded, cadence]);
+
+  // --- preview current-line highlight + scroll ---
+  useEffect(() => {
+    const root = previewRef.current;
+    if (!root) return;
+    root.querySelectorAll(".ap-active-line").forEach((el) => el.classList.remove("ap-active-line"));
+    if (activePreviewLine == null) return;
+    let best: Element | null = null;
+    let bestLine = -1;
+    root.querySelectorAll("[data-line]").forEach((el) => {
+      const l = Number(el.getAttribute("data-line") ?? -1);
+      if (l <= activePreviewLine && l > bestLine) {
+        bestLine = l;
+        best = el;
+      }
+    });
+    if (best) {
+      (best as Element).classList.add("ap-active-line");
+      (best as Element).scrollIntoView({ block: "center" });
+    }
+  }, [activePreviewLine, doc.body]);
 
   // --- mutate helpers ---
   const apply = useCallback((next: ParsedDocument, action?: { type: string; payload?: unknown }) => {
@@ -187,15 +234,45 @@ export function App(): JSX.Element {
     const sel = window.getSelection();
     const txt = sel?.toString().trim() ?? "";
     if (txt && sel && sel.rangeCount > 0) {
-      // Float just below/right of the selected text.
       const r = sel.getRangeAt(0).getBoundingClientRect();
       setComposer({ target: txt, pos: { x: Math.max(8, Math.min(r.left, window.innerWidth - 360)), y: r.bottom + 6 } });
     } else {
-      // Doc comment: scroll to the top and float at the top of the document.
       previewRef.current?.scrollTo({ top: 0 });
       setComposer({ target: null, pos: { x: 24, y: 56 } });
     }
   }, []);
+
+  // --- cross-pane sync ---
+  const syncToLine = useCallback((line: number) => {
+    setActivePreviewLine(line);
+    editorRef.current?.scrollToLine(line);
+  }, []);
+
+  const focusComment = useCallback(
+    (id: string) => {
+      setFocused(id);
+      const line = anchorLine(docRef.current.body, id);
+      if (line != null) editorRef.current?.scrollToLine(line);
+      previewRef.current?.querySelector(`[data-cmt="${id}"]`)?.scrollIntoView({ block: "center" });
+    },
+    [],
+  );
+
+  // --- review apply ---
+  const applyProposal = useCallback(
+    (segs: DiffSegment[], accepted: boolean[]) => {
+      if (!proposal) return;
+      const body = applySegments(segs, accepted);
+      const finalDoc: ParsedDocument = { body, comments: proposal.next.comments };
+      setDoc(finalDoc);
+      setProposal(null);
+      const acceptedCount = accepted.filter(Boolean).length;
+      void window.api.save(serialize(finalDoc), { kind: "canonical", cadence });
+      void window.api.logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", { accepted: acceptedCount, total: accepted.length });
+      setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`);
+    },
+    [proposal, cadence],
+  );
 
   const threads = useMemo(() => buildThreads(doc.comments), [doc.comments]);
   const ordered = useMemo<OrderedThread[]>(() => {
@@ -231,12 +308,15 @@ export function App(): JSX.Element {
         onPanes={setPanes}
         onZoom={onZoom}
         onAddComment={openComposer}
+        onToggleFind={() => setFindOpen((v) => !v)}
         dirty={dirty}
         onSave={saveNow}
         onFinishTurn={finishTurn}
         onComplete={complete}
         locked={editingLocked}
       />
+
+      {findOpen && <FindReplaceBar doc={doc} onApply={apply} onClose={() => setFindOpen(false)} />}
 
       {agentDone && (
         <div className="ap-banner">
@@ -246,6 +326,8 @@ export function App(): JSX.Element {
           </button>
         </div>
       )}
+
+      {proposal && <ReviewPanel proposal={proposal} onApply={applyProposal} onClose={() => setProposal(null)} />}
 
       {composer && (
         <ComposerPopover
@@ -274,16 +356,21 @@ export function App(): JSX.Element {
               }
             }}
             onClick={(e) => {
-              const a = (e.target as HTMLElement).closest("a");
-              if (!a) return;
-              e.preventDefault(); // links never navigate the editor window
-              const cmt = a.getAttribute("data-cmt");
-              if (cmt) {
-                setFocused(cmt);
+              const target = e.target as HTMLElement;
+              const a = target.closest("a");
+              if (a) {
+                e.preventDefault();
+                const cmt = a.getAttribute("data-cmt");
+                if (cmt) {
+                  focusComment(cmt);
+                  return;
+                }
+                const href = a.getAttribute("href") ?? "";
+                if (/^https?:/.test(href)) window.open(href, "_blank");
                 return;
               }
-              const href = a.getAttribute("href") ?? "";
-              if (/^https?:/.test(href)) window.open(href, "_blank");
+              const block = target.closest("[data-line]");
+              if (block) syncToLine(Number(block.getAttribute("data-line")));
             }}
           />
         </section>
@@ -291,7 +378,13 @@ export function App(): JSX.Element {
         {showSource && (
           <section className="ap-pane">
             {panes === 2 && <PaneTabs tab={rightTab} onTab={setRightTab} />}
-            <SourceEditor value={doc.body} editable={!editingLocked} onChange={(body) => apply({ ...docRef.current, body })} />
+            <SourceEditor
+              ref={editorRef}
+              value={doc.body}
+              editable={!editingLocked}
+              onChange={(body) => apply({ ...docRef.current, body })}
+              onCursorLine={(line) => setActivePreviewLine(line)}
+            />
           </section>
         )}
 
@@ -313,7 +406,7 @@ export function App(): JSX.Element {
                   orphaned={o.orphaned}
                   focused={focused === o.thread.root.id}
                   disabled={editingLocked}
-                  onFocus={() => setFocused(o.thread.root.id)}
+                  onFocus={() => focusComment(o.thread.root.id)}
                   onReply={(text) => apply(addReply(docRef.current, o.thread.root.id, text, USER_AUTHOR).doc, { type: "comment_created", payload: { parentId: o.thread.root.id } })}
                   onAnswer={(selected, text) => apply(addAnswer(docRef.current, o.thread.root.id, selected, text, USER_AUTHOR).doc, { type: "comment_answered", payload: { parentId: o.thread.root.id, selected } })}
                   onResolve={(r) => apply(setResolved(docRef.current, o.thread.root.id, r), { type: "comment_resolved", payload: { id: o.thread.root.id, resolved: r } })}
@@ -365,6 +458,7 @@ function TopBar(props: {
   onPanes: (p: 1 | 2 | 3) => void;
   onZoom: (dir: -1 | 0 | 1) => void;
   onAddComment: () => void;
+  onToggleFind: () => void;
   dirty: boolean;
   onSave: () => void;
   onFinishTurn: () => void;
@@ -408,6 +502,9 @@ function TopBar(props: {
           +
         </button>
       </div>
+      <button onClick={props.onToggleFind} title="Find &amp; replace">
+        Find
+      </button>
       <button onClick={props.onAddComment} disabled={props.locked}>
         {props.hasSelection ? "+ Add Comment" : "+ Add Doc Comment"}
       </button>
@@ -422,6 +519,110 @@ function TopBar(props: {
         Complete &amp; quit
       </button>
     </header>
+  );
+}
+
+function FindReplaceBar({ doc, onApply, onClose }: { doc: ParsedDocument; onApply: (next: ParsedDocument, action?: { type: string; payload?: unknown }) => void; onClose: () => void }): JSX.Element {
+  const [find, setFind] = useState("");
+  const [replace, setReplace] = useState("");
+  const [inPreview, setInPreview] = useState(true);
+  const [inEditor, setInEditor] = useState(true);
+  const [inComments, setInComments] = useState(false);
+
+  const inBody = inPreview || inEditor; // preview & editor are both views of the body
+  const count = useMemo(() => {
+    if (!find) return 0;
+    const occ = (s: string) => (find ? s.split(find).length - 1 : 0);
+    let n = 0;
+    if (inBody) n += occ(doc.body);
+    if (inComments) for (const c of doc.comments) n += occ(c.text);
+    return n;
+  }, [find, doc, inBody, inComments]);
+
+  const replaceAll = () => {
+    if (!find) return;
+    const body = inBody ? doc.body.split(find).join(replace) : doc.body;
+    const comments = inComments ? doc.comments.map((c) => ({ ...c, text: c.text.split(find).join(replace) })) : doc.comments;
+    onApply({ body, comments }, { type: "document_edited", payload: { findReplace: true } });
+  };
+
+  return (
+    <div className="ap-find">
+      <input placeholder="Find…" value={find} onChange={(e) => setFind(e.target.value)} autoFocus />
+      <input placeholder="Replace…" value={replace} onChange={(e) => setReplace(e.target.value)} />
+      <span className="ap-find-scope">
+        <label>
+          <input type="checkbox" checked={inPreview} onChange={(e) => setInPreview(e.target.checked)} /> preview
+        </label>
+        <label>
+          <input type="checkbox" checked={inEditor} onChange={(e) => setInEditor(e.target.checked)} /> editor
+        </label>
+        <label>
+          <input type="checkbox" checked={inComments} onChange={(e) => setInComments(e.target.checked)} /> comments
+        </label>
+      </span>
+      <span className="ap-muted">{count} match{count === 1 ? "" : "es"}</span>
+      <button onClick={replaceAll} disabled={!find || count === 0}>
+        Replace all
+      </button>
+      <button className="ap-link" onClick={onClose}>
+        close
+      </button>
+    </div>
+  );
+}
+
+function ReviewPanel({ proposal, onApply, onClose }: { proposal: Proposal; onApply: (segs: DiffSegment[], accepted: boolean[]) => void; onClose: () => void }): JSX.Element {
+  const segs = useMemo(() => lineSegments(proposal.baseBody, proposal.next.body), [proposal]);
+  const changeCount = segs.filter(isChange).length;
+  const [accepted, setAccepted] = useState<boolean[]>(() => new Array(changeCount).fill(true));
+
+  let ci = -1;
+  return (
+    <div className="ap-review">
+      <div className="ap-review-head">
+        <strong>Agent proposed changes</strong> — {changeCount} hunk{changeCount === 1 ? "" : "s"}
+        <span className="ap-spacer" />
+        <button onClick={() => setAccepted(new Array(changeCount).fill(true))}>Accept all</button>
+        <button onClick={() => setAccepted(new Array(changeCount).fill(false))}>Reject all</button>
+        <button className="ap-primary" onClick={() => onApply(segs, accepted)}>
+          Apply
+        </button>
+        <button className="ap-link" onClick={onClose}>
+          dismiss
+        </button>
+      </div>
+      <div className="ap-review-body">
+        {segs.map((s, i) => {
+          if (s.same) {
+            return (
+              <pre key={i} className="ap-diff-same">
+                {s.same.slice(Math.max(0, s.same.length - 3)).join("\n")}
+              </pre>
+            );
+          }
+          ci++;
+          const idx = ci;
+          return (
+            <div key={i} className={`ap-hunk${accepted[idx] ? " accepted" : " rejected"}`}>
+              <label className="ap-hunk-toggle">
+                <input type="checkbox" checked={accepted[idx]} onChange={(e) => setAccepted((a) => a.map((v, k) => (k === idx ? e.target.checked : v)))} /> accept hunk {idx + 1}
+              </label>
+              {(s.removed ?? []).map((l, k) => (
+                <pre key={`r${k}`} className="ap-diff-del">
+                  − {l}
+                </pre>
+              ))}
+              {(s.added ?? []).map((l, k) => (
+                <pre key={`a${k}`} className="ap-diff-add">
+                  + {l}
+                </pre>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -465,7 +666,6 @@ function ComposerPopover({
     ta.current?.focus();
   }, []);
 
-  // Drag by the header.
   useEffect(() => {
     const move = (e: MouseEvent) => {
       if (drag.current) setP({ x: e.clientX - drag.current.dx, y: e.clientY - drag.current.dy });
@@ -481,7 +681,6 @@ function ComposerPopover({
     };
   }, []);
 
-  // Click outside an EMPTY composer dismisses it (keeps it if you've typed).
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       if (box.current && !box.current.contains(e.target as Node) && !text.trim()) onClose();
@@ -492,7 +691,7 @@ function ComposerPopover({
 
   const grow = (el: HTMLTextAreaElement) => {
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 8 * 22)}px`; // cap at ~8 lines
+    el.style.height = `${Math.min(el.scrollHeight, 8 * 22)}px`;
   };
 
   const submit = () => {

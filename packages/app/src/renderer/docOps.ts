@@ -26,31 +26,49 @@ function findPlainOccurrence(body: string, text: string): number {
   }
 }
 
-/** Build a copy of `source` with inline markdown markers (* _ `) removed, plus a
- *  map from each kept char's index back to its index in `source`. */
+/**
+ * Build a normalized copy of `source` (inline markers * _ ` dropped, whitespace
+ * runs collapsed to a single space) plus a map from each kept char's index back
+ * to its index in `source`. This lets a preview selection — which has no markup
+ * and collapsed whitespace — map back to the exact source range.
+ */
 function buildNormalized(source: string): { text: string; map: number[] } {
   let text = "";
   const map: number[] = [];
+  let prevSpace = false;
   for (let i = 0; i < source.length; i++) {
     const ch = source[i]!;
-    if (ch === "*" || ch === "_" || ch === "`") continue;
-    text += ch;
-    map.push(i);
+    if (ch === "*" || ch === "_" || ch === "`") {
+      prevSpace = false;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (prevSpace) continue;
+      text += " ";
+      map.push(i);
+      prevSpace = true;
+    } else {
+      text += ch;
+      map.push(i);
+      prevSpace = false;
+    }
   }
   return { text, map };
 }
 
+const normalizeNeedle = (s: string): string => s.replace(/[*_`]/g, "").replace(/\s+/g, " ").trim();
+
 /**
  * Locate the source range to anchor for `selected` (the user's preview selection).
- * Tries a verbatim match first; falls back to a markup-insensitive match so a
- * selection like "showing resolved and orphaned" still matches source
+ * Tries a verbatim match first; falls back to a markup- and whitespace-insensitive
+ * match so a selection like "showing resolved and orphaned" still maps to source
  * "showing resolved *and* orphaned". Returns null if not found.
  */
 export function findSpanRange(body: string, selected: string): { start: number; end: number } | null {
   const direct = findPlainOccurrence(body, selected);
   if (direct >= 0) return { start: direct, end: direct + selected.length };
 
-  const needle = selected.replace(/[*_`]/g, "");
+  const needle = normalizeNeedle(selected);
   if (!needle) return null;
   const { text, map } = buildNormalized(body);
   const idx = text.indexOf(needle);

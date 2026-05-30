@@ -94,5 +94,26 @@ body {
 .ap-thread.orphaned { background: #fff6f4; }
 .ap-thread.orphaned .ap-thread-quote { color: var(--danger); }
 
+/* find & replace bar */
+.ap-find { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--accent-soft); flex-wrap: wrap; }
+.ap-find input[type="text"], .ap-find > input { border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; }
+.ap-find-scope { display: inline-flex; gap: 10px; font-size: 12px; }
+
+/* cross-pane current-line highlight */
+.ap-active-line, .cm-line.ap-active-line { background: var(--accent-soft); }
+.ap-rendered [data-line] { scroll-margin-top: 12px; }
+
+/* review-mode diff panel */
+.ap-review { position: absolute; left: 50%; transform: translateX(-50%); top: 48px; z-index: 25; width: min(820px, 92vw); max-height: 70vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.22); }
+.ap-review-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.ap-review-body { overflow: auto; padding: 8px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.ap-hunk { border-left: 3px solid var(--line); margin: 8px 0; padding-left: 8px; }
+.ap-hunk.accepted { border-left-color: #2e9e5b; }
+.ap-hunk.rejected { border-left-color: var(--danger); opacity: 0.7; }
+.ap-hunk-toggle { display: block; font-family: -apple-system, sans-serif; font-size: 12px; margin-bottom: 4px; }
+.ap-diff-same { color: var(--muted); margin: 0; white-space: pre-wrap; }
+.ap-diff-del { background: #ffe9e6; color: #8a1c10; margin: 0; white-space: pre-wrap; }
+.ap-diff-add { background: #e6f6ec; color: #18643a; margin: 0; white-space: pre-wrap; }
+
 /* status bar */
 .ap-statusbar { display: flex; gap: 8px; padding: 4px 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }

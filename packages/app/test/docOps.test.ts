@@ -18,6 +18,15 @@ describe("findSpanRange", () => {
     expect(body.slice(r!.start, r!.end)).toBe("showing resolved *and* orphaned");
   });
 
+  it("matches across markup AND collapsed whitespace", () => {
+    const body = "tasks are stored *locally*\nin a single file";
+    const r = findSpanRange(body, "stored locally in a single file");
+    expect(r).not.toBeNull();
+    const span = body.slice(r!.start, r!.end);
+    expect(span.startsWith("stored")).toBe(true);
+    expect(span.endsWith("file")).toBe(true);
+  });
+
   it("returns null when the text isn't present", () => {
     expect(findSpanRange("nothing here", "missing phrase")).toBeNull();
   });
