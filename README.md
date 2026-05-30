@@ -1,4 +1,4 @@
-# agent-planner
+# inplan
 
 Example comment [on here](#cmt-abfdb1)
 [Another example comment](#cmt-1e2lef)
@@ -39,7 +39,7 @@ Example comment [on here](#cmt-abfdb1)
 
 ## License
 
-agent-planner is **dual-licensed**:
+inplan is **dual-licensed**:
 
 - **Open source:** [AGPL-3.0-or-later](./LICENSE).
 - **Commercial:** a separate license from CrazyIdeaStudio, Inc. for

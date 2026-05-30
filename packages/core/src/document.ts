@@ -3,16 +3,16 @@
 import type { Comment, ParsedDocument } from "./types";
 
 /** Opening delimiter of the comment data block. */
-export const BLOCK_OPEN = "<!--agent-planner";
+export const BLOCK_OPEN = "<!--inplan";
 /** Closing delimiter of the comment data block. */
 export const BLOCK_CLOSE = "-->";
 
 /**
- * Parse an agent-planner Markdown document into its body and comments.
+ * Parse an inplan Markdown document into its body and comments.
  *
  * The data block is a single HTML comment holding a JSON array:
  *
- *     <!--agent-planner
+ *     <!--inplan
  *     [ { "id": "cmt-...", ... } ]
  *     -->
  *

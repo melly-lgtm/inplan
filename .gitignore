@@ -5,8 +5,8 @@ build/
 out/
 *.tsbuildinfo
 
-# agent-planner runtime sidecars (per-document logs, backups, proposals)
-.agent-planner/
+# inplan runtime sidecars (per-document logs, backups, proposals)
+.inplan/
 
 # OS / editor cruft
 .DS_Store

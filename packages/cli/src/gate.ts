@@ -8,7 +8,7 @@ import {
   type Comment,
   type IntegrityError,
   type ParsedDocument,
-} from "@agent-planner/core";
+} from "@inplan/core";
 
 export interface AgentEditEvaluation {
   /** True when no *structural* integrity errors remain (orphaned spans are handled by the confirm gate, not here). */

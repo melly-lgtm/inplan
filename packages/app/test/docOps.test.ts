@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import { addSpanComment, findSpanRange } from "../src/renderer/docOps";
-import type { ParsedDocument } from "@agent-planner/core";
+import type { ParsedDocument } from "@inplan/core";
 
 describe("findSpanRange", () => {
   it("matches a verbatim selection", () => {

@@ -26,7 +26,7 @@ export interface Comment {
   anchor?: "doc";
   /** Comment body / free-text / "Other" note. */
   text: string;
-  /** "Name <email>"; the agent uses "Agent <agent@agent-planner>". */
+  /** "Name <email>"; the agent uses "Agent <agent@inplan>". */
   author: string;
   /** ISO-8601 timestamp. */
   date: string;
@@ -39,7 +39,7 @@ export interface Comment {
 
 /** A parsed document: the Markdown body plus the structured comments. */
 export interface ParsedDocument {
-  /** The Markdown body, with the agent-planner data block removed. */
+  /** The Markdown body, with the inplan data block removed. */
   body: string;
   /** Comments parsed from the data block. */
   comments: Comment[];

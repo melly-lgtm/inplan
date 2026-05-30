@@ -33,8 +33,8 @@ jobs:
           PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_PAT }}
         with:
           path-to-signatures: 'signatures/cla.json'
-          path-to-document: 'https://github.com/melly-lgtm/agent-planner/blob/main/CLA.md'
+          path-to-document: 'https://github.com/melly-lgtm/inplan/blob/main/CLA.md'
           branch: 'main'
           allowlist: 'dependabot[bot]'
           custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
-          custom-notsigned-prcomment: 'Thanks for your PR! Before we can merge it, please sign our [Contributor License Agreement](https://github.com/melly-lgtm/agent-planner/blob/main/CLA.md) by commenting below:'
+          custom-notsigned-prcomment: 'Thanks for your PR! Before we can merge it, please sign our [Contributor License Agreement](https://github.com/melly-lgtm/inplan/blob/main/CLA.md) by commenting below:'

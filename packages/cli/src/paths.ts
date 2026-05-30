@@ -2,11 +2,11 @@
 
 import { basename, dirname, join } from "node:path";
 
-/** Resolved sidecar paths for a plan document, all under a `.agent-planner/` sibling dir. */
+/** Resolved sidecar paths for a plan document, all under a `.inplan/` sibling dir. */
 export interface DocPaths {
   /** Absolute-ish path to the plan document itself. */
   file: string;
-  /** The `.agent-planner/` control directory next to the file. */
+  /** The `.inplan/` control directory next to the file. */
   controlDir: string;
   /** Append-only JSONL control log (wake signal + audit trail). */
   logPath: string;
@@ -28,7 +28,7 @@ export interface DocPaths {
 export function docPaths(file: string): DocPaths {
   const dir = dirname(file);
   const base = basename(file);
-  const controlDir = join(dir, ".agent-planner");
+  const controlDir = join(dir, ".inplan");
   return {
     file,
     controlDir,

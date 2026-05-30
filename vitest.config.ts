@@ -4,8 +4,8 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   resolve: {
     alias: {
-      "@agent-planner/core/node": fileURLToPath(new URL("./packages/core/src/node.ts", import.meta.url)),
-      "@agent-planner/core": fileURLToPath(new URL("./packages/core/src/index.ts", import.meta.url)),
+      "@inplan/core/node": fileURLToPath(new URL("./packages/core/src/node.ts", import.meta.url)),
+      "@inplan/core": fileURLToPath(new URL("./packages/core/src/index.ts", import.meta.url)),
     },
   },
   test: {

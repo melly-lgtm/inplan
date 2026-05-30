@@ -4,7 +4,7 @@
 > until a lawyer has reviewed and finalized it.** It is adapted from common
 > open-source CLAs (Apache ICLA / Project Harmony) and is not legal advice.
 
-Thank you for contributing to agent-planner (the "Project"), stewarded by
+Thank you for contributing to inplan (the "Project"), stewarded by
 **CrazyIdeaStudio, Inc.** ("We" or "Us"). This Agreement clarifies the
 intellectual-property rights granted with Contributions from any person or
 entity. By submitting a Contribution (for example, opening a pull request), You

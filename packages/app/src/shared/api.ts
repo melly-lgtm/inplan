@@ -17,7 +17,7 @@ export interface SaveOptions {
   cadence: Cadence;
 }
 
-/** Global user settings that affect agent behavior (persisted in ~/.agent-planner/settings.json). */
+/** Global user settings that affect agent behavior (persisted in ~/.inplan/settings.json). */
 export interface Settings {
   /** Agent resolves a thread after incorporating it (true), or leaves it for the human (false). */
   autoResolve: boolean;

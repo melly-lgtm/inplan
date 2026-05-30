@@ -1,7 +1,7 @@
 {
-  "name": "@agent-planner/app",
+  "name": "@inplan/app",
   "version": "0.0.0",
-  "description": "agent-planner Electron editor for human/agent collaboration on planning documents.",
+  "description": "inplan Electron editor for human/agent collaboration on planning documents.",
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "main": "./out/main/index.js",
@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@agent-planner/core": "0.0.0"
+    "@inplan/core": "0.0.0"
   },
   "devDependencies": {
     "@codemirror/lang-markdown": "^6.3.0",

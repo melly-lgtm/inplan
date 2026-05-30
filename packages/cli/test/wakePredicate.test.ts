@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { LogEventType, type LogEntry } from "@agent-planner/core/node";
+import { LogEventType, type LogEntry } from "@inplan/core/node";
 import { describe, expect, it } from "vitest";
 import { wakePredicate } from "../src/wait";
 

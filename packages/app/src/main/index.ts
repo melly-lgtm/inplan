@@ -11,10 +11,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Log main-process errors to stderr instead of Electron's default GUI error dialog.
 process.on("uncaughtException", (err) => {
-  process.stderr.write(`[agent-planner] uncaught exception: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);
+  process.stderr.write(`[inplan] uncaught exception: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);
 });
 process.on("unhandledRejection", (reason) => {
-  process.stderr.write(`[agent-planner] unhandled rejection: ${String(reason)}\n`);
+  process.stderr.write(`[inplan] unhandled rejection: ${String(reason)}\n`);
 });
 
 /** The plan file to open is the first non-flag CLI argument. */
@@ -34,7 +34,7 @@ function createWindow(): void {
   win = new BrowserWindow({
     width: 1200,
     height: 800,
-    title: "agent-planner",
+    title: "inplan",
     webPreferences: {
       preload: join(__dirname, "../preload/index.mjs"),
       sandbox: false,

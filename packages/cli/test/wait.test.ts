@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { appendLog, LogEventType } from "@agent-planner/core/node";
+import { appendLog, LogEventType } from "@inplan/core/node";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

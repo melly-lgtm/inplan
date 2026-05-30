@@ -1,10 +1,10 @@
 # Contributing
 
-Thanks for your interest in agent-planner.
+Thanks for your interest in inplan.
 
 ## License & CLA
 
-agent-planner is **dual-licensed**: open source under the **GNU Affero General
+inplan is **dual-licensed**: open source under the **GNU Affero General
 Public License v3.0 or later** (see [`LICENSE`](./LICENSE)), or under a
 **commercial license** from CrazyIdeaStudio, Inc. for proprietary/SaaS use — see
 [`LICENSING.md`](./LICENSING.md).
@@ -34,6 +34,6 @@ npm run build          # build all packages
 The codebase is a TypeScript monorepo:
 
 - `packages/core` — pure-TS document model, parser, integrity, diff, control log
-- `packages/cli` — the `agent-planner` CLI (`open` / `wait` / `signal`)
+- `packages/cli` — the `inplan` CLI (`open` / `wait` / `signal`)
 - `packages/app` — the Electron editor
 - `skill/` — the agent skill

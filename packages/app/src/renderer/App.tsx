@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { parse, serialize, type Comment, type ParsedDocument, type Question } from "@agent-planner/core";
+import { parse, serialize, type Comment, type ParsedDocument, type Question } from "@inplan/core";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Acceptance, Cadence } from "../shared/api";
 import {
@@ -105,7 +105,7 @@ export function App(): JSX.Element {
   }, [panes, rightTab, zoom, showResolvedOrphaned, cadence, acceptance]);
 
   // autoResolve is a global, cross-session user setting (affects agent behavior),
-  // loaded from ~/.agent-planner/settings.json on launch — not localStorage.
+  // loaded from ~/.inplan/settings.json on launch — not localStorage.
   useEffect(() => {
     void window.api.getSettings().then((s) => setAutoResolve(s.autoResolve));
   }, []);

@@ -1,5 +1,5 @@
 {
-  "name": "agent-planner-monorepo",
+  "name": "inplan-monorepo",
   "private": true,
   "type": "module",
   "workspaces": [

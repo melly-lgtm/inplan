@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { readFileSync } from "node:fs";
-import { LogEventType, readLogSince, type LogEntry } from "@agent-planner/core/node";
+import { LogEventType, readLogSince, type LogEntry } from "@inplan/core/node";
 import { isProcessAlive, latestEditorPid } from "./editorProcess";
 
 export interface WaitResult {

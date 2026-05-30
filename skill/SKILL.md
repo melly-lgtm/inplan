@@ -1,9 +1,9 @@
 ---
-name: agent-planner
-description: Use when drafting a planning, PRD, or design document that a human should review interactively. Saves the plan as *.plan.md and opens it in the agent-planner editor for inline-comment collaboration — the agent drafts and poses questions as comments, the human comments/answers, the agent revises — looping until the human completes the session.
+name: inplan
+description: Use when drafting a planning, PRD, or design document that a human should review interactively. Saves the plan as *.plan.md and opens it in the inplan editor for inline-comment collaboration — the agent drafts and poses questions as comments, the human comments/answers, the agent revises — looping until the human completes the session.
 ---
 
-# agent-planner
+# inplan
 
 Collaborate with the human on a planning document through inline comments, like
 two people on a shared doc. You draft the plan and pose open questions as
@@ -14,14 +14,14 @@ human completes the session.
 
 Check for the CLI and install it if missing:
 
-    agent-planner --version || npm install -g agent-planner
+    inplan --version || npm install -g inplan
 
-(If the unscoped name is unavailable, install `@cis/agent-planner`.)
+(If the unscoped name is unavailable, install `@cis/inplan`.)
 
 ## File convention
 
 Save plans as `<name>.plan.md`. The editor keeps its sidecars in an
-`.agent-planner/` directory next to the file (control log, canonical base,
+`.inplan/` directory next to the file (control log, canonical base,
 backups) — never edit those by hand.
 
 ## Document format
@@ -31,9 +31,9 @@ anchored comment is an inline Markdown link whose href is the comment id:
 
     The plan should [use Postgres](#cmt-abfdb1) for storage.
 
-    <!--agent-planner
+    <!--inplan
     [
-      { "id": "cmt-abfdb1", "author": "Agent <agent@agent-planner>",
+      { "id": "cmt-abfdb1", "author": "Agent <agent@inplan>",
         "date": "2026-05-29T00:00:00Z", "resolved": false,
         "text": "Confirm the datastore?",
         "question": { "multiSelect": false, "choices": [
@@ -77,7 +77,7 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
 2. Launch the editor **in the background, with no timeout** — do not foreground
    it, do not poll:
 
-       agent-planner open <name>.plan.md
+       inplan open <name>.plan.md
 
    It opens the editor and blocks until the human acts, then prints one JSON
    line to stdout and exits. Re-invoke yourself when it returns.
@@ -121,14 +121,14 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
    then loop to step 3. This unlocks the human's editor and blocks until their
    next turn. Do this after *every* turn, even an empty one:
 
-       agent-planner wait <name>.plan.md
+       inplan wait <name>.plan.md
 
    `your_turn` and `activity` are **not** stop conditions — you always loop back
    and keep waiting. The **only** thing that ends the loop is `status: closed`.
 
 6. When you believe the plan is ready, signal it (the human still decides):
 
-       agent-planner signal <name>.plan.md --done
+       inplan signal <name>.plan.md --done
 
    Then wait again. Stop only on `status: closed`.
 

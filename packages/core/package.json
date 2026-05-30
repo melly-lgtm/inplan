@@ -1,7 +1,7 @@
 {
-  "name": "@agent-planner/core",
+  "name": "@inplan/core",
   "version": "0.0.0",
-  "description": "Pure-TypeScript core for agent-planner: document model, parser, integrity, diff, control log.",
+  "description": "Pure-TypeScript core for inplan: document model, parser, integrity, diff, control log.",
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "main": "./dist/index.js",

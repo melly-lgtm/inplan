@@ -3,7 +3,7 @@
 > **Draft — pending review by IP counsel.** This document describes the intended
 > licensing model. It is not legal advice and is not final until reviewed.
 
-agent-planner is **dual-licensed**.
+inplan is **dual-licensed**.
 
 ## 1. Open-source license — AGPL-3.0-or-later
 
@@ -19,7 +19,7 @@ corresponding source code to its users.
 
 The AGPL is impractical for organizations that want to:
 
-- embed agent-planner in a **proprietary / closed-source** product;
+- embed inplan in a **proprietary / closed-source** product;
 - offer it as part of a **hosted or SaaS** service **without** releasing their
   modifications; or
 - otherwise use it **free of the AGPL's share-alike and source-disclosure

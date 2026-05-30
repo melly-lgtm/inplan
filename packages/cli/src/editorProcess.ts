@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { LogEventType, readLog } from "@agent-planner/core/node";
+import { LogEventType, readLog } from "@inplan/core/node";
 
 /** Is a process with this pid currently alive? (signal 0 = existence check). */
 export function isProcessAlive(pid: number): boolean {

@@ -2,11 +2,11 @@
 //
 // Doc-level user settings that affect *agent behavior* (so the agent and the
 // editor must agree on them). These are a **user preference**, not a property
-// of any one plan, so they live globally in `~/.agent-planner/settings.json`,
+// of any one plan, so they live globally in `~/.inplan/settings.json`,
 // load on launch, and are materialized into every `wait` result — a long
 // control log can never make the agent "forget" the current value.
 //
-// fs/os-backed: import from `@agent-planner/core/node`, never the browser root.
+// fs/os-backed: import from `@inplan/core/node`, never the browser root.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -23,10 +23,10 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = { autoResolve: true };
 
-/** `~/.agent-planner/settings.json` — the global, cross-session source of truth.
- *  `AGENT_PLANNER_HOME` overrides the base dir (used by tests; avoids touching $HOME). */
+/** `~/.inplan/settings.json` — the global, cross-session source of truth.
+ *  `INPLAN_HOME` overrides the base dir (used by tests; avoids touching $HOME). */
 export function globalSettingsPath(): string {
-  const base = process.env.AGENT_PLANNER_HOME || join(homedir(), ".agent-planner");
+  const base = process.env.INPLAN_HOME || join(homedir(), ".inplan");
   return join(base, "settings.json");
 }
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// Node-only, fs-backed control-log I/O. Imported via `@agent-planner/core/node`
+// Node-only, fs-backed control-log I/O. Imported via `@inplan/core/node`
 // (never from the browser-safe package root).
 
 import { appendFileSync, existsSync, readFileSync } from "node:fs";

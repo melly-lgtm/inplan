@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { genId, type Comment, type ParsedDocument, type Question } from "@agent-planner/core";
+import { genId, type Comment, type ParsedDocument, type Question } from "@inplan/core";
 
 export function nowIso(): string {
   return new Date().toISOString();

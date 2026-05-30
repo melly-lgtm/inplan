@@ -3,7 +3,7 @@
 
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { appendLog, currentSettings, LogEventType, parse, readLog } from "@agent-planner/core/node";
+import { appendLog, currentSettings, LogEventType, parse, readLog } from "@inplan/core/node";
 import { runningEditorPid } from "./editorProcess";
 import { evaluateAgentEdit } from "./gate";
 import { docPaths, type DocPaths } from "./paths";
@@ -27,13 +27,13 @@ function hasFlag(args: string[], name: string): boolean {
   return args.includes(`--${name}`);
 }
 
-const debounceMs = Number(process.env.AGENT_PLANNER_DEBOUNCE_MS ?? 3000);
-const pollMs = Number(process.env.AGENT_PLANNER_POLL_MS ?? 200);
+const debounceMs = Number(process.env.INPLAN_DEBOUNCE_MS ?? 3000);
+const pollMs = Number(process.env.INPLAN_POLL_MS ?? 200);
 
 function spawnApp(file: string): number | null {
-  const cmd = process.env.AGENT_PLANNER_APP_CMD;
+  const cmd = process.env.INPLAN_APP_CMD;
   if (!cmd) {
-    process.stderr.write("[agent-planner] no editor configured (set AGENT_PLANNER_APP_CMD); running headless\n");
+    process.stderr.write("[inplan] no editor configured (set INPLAN_APP_CMD); running headless\n");
     return null;
   }
   const child = spawn(cmd, [file], { detached: true, stdio: "ignore", shell: true });
@@ -251,11 +251,11 @@ async function main(): Promise<void> {
   );
 
   if (!cmd || !["open", "wait", "signal"].includes(cmd)) {
-    process.stderr.write("usage: agent-planner <open|wait|signal> <file> [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n");
+    process.stderr.write("usage: inplan <open|wait|signal> <file> [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n");
     process.exit(64);
   }
   if (!file) {
-    process.stderr.write(`agent-planner ${cmd}: missing <file>\n`);
+    process.stderr.write(`inplan ${cmd}: missing <file>\n`);
     process.exit(64);
   }
 
@@ -275,7 +275,7 @@ async function main(): Promise<void> {
   }
 
   if (!existsSync(file)) {
-    process.stderr.write(`agent-planner ${cmd}: file not found: ${file}\n`);
+    process.stderr.write(`inplan ${cmd}: file not found: ${file}\n`);
     process.exit(1);
   }
 
@@ -284,7 +284,7 @@ async function main(): Promise<void> {
     mkdirSync(p.controlDir, { recursive: true });
     const existing = runningEditorPid(p.logPath);
     if (existing !== null) {
-      process.stderr.write(`[agent-planner] an editor is already open for this document (pid ${existing}); attaching without launching another window\n`);
+      process.stderr.write(`[inplan] an editor is already open for this document (pid ${existing}); attaching without launching another window\n`);
     } else {
       const pid = spawnApp(file);
       if (pid !== null) {
@@ -297,6 +297,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  process.stderr.write(`agent-planner: ${(err as Error).message}\n`);
+  process.stderr.write(`inplan: ${(err as Error).message}\n`);
   process.exit(1);
 });

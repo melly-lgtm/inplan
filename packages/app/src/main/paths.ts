@@ -11,11 +11,11 @@ export interface DocPaths {
   proposedPath: string;
 }
 
-/** Sidecar paths for a plan document, under a `.agent-planner/` sibling dir. */
+/** Sidecar paths for a plan document, under a `.inplan/` sibling dir. */
 export function docPaths(file: string): DocPaths {
   const dir = dirname(file);
   const base = basename(file);
-  const controlDir = join(dir, ".agent-planner");
+  const controlDir = join(dir, ".inplan");
   return {
     file,
     controlDir,

@@ -22,11 +22,11 @@ beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "ap-home-"));
   dir = mkdtempSync(join(tmpdir(), "ap-doc-"));
   logPath = join(dir, "doc.log.jsonl");
-  process.env.AGENT_PLANNER_HOME = home;
+  process.env.INPLAN_HOME = home;
 });
 
 afterEach(() => {
-  delete process.env.AGENT_PLANNER_HOME;
+  delete process.env.INPLAN_HOME;
   rmSync(home, { recursive: true, force: true });
   rmSync(dir, { recursive: true, force: true });
 });
@@ -37,7 +37,7 @@ describe("global settings", () => {
     expect(DEFAULT_SETTINGS.autoResolve).toBe(true);
   });
 
-  it("round-trips through the global file under AGENT_PLANNER_HOME", () => {
+  it("round-trips through the global file under INPLAN_HOME", () => {
     writeGlobalSettings({ autoResolve: false });
     expect(globalSettingsPath()).toBe(join(home, "settings.json"));
     expect(readGlobalSettings()).toEqual({ autoResolve: false });

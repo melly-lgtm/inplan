@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { appendLog, LogEventType, readGlobalSettings, readLog, writeGlobalSettings } from "@agent-planner/core/node";
+import { appendLog, LogEventType, readGlobalSettings, readLog, writeGlobalSettings } from "@inplan/core/node";
 import type { Settings } from "../shared/api";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { join } from "node:path";

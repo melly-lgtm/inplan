@@ -2,7 +2,7 @@
 //
 // Browser-safe control-log types and pure (de)serialization. The fs-backed
 // readers/writers live in `./controlLogFs` (Node only), exposed via the
-// `@agent-planner/core/node` entry — keeping this package root importable in a
+// `@inplan/core/node` entry — keeping this package root importable in a
 // browser/renderer bundle.
 
 /** Who performed a logged action. */

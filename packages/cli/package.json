@@ -1,15 +1,15 @@
 {
-  "name": "@agent-planner/cli",
+  "name": "@inplan/cli",
   "version": "0.0.0",
-  "description": "agent-planner CLI: open / wait / signal orchestration over the document core.",
+  "description": "inplan CLI: open / wait / signal orchestration over the document core.",
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "bin": {
-    "agent-planner": "./dist/cli.js"
+    "inplan": "./dist/cli.js"
   },
   "files": ["dist"],
   "dependencies": {
-    "@agent-planner/core": "0.0.0"
+    "@inplan/core": "0.0.0"
   },
   "scripts": {
     "build": "tsup src/cli.ts --format esm --clean",
