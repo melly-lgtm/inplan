@@ -84,6 +84,7 @@ export function App(): JSX.Element {
   const history = useRef<ParsedDocument[]>([]); // undo stack of doc snapshots
   const future = useRef<ParsedDocument[]>([]); // redo stack
   const savedRef = useRef<string>(""); // last canonical-saved serialized content (for the dirty dot)
+  const skipPreviewScroll = useRef(false); // set when the active line came from a click in the preview itself
 
   // --- persisted layout ---
   useEffect(() => {
@@ -237,8 +238,11 @@ export function App(): JSX.Element {
     });
     if (best) {
       (best as Element).classList.add("ap-active-line");
-      (best as Element).scrollIntoView({ block: "center" });
+      // Don't scroll the preview when the click originated here — only re-center
+      // when the active line was driven from another pane (the source editor).
+      if (!skipPreviewScroll.current) (best as Element).scrollIntoView({ block: "center" });
     }
+    skipPreviewScroll.current = false;
   }, [activePreviewLine, doc.body]);
 
   // The comment anchored on the active line (if any) — highlighted in the rail.
@@ -340,6 +344,7 @@ export function App(): JSX.Element {
 
   // --- cross-pane sync ---
   const syncToLine = useCallback((line: number) => {
+    skipPreviewScroll.current = true; // the user clicked in the preview; don't re-scroll it
     setActivePreviewLine(line);
     editorRef.current?.scrollToLine(line);
   }, []);
