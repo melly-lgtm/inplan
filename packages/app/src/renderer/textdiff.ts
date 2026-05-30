@@ -63,6 +63,50 @@ export function isChange(s: DiffSegment): boolean {
   return Boolean((s.removed && s.removed.length) || (s.added && s.added.length));
 }
 
+export interface WordPart {
+  text: string;
+  kind: "same" | "add" | "del";
+}
+
+/** Token-level (word/space) diff of two lines, marking changed words. */
+export function wordDiff(a: string, b: string): WordPart[] {
+  const tok = (s: string): string[] => s.match(/\s+|\S+/g) ?? [];
+  const A = tok(a);
+  const B = tok(b);
+  const n = A.length;
+  const m = B.length;
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i]![j] = A[i] === B[j] ? dp[i + 1]![j + 1]! + 1 : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!);
+    }
+  }
+  const out: WordPart[] = [];
+  const push = (text: string, kind: WordPart["kind"]) => {
+    const last = out[out.length - 1];
+    if (last && last.kind === kind) last.text += text;
+    else out.push({ text, kind });
+  };
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) {
+      push(A[i]!, "same");
+      i++;
+      j++;
+    } else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) {
+      push(A[i]!, "del");
+      i++;
+    } else {
+      push(B[j]!, "add");
+      j++;
+    }
+  }
+  while (i < n) push(A[i++]!, "del");
+  while (j < m) push(B[j++]!, "add");
+  return out;
+}
+
 /**
  * Rebuild the body from segments, taking the `added` side for accepted change
  * blocks and the `removed` (original) side for rejected ones. `accepted` is keyed

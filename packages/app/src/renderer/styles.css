@@ -56,6 +56,10 @@ body {
 
 .ap-thread { padding: 10px; border-bottom: 1px solid var(--line); cursor: pointer; }
 .ap-thread.focused { background: var(--accent-soft); }
+.ap-thread.synced { box-shadow: inset 3px 0 0 var(--accent); }
+.ap-diff-del .w, .ap-diff-add .w { border-radius: 2px; padding: 0 1px; }
+.ap-diff-del .w { background: #ffc9c2; }
+.ap-diff-add .w { background: #b6e6c6; }
 .ap-thread.resolved { opacity: 0.55; }
 .ap-thread-quote { font-size: 12px; color: var(--accent); }
 .ap-meta { font-size: 11px; color: var(--muted); margin: 2px 0; }

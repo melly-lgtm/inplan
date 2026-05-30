@@ -16,7 +16,7 @@ import {
 } from "./docOps";
 import { renderMarkdown } from "./markdown";
 import { SourceEditor, type SourceEditorHandle } from "./SourceEditor";
-import { applySegments, isChange, lineSegments, type DiffSegment } from "./textdiff";
+import { applySegments, isChange, lineSegments, wordDiff, type DiffSegment, type WordPart } from "./textdiff";
 
 const USER_AUTHOR = "You";
 const EMPTY: ParsedDocument = { body: "", comments: [] };
@@ -189,6 +189,19 @@ export function App(): JSX.Element {
       (best as Element).scrollIntoView({ block: "center" });
     }
   }, [activePreviewLine, doc.body]);
+
+  // The comment anchored on the active line (if any) — highlighted in the rail.
+  const syncedCommentId = useMemo(() => {
+    if (activePreviewLine == null) return null;
+    for (const c of doc.comments) {
+      if (c.parentId || c.anchor === "doc") continue;
+      if (anchorLine(doc.body, c.id) === activePreviewLine) return c.id;
+    }
+    return null;
+  }, [activePreviewLine, doc.body, doc.comments]);
+  useEffect(() => {
+    if (syncedCommentId) document.querySelector(`[data-cmt-card="${syncedCommentId}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [syncedCommentId]);
 
   // --- mutate helpers ---
   const apply = useCallback((next: ParsedDocument, action?: { type: string; payload?: unknown }) => {
@@ -421,6 +434,7 @@ export function App(): JSX.Element {
                   body={doc.body}
                   orphaned={o.orphaned}
                   focused={focused === o.thread.root.id}
+                  synced={syncedCommentId === o.thread.root.id}
                   disabled={editingLocked}
                   onFocus={() => focusComment(o.thread.root.id)}
                   onReply={(text) => apply(addReply(docRef.current, o.thread.root.id, text, USER_AUTHOR).doc, { type: "comment_created", payload: { parentId: o.thread.root.id } })}
@@ -662,22 +676,51 @@ function ReviewPanel({ proposal, onApply, onClose }: { proposal: Proposal; onApp
               <label className="ap-hunk-toggle">
                 <input type="checkbox" checked={accepted[idx]} onChange={(e) => setAccepted((a) => a.map((v, k) => (k === idx ? e.target.checked : v)))} /> accept hunk {idx + 1}
               </label>
-              {(s.removed ?? []).map((l, k) => (
-                <pre key={`r${k}`} className="ap-diff-del">
-                  − {l}
-                </pre>
-              ))}
-              {(s.added ?? []).map((l, k) => (
-                <pre key={`a${k}`} className="ap-diff-add">
-                  + {l}
-                </pre>
-              ))}
+              <HunkLines removed={s.removed ?? []} added={s.added ?? []} />
             </div>
           );
         })}
       </div>
     </div>
   );
+}
+
+function WordLine({ wd, side }: { wd: WordPart[]; side: "del" | "add" }): JSX.Element {
+  const skip = side === "del" ? "add" : "del";
+  const mark = side === "del" ? "del" : "add";
+  return (
+    <pre className={side === "del" ? "ap-diff-del" : "ap-diff-add"}>
+      {side === "del" ? "− " : "+ "}
+      {wd
+        .filter((p) => p.kind !== skip)
+        .map((p, i) => (p.kind === mark ? <span key={i} className="w">{p.text}</span> : <span key={i}>{p.text}</span>))}
+    </pre>
+  );
+}
+
+function HunkLines({ removed, added }: { removed: string[]; added: string[] }): JSX.Element {
+  const pairs = Math.min(removed.length, added.length);
+  const rows: JSX.Element[] = [];
+  for (let k = 0; k < pairs; k++) {
+    const wd = wordDiff(removed[k]!, added[k]!);
+    rows.push(<WordLine key={`r${k}`} wd={wd} side="del" />);
+    rows.push(<WordLine key={`a${k}`} wd={wd} side="add" />);
+  }
+  for (let k = pairs; k < removed.length; k++) {
+    rows.push(
+      <pre key={`re${k}`} className="ap-diff-del">
+        − {removed[k]}
+      </pre>,
+    );
+  }
+  for (let k = pairs; k < added.length; k++) {
+    rows.push(
+      <pre key={`ae${k}`} className="ap-diff-add">
+        + {added[k]}
+      </pre>,
+    );
+  }
+  return <>{rows}</>;
 }
 
 function StatusBar({ cadence, status, dirty, agentThinking }: { cadence: Cadence; status: string; dirty: boolean; agentThinking: boolean }): JSX.Element {
@@ -792,6 +835,7 @@ function ThreadCard(props: {
   body: string;
   orphaned: boolean;
   focused: boolean;
+  synced: boolean;
   disabled: boolean;
   onFocus: () => void;
   onReply: (text: string) => void;
@@ -808,7 +852,11 @@ function ThreadCard(props: {
   const [editText, setEditText] = useState(root.text);
 
   return (
-    <article className={`ap-thread${props.focused ? " focused" : ""}${root.resolved ? " resolved" : ""}${orphaned ? " orphaned" : ""}`} onClick={props.onFocus}>
+    <article
+      data-cmt-card={root.id}
+      className={`ap-thread${props.focused ? " focused" : ""}${props.synced ? " synced" : ""}${root.resolved ? " resolved" : ""}${orphaned ? " orphaned" : ""}`}
+      onClick={props.onFocus}
+    >
       <div className="ap-thread-quote">{quote ?? "(anchor missing)"}</div>
       <div className="ap-meta">
         {root.author} · {root.date.slice(0, 16).replace("T", " ")}
