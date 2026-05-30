@@ -70,6 +70,8 @@ export function App(): JSX.Element {
   const [activePreviewLine, setActivePreviewLine] = useState<number | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findCi, setFindCi] = useState(false);
 
   const docRef = useRef(doc);
   docRef.current = doc;
@@ -310,6 +312,11 @@ export function App(): JSX.Element {
     [apply],
   );
 
+  const reportFindQuery = useCallback((q: string, c: boolean) => {
+    setFindQuery(q);
+    setFindCi(c);
+  }, []);
+
   const openComposer = useCallback(() => {
     const sel = window.getSelection();
     const txt = sel?.toString().trim() ?? "";
@@ -386,6 +393,34 @@ export function App(): JSX.Element {
     [doc.body, resolvedIds, showResolvedOrphaned],
   );
 
+  // Highlight find matches in the preview via the CSS Custom Highlight API
+  // (non-destructive Ranges — does not touch the DOM, so anchors stay intact).
+  useEffect(() => {
+    const cssApi = CSS as unknown as { highlights?: Map<string, unknown> };
+    const HighlightCtor = (window as unknown as { Highlight?: new (...r: Range[]) => unknown }).Highlight;
+    if (!cssApi.highlights || !HighlightCtor) return;
+    cssApi.highlights.delete("ap-find");
+    const root = previewRef.current;
+    if (!root || !findOpen || !findQuery) return;
+    const needle = findCi ? findQuery.toLowerCase() : findQuery;
+    const ranges: Range[] = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node: Node | null;
+    while ((node = walker.nextNode())) {
+      const text = node.nodeValue ?? "";
+      const hay = findCi ? text.toLowerCase() : text;
+      let i = hay.indexOf(needle);
+      while (i !== -1) {
+        const r = document.createRange();
+        r.setStart(node, i);
+        r.setEnd(node, i + needle.length);
+        ranges.push(r);
+        i = hay.indexOf(needle, i + needle.length);
+      }
+    }
+    if (ranges.length) cssApi.highlights.set("ap-find", new HighlightCtor(...ranges));
+  }, [findQuery, findCi, findOpen, previewHtml]);
+
   if (!loaded) return <div className="ap-loading">Loading…</div>;
 
   const showSource = panes === 3 || (panes === 2 && rightTab === "source");
@@ -411,7 +446,15 @@ export function App(): JSX.Element {
         locked={editingLocked}
       />
 
-      {findOpen && <FindReplaceBar doc={doc} onApply={apply} onClose={() => setFindOpen(false)} onNavigate={navigateMatch} />}
+      {findOpen && (
+        <FindReplaceBar
+          doc={doc}
+          onApply={apply}
+          onClose={() => setFindOpen(false)}
+          onNavigate={navigateMatch}
+          onQuery={reportFindQuery}
+        />
+      )}
 
       {agentDone && (
         <div className="ap-banner">
@@ -630,11 +673,13 @@ function FindReplaceBar({
   onApply,
   onClose,
   onNavigate,
+  onQuery,
 }: {
   doc: ParsedDocument;
   onApply: (next: ParsedDocument, action?: { type: string; payload?: unknown }) => void;
   onClose: () => void;
   onNavigate: (m: FindMatch) => void;
+  onQuery: (query: string, ci: boolean) => void;
 }): JSX.Element {
   const [find, setFind] = useState("");
   const [replace, setReplace] = useState("");
@@ -644,6 +689,12 @@ function FindReplaceBar({
   const [ci, setCi] = useState(false);
   const [idx, setIdx] = useState(0);
   const navAfterReplace = useRef(false);
+
+  // Report the query up so the preview can highlight matches; clear on unmount.
+  useEffect(() => {
+    onQuery(find, ci);
+  }, [find, ci, onQuery]);
+  useEffect(() => () => onQuery("", false), [onQuery]);
 
   const matches = useMemo<FindMatch[]>(() => {
     if (!find) return [];

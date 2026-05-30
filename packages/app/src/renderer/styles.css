@@ -104,6 +104,9 @@ body {
 .ap-find-scope { display: inline-flex; gap: 10px; font-size: 12px; }
 .ap-find-mode { font-size: 12px; font-weight: 600; border-right: 1px solid var(--line); padding-right: 8px; }
 
+/* find matches highlighted in the preview (CSS Custom Highlight API) */
+::highlight(ap-find) { background: #ffe58a; color: inherit; }
+
 /* cross-pane current-line highlight */
 .ap-active-line, .cm-line.ap-active-line { background: var(--accent-soft); }
 .ap-rendered [data-line] { scroll-margin-top: 12px; }
