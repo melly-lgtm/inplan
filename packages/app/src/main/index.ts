@@ -65,6 +65,7 @@ function createWindow(): void {
       onExternalChange: (content) => win?.webContents.send("doc:external-change", { path: session!.paths.file, content }),
       onAgentDone: () => win?.webContents.send("agent:done"),
       onAgentActive: () => win?.webContents.send("agent:active"),
+      onProposal: (content) => win?.webContents.send("doc:proposal", { content }),
     });
   }
 
@@ -118,6 +119,10 @@ function registerIpc(): void {
   ipcMain.handle("settings:get", () => session?.getSettings());
   ipcMain.handle("settings:set", (_e, settings: Settings) => {
     session?.setSettings(settings);
+  });
+  ipcMain.handle("proposal:get", () => session?.pendingProposal() ?? null);
+  ipcMain.handle("proposal:clear", () => {
+    session?.clearProposal();
   });
   ipcMain.handle("doc:complete", (_e, content: string) => {
     session?.complete(content);

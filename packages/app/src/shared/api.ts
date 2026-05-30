@@ -46,6 +46,12 @@ export interface Api {
   onAgentDone(cb: () => void): void;
   /** The agent re-engaged this round (revised the doc or re-attached) — clear "thinking". */
   onAgentActive(cb: () => void): void;
+  /** Read the parked Review-mode proposal pending decision (null if none) — for durable re-show on launch. */
+  getProposal(): Promise<string | null>;
+  /** Discard the parked proposal after the human accepts/rejects it. */
+  clearProposal(): Promise<void>;
+  /** A Review-mode proposal was parked by the agent this session — surface it for review. */
+  onProposal(cb: (payload: { content: string }) => void): void;
 }
 
 declare global {

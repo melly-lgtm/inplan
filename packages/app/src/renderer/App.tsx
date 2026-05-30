@@ -70,13 +70,12 @@ export function App(): JSX.Element {
   const [focused, setFocused] = useState<string | null>(null);
   const [activePreviewLine, setActivePreviewLine] = useState<number | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [reviewOpen, setReviewOpen] = useState(false); // is the review panel visible (vs. parked behind a banner)
   const [findOpen, setFindOpen] = useState(false);
   const [findOpts, setFindOpts] = useState<{ query: string; ci: boolean; inBody: boolean; inComments: boolean }>({ query: "", ci: false, inBody: true, inComments: false });
 
   const docRef = useRef(doc);
   docRef.current = doc;
-  const acceptanceRef = useRef(acceptance);
-  acceptanceRef.current = acceptance;
   const previewRef = useRef<HTMLElement>(null);
   const railRef = useRef<HTMLElement>(null);
   const editorRef = useRef<SourceEditorHandle>(null);
@@ -112,6 +111,15 @@ export function App(): JSX.Element {
 
   // --- load + agent signals ---
   useEffect(() => {
+    const showProposal = (content: string) => {
+      // The agent's version is parked in `.proposed.md`; review it against the
+      // current (canonical) body. The working doc stays unchanged until Apply.
+      setProposal({ baseBody: docRef.current.body, next: parse(content) });
+      setReviewOpen(true);
+      setAgentThinking(false);
+      setStatus("agent proposed changes — review below");
+    };
+
     window.api
       .load()
       .then(({ content }) => {
@@ -119,24 +127,23 @@ export function App(): JSX.Element {
         setDoc(d);
         savedRef.current = serialize(d);
         setLoaded(true);
+        // Durable re-show: if a proposal was parked (e.g. the app was closed
+        // mid-review), surface it again rather than silently accepting it.
+        void window.api.getProposal().then((parked) => parked != null && showProposal(parked));
       })
       .catch(() => setLoaded(true));
 
+    // Auto-accept (and review-mode comment-only changes) arrive as a file rewrite.
     window.api.onExternalChange(({ content }) => {
       const next = parse(content);
       setAgentThinking(false);
-      // Review mode: agent body edits arrive as a reviewable proposal (comment
-      // additions still apply). Auto-accept adopts the change directly.
-      if (acceptanceRef.current === "review" && docRef.current.body !== next.body) {
-        setProposal({ baseBody: docRef.current.body, next });
-        setStatus("agent proposed changes — review below");
-      } else {
-        setDoc(next);
-        savedRef.current = serialize(next);
-        setDirty(false);
-        setStatus("agent updated the document");
-      }
+      setDoc(next);
+      savedRef.current = serialize(next);
+      setDirty(false);
+      setStatus("agent updated the document");
     });
+    // Review-mode body changes arrive parked, as a proposal to accept/reject.
+    window.api.onProposal(({ content }) => showProposal(content));
     window.api.onAgentDone(() => setAgentDone(true));
     window.api.onAgentActive(() => {
       setAgentThinking(false);
@@ -186,12 +193,12 @@ export function App(): JSX.Element {
       } else if (e.key === "Escape") {
         if (composer) setComposer(null);
         else if (findOpen) setFindOpen(false);
-        else if (proposal) setProposal(null);
+        else if (proposal && reviewOpen) setReviewOpen(false);
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [composer, findOpen, proposal, undo, redo]);
+  }, [composer, findOpen, proposal, reviewOpen, undo, redo]);
 
   const editingLocked = cadence === "turn" && agentThinking;
 
@@ -391,8 +398,14 @@ export function App(): JSX.Element {
       const finalDoc: ParsedDocument = { body, comments: proposal.next.comments };
       setDoc(finalDoc);
       setProposal(null);
+      setReviewOpen(false);
+      const serialized = serialize(finalDoc);
+      savedRef.current = serialized;
+      setDirty(false);
       const acceptedCount = accepted.filter(Boolean).length;
-      void window.api.save(serialize(finalDoc), { kind: "canonical", cadence });
+      // Decision made → persist canonical and discard the parked proposal.
+      void window.api.save(serialized, { kind: "canonical", cadence });
+      void window.api.clearProposal();
       void window.api.logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", { accepted: acceptedCount, total: accepted.length });
       setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`);
     },
@@ -496,7 +509,14 @@ export function App(): JSX.Element {
         </div>
       )}
 
-      {proposal && <ReviewPanel proposal={proposal} onApply={applyProposal} onClose={() => setProposal(null)} />}
+      {proposal && !reviewOpen && (
+        <div className="ap-banner">
+          The agent proposed changes awaiting your review.{" "}
+          <button onClick={() => setReviewOpen(true)}>Review</button>
+        </div>
+      )}
+
+      {proposal && reviewOpen && <ReviewPanel proposal={proposal} onApply={applyProposal} onClose={() => setReviewOpen(false)} />}
 
       {composer && (
         <ComposerPopover
@@ -903,7 +923,7 @@ function ReviewPanel({ proposal, onApply, onClose }: { proposal: Proposal; onApp
           Apply
         </button>
         <button className="ap-link" onClick={onClose}>
-          dismiss
+          later
         </button>
       </div>
       <div className="ap-review-body">

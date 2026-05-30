@@ -21,6 +21,11 @@ const api: Api = {
   onAgentActive: (cb: () => void) => {
     ipcRenderer.on("agent:active", () => cb());
   },
+  getProposal: () => ipcRenderer.invoke("proposal:get"),
+  clearProposal: () => ipcRenderer.invoke("proposal:clear"),
+  onProposal: (cb: (payload: { content: string }) => void) => {
+    ipcRenderer.on("doc:proposal", (_e, payload: { content: string }) => cb(payload));
+  },
 };
 
 contextBridge.exposeInMainWorld("api", api);

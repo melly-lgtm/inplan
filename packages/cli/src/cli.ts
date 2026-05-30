@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { appendLog, currentSettings, LogEventType, readLog } from "@agent-planner/core/node";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendLog, currentSettings, LogEventType, parse, readLog } from "@agent-planner/core/node";
 import { runningEditorPid } from "./editorProcess";
 import { evaluateAgentEdit } from "./gate";
 import { docPaths, type DocPaths } from "./paths";
@@ -53,6 +53,18 @@ function currentCadence(logPath: string): "turn" | "instant" {
   return "turn";
 }
 
+/** Latest agent-change acceptance from the control log (Auto unless a mode_changed says Review). */
+function currentAcceptance(logPath: string): "auto" | "review" {
+  const entries = readLog(logPath);
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i]!.type === LogEventType.ModeChanged) {
+      const a = (entries[i]!.payload as { acceptance?: string } | undefined)?.acceptance;
+      if (a === "auto" || a === "review") return a;
+    }
+  }
+  return "auto";
+}
+
 /** The highest seq in the control log (0 if empty). */
 function maxSeq(logPath: string): number {
   const entries = readLog(logPath);
@@ -68,6 +80,11 @@ function readCursor(p: DocPaths): number | null {
 
 function writeCursor(p: DocPaths, seq: number): void {
   writeFileSync(p.cursorPath, String(seq));
+}
+
+/** Remove any stale parked proposal (after an auto-accept or confirmed deletion). */
+function clearProposed(p: DocPaths): void {
+  if (existsSync(p.proposedPath)) unlinkSync(p.proposedPath);
 }
 
 /**
@@ -104,13 +121,30 @@ async function waitCycle(file: string, explicitCursor: number | null, confirmed:
     output({ status: "integrity_error", errors: ev.integrityErrors });
     process.exit(2);
   }
+  // In Review mode an agent **body** change is quarantined as a proposal rather
+  // than applied: the working file + canonical stay put, the agent's version is
+  // parked in `.proposed.md`, and `agent_revision_proposed` is logged. The human
+  // accepts/rejects in the editor (which then writes canonical). This makes the
+  // file the source of truth WITHOUT auto-applying — killing the app before a
+  // decision leaves the proposal pending, never silently accepted.
+  const acceptance = currentAcceptance(p.logPath);
+  const bodyChanged = parse(canonicalText).body !== parse(current).body;
+
   if (ev.removedIds.length > 0) {
     // Confirmed deletions: drop the orphaned comment objects from the document and canonical base.
     writeFileSync(file, ev.acceptedText);
     writeFileSync(p.canonicalPath, ev.acceptedText);
+    clearProposed(p);
     appendLog(p.logPath, { actor: "agent", type: LogEventType.DocumentEdited, payload: { removed: ev.removedIds } });
+  } else if (ev.changed && acceptance === "review" && bodyChanged) {
+    // Quarantine: park the proposal, revert the working file to canonical.
+    writeFileSync(p.proposedPath, current);
+    writeFileSync(file, canonicalText);
+    appendLog(p.logPath, { actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: current.length } });
   } else if (ev.changed) {
+    // Auto-accept (auto mode, or review mode with comment-only changes).
     writeFileSync(p.canonicalPath, current);
+    clearProposed(p);
     appendLog(p.logPath, { actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: current.length } });
   }
 

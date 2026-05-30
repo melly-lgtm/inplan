@@ -2,7 +2,7 @@
 
 import { appendLog, LogEventType, readGlobalSettings, readLog, writeGlobalSettings } from "@agent-planner/core/node";
 import type { Settings } from "../shared/api";
-import { existsSync, mkdirSync, readFileSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Acceptance, Cadence, SaveOptions } from "../shared/api";
 import { docPaths, type DocPaths } from "./paths";
@@ -92,6 +92,16 @@ export class Session {
     this.lastWritten = content;
   }
 
+  /** The parked Review-mode proposal, if one is pending (the file exists ⇔ undecided). */
+  pendingProposal(): string | null {
+    return existsSync(this.paths.proposedPath) ? readFileSync(this.paths.proposedPath, "utf8") : null;
+  }
+
+  /** Discard the parked proposal once the human has accepted/rejected it. */
+  clearProposal(): void {
+    if (existsSync(this.paths.proposedPath)) unlinkSync(this.paths.proposedPath);
+  }
+
   /** Record why the session ended (logged at most once) so the agent's `wait` can report it. */
   logClose(reason: "completed" | "window_closed"): void {
     if (this.closed) return;
@@ -104,7 +114,12 @@ export class Session {
    * `agent_done_suggested` signal in the control log. Polling-based for
    * cross-platform reliability.
    */
-  watch(handlers: { onExternalChange: (content: string) => void; onAgentDone: () => void; onAgentActive: () => void }): () => void {
+  watch(handlers: {
+    onExternalChange: (content: string) => void;
+    onAgentDone: () => void;
+    onAgentActive: () => void;
+    onProposal: (content: string) => void;
+  }): () => void {
     let lastLogSeq = readLog(this.paths.logPath).at(-1)?.seq ?? 0;
 
     const onFile = () => {
@@ -126,6 +141,11 @@ export class Session {
       if (entries.length) lastLogSeq = entries.at(-1)!.seq;
       if (entries.some((e) => e.type === LogEventType.AgentDoneSuggested)) {
         handlers.onAgentDone();
+      }
+      // A Review-mode proposal was parked by the CLI gate — surface it for review.
+      if (entries.some((e) => e.type === LogEventType.AgentRevisionProposed)) {
+        const proposed = this.pendingProposal();
+        if (proposed != null) handlers.onProposal(proposed);
       }
       // The agent re-engaged (revised the doc or just re-attached) — clear "thinking".
       if (entries.some((e) => e.actor === "agent" && (e.type === LogEventType.AgentRevised || e.type === LogEventType.DocumentEdited))) {
