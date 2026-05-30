@@ -72,5 +72,24 @@ body {
 .ap-chip { border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; cursor: pointer; }
 .ap-chip.on { border-color: var(--accent); background: var(--accent-soft); }
 
+/* pane-selector icons (vertically-long rectangles) */
+.ap-pane-ic { display: inline-flex; gap: 2px; vertical-align: middle; }
+.ap-pane-ic i { width: 4px; height: 13px; border: 1px solid currentColor; border-radius: 1px; display: block; }
+.ap-seg button .ap-pane-ic { color: inherit; }
+
+/* floating contextual composer */
+.ap-composer-float {
+  position: absolute; top: 44px; right: 16px; z-index: 20; width: 340px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.16); padding: 10px;
+}
+.ap-grow { width: 100%; min-height: 44px; max-height: 176px; resize: none; overflow-y: auto; }
+
+/* rail splitter + empty + orphaned */
+.ap-splitter { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding: 8px 10px 2px; border-top: 2px solid var(--line); margin-top: 4px; }
+.ap-empty { padding: 16px 10px; color: var(--muted); font-size: 13px; }
+.ap-thread.orphaned { background: #fff6f4; }
+.ap-thread.orphaned .ap-thread-quote { color: var(--danger); }
+
 /* status bar */
 .ap-statusbar { display: flex; gap: 8px; padding: 4px 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }

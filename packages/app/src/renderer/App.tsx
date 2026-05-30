@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { parse, serialize, type Comment, type ParsedDocument, type Question } from "@agent-planner/core";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { parse, serialize, type ParsedDocument, type Question } from "@agent-planner/core";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Acceptance, Cadence } from "../shared/api";
 import {
   addAnswer,
@@ -19,11 +19,22 @@ import { SourceEditor } from "./SourceEditor";
 
 const USER_AUTHOR = "You";
 const EMPTY: ParsedDocument = { body: "", comments: [] };
+const ZOOM_MIN = 0.6;
+const ZOOM_MAX = 1.8;
 
 /** The anchored label for a span comment, recovered from the body link. */
 function anchoredText(body: string, id: string): string | null {
   const m = new RegExp(`\\[([^\\]]*)\\]\\(#${id}\\)`).exec(body);
   return m ? m[1]! : null;
+}
+
+const liveSelection = (): string => window.getSelection()?.toString().trim() ?? "";
+
+interface OrderedThread {
+  thread: Thread;
+  group: 0 | 1; // 0 = document-level, 1 = text-anchored
+  pos: number; // source index of the anchor (MAX for orphaned)
+  orphaned: boolean;
 }
 
 export function App(): JSX.Element {
@@ -33,17 +44,37 @@ export function App(): JSX.Element {
   const [acceptance, setAcceptance] = useState<Acceptance>("auto");
   const [panes, setPanes] = useState<1 | 2 | 3>(2);
   const [rightTab, setRightTab] = useState<"comments" | "source">("comments");
+  const [zoom, setZoom] = useState(1);
   const [dirty, setDirty] = useState(false);
   const [status, setStatus] = useState("");
   const [agentThinking, setAgentThinking] = useState(false);
   const [agentDone, setAgentDone] = useState(false);
-  const [showResolved, setShowResolved] = useState(false);
-  const [pendingSelection, setPendingSelection] = useState<string | null>(null);
+  const [showResolvedOrphaned, setShowResolvedOrphaned] = useState(false);
+  const [selectionText, setSelectionText] = useState("");
+  const [composer, setComposer] = useState<{ target: string | null } | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
 
   const docRef = useRef(doc);
   docRef.current = doc;
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // --- persisted layout ---
+  useEffect(() => {
+    try {
+      const s = JSON.parse(localStorage.getItem("ap-layout") ?? "{}");
+      if (s.panes === 1 || s.panes === 2 || s.panes === 3) setPanes(s.panes);
+      if (s.rightTab === "comments" || s.rightTab === "source") setRightTab(s.rightTab);
+      if (typeof s.zoom === "number") setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s.zoom)));
+      if (typeof s.showResolvedOrphaned === "boolean") setShowResolvedOrphaned(s.showResolvedOrphaned);
+      if (s.cadence === "turn" || s.cadence === "instant") setCadence(s.cadence);
+      if (s.acceptance === "auto" || s.acceptance === "review") setAcceptance(s.acceptance);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  useEffect(() => {
+    localStorage.setItem("ap-layout", JSON.stringify({ panes, rightTab, zoom, showResolvedOrphaned, cadence, acceptance }));
+  }, [panes, rightTab, zoom, showResolvedOrphaned, cadence, acceptance]);
 
   // --- load + agent signals ---
   useEffect(() => {
@@ -62,7 +93,14 @@ export function App(): JSX.Element {
       setStatus("agent updated the document");
     });
     window.api.onAgentDone(() => setAgentDone(true));
-    window.api.onAgentActive(() => setAgentThinking(false));
+    window.api.onAgentActive(() => {
+      setAgentThinking(false);
+      setStatus("agent took its turn — your move");
+    });
+
+    const onSel = () => setSelectionText(liveSelection());
+    document.addEventListener("selectionchange", onSel);
+    return () => document.removeEventListener("selectionchange", onSel);
   }, []);
 
   const editingLocked = cadence === "turn" && agentThinking;
@@ -95,14 +133,15 @@ export function App(): JSX.Element {
     if (action) void window.api.logAction(action.type, action.payload);
   }, []);
 
-  const onModeChange = useCallback(
-    (c: Cadence, a: Acceptance) => {
-      setCadence(c);
-      setAcceptance(a);
-      void window.api.setMode(c, a);
-    },
-    [],
-  );
+  const onModeChange = useCallback((c: Cadence, a: Acceptance) => {
+    setCadence(c);
+    setAcceptance(a);
+    void window.api.setMode(c, a);
+  }, []);
+
+  const onZoom = useCallback((dir: -1 | 0 | 1) => {
+    setZoom((z) => (dir === 0 ? 1 : Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, +(z + dir * 0.1).toFixed(2)))));
+  }, []);
 
   const saveNow = useCallback(() => {
     const content = serialize(docRef.current);
@@ -125,11 +164,11 @@ export function App(): JSX.Element {
 
   // --- comment actions ---
   const addComment = useCallback(
-    (text: string, question?: Question) => {
-      if (pendingSelection) {
-        const res = addSpanComment(docRef.current, pendingSelection, { text, author: USER_AUTHOR, question });
+    (text: string, target: string | null, question?: Question) => {
+      if (target) {
+        const res = addSpanComment(docRef.current, target, { text, author: USER_AUTHOR, question });
         if (!res) {
-          setStatus("could not anchor: selected text not found uniquely in the source");
+          setStatus("could not anchor the selected text in the source");
           return;
         }
         apply(res.doc, { type: "comment_created", payload: { id: res.id } });
@@ -139,25 +178,30 @@ export function App(): JSX.Element {
         apply(res.doc, { type: "comment_created", payload: { id: res.id, anchor: "doc" } });
         setFocused(res.id);
       }
-      setPendingSelection(null);
     },
-    [apply, pendingSelection],
+    [apply],
   );
 
-  const onPreviewMouseUp = useCallback(() => {
-    if (editingLocked) return;
-    const sel = window.getSelection()?.toString().trim() ?? "";
-    if (sel.length > 0) setPendingSelection(sel);
-  }, [editingLocked]);
+  const openComposer = useCallback(() => {
+    const sel = liveSelection();
+    setComposer({ target: sel.length ? sel : null }); // target locked at open time
+  }, []);
 
   const threads = useMemo(() => buildThreads(doc.comments), [doc.comments]);
-  const visibleThreads = showResolved ? threads : threads.filter((t) => !t.root.resolved);
+  const ordered = useMemo<OrderedThread[]>(() => {
+    const annotate = (thread: Thread): OrderedThread => {
+      if (thread.root.anchor === "doc") return { thread, group: 0, pos: 0, orphaned: false };
+      const idx = doc.body.indexOf(`](#${thread.root.id})`);
+      return { thread, group: 1, pos: idx < 0 ? Number.MAX_SAFE_INTEGER : idx, orphaned: idx < 0 };
+    };
+    return threads.map(annotate).sort((a, b) => a.group - b.group || a.pos - b.pos);
+  }, [threads, doc.body]);
+  const visible = ordered.filter((o) => showResolvedOrphaned || (!o.thread.root.resolved && !o.orphaned));
 
-  // Anchors of resolved comments are not highlighted unless "show resolved" is on.
   const resolvedIds = useMemo(() => new Set(doc.comments.filter((c) => c.resolved).map((c) => c.id)), [doc.comments]);
   const previewHtml = useMemo(
-    () => renderMarkdown(doc.body, (id) => showResolved || !resolvedIds.has(id)),
-    [doc.body, resolvedIds, showResolved],
+    () => renderMarkdown(doc.body, (id) => showResolvedOrphaned || !resolvedIds.has(id)),
+    [doc.body, resolvedIds, showResolvedOrphaned],
   );
 
   if (!loaded) return <div className="ap-loading">Loading…</div>;
@@ -171,8 +215,12 @@ export function App(): JSX.Element {
         cadence={cadence}
         acceptance={acceptance}
         panes={panes}
+        zoom={zoom}
+        hasSelection={selectionText.length > 0}
         onMode={onModeChange}
         onPanes={setPanes}
+        onZoom={onZoom}
+        onAddComment={openComposer}
         dirty={dirty}
         onSave={saveNow}
         onFinishTurn={finishTurn}
@@ -189,16 +237,35 @@ export function App(): JSX.Element {
         </div>
       )}
 
-      <div className="ap-main">
-        <section className="ap-preview" onMouseUp={onPreviewMouseUp}>
+      {composer && (
+        <ComposerPopover
+          target={composer.target}
+          disabled={editingLocked}
+          onSubmit={(text) => {
+            addComment(text, composer.target);
+            setComposer(null);
+          }}
+          onClose={() => setComposer(null)}
+        />
+      )}
+
+      <div className="ap-main" style={{ zoom }}>
+        <section className="ap-preview">
           <div
             className="ap-rendered"
             dangerouslySetInnerHTML={{ __html: previewHtml }}
+            onContextMenu={(e) => {
+              if (editingLocked) return;
+              const sel = liveSelection();
+              if (sel.length) {
+                e.preventDefault();
+                setComposer({ target: sel });
+              }
+            }}
             onClick={(e) => {
               const a = (e.target as HTMLElement).closest("a");
               if (!a) return;
-              // Never let a link navigate the editor window.
-              e.preventDefault();
+              e.preventDefault(); // links never navigate the editor window
               const cmt = a.getAttribute("data-cmt");
               if (cmt) {
                 setFocused(cmt);
@@ -213,11 +280,7 @@ export function App(): JSX.Element {
         {showSource && (
           <section className="ap-pane">
             {panes === 2 && <PaneTabs tab={rightTab} onTab={setRightTab} />}
-            <SourceEditor
-              value={doc.body}
-              editable={!editingLocked}
-              onChange={(body) => apply({ ...docRef.current, body })}
-            />
+            <SourceEditor value={doc.body} editable={!editingLocked} onChange={(body) => apply({ ...docRef.current, body })} />
           </section>
         )}
 
@@ -227,36 +290,44 @@ export function App(): JSX.Element {
             <div className="ap-rail-head">
               <strong>Comments</strong>
               <label>
-                <input type="checkbox" checked={showResolved} onChange={(e) => setShowResolved(e.target.checked)} /> resolved
+                <input type="checkbox" checked={showResolvedOrphaned} onChange={(e) => setShowResolvedOrphaned(e.target.checked)} /> resolved &amp; orphaned
               </label>
             </div>
-            <Composer
-              pendingSelection={pendingSelection}
-              disabled={editingLocked}
-              onCancel={() => setPendingSelection(null)}
-              onSubmit={addComment}
-            />
-            {visibleThreads.map((t) => (
-              <ThreadCard
-                key={t.root.id}
-                thread={t}
-                body={doc.body}
-                focused={focused === t.root.id}
-                disabled={editingLocked}
-                onFocus={() => setFocused(t.root.id)}
-                onReply={(text) => apply(addReply(docRef.current, t.root.id, text, USER_AUTHOR).doc, { type: "comment_created", payload: { parentId: t.root.id } })}
-                onAnswer={(selected, text) => apply(addAnswer(docRef.current, t.root.id, selected, text, USER_AUTHOR).doc, { type: "comment_answered", payload: { parentId: t.root.id, selected } })}
-                onResolve={(r) => apply(setResolved(docRef.current, t.root.id, r), { type: "comment_resolved", payload: { id: t.root.id, resolved: r } })}
-                onEdit={(text) => apply(editCommentText(docRef.current, t.root.id, text), { type: "comment_modified", payload: { id: t.root.id } })}
-                onDelete={() => apply(deleteComment(docRef.current, t.root.id), { type: "comment_deleted", payload: { id: t.root.id } })}
-              />
+            {visible.map((o, i) => (
+              <Fragment key={o.thread.root.id}>
+                {i > 0 && visible[i - 1]!.group === 0 && o.group === 1 && <div className="ap-splitter">Anchored comments</div>}
+                <ThreadCard
+                  thread={o.thread}
+                  body={doc.body}
+                  orphaned={o.orphaned}
+                  focused={focused === o.thread.root.id}
+                  disabled={editingLocked}
+                  onFocus={() => setFocused(o.thread.root.id)}
+                  onReply={(text) => apply(addReply(docRef.current, o.thread.root.id, text, USER_AUTHOR).doc, { type: "comment_created", payload: { parentId: o.thread.root.id } })}
+                  onAnswer={(selected, text) => apply(addAnswer(docRef.current, o.thread.root.id, selected, text, USER_AUTHOR).doc, { type: "comment_answered", payload: { parentId: o.thread.root.id, selected } })}
+                  onResolve={(r) => apply(setResolved(docRef.current, o.thread.root.id, r), { type: "comment_resolved", payload: { id: o.thread.root.id, resolved: r } })}
+                  onEdit={(text) => apply(editCommentText(docRef.current, o.thread.root.id, text), { type: "comment_modified", payload: { id: o.thread.root.id } })}
+                  onDelete={() => apply(deleteComment(docRef.current, o.thread.root.id), { type: "comment_deleted", payload: { id: o.thread.root.id } })}
+                />
+              </Fragment>
             ))}
+            {visible.length === 0 && <div className="ap-empty">No comments. Select text and use “+ Add Comment”.</div>}
           </section>
         )}
       </div>
 
       <StatusBar cadence={cadence} status={status} dirty={dirty} agentThinking={agentThinking} />
     </div>
+  );
+}
+
+function PaneIcon({ n }: { n: 1 | 2 | 3 }): JSX.Element {
+  return (
+    <span className="ap-pane-ic" aria-hidden="true">
+      {Array.from({ length: n }, (_, i) => (
+        <i key={i} />
+      ))}
+    </span>
   );
 }
 
@@ -277,8 +348,12 @@ function TopBar(props: {
   cadence: Cadence;
   acceptance: Acceptance;
   panes: 1 | 2 | 3;
+  zoom: number;
+  hasSelection: boolean;
   onMode: (c: Cadence, a: Acceptance) => void;
   onPanes: (p: 1 | 2 | 3) => void;
+  onZoom: (dir: -1 | 0 | 1) => void;
+  onAddComment: () => void;
   dirty: boolean;
   onSave: () => void;
   onFinishTurn: () => void;
@@ -305,12 +380,26 @@ function TopBar(props: {
         </button>
       </div>
       <div className="ap-seg" role="group" aria-label="panes">
-        {[1, 2, 3].map((n) => (
-          <button key={n} className={panes === n ? "active" : ""} onClick={() => props.onPanes(n as 1 | 2 | 3)}>
-            {n}
+        {([1, 2, 3] as const).map((n) => (
+          <button key={n} className={panes === n ? "active" : ""} title={`${n} pane${n > 1 ? "s" : ""}`} onClick={() => props.onPanes(n)}>
+            <PaneIcon n={n} />
           </button>
         ))}
       </div>
+      <div className="ap-seg" role="group" aria-label="zoom">
+        <button title="Zoom out" onClick={() => props.onZoom(-1)}>
+          −
+        </button>
+        <button title="Reset zoom" onClick={() => props.onZoom(0)}>
+          {Math.round(props.zoom * 100)}%
+        </button>
+        <button title="Zoom in" onClick={() => props.onZoom(1)}>
+          +
+        </button>
+      </div>
+      <button onClick={props.onAddComment} disabled={props.locked}>
+        {props.hasSelection ? "+ Add Comment" : "+ Add Doc Comment"}
+      </button>
       <div className="ap-spacer" />
       <button onClick={props.onSave}>Save{props.dirty ? " •" : ""}</button>
       {cadence === "turn" && (
@@ -342,45 +431,70 @@ function StatusBar({ cadence, status, dirty, agentThinking }: { cadence: Cadence
   );
 }
 
-function Composer({
-  pendingSelection,
+function ComposerPopover({
+  target,
   disabled,
-  onCancel,
   onSubmit,
+  onClose,
 }: {
-  pendingSelection: string | null;
+  target: string | null;
   disabled: boolean;
-  onCancel: () => void;
-  onSubmit: (text: string, question?: Question) => void;
+  onSubmit: (text: string) => void;
+  onClose: () => void;
 }): JSX.Element {
   const [text, setText] = useState("");
-  const submit = () => {
-    if (!text.trim()) return;
-    onSubmit(text.trim());
-    setText("");
+  const box = useRef<HTMLDivElement>(null);
+  const ta = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    ta.current?.focus();
+  }, []);
+
+  // Click outside an EMPTY composer dismisses it (keeps it if you've typed).
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (box.current && !box.current.contains(e.target as Node) && !text.trim()) onClose();
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [text, onClose]);
+
+  const grow = (el: HTMLTextAreaElement) => {
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 8 * 22)}px`; // cap at ~8 lines
   };
+
+  const submit = () => {
+    if (text.trim()) onSubmit(text.trim());
+  };
+
   return (
-    <div className="ap-composer">
-      {pendingSelection ? (
-        <div className="ap-quote">on “{pendingSelection}”</div>
-      ) : (
-        <div className="ap-quote ap-muted">document-level comment</div>
-      )}
+    <div className="ap-composer ap-composer-float" ref={box}>
+      <div className="ap-quote">{target ? `on “${target}”` : "document-level comment"}</div>
       <textarea
-        placeholder="Add a comment…"
+        ref={ta}
+        className="ap-grow"
+        placeholder="Add a comment…  (⌘/Ctrl+Enter to submit)"
         value={text}
         disabled={disabled}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          setText(e.target.value);
+          grow(e.target);
+        }}
+        onKeyDown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+            e.preventDefault();
+            submit();
+          }
+        }}
       />
       <div className="ap-row">
-        <button onClick={submit} disabled={disabled}>
+        <button onClick={submit} disabled={disabled || !text.trim()}>
           Comment
         </button>
-        {pendingSelection && (
-          <button className="ap-link" onClick={onCancel}>
-            clear selection
-          </button>
-        )}
+        <button className="ap-link" onClick={onClose}>
+          cancel
+        </button>
       </div>
     </div>
   );
@@ -389,6 +503,7 @@ function Composer({
 function ThreadCard(props: {
   thread: Thread;
   body: string;
+  orphaned: boolean;
   focused: boolean;
   disabled: boolean;
   onFocus: () => void;
@@ -398,15 +513,15 @@ function ThreadCard(props: {
   onEdit: (text: string) => void;
   onDelete: () => void;
 }): JSX.Element {
-  const { thread, body, disabled } = props;
+  const { thread, body, disabled, orphaned } = props;
   const root = thread.root;
-  const quote = root.anchor === "doc" ? "· document" : anchoredText(body, root.id);
+  const quote = root.anchor === "doc" ? "· document" : orphaned ? "⚠ anchor removed (orphaned)" : anchoredText(body, root.id);
   const [replyText, setReplyText] = useState("");
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(root.text);
 
   return (
-    <article className={`ap-thread${props.focused ? " focused" : ""}${root.resolved ? " resolved" : ""}`} onClick={props.onFocus}>
+    <article className={`ap-thread${props.focused ? " focused" : ""}${root.resolved ? " resolved" : ""}${orphaned ? " orphaned" : ""}`} onClick={props.onFocus}>
       <div className="ap-thread-quote">{quote ?? "(anchor missing)"}</div>
       <div className="ap-meta">
         {root.author} · {root.date.slice(0, 16).replace("T", " ")}
@@ -482,13 +597,7 @@ function QuestionChips({ question, disabled, onAnswer }: { question: Question; d
     <div className="ap-question">
       {question.choices.map((c) => (
         <label key={c.label} className={`ap-chip${selected.includes(c.label) ? " on" : ""}`}>
-          <input
-            type={question.multiSelect ? "checkbox" : "radio"}
-            name={`q-${c.label}`}
-            checked={selected.includes(c.label)}
-            disabled={disabled}
-            onChange={() => toggle(c.label)}
-          />
+          <input type={question.multiSelect ? "checkbox" : "radio"} name={`q-${c.label}`} checked={selected.includes(c.label)} disabled={disabled} onChange={() => toggle(c.label)} />
           {c.label}
           {c.description ? <span className="ap-muted"> — {c.description}</span> : null}
         </label>
