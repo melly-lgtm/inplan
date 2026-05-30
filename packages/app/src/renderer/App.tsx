@@ -263,7 +263,10 @@ export function App(): JSX.Element {
     skipPreviewScroll.current = false;
   }, [activePreviewLine, doc.body]);
 
-  // The comment anchored on the active line (if any) — highlighted in the rail.
+  // The comment anchored on the active line (if any) — used only to *highlight*
+  // the corresponding rail card. We intentionally do NOT scroll the rail here:
+  // plain preview clicks / cursor moves must not move the rail. The rail scrolls
+  // only on an explicit comment-anchor click (see focusComment).
   const syncedCommentId = useMemo(() => {
     if (activePreviewLine == null) return null;
     for (const c of doc.comments) {
@@ -272,9 +275,6 @@ export function App(): JSX.Element {
     }
     return null;
   }, [activePreviewLine, doc.body, doc.comments]);
-  useEffect(() => {
-    if (syncedCommentId) document.querySelector(`[data-cmt-card="${syncedCommentId}"]`)?.scrollIntoView({ block: "nearest" });
-  }, [syncedCommentId]);
 
   // --- mutate helpers ---
   const apply = useCallback((next: ParsedDocument, action?: { type: string; payload?: unknown }) => {
@@ -377,6 +377,15 @@ export function App(): JSX.Element {
       // pane (the rail). If the user clicked the anchor in the preview itself,
       // don't yank the pane they just clicked.
       if (!fromPreview) previewRef.current?.querySelector(`[data-cmt="${id}"]`)?.scrollIntoView({ block: "center" });
+      // Scroll the comment rail to this thread, showing its LAST comment (the
+      // newest reply / reply box). This is the only path that scrolls the rail.
+      const c = docRef.current.comments.find((x) => x.id === id);
+      const rootId = c?.parentId ?? id;
+      const card = railRef.current?.querySelector(`[data-cmt-card="${rootId}"]`);
+      if (card) {
+        const parts = card.querySelectorAll(".ap-comment, .ap-reply");
+        (parts[parts.length - 1] ?? card).scrollIntoView({ block: "nearest" });
+      }
     },
     [],
   );
