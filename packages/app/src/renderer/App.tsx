@@ -425,6 +425,18 @@ export function App(): JSX.Element {
   const toggleHunk = useCallback((idx: number, val: boolean) => setAccepted((a) => a.map((v, k) => (k === idx ? val : v))), []);
   const applyReview = useCallback(() => applyProposal(reviewSegs, accepted), [applyProposal, reviewSegs, accepted]);
 
+  // "Review next": step through change hunks, scrolling each into view (in both
+  // the preview and, when shown, the source diff) and highlighting it.
+  const [reviewCursor, setReviewCursor] = useState(-1);
+  useEffect(() => setReviewCursor(-1), [proposal]);
+  const reviewNext = useCallback(() => {
+    if (!changeCount) return;
+    const n = (reviewCursor + 1) % changeCount;
+    setReviewCursor(n);
+    previewRef.current?.querySelector(`[data-hunk="${n}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+    document.querySelector(`.ap-diffsource [data-hunk="${n}"]`)?.scrollIntoView({ block: "center" });
+  }, [changeCount, reviewCursor]);
+
   const threads = useMemo(() => buildThreads(doc.comments), [doc.comments]);
   const ordered = useMemo<OrderedThread[]>(() => {
     const annotate = (thread: Thread): OrderedThread => {
@@ -539,6 +551,9 @@ export function App(): JSX.Element {
         <div className="ap-review-bar">
           <strong>Agent proposed changes</strong> — {changeCount} change{changeCount === 1 ? "" : "s"} shown inline below
           <span className="ap-spacer" />
+          <button onClick={reviewNext} disabled={!changeCount} title="Scroll to the next change">
+            Review next{reviewCursor >= 0 ? ` (${reviewCursor + 1}/${changeCount})` : ""}
+          </button>
           <button onClick={() => setAccepted(new Array(changeCount).fill(true))}>Accept all</button>
           <button onClick={() => setAccepted(new Array(changeCount).fill(false))}>Reject all</button>
           <button className="ap-primary" onClick={applyReview}>
@@ -566,7 +581,7 @@ export function App(): JSX.Element {
       <div className="ap-main" style={{ zoom }}>
         <section className="ap-preview" ref={previewRef}>
           {proposal && reviewOpen ? (
-            <DiffPreview segs={reviewSegs} accepted={accepted} onToggle={toggleHunk} />
+            <DiffPreview segs={reviewSegs} accepted={accepted} focused={reviewCursor} onToggle={toggleHunk} />
           ) : (
           <div
             className="ap-rendered"
@@ -604,7 +619,7 @@ export function App(): JSX.Element {
           <section className="ap-pane">
             {panes === 2 && <PaneTabs tab={rightTab} onTab={setRightTab} />}
             {proposal && reviewOpen ? (
-              <DiffSource segs={reviewSegs} accepted={accepted} onToggle={toggleHunk} />
+              <DiffSource segs={reviewSegs} accepted={accepted} focused={reviewCursor} onToggle={toggleHunk} />
             ) : (
               <SourceEditor
                 ref={editorRef}
@@ -951,7 +966,7 @@ function FindReplaceBar({
 /** Inline diff rendered in the PREVIEW pane: changed blocks shown in place as
  *  rendered Markdown, with a per-hunk accept/reject toggle. This is the complete
  *  review surface in 1-pane mode (where the source pane isn't visible). */
-function DiffPreview({ segs, accepted, onToggle }: { segs: DiffSegment[]; accepted: boolean[]; onToggle: (i: number, v: boolean) => void }): JSX.Element {
+function DiffPreview({ segs, accepted, focused, onToggle }: { segs: DiffSegment[]; accepted: boolean[]; focused: number; onToggle: (i: number, v: boolean) => void }): JSX.Element {
   let ci = -1;
   return (
     <div className="ap-rendered ap-diffview">
@@ -963,7 +978,7 @@ function DiffPreview({ segs, accepted, onToggle }: { segs: DiffSegment[]; accept
         const idx = ci;
         const on = accepted[idx] ?? true;
         return (
-          <div key={i} className={`ap-ihunk${on ? " accepted" : " rejected"}`}>
+          <div key={i} data-hunk={idx} className={`ap-ihunk${on ? " accepted" : " rejected"}${focused === idx ? " focused" : ""}`}>
             <div className="ap-ihunk-bar">
               <span>change {idx + 1}</span>
               <span className="ap-spacer" />
@@ -989,7 +1004,7 @@ function DiffPreview({ segs, accepted, onToggle }: { segs: DiffSegment[]; accept
 
 /** Inline diff rendered in the SOURCE pane: a monospaced unified diff with the
  *  same per-hunk accept/reject toggles, bound to the same accept state. */
-function DiffSource({ segs, accepted, onToggle }: { segs: DiffSegment[]; accepted: boolean[]; onToggle: (i: number, v: boolean) => void }): JSX.Element {
+function DiffSource({ segs, accepted, focused, onToggle }: { segs: DiffSegment[]; accepted: boolean[]; focused: number; onToggle: (i: number, v: boolean) => void }): JSX.Element {
   let ci = -1;
   return (
     <div className="ap-source ap-diffsource">
@@ -1005,7 +1020,7 @@ function DiffSource({ segs, accepted, onToggle }: { segs: DiffSegment[]; accepte
         const idx = ci;
         const on = accepted[idx] ?? true;
         return (
-          <div key={i} className={`ap-hunk${on ? " accepted" : " rejected"}`}>
+          <div key={i} data-hunk={idx} className={`ap-hunk${on ? " accepted" : " rejected"}${focused === idx ? " focused" : ""}`}>
             <label className="ap-hunk-toggle">
               <input type="checkbox" checked={on} onChange={(e) => onToggle(idx, e.target.checked)} /> accept change {idx + 1}
             </label>

@@ -150,6 +150,8 @@ body {
 .ap-ihunk-add { background: #e9f7ef; padding: 2px 10px; }
 .ap-ihunk.rejected .ap-ihunk-add { opacity: 0.4; }
 .ap-ihunk.accepted .ap-ihunk-del { opacity: 0.5; }
+.ap-ihunk.focused { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ap-hunk.focused { background: var(--accent-soft); }
 
 /* inline diff in the SOURCE pane (monospaced unified diff) */
 .ap-diffsource { padding: 8px 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow: auto; }
