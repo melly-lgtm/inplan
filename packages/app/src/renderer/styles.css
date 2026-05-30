@@ -54,18 +54,19 @@ body {
 .ap-tabs button.active { border-bottom: 2px solid var(--accent); font-weight: 600; }
 
 /* rail */
-.ap-rail { overflow: auto; }
-.ap-rail-head { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+/* dark-gray rail surface so the comment cards read as separate, floating cards */
+.ap-rail { overflow: auto; background: #45474d; }
+.ap-rail-head { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); background: var(--bg); position: sticky; top: 0; z-index: 1; }
 .ap-composer { padding: 10px; border-bottom: 1px solid var(--line); }
 .ap-composer textarea { width: 100%; min-height: 48px; resize: vertical; }
 .ap-quote { font-size: 12px; color: var(--accent); margin-bottom: 4px; }
 .ap-muted { color: var(--muted); }
 .ap-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
 
-.ap-thread { padding: 10px; border-bottom: 1px solid var(--line); cursor: pointer; margin-bottom: 5px; }
+.ap-thread { padding: 10px; cursor: pointer; margin: 0 8px 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.32); }
 /* rail section titles (Document / Anchored) with 10px between sections */
-.ap-section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 600; padding: 4px 10px; margin-top: 10px; }
-.ap-section-title:first-child { margin-top: 4px; }
+.ap-section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: #d2d3d8; font-weight: 600; padding: 4px 10px; margin-top: 8px; }
+.ap-section-title:first-child { margin-top: 6px; }
 .ap-thread.focused { background: var(--accent-soft); }
 .ap-thread.synced { box-shadow: inset 3px 0 0 var(--accent); }
 .ap-diff-del .w, .ap-diff-add .w { border-radius: 2px; padding: 0 1px; }
@@ -117,7 +118,7 @@ body {
 
 /* rail splitter + empty + orphaned */
 .ap-splitter { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding: 8px 10px 2px; border-top: 2px solid var(--line); margin-top: 4px; }
-.ap-empty { padding: 16px 10px; color: var(--muted); font-size: 13px; }
+.ap-empty { padding: 16px 10px; color: #d2d3d8; font-size: 13px; }
 .ap-thread.orphaned { background: #fff6f4; }
 .ap-thread.orphaned .ap-thread-quote { color: var(--danger); }
 

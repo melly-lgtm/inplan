@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# License / provenance gate. Two free, open-source scanners guard against
+# inadvertently shipping code under licenses that are incompatible with the
+# project's AGPL-3.0 + commercial dual-licensing (which is what makes the IP
+# sellable):
+#
+#   1. dependency-licenses — fails the build if any production dependency is
+#      under a non-permissive (copyleft / unknown) license. Strong copyleft in a
+#      dependency would block offering a proprietary commercial license.
+#   2. source-license-scan — runs ScanCode Toolkit over our own source and fails
+#      if it detects license/copyright clues that aren't ours (AGPL) or plainly
+#      permissive — the closest free signal that a snippet was copied in from a
+#      differently-licensed open-source project.
+#
+# NOTE: this is a best-effort *free* gate. True snippet-level "similarity to a
+# specific OSS project" detection needs a commercial corpus (FOSSA / Black Duck);
+# see docs/PLAN.md § Licensing & IP. The allowlists below are intentionally
+# explicit and meant to be tuned on the first few runs.
+#
+# Actions are referenced by version tag for readability; pin to immutable SHAs
+# (as .github/workflows/cla.yml does for the third-party CLA action) when hardening.
+name: License & provenance scan
+
+on:
+  pull_request:
+    branches: ["**"]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - name: Fail on non-permissive dependency licenses
+        # Our own workspace packages are AGPL and private — excluded. Everything
+        # shipped must be permissive so the commercial relicense stays clean.
+        run: |
+          npx --yes license-checker-rseidelsohn \
+            --production \
+            --excludePrivatePackages \
+            --onlyAllow "MIT;MIT-0;ISC;0BSD;BSD-2-Clause;BSD-3-Clause;Apache-2.0;CC0-1.0;Unlicense;BlueOak-1.0.0;Python-2.0;Zlib;CC-BY-4.0;WTFPL" \
+            --summary
+
+  source-license-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ScanCode Toolkit
+        run: pip install --upgrade "scancode-toolkit==32.*"
+      - name: Scan source for license & copyright clues
+        run: |
+          scancode --license --copyright --strip-root --json-pp scancode.json \
+            --ignore "*/node_modules/*" --ignore "*/dist/*" --ignore "*/out/*" \
+            --ignore "*.lock" --ignore "package-lock.json" \
+            packages skill LICENSE NOTICE
+      - name: Fail on foreign / non-permitted license detections
+        run: python3 .github/scripts/check_scancode_licenses.py scancode.json
+      - name: Upload ScanCode report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scancode-report
+          path: scancode.json
