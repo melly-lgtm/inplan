@@ -77,12 +77,15 @@ body {
 .ap-pane-ic i { width: 4px; height: 13px; border: 1px solid currentColor; border-radius: 1px; display: block; }
 .ap-seg button .ap-pane-ic { color: inherit; }
 
-/* floating contextual composer */
+/* floating contextual composer (position set inline; draggable by its header) */
 .ap-composer-float {
-  position: absolute; top: 44px; right: 16px; z-index: 20; width: 340px;
+  position: fixed; z-index: 30; width: 340px;
   background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
   box-shadow: 0 6px 24px rgba(0,0,0,0.16); padding: 10px;
 }
+.ap-composer-head { display: flex; align-items: center; justify-content: space-between; cursor: move; user-select: none; margin-bottom: 6px; }
+.ap-composer-head .ap-quote { margin-bottom: 0; }
+.ap-drag { color: var(--muted); cursor: move; }
 .ap-grow { width: 100%; min-height: 44px; max-height: 176px; resize: none; overflow-y: auto; }
 
 /* rail splitter + empty + orphaned */

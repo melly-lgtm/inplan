@@ -51,11 +51,12 @@ export function App(): JSX.Element {
   const [agentDone, setAgentDone] = useState(false);
   const [showResolvedOrphaned, setShowResolvedOrphaned] = useState(false);
   const [selectionText, setSelectionText] = useState("");
-  const [composer, setComposer] = useState<{ target: string | null } | null>(null);
+  const [composer, setComposer] = useState<{ target: string | null; pos: { x: number; y: number } } | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
 
   const docRef = useRef(doc);
   docRef.current = doc;
+  const previewRef = useRef<HTMLElement>(null);
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // --- persisted layout ---
@@ -183,8 +184,17 @@ export function App(): JSX.Element {
   );
 
   const openComposer = useCallback(() => {
-    const sel = liveSelection();
-    setComposer({ target: sel.length ? sel : null }); // target locked at open time
+    const sel = window.getSelection();
+    const txt = sel?.toString().trim() ?? "";
+    if (txt && sel && sel.rangeCount > 0) {
+      // Float just below/right of the selected text.
+      const r = sel.getRangeAt(0).getBoundingClientRect();
+      setComposer({ target: txt, pos: { x: Math.max(8, Math.min(r.left, window.innerWidth - 360)), y: r.bottom + 6 } });
+    } else {
+      // Doc comment: scroll to the top and float at the top of the document.
+      previewRef.current?.scrollTo({ top: 0 });
+      setComposer({ target: null, pos: { x: 24, y: 56 } });
+    }
   }, []);
 
   const threads = useMemo(() => buildThreads(doc.comments), [doc.comments]);
@@ -240,6 +250,7 @@ export function App(): JSX.Element {
       {composer && (
         <ComposerPopover
           target={composer.target}
+          pos={composer.pos}
           disabled={editingLocked}
           onSubmit={(text) => {
             addComment(text, composer.target);
@@ -250,7 +261,7 @@ export function App(): JSX.Element {
       )}
 
       <div className="ap-main" style={{ zoom }}>
-        <section className="ap-preview">
+        <section className="ap-preview" ref={previewRef}>
           <div
             className="ap-rendered"
             dangerouslySetInnerHTML={{ __html: previewHtml }}
@@ -259,7 +270,7 @@ export function App(): JSX.Element {
               const sel = liveSelection();
               if (sel.length) {
                 e.preventDefault();
-                setComposer({ target: sel });
+                setComposer({ target: sel, pos: { x: Math.max(8, Math.min(e.clientX, window.innerWidth - 360)), y: e.clientY + 6 } });
               }
             }}
             onClick={(e) => {
@@ -433,21 +444,41 @@ function StatusBar({ cadence, status, dirty, agentThinking }: { cadence: Cadence
 
 function ComposerPopover({
   target,
+  pos,
   disabled,
   onSubmit,
   onClose,
 }: {
   target: string | null;
+  pos: { x: number; y: number };
   disabled: boolean;
   onSubmit: (text: string) => void;
   onClose: () => void;
 }): JSX.Element {
   const [text, setText] = useState("");
+  const [p, setP] = useState(pos);
   const box = useRef<HTMLDivElement>(null);
   const ta = useRef<HTMLTextAreaElement>(null);
+  const drag = useRef<{ dx: number; dy: number } | null>(null);
 
   useEffect(() => {
     ta.current?.focus();
+  }, []);
+
+  // Drag by the header.
+  useEffect(() => {
+    const move = (e: MouseEvent) => {
+      if (drag.current) setP({ x: e.clientX - drag.current.dx, y: e.clientY - drag.current.dy });
+    };
+    const up = () => {
+      drag.current = null;
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+    return () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+    };
   }, []);
 
   // Click outside an EMPTY composer dismisses it (keeps it if you've typed).
@@ -469,8 +500,11 @@ function ComposerPopover({
   };
 
   return (
-    <div className="ap-composer ap-composer-float" ref={box}>
-      <div className="ap-quote">{target ? `on “${target}”` : "document-level comment"}</div>
+    <div className="ap-composer ap-composer-float" ref={box} style={{ left: p.x, top: p.y, right: "auto" }}>
+      <div className="ap-composer-head" onMouseDown={(e) => (drag.current = { dx: e.clientX - p.x, dy: e.clientY - p.y })}>
+        <span className="ap-quote">{target ? `on “${target}”` : "document-level comment"}</span>
+        <span className="ap-drag" title="drag to move">⠿</span>
+      </div>
       <textarea
         ref={ta}
         className="ap-grow"
