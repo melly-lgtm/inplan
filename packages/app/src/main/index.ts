@@ -95,7 +95,11 @@ function registerIpc(): void {
 
 void app.whenReady().then(() => {
   const target = resolveTargetFile();
-  if (target) session = new Session(target);
+  if (target) {
+    session = new Session(target);
+    // Authoritative editor pid for the CLI's liveness/duplicate checks.
+    session.logEditorPid(process.pid);
+  }
   registerIpc();
   createWindow();
 

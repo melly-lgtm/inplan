@@ -12,14 +12,20 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
-/** The pid of a still-running editor for this document (from the latest editor_pid entry), else null. */
-export function runningEditorPid(logPath: string): number | null {
+/** The most recently logged editor pid (regardless of liveness), else null. */
+export function latestEditorPid(logPath: string): number | null {
   const entries = readLog(logPath);
   for (let i = entries.length - 1; i >= 0; i--) {
     if (entries[i]!.type === LogEventType.EditorPid) {
       const pid = (entries[i]!.payload as { pid?: number } | undefined)?.pid;
-      return typeof pid === "number" && isProcessAlive(pid) ? pid : null;
+      return typeof pid === "number" ? pid : null;
     }
   }
   return null;
+}
+
+/** The pid of a still-running editor for this document (from the latest editor_pid entry), else null. */
+export function runningEditorPid(logPath: string): number | null {
+  const pid = latestEditorPid(logPath);
+  return pid !== null && isProcessAlive(pid) ? pid : null;
 }

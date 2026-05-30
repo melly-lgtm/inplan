@@ -94,7 +94,8 @@ async function waitCycle(file: string, cursor: number, confirmed: Set<string>): 
   const isActionable = wakePredicate(currentCadence(p.logPath));
   const result = await waitForActions({ logPath: p.logPath, cursor, debounceMs, pollMs, isActionable });
   const closed = result.entries.some((e) => e.type === LogEventType.SessionClosed);
-  output({ status: closed ? "closed" : "actions", cursor: result.cursor, closed, entries: result.entries });
+  const status = result.editorGone ? "editor_closed" : closed ? "closed" : "actions";
+  output({ status, cursor: result.cursor, closed: closed || !!result.editorGone, editorGone: !!result.editorGone, entries: result.entries });
 }
 
 async function main(): Promise<void> {

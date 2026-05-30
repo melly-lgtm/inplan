@@ -46,6 +46,11 @@ export class Session {
     appendLog(this.paths.logPath, { actor: "user", type, payload: { bytes: content.length } });
   }
 
+  /** Record this editor process's own pid (authoritative for liveness checks). */
+  logEditorPid(pid: number): void {
+    appendLog(this.paths.logPath, { actor: "agent", type: LogEventType.EditorPid, payload: { pid } });
+  }
+
   logAction(type: string, payload?: unknown): void {
     appendLog(this.paths.logPath, { actor: "user", type, ...(payload !== undefined ? { payload } : {}) });
   }

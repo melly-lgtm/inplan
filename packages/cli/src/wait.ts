@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { LogEventType, readLogSince, type LogEntry } from "@agent-planner/core/node";
+import { isProcessAlive, latestEditorPid } from "./editorProcess";
 
 export interface WaitResult {
   entries: LogEntry[];
   cursor: number;
+  /** True when the wait ended because the editor process went away (not via a turn/close action). */
+  editorGone?: boolean;
 }
 
 export interface WaitOptions {
@@ -17,6 +20,8 @@ export interface WaitOptions {
   pollMs?: number;
   /** Which entries should wake the agent. Default: any user-authored entry. */
   isActionable?: (e: LogEntry) => boolean;
+  /** Watch the editor pid and resolve (editorGone) if a once-alive editor dies. Default true. */
+  watchEditor?: boolean;
   /** Abort the wait (e.g. on shutdown). */
   signal?: AbortSignal;
 }
@@ -45,9 +50,12 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
   const pollMs = opts.pollMs ?? 200;
   const isActionable = opts.isActionable ?? defaultActionable;
 
+  const watchEditor = opts.watchEditor ?? true;
+
   return new Promise<WaitResult>((resolve, reject) => {
     let deadline: number | null = null;
     let lastCount = -1;
+    let sawEditorAlive = false;
 
     const cleanup = () => {
       clearInterval(timer);
@@ -60,6 +68,20 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
 
     const tick = () => {
       const { entries, cursor } = readLogSince(opts.logPath, opts.cursor);
+
+      // Editor liveness: once we've seen the editor alive, exit if it goes away —
+      // so a wait never lingers as a zombie after the window is gone.
+      if (watchEditor) {
+        const pid = latestEditorPid(opts.logPath);
+        const alive = pid !== null && isProcessAlive(pid);
+        if (alive) sawEditorAlive = true;
+        else if (sawEditorAlive) {
+          cleanup();
+          resolve({ entries, cursor, editorGone: true });
+          return;
+        }
+      }
+
       if (entries.some(isActionable)) {
         if (entries.length !== lastCount) {
           // New activity since last check — (re)start the debounce window.
