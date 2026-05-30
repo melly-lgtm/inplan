@@ -105,11 +105,14 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
    Reply by appending a comment with `parentId`. Resolve by setting
    `"resolved": true`. Read `selected` on the human's answers. If nothing needs
    changing, that's fine — you still take your (empty) turn and proceed to step 5.
-5. **Hand control back: call `wait` again** (no `--cursor` — it self-manages).
-   This unlocks the human's editor and blocks until their next turn. Do this
-   after *every* turn, even an empty one:
+5. **Hand control back: call `wait` again** (no `--cursor` — it self-manages),
+   then loop to step 3. This unlocks the human's editor and blocks until their
+   next turn. Do this after *every* turn, even an empty one:
 
        agent-planner wait <name>.plan.md
+
+   `your_turn` and `activity` are **not** stop conditions — you always loop back
+   and keep waiting. The **only** thing that ends the loop is `status: closed`.
 
 6. When you believe the plan is ready, signal it (the human still decides):
 
