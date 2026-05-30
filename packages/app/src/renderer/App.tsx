@@ -152,6 +152,13 @@ export function App(): JSX.Element {
   const threads = useMemo(() => buildThreads(doc.comments), [doc.comments]);
   const visibleThreads = showResolved ? threads : threads.filter((t) => !t.root.resolved);
 
+  // Anchors of resolved comments are not highlighted unless "show resolved" is on.
+  const resolvedIds = useMemo(() => new Set(doc.comments.filter((c) => c.resolved).map((c) => c.id)), [doc.comments]);
+  const previewHtml = useMemo(
+    () => renderMarkdown(doc.body, (id) => showResolved || !resolvedIds.has(id)),
+    [doc.body, resolvedIds, showResolved],
+  );
+
   if (!loaded) return <div className="ap-loading">Loading…</div>;
 
   const showSource = panes === 3 || (panes === 2 && rightTab === "source");
@@ -185,7 +192,7 @@ export function App(): JSX.Element {
         <section className="ap-preview" onMouseUp={onPreviewMouseUp}>
           <div
             className="ap-rendered"
-            dangerouslySetInnerHTML={{ __html: renderMarkdown(doc.body) }}
+            dangerouslySetInnerHTML={{ __html: previewHtml }}
             onClick={(e) => {
               const a = (e.target as HTMLElement).closest("a");
               if (!a) return;

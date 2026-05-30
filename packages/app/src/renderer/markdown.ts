@@ -13,13 +13,22 @@ md.renderer.rules.link_open = (tokens, idx, opts, env, self) => {
   const href = tokens[idx]!.attrGet("href") ?? "";
   const m = /^#(cmt-[0-9a-z]+)$/i.exec(href);
   if (m) {
-    tokens[idx]!.attrSet("class", "ap-anchor");
-    tokens[idx]!.attrSet("data-cmt", m[1]!.toLowerCase());
+    const id = m[1]!.toLowerCase();
+    tokens[idx]!.attrSet("data-cmt", id);
+    // Highlight only when the predicate allows (e.g. unresolved, or "show resolved" on).
+    const shouldHighlight = (env as { shouldHighlight?: (id: string) => boolean } | undefined)?.shouldHighlight;
+    if (!shouldHighlight || shouldHighlight(id)) {
+      tokens[idx]!.attrSet("class", "ap-anchor");
+    }
   }
   return defaultLinkOpen(tokens, idx, opts, env, self);
 };
 
-/** Render Markdown body to HTML, with comment anchors tagged for the UI. */
-export function renderMarkdown(body: string): string {
-  return md.render(body);
+/**
+ * Render Markdown body to HTML, with comment anchors tagged for the UI.
+ * `shouldHighlight(id)` controls the yellow anchor background; when omitted, all
+ * anchors are highlighted.
+ */
+export function renderMarkdown(body: string, shouldHighlight?: (id: string) => boolean): string {
+  return md.render(body, { shouldHighlight });
 }

@@ -26,6 +26,38 @@ function findPlainOccurrence(body: string, text: string): number {
   }
 }
 
+/** Build a copy of `source` with inline markdown markers (* _ `) removed, plus a
+ *  map from each kept char's index back to its index in `source`. */
+function buildNormalized(source: string): { text: string; map: number[] } {
+  let text = "";
+  const map: number[] = [];
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i]!;
+    if (ch === "*" || ch === "_" || ch === "`") continue;
+    text += ch;
+    map.push(i);
+  }
+  return { text, map };
+}
+
+/**
+ * Locate the source range to anchor for `selected` (the user's preview selection).
+ * Tries a verbatim match first; falls back to a markup-insensitive match so a
+ * selection like "showing resolved and orphaned" still matches source
+ * "showing resolved *and* orphaned". Returns null if not found.
+ */
+export function findSpanRange(body: string, selected: string): { start: number; end: number } | null {
+  const direct = findPlainOccurrence(body, selected);
+  if (direct >= 0) return { start: direct, end: direct + selected.length };
+
+  const needle = selected.replace(/[*_`]/g, "");
+  if (!needle) return null;
+  const { text, map } = buildNormalized(body);
+  const idx = text.indexOf(needle);
+  if (idx < 0) return null;
+  return { start: map[idx]!, end: map[idx + needle.length - 1]! + 1 };
+}
+
 export interface NewCommentFields {
   text: string;
   author: string;
@@ -34,10 +66,11 @@ export interface NewCommentFields {
 
 /** Wrap the selected body span in an anchor link and add a span comment. Null if the span isn't found. */
 export function addSpanComment(doc: ParsedDocument, selectedText: string, fields: NewCommentFields): { doc: ParsedDocument; id: string } | null {
-  const idx = findPlainOccurrence(doc.body, selectedText);
-  if (idx < 0) return null;
+  const range = findSpanRange(doc.body, selectedText);
+  if (!range) return null;
   const id = genId(takenIds(doc));
-  const body = `${doc.body.slice(0, idx)}[${selectedText}](#${id})${doc.body.slice(idx + selectedText.length)}`;
+  const sourceSpan = doc.body.slice(range.start, range.end); // keep original markup in the label
+  const body = `${doc.body.slice(0, range.start)}[${sourceSpan}](#${id})${doc.body.slice(range.end)}`;
   const comment: Comment = { id, author: fields.author, date: nowIso(), resolved: false, text: fields.text, ...(fields.question ? { question: fields.question } : {}) };
   return { doc: { body, comments: [...doc.comments, comment] }, id };
 }
