@@ -62,6 +62,7 @@ export function App(): JSX.Element {
       setStatus("agent updated the document");
     });
     window.api.onAgentDone(() => setAgentDone(true));
+    window.api.onAgentActive(() => setAgentThinking(false));
   }, []);
 
   const editingLocked = cadence === "turn" && agentThinking;

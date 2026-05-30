@@ -71,7 +71,7 @@ export class Session {
    * `agent_done_suggested` signal in the control log. Polling-based for
    * cross-platform reliability.
    */
-  watch(handlers: { onExternalChange: (content: string) => void; onAgentDone: () => void }): () => void {
+  watch(handlers: { onExternalChange: (content: string) => void; onAgentDone: () => void; onAgentActive: () => void }): () => void {
     let lastLogSeq = readLog(this.paths.logPath).at(-1)?.seq ?? 0;
 
     const onFile = () => {
@@ -93,6 +93,10 @@ export class Session {
       if (entries.length) lastLogSeq = entries.at(-1)!.seq;
       if (entries.some((e) => e.type === LogEventType.AgentDoneSuggested)) {
         handlers.onAgentDone();
+      }
+      // The agent re-engaged (revised the doc or just re-attached) — clear "thinking".
+      if (entries.some((e) => e.actor === "agent" && (e.type === LogEventType.AgentRevised || e.type === LogEventType.DocumentEdited))) {
+        handlers.onAgentActive();
       }
     };
 

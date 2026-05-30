@@ -64,6 +64,7 @@ function createWindow(): void {
     stopWatching = session.watch({
       onExternalChange: (content) => win?.webContents.send("doc:external-change", { path: session!.paths.file, content }),
       onAgentDone: () => win?.webContents.send("agent:done"),
+      onAgentActive: () => win?.webContents.send("agent:active"),
     });
   }
 

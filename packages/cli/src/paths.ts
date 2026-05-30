@@ -16,6 +16,8 @@ export interface DocPaths {
   backupsDir: string;
   /** Proposed agent revision (Review mode), pending human accept/reject. */
   proposedPath: string;
+  /** Persisted wait cursor (the seq the agent has consumed) — so the agent never hand-manages it. */
+  cursorPath: string;
 }
 
 /** Compute the sidecar paths for a plan document. */
@@ -30,5 +32,6 @@ export function docPaths(file: string): DocPaths {
     canonicalPath: join(controlDir, `${base}.canonical.md`),
     backupsDir: join(controlDir, `${base}.backups`),
     proposedPath: join(controlDir, `${base}.proposed.md`),
+    cursorPath: join(controlDir, `${base}.cursor`),
   };
 }

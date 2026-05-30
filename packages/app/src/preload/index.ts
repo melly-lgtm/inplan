@@ -15,6 +15,9 @@ const api: Api = {
   onAgentDone: (cb: () => void) => {
     ipcRenderer.on("agent:done", () => cb());
   },
+  onAgentActive: (cb: () => void) => {
+    ipcRenderer.on("agent:active", () => cb());
+  },
 };
 
 contextBridge.exposeInMainWorld("api", api);

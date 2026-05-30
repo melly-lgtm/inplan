@@ -32,6 +32,8 @@ export interface Api {
   onExternalChange(cb: (payload: DocPayload) => void): void;
   /** The agent signalled it thinks the plan is ready. */
   onAgentDone(cb: () => void): void;
+  /** The agent re-engaged this round (revised the doc or re-attached) — clear "thinking". */
+  onAgentActive(cb: () => void): void;
 }
 
 declare global {

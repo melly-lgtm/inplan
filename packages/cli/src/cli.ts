@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { appendLog, LogEventType, readLog } from "@agent-planner/core/node";
 import { runningEditorPid } from "./editorProcess";
 import { evaluateAgentEdit } from "./gate";
-import { docPaths } from "./paths";
+import { docPaths, type DocPaths } from "./paths";
 import { wakePredicate, waitForActions } from "./wait";
 
 const VERSION = "0.0.0";
@@ -53,10 +53,34 @@ function currentCadence(logPath: string): "turn" | "instant" {
   return "turn";
 }
 
-/** Evaluate the agent's edit (gate), accept it as canonical, then block for user actions. */
-async function waitCycle(file: string, cursor: number, confirmed: Set<string>): Promise<void> {
+/** The highest seq in the control log (0 if empty). */
+function maxSeq(logPath: string): number {
+  const entries = readLog(logPath);
+  return entries.length ? entries[entries.length - 1]!.seq : 0;
+}
+
+/** The persisted wait cursor (what the agent has already consumed), or null. */
+function readCursor(p: DocPaths): number | null {
+  if (!existsSync(p.cursorPath)) return null;
+  const n = Number(readFileSync(p.cursorPath, "utf8").trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+function writeCursor(p: DocPaths, seq: number): void {
+  writeFileSync(p.cursorPath, String(seq));
+}
+
+/**
+ * Evaluate the agent's edit (gate), accept it as canonical, then block for user
+ * actions. The cursor is self-managed: an explicit override, else the persisted
+ * cursor, else "start from now" (current max). It is persisted on return so the
+ * agent never hand-manages it and turns can't be skipped.
+ */
+async function waitCycle(file: string, explicitCursor: number | null, confirmed: Set<string>): Promise<void> {
   const p = docPaths(file);
   mkdirSync(p.controlDir, { recursive: true });
+
+  const cursor = explicitCursor ?? readCursor(p) ?? maxSeq(p.logPath);
 
   const current = readFileSync(file, "utf8");
   let canonicalText: string;
@@ -90,9 +114,14 @@ async function waitCycle(file: string, cursor: number, confirmed: Set<string>): 
     appendLog(p.logPath, { actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: current.length } });
   }
 
+  // Signal the agent has (re)engaged this round so the editor can clear its
+  // "Agent is thinking…" indicator even when the agent made no body change.
+  appendLog(p.logPath, { actor: "agent", type: LogEventType.AgentRevised });
+
   // Mode-aware wake: Turn mode wakes only on turn-end / session-close; Instant on any user action.
   const isActionable = wakePredicate(currentCadence(p.logPath));
   const result = await waitForActions({ logPath: p.logPath, cursor, debounceMs, pollMs, isActionable });
+  writeCursor(p, result.cursor); // advance the persisted cursor so the next call continues here
   const closed = result.entries.some((e) => e.type === LogEventType.SessionClosed);
   const status = result.editorGone ? "editor_closed" : closed ? "closed" : "actions";
   output({ status, cursor: result.cursor, closed: closed || !!result.editorGone, editorGone: !!result.editorGone, entries: result.entries });
@@ -109,7 +138,8 @@ async function main(): Promise<void> {
 
   const file = argv[1];
   const rest = argv.slice(2);
-  const cursor = Number(getFlag(rest, "cursor") ?? 0);
+  const cursorFlag = getFlag(rest, "cursor");
+  const explicitCursor = cursorFlag !== undefined ? Number(cursorFlag) : null; // optional override; wait self-manages otherwise
   const confirmed = new Set(
     (getFlag(rest, "confirmed-comment-deletion") ?? "")
       .split(",")
@@ -155,7 +185,7 @@ async function main(): Promise<void> {
     }
   }
 
-  await waitCycle(file, cursor, confirmed);
+  await waitCycle(file, explicitCursor, confirmed);
 }
 
 main().catch((err) => {
