@@ -102,6 +102,7 @@ body {
 .ap-find { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--accent-soft); flex-wrap: wrap; }
 .ap-find input[type="text"], .ap-find > input { border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; }
 .ap-find-scope { display: inline-flex; gap: 10px; font-size: 12px; }
+.ap-find-mode { font-size: 12px; font-weight: 600; border-right: 1px solid var(--line); padding-right: 8px; }
 
 /* cross-pane current-line highlight */
 .ap-active-line, .cm-line.ap-active-line { background: var(--accent-soft); }

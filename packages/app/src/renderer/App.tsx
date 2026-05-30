@@ -49,6 +49,8 @@ interface Proposal {
   next: ParsedDocument;
 }
 
+type FindMatch = { scope: "body"; from: number; to: number } | { scope: "comment"; id: string; from: number; to: number };
+
 export function App(): JSX.Element {
   const [loaded, setLoaded] = useState(false);
   const [doc, setDoc] = useState<ParsedDocument>(EMPTY);
@@ -78,6 +80,7 @@ export function App(): JSX.Element {
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const history = useRef<ParsedDocument[]>([]); // undo stack of doc snapshots
   const future = useRef<ParsedDocument[]>([]); // redo stack
+  const savedRef = useRef<string>(""); // last canonical-saved serialized content (for the dirty dot)
 
   // --- persisted layout ---
   useEffect(() => {
@@ -102,7 +105,9 @@ export function App(): JSX.Element {
     window.api
       .load()
       .then(({ content }) => {
-        setDoc(parse(content));
+        const d = parse(content);
+        setDoc(d);
+        savedRef.current = serialize(d);
         setLoaded(true);
       })
       .catch(() => setLoaded(true));
@@ -117,6 +122,7 @@ export function App(): JSX.Element {
         setStatus("agent proposed changes — review below");
       } else {
         setDoc(next);
+        savedRef.current = serialize(next);
         setDirty(false);
         setStatus("agent updated the document");
       }
@@ -140,7 +146,7 @@ export function App(): JSX.Element {
     }
     future.current.push(docRef.current);
     setDoc(prev);
-    setDirty(true);
+    setDirty(serialize(prev) !== savedRef.current);
     setStatus("undid last change");
   }, []);
   const redo = useCallback(() => {
@@ -151,7 +157,7 @@ export function App(): JSX.Element {
     }
     history.current.push(docRef.current);
     setDoc(next);
-    setDirty(true);
+    setDirty(serialize(next) !== savedRef.current);
     setStatus("redid change");
   }, []);
 
@@ -188,6 +194,7 @@ export function App(): JSX.Element {
       const content = serialize(docRef.current);
       if (cadence === "instant") {
         void window.api.save(content, { kind: "canonical", cadence });
+        savedRef.current = content;
         setDirty(false);
         setStatus("auto-saving…");
       } else {
@@ -245,7 +252,7 @@ export function App(): JSX.Element {
     if (history.current.length > 200) history.current.shift();
     future.current = [];
     setDoc(next);
-    setDirty(true);
+    setDirty(serialize(next) !== savedRef.current);
     if (action) void window.api.logAction(action.type, action.payload);
   }, []);
 
@@ -263,12 +270,17 @@ export function App(): JSX.Element {
     const content = serialize(docRef.current);
     const kind = cadence === "instant" ? "canonical" : "backup";
     void window.api.save(content, { kind, cadence });
-    if (kind === "canonical") setDirty(false);
+    if (kind === "canonical") {
+      savedRef.current = content;
+      setDirty(false);
+    }
     setStatus(kind === "canonical" ? "saved" : "checkpoint saved");
   }, [cadence]);
 
   const finishTurn = useCallback(() => {
-    void window.api.save(serialize(docRef.current), { kind: "canonical", cadence: "turn" });
+    const content = serialize(docRef.current);
+    void window.api.save(content, { kind: "canonical", cadence: "turn" });
+    savedRef.current = content;
     setDirty(false);
     setAgentThinking(true);
     setStatus("turn finished — waiting for agent");
@@ -324,6 +336,21 @@ export function App(): JSX.Element {
       previewRef.current?.querySelector(`[data-cmt="${id}"]`)?.scrollIntoView({ block: "center" });
     },
     [],
+  );
+
+  // Jump to a find match: body matches select in the source editor (revealing it)
+  // and scroll the preview; comment matches focus the comment thread.
+  const navigateMatch = useCallback(
+    (m: FindMatch) => {
+      if (m.scope === "body") {
+        setRightTab((t) => (panes === 2 && t !== "source" ? "source" : t));
+        editorRef.current?.selectRange(m.from, m.to);
+        setActivePreviewLine(docRef.current.body.slice(0, m.from).split("\n").length - 1);
+      } else {
+        focusComment(m.id);
+      }
+    },
+    [panes, focusComment],
   );
 
   // --- review apply ---
@@ -384,7 +411,7 @@ export function App(): JSX.Element {
         locked={editingLocked}
       />
 
-      {findOpen && <FindReplaceBar doc={doc} onApply={apply} onClose={() => setFindOpen(false)} />}
+      {findOpen && <FindReplaceBar doc={doc} onApply={apply} onClose={() => setFindOpen(false)} onNavigate={navigateMatch} />}
 
       {agentDone && (
         <div className="ap-banner">
@@ -452,8 +479,9 @@ export function App(): JSX.Element {
               editable={!editingLocked}
               onChange={(body) => {
                 // Typing has its own (CodeMirror) undo; don't push app-level history per keystroke.
-                setDoc({ ...docRef.current, body });
-                setDirty(true);
+                const nd = { ...docRef.current, body };
+                setDoc(nd);
+                setDirty(serialize(nd) !== savedRef.current);
               }}
               onCursorLine={(line) => setActivePreviewLine(line)}
             />
@@ -597,70 +625,103 @@ function TopBar(props: {
 
 const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-function FindReplaceBar({ doc, onApply, onClose }: { doc: ParsedDocument; onApply: (next: ParsedDocument, action?: { type: string; payload?: unknown }) => void; onClose: () => void }): JSX.Element {
+function FindReplaceBar({
+  doc,
+  onApply,
+  onClose,
+  onNavigate,
+}: {
+  doc: ParsedDocument;
+  onApply: (next: ParsedDocument, action?: { type: string; payload?: unknown }) => void;
+  onClose: () => void;
+  onNavigate: (m: FindMatch) => void;
+}): JSX.Element {
   const [find, setFind] = useState("");
   const [replace, setReplace] = useState("");
-  const [inPreview, setInPreview] = useState(true);
-  const [inEditor, setInEditor] = useState(true);
+  const [replaceMode, setReplaceMode] = useState(false);
+  const [inBody, setInBody] = useState(true); // the document body (preview + editor)
   const [inComments, setInComments] = useState(false);
   const [ci, setCi] = useState(false);
+  const [idx, setIdx] = useState(0);
+  const navAfterReplace = useRef(false);
 
-  const inBody = inPreview || inEditor; // preview & editor are both views of the body
-  const re = (flags: string) => (find ? new RegExp(escapeRegExp(find), flags + (ci ? "i" : "")) : null);
-
-  const count = useMemo(() => {
-    const r = re("g");
-    if (!r) return 0;
-    let n = 0;
-    if (inBody) n += doc.body.match(r)?.length ?? 0;
-    if (inComments) for (const c of doc.comments) n += c.text.match(r)?.length ?? 0;
-    return n;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const matches = useMemo<FindMatch[]>(() => {
+    if (!find) return [];
+    const flags = "g" + (ci ? "i" : "");
+    const out: FindMatch[] = [];
+    const scan = (text: string, make: (from: number, to: number) => FindMatch) => {
+      const re = new RegExp(escapeRegExp(find), flags);
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(text))) {
+        out.push(make(m.index, m.index + m[0].length));
+        if (m[0].length === 0) re.lastIndex++;
+      }
+    };
+    if (inBody) scan(doc.body, (from, to) => ({ scope: "body", from, to }));
+    if (inComments) for (const c of doc.comments) scan(c.text, (from, to) => ({ scope: "comment", id: c.id, from, to }));
+    return out;
   }, [find, doc, inBody, inComments, ci]);
 
-  const replaceAll = () => {
-    const r = re("g");
-    if (!r) return;
-    const body = inBody ? doc.body.replace(r, replace) : doc.body;
-    const comments = inComments ? doc.comments.map((c) => ({ ...c, text: c.text.replace(r, replace) })) : doc.comments;
-    onApply({ body, comments }, { type: "document_edited", payload: { findReplace: "all" } });
+  const n = matches.length;
+  useEffect(() => {
+    if (idx >= n) setIdx(n ? n - 1 : 0);
+  }, [n, idx]);
+  // After a single replace, re-render brings fresh matches — jump to the next one.
+  useEffect(() => {
+    if (navAfterReplace.current && n) onNavigate(matches[Math.min(idx, n - 1)]!);
+    navAfterReplace.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matches]);
+
+  const go = (to: number) => {
+    if (!n) return;
+    const i = ((to % n) + n) % n;
+    setIdx(i);
+    onNavigate(matches[i]!);
   };
 
-  const replaceNext = () => {
-    const r = re("");
-    if (!r) return;
-    if (inBody) {
-      const m = r.exec(doc.body);
-      if (m) {
-        const body = doc.body.slice(0, m.index) + replace + doc.body.slice(m.index + m[0].length);
-        onApply({ ...doc, body }, { type: "document_edited", payload: { findReplace: "next" } });
-        return;
-      }
-    }
-    if (inComments) {
-      for (let k = 0; k < doc.comments.length; k++) {
-        const c = doc.comments[k]!;
-        const m = r.exec(c.text);
-        if (m) {
-          const comments = [...doc.comments];
-          comments[k] = { ...c, text: c.text.slice(0, m.index) + replace + c.text.slice(m.index + m[0].length) };
-          onApply({ ...doc, comments }, { type: "document_edited", payload: { findReplace: "next" } });
-          return;
-        }
-      }
-    }
+  const replaceOne = (m: FindMatch): ParsedDocument =>
+    m.scope === "body"
+      ? { ...doc, body: doc.body.slice(0, m.from) + replace + doc.body.slice(m.to) }
+      : { ...doc, comments: doc.comments.map((c) => (c.id === m.id ? { ...c, text: c.text.slice(0, m.from) + replace + c.text.slice(m.to) } : c)) };
+
+  const replaceCurrent = (dir: 1 | -1) => {
+    if (!n) return;
+    const m = matches[idx]!;
+    navAfterReplace.current = true;
+    if (dir === -1) setIdx(Math.max(0, idx - 1));
+    onApply(replaceOne(m), { type: "document_edited", payload: { findReplace: "one" } });
+  };
+
+  const replaceAll = () => {
+    if (!find) return;
+    const flags = "g" + (ci ? "i" : "");
+    const body = inBody ? doc.body.replace(new RegExp(escapeRegExp(find), flags), replace) : doc.body;
+    const comments = inComments ? doc.comments.map((c) => ({ ...c, text: c.text.replace(new RegExp(escapeRegExp(find), flags), replace) })) : doc.comments;
+    onApply({ body, comments }, { type: "document_edited", payload: { findReplace: "all" } });
   };
 
   return (
     <div className="ap-find">
-      <input placeholder="Find…" value={find} onChange={(e) => setFind(e.target.value)} autoFocus />
-      <input placeholder="Replace…" value={replace} onChange={(e) => setReplace(e.target.value)} />
+      <label className="ap-find-mode" title="toggle replace">
+        <input type="checkbox" checked={replaceMode} onChange={(e) => setReplaceMode(e.target.checked)} /> Replace
+      </label>
+      <input
+        placeholder="Find…"
+        value={find}
+        onChange={(e) => {
+          setFind(e.target.value);
+          setIdx(0);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") go(e.shiftKey ? idx - 1 : idx + 1);
+        }}
+        autoFocus
+      />
+      {replaceMode && <input placeholder="Replace…" value={replace} onChange={(e) => setReplace(e.target.value)} />}
       <span className="ap-find-scope">
         <label>
-          <input type="checkbox" checked={inPreview} onChange={(e) => setInPreview(e.target.checked)} /> preview
-        </label>
-        <label>
-          <input type="checkbox" checked={inEditor} onChange={(e) => setInEditor(e.target.checked)} /> editor
+          <input type="checkbox" checked={inBody} onChange={(e) => setInBody(e.target.checked)} /> body
         </label>
         <label>
           <input type="checkbox" checked={inComments} onChange={(e) => setInComments(e.target.checked)} /> comments
@@ -669,13 +730,29 @@ function FindReplaceBar({ doc, onApply, onClose }: { doc: ParsedDocument; onAppl
           <input type="checkbox" checked={ci} onChange={(e) => setCi(e.target.checked)} /> Aa
         </label>
       </span>
-      <span className="ap-muted">{count} match{count === 1 ? "" : "es"}</span>
-      <button onClick={replaceNext} disabled={!find || count === 0}>
-        Replace next
-      </button>
-      <button onClick={replaceAll} disabled={!find || count === 0}>
-        Replace all
-      </button>
+      <span className="ap-muted">{n ? `${Math.min(idx + 1, n)}/${n}` : "0/0"}</span>
+      {replaceMode ? (
+        <>
+          <button onClick={() => replaceCurrent(-1)} disabled={!n}>
+            Replace Prev
+          </button>
+          <button onClick={() => replaceCurrent(1)} disabled={!n}>
+            Replace Next
+          </button>
+          <button onClick={replaceAll} disabled={!n}>
+            Replace All
+          </button>
+        </>
+      ) : (
+        <>
+          <button onClick={() => go(idx - 1)} disabled={!n}>
+            Find Prev
+          </button>
+          <button onClick={() => go(idx + 1)} disabled={!n}>
+            Find Next
+          </button>
+        </>
+      )}
       <button className="ap-link" onClick={onClose}>
         close
       </button>

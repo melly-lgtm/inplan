@@ -9,6 +9,8 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 export interface SourceEditorHandle {
   /** Scroll to a 0-based source line and highlight it. */
   scrollToLine(line: number): void;
+  /** Select a character range [from,to) and scroll it into view (for find navigation). */
+  selectRange(from: number, to: number): void;
 }
 
 const setActiveLine = StateEffect.define<number | null>();
@@ -48,6 +50,15 @@ export const SourceEditor = forwardRef<
       const n = Math.min(Math.max(1, line + 1), v.state.doc.lines);
       const pos = v.state.doc.line(n).from;
       v.dispatch({ effects: [setActiveLine.of(line), EditorView.scrollIntoView(pos, { y: "center" })] });
+    },
+    selectRange(from: number, to: number) {
+      const v = view.current;
+      if (!v) return;
+      const len = v.state.doc.length;
+      const f = Math.max(0, Math.min(from, len));
+      const t = Math.max(0, Math.min(to, len));
+      v.dispatch({ selection: { anchor: f, head: t }, effects: EditorView.scrollIntoView(f, { y: "center" }) });
+      v.focus();
     },
   }));
 
