@@ -224,9 +224,13 @@ export function App(): JSX.Element {
     if (activePreviewLine == null) return;
     let best: Element | null = null;
     let bestLine = -1;
+    // Among blocks at or before the active line, pick the closest one. On a tie
+    // (a container and its first child share a source line — `<ul>`/`<li>`,
+    // `<blockquote>`/`<p>`), `>=` lets the later DOM node win, i.e. the more
+    // specific child, so we highlight just that item rather than the whole list.
     root.querySelectorAll("[data-line]").forEach((el) => {
       const l = Number(el.getAttribute("data-line") ?? -1);
-      if (l <= activePreviewLine && l > bestLine) {
+      if (l <= activePreviewLine && l >= bestLine) {
         bestLine = l;
         best = el;
       }
