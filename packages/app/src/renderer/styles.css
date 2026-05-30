@@ -42,10 +42,13 @@ body {
 
 /* main layout */
 .ap-main { flex: 1; display: flex; min-height: 0; }
-.ap-preview { flex: 1; overflow: auto; padding: 24px 32px; border-right: 1px solid var(--line); }
+.ap-preview { flex: 1; min-width: 0; overflow: auto; padding: 24px 32px; border-right: 1px solid var(--line); }
 .ap-rendered { max-width: 760px; }
 .ap-rendered .ap-anchor { background: #fff3b0; border-bottom: 2px solid #e6c200; color: inherit; text-decoration: none; cursor: pointer; border-radius: 2px; }
-.ap-pane { width: 380px; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
+.ap-pane { width: 380px; flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); overflow: hidden; }
+/* draggable vertical splitter between panes */
+.ap-vsplit { flex: 0 0 6px; cursor: col-resize; background: var(--line); }
+.ap-vsplit:hover, .ap-vsplit:active { background: var(--accent); }
 .ap-pane:last-child { border-right: 0; }
 .ap-source { flex: 1; overflow: auto; }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { parse, serialize, type Comment, type ParsedDocument, type Question } from "@inplan/core";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Acceptance, Cadence } from "../shared/api";
 import {
   addAnswer,
@@ -59,6 +59,8 @@ export function App(): JSX.Element {
   const [autoResolve, setAutoResolve] = useState(true); // agent auto-resolves threads after incorporating
   const [panes, setPanes] = useState<1 | 2 | 3>(2);
   const [rightTab, setRightTab] = useState<"comments" | "source">("comments");
+  const [srcW, setSrcW] = useState(380); // source pane width (px) — drag-resizable
+  const [cmtW, setCmtW] = useState(380); // comments pane width (px) — drag-resizable
   const [zoom, setZoom] = useState(1);
   const [dirty, setDirty] = useState(false);
   const [status, setStatus] = useState("");
@@ -96,13 +98,15 @@ export function App(): JSX.Element {
       if (typeof s.showResolvedOrphaned === "boolean") setShowResolvedOrphaned(s.showResolvedOrphaned);
       if (s.cadence === "turn" || s.cadence === "instant") setCadence(s.cadence);
       if (s.acceptance === "auto" || s.acceptance === "review") setAcceptance(s.acceptance);
+      if (typeof s.srcW === "number") setSrcW(Math.min(900, Math.max(220, s.srcW)));
+      if (typeof s.cmtW === "number") setCmtW(Math.min(900, Math.max(220, s.cmtW)));
     } catch {
       /* ignore */
     }
   }, []);
   useEffect(() => {
-    localStorage.setItem("ap-layout", JSON.stringify({ panes, rightTab, zoom, showResolvedOrphaned, cadence, acceptance }));
-  }, [panes, rightTab, zoom, showResolvedOrphaned, cadence, acceptance]);
+    localStorage.setItem("ap-layout", JSON.stringify({ panes, rightTab, zoom, showResolvedOrphaned, cadence, acceptance, srcW, cmtW }));
+  }, [panes, rightTab, zoom, showResolvedOrphaned, cadence, acceptance, srcW, cmtW]);
 
   // autoResolve is a global, cross-session user setting (affects agent behavior),
   // loaded from ~/.inplan/settings.json on launch — not localStorage.
@@ -652,7 +656,9 @@ export function App(): JSX.Element {
         </section>
 
         {showSource && (
-          <section className="ap-pane">
+          <>
+            <VSplitter width={srcW} setWidth={setSrcW} />
+          <section className="ap-pane" style={{ width: srcW }}>
             {panes === 2 && <PaneTabs tab={rightTab} onTab={setRightTab} />}
             {proposal && reviewOpen ? (
               <DiffSource segs={reviewSegs} accepted={accepted} focused={reviewCursor} onToggle={toggleHunk} />
@@ -672,10 +678,13 @@ export function App(): JSX.Element {
               />
             )}
           </section>
+          </>
         )}
 
         {showComments && (
-          <section className="ap-pane ap-rail" ref={railRef}>
+          <>
+            <VSplitter width={cmtW} setWidth={setCmtW} />
+          <section className="ap-pane ap-rail" ref={railRef} style={{ width: cmtW }}>
             {panes === 2 && <PaneTabs tab={rightTab} onTab={setRightTab} />}
             <div className="ap-rail-head">
               <strong>Comments</strong>
@@ -706,6 +715,7 @@ export function App(): JSX.Element {
             ))}
             {visible.length === 0 && <div className="ap-empty">No comments. Select text and use “+ Add Comment”.</div>}
           </section>
+          </>
         )}
       </div>
 
@@ -771,6 +781,26 @@ function SettingsMenu({
       )}
     </div>
   );
+}
+
+// Draggable vertical splitter sitting on a side pane's left edge. Dragging left
+// widens the pane to its right (the flexible preview absorbs the rest).
+function VSplitter({ width, setWidth }: { width: number; setWidth: (w: number) => void }): JSX.Element {
+  const onDown = (e: ReactMouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = width;
+    const onMove = (ev: MouseEvent) => setWidth(Math.max(220, Math.min(900, startW + (startX - ev.clientX))));
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    document.body.style.cursor = "col-resize";
+  };
+  return <div className="ap-vsplit" onMouseDown={onDown} title="Drag to resize" role="separator" aria-orientation="vertical" />;
 }
 
 function PaneTabs({ tab, onTab }: { tab: "comments" | "source"; onTab: (t: "comments" | "source") => void }): JSX.Element {
