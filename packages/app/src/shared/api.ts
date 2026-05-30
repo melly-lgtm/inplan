@@ -24,6 +24,8 @@ export interface Api {
   save(content: string, options: SaveOptions): Promise<void>;
   /** Append a single control-log action (actor "user"). */
   logAction(type: string, payload?: unknown): Promise<void>;
+  /** Tell main about unsaved state + latest content, so window-close can prompt Save/Don't Save. */
+  reportState(dirty: boolean, content: string): Promise<void>;
   /** Record a mode change (cadence/acceptance) to the control log. */
   setMode(cadence: Cadence, acceptance: Acceptance): Promise<void>;
   /** Write canonical, log session_closed, and quit. */

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
@@ -68,6 +68,30 @@ function createWindow(): void {
     });
   }
 
+  // Prompt to Save / Don't Save / Cancel when closing with unsaved edits.
+  let forceClose = false;
+  win.on("close", (e) => {
+    if (forceClose || !session?.hasUnsaved) return;
+    e.preventDefault();
+    const choice = dialog.showMessageBoxSync(win!, {
+      type: "question",
+      buttons: ["Save", "Don't Save", "Cancel"],
+      defaultId: 0,
+      cancelId: 2,
+      message: "Save changes before closing?",
+      detail: "Your edits this turn aren't saved to the plan yet.",
+    });
+    if (choice === 2) return; // Cancel — keep the window open
+    if (choice === 0) {
+      session.complete(session.pending);
+      session.logClose("completed");
+    } else {
+      session.logClose("window_closed");
+    }
+    forceClose = true;
+    win!.close();
+  });
+
   win.on("closed", () => {
     stopWatching?.();
     win = null;
@@ -84,6 +108,9 @@ function registerIpc(): void {
   });
   ipcMain.handle("doc:log-action", (_e, type: string, payload?: unknown) => {
     session?.logAction(type, payload);
+  });
+  ipcMain.handle("doc:report-state", (_e, dirty: boolean, content: string) => {
+    session?.setPending(dirty, content);
   });
   ipcMain.handle("doc:set-mode", (_e, cadence: Cadence, acceptance: Acceptance) => {
     session?.setMode(cadence, acceptance);

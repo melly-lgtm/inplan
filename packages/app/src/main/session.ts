@@ -17,6 +17,20 @@ export class Session {
   private lastWritten = "";
   private backupSeq = 0;
   private closed = false;
+  /** Latest unsaved state reported by the renderer, for the close prompt. */
+  private pendingDirty = false;
+  private pendingContent = "";
+
+  setPending(dirty: boolean, content: string): void {
+    this.pendingDirty = dirty;
+    this.pendingContent = content;
+  }
+  get hasUnsaved(): boolean {
+    return this.pendingDirty;
+  }
+  get pending(): string {
+    return this.pendingContent;
+  }
 
   constructor(file: string) {
     this.paths = docPaths(file);

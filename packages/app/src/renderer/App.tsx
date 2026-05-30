@@ -76,6 +76,8 @@ export function App(): JSX.Element {
   const previewRef = useRef<HTMLElement>(null);
   const editorRef = useRef<SourceEditorHandle>(null);
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const history = useRef<ParsedDocument[]>([]); // undo stack of doc snapshots
+  const future = useRef<ParsedDocument[]>([]); // redo stack
 
   // --- persisted layout ---
   useEffect(() => {
@@ -130,10 +132,39 @@ export function App(): JSX.Element {
     return () => document.removeEventListener("selectionchange", onSel);
   }, []);
 
+  const undo = useCallback(() => {
+    const prev = history.current.pop();
+    if (!prev) {
+      setStatus("nothing to undo");
+      return;
+    }
+    future.current.push(docRef.current);
+    setDoc(prev);
+    setDirty(true);
+    setStatus("undid last change");
+  }, []);
+  const redo = useCallback(() => {
+    const next = future.current.pop();
+    if (!next) {
+      setStatus("nothing to redo");
+      return;
+    }
+    history.current.push(docRef.current);
+    setDoc(next);
+    setDirty(true);
+    setStatus("redid change");
+  }, []);
+
   // --- keyboard ergonomics ---
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "f" || e.key === "F")) {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z")) {
+        // While the source editor is focused, let CodeMirror handle typing undo.
+        if ((document.activeElement as HTMLElement | null)?.closest(".ap-source")) return;
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+      } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "f" || e.key === "F")) {
         e.preventDefault();
         setFindOpen((v) => !v);
       } else if (e.key === "Escape") {
@@ -144,7 +175,7 @@ export function App(): JSX.Element {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [composer, findOpen, proposal]);
+  }, [composer, findOpen, proposal, undo, redo]);
 
   const editingLocked = cadence === "turn" && agentThinking;
 
@@ -168,6 +199,11 @@ export function App(): JSX.Element {
       if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
     };
   }, [doc, dirty, loaded, cadence]);
+
+  // Keep main informed of unsaved state so window-close can prompt Save/Don't Save.
+  useEffect(() => {
+    if (loaded) void window.api.reportState(dirty, serialize(docRef.current));
+  }, [dirty, doc, loaded]);
 
   // --- preview current-line highlight + scroll ---
   useEffect(() => {
@@ -205,6 +241,9 @@ export function App(): JSX.Element {
 
   // --- mutate helpers ---
   const apply = useCallback((next: ParsedDocument, action?: { type: string; payload?: unknown }) => {
+    history.current.push(docRef.current); // snapshot for undo
+    if (history.current.length > 200) history.current.shift();
+    future.current = [];
     setDoc(next);
     setDirty(true);
     if (action) void window.api.logAction(action.type, action.payload);
@@ -411,7 +450,11 @@ export function App(): JSX.Element {
               ref={editorRef}
               value={doc.body}
               editable={!editingLocked}
-              onChange={(body) => apply({ ...docRef.current, body })}
+              onChange={(body) => {
+                // Typing has its own (CodeMirror) undo; don't push app-level history per keystroke.
+                setDoc({ ...docRef.current, body });
+                setDirty(true);
+              }}
               onCursorLine={(line) => setActivePreviewLine(line)}
             />
           </section>

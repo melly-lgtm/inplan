@@ -7,6 +7,7 @@ const api: Api = {
   load: () => ipcRenderer.invoke("doc:load"),
   save: (content: string, options: SaveOptions) => ipcRenderer.invoke("doc:save", content, options),
   logAction: (type: string, payload?: unknown) => ipcRenderer.invoke("doc:log-action", type, payload),
+  reportState: (dirty: boolean, content: string) => ipcRenderer.invoke("doc:report-state", dirty, content),
   setMode: (cadence: Cadence, acceptance: Acceptance) => ipcRenderer.invoke("doc:set-mode", cadence, acceptance),
   complete: (content: string) => ipcRenderer.invoke("doc:complete", content),
   onExternalChange: (cb: (payload: DocPayload) => void) => {
