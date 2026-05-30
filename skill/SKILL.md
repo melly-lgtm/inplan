@@ -94,8 +94,10 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
      restore the anchor link and try again.
    - `integrity_error` — the document violates the comment grammar (`errors`).
      Fix it and wait again.
-   - `editor_closed` — the editor window went away. The session is over; stop.
-   - `closed` — the human ended the session (Complete & quit). Stop.
+   - `closed` — the editor closed **cleanly**; `reason` is `completed` (Complete &
+     quit) or `window_closed` (window closed). The session is over; stop.
+   - `editor_closed` — the editor **vanished with no close log** (`reason:
+     crashed_or_killed`) — likely a crash. Stop, and surface it to the human.
 4. Act on what changed (`your_turn` → the human is locked and waiting; `activity`
    → they're still editing live), **respecting the mode**:
    - **Turn mode**: you may revise the document body and reply/resolve comments.

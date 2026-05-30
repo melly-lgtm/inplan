@@ -251,7 +251,7 @@ export function App(): JSX.Element {
     const txt = sel?.toString().trim() ?? "";
     if (txt && sel && sel.rangeCount > 0) {
       const r = sel.getRangeAt(0).getBoundingClientRect();
-      setComposer({ target: txt, pos: { x: Math.max(8, Math.min(r.left, window.innerWidth - 360)), y: r.bottom + 6 } });
+      setComposer({ target: txt, pos: { x: Math.max(8, Math.min(r.left, window.innerWidth - 360)), y: Math.max(48, Math.min(r.bottom + 6, window.innerHeight - 220)) } });
     } else {
       previewRef.current?.scrollTo({ top: 0 });
       setComposer({ target: null, pos: { x: 24, y: 56 } });

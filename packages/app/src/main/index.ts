@@ -90,6 +90,7 @@ function registerIpc(): void {
   });
   ipcMain.handle("doc:complete", (_e, content: string) => {
     session?.complete(content);
+    session?.logClose("completed");
     app.quit();
   });
 }
@@ -107,6 +108,12 @@ void app.whenReady().then(() => {
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+// Any quit path (window close, Cmd+Q) records a reason — unless Complete & quit
+// already logged "completed". A crash logs nothing, so the agent's wait reports it.
+app.on("before-quit", () => {
+  session?.logClose("window_closed");
 });
 
 app.on("window-all-closed", () => {

@@ -123,25 +123,33 @@ async function waitCycle(file: string, explicitCursor: number | null, confirmed:
   const isActionable = wakePredicate(cadence);
   const result = await waitForActions({ logPath: p.logPath, cursor, debounceMs, pollMs, isActionable });
   writeCursor(p, result.cursor); // advance the persisted cursor so the next call continues here
-  const closed = result.entries.some((e) => e.type === LogEventType.SessionClosed);
-  // Distinct control message per regime so the agent knows how to behave:
-  //   your_turn  — Turn mode: the human finished their turn and is LOCKED; revise as
-  //                needed, then call wait to hand control back (unlocks them).
-  //   activity   — Instant mode: the human is editing LIVE and is NOT blocked; react
-  //                by appending to comment threads only (do not rewrite the body).
-  const status = result.editorGone
-    ? "editor_closed"
-    : closed
-      ? "closed"
-      : cadence === "turn"
-        ? "your_turn"
-        : "activity";
+
+  // The editor logs WHY it closed (completed / window_closed); a crash logs nothing.
+  const closeEntry = result.entries.find((e) => e.type === LogEventType.SessionClosed);
+  // Control message per situation so the agent knows how to behave:
+  //   your_turn     — Turn mode: human finished their turn and is LOCKED; revise, then
+  //                   call wait to hand control back.
+  //   activity      — Instant mode: human is editing LIVE and is NOT blocked.
+  //   closed        — the editor closed cleanly; `reason` says completed vs window_closed.
+  //   editor_closed — the editor vanished with no close log (crashed/killed).
+  let status: string;
+  let reason: string | undefined;
+  if (closeEntry) {
+    status = "closed";
+    reason = (closeEntry.payload as { reason?: string } | undefined)?.reason ?? "closed";
+  } else if (result.editorGone) {
+    status = "editor_closed";
+    reason = "crashed_or_killed";
+  } else {
+    status = cadence === "turn" ? "your_turn" : "activity";
+  }
   output({
     status,
     mode: cadence,
     humanLocked: status === "your_turn",
+    ...(reason ? { reason } : {}),
     cursor: result.cursor,
-    closed: closed || !!result.editorGone,
+    closed: !!closeEntry || !!result.editorGone,
     editorGone: !!result.editorGone,
     entries: result.entries,
   });

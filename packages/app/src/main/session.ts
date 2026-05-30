@@ -16,6 +16,7 @@ export class Session {
   /** Content the editor last wrote, used to distinguish our writes from the agent's. */
   private lastWritten = "";
   private backupSeq = 0;
+  private closed = false;
 
   constructor(file: string) {
     this.paths = docPaths(file);
@@ -63,7 +64,13 @@ export class Session {
     writeFileSync(this.paths.file, content);
     writeFileSync(this.paths.canonicalPath, content);
     this.lastWritten = content;
-    appendLog(this.paths.logPath, { actor: "user", type: LogEventType.SessionClosed });
+  }
+
+  /** Record why the session ended (logged at most once) so the agent's `wait` can report it. */
+  logClose(reason: "completed" | "window_closed"): void {
+    if (this.closed) return;
+    this.closed = true;
+    appendLog(this.paths.logPath, { actor: "user", type: LogEventType.SessionClosed, payload: { reason } });
   }
 
   /**
