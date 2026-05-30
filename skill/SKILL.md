@@ -102,9 +102,13 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
    - **Turn mode**: you may revise the document body and reply/resolve comments.
    - **Instant mode**: only add to comment threads (reply/resolve/answer); do
      **not** rewrite the body.
-   Reply by appending a comment with `parentId`. Resolve by setting
-   `"resolved": true`. Read `selected` on the human's answers. If nothing needs
-   changing, that's fine — you still take your (empty) turn and proceed to step 5.
+   Reply by appending a comment with `parentId`. Read `selected` on the human's
+   answers. If nothing needs changing, that's fine — you still take your (empty)
+   turn and proceed to step 5.
+   **Resolving:** by default, set `"resolved": true` once you've incorporated a
+   comment. But honor the latest `settings_changed.autoResolve` in the control
+   log: if it's `false`, do **not** auto-resolve — instead reply that the thread
+   can be resolved and leave it `resolved: false` for the human to resolve.
 5. **Hand control back: call `wait` again** (no `--cursor` — it self-manages),
    then loop to step 3. This unlocks the human's editor and blocks until their
    next turn. Do this after *every* turn, even an empty one:

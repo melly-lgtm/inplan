@@ -56,6 +56,7 @@ export function App(): JSX.Element {
   const [doc, setDoc] = useState<ParsedDocument>(EMPTY);
   const [cadence, setCadence] = useState<Cadence>("turn");
   const [acceptance, setAcceptance] = useState<Acceptance>("auto");
+  const [autoResolve, setAutoResolve] = useState(true); // agent auto-resolves threads after incorporating
   const [panes, setPanes] = useState<1 | 2 | 3>(2);
   const [rightTab, setRightTab] = useState<"comments" | "source">("comments");
   const [zoom, setZoom] = useState(1);
@@ -94,13 +95,14 @@ export function App(): JSX.Element {
       if (typeof s.showResolvedOrphaned === "boolean") setShowResolvedOrphaned(s.showResolvedOrphaned);
       if (s.cadence === "turn" || s.cadence === "instant") setCadence(s.cadence);
       if (s.acceptance === "auto" || s.acceptance === "review") setAcceptance(s.acceptance);
+      if (typeof s.autoResolve === "boolean") setAutoResolve(s.autoResolve);
     } catch {
       /* ignore */
     }
   }, []);
   useEffect(() => {
-    localStorage.setItem("ap-layout", JSON.stringify({ panes, rightTab, zoom, showResolvedOrphaned, cadence, acceptance }));
-  }, [panes, rightTab, zoom, showResolvedOrphaned, cadence, acceptance]);
+    localStorage.setItem("ap-layout", JSON.stringify({ panes, rightTab, zoom, showResolvedOrphaned, cadence, acceptance, autoResolve }));
+  }, [panes, rightTab, zoom, showResolvedOrphaned, cadence, acceptance, autoResolve]);
 
   // --- load + agent signals ---
   useEffect(() => {
@@ -262,6 +264,12 @@ export function App(): JSX.Element {
     setCadence(c);
     setAcceptance(a);
     void window.api.setMode(c, a);
+  }, []);
+
+  // Auto-resolve is a directive to the agent — log it so the agent can honor it.
+  const onAutoResolve = useCallback((v: boolean) => {
+    setAutoResolve(v);
+    void window.api.logAction("settings_changed", { autoResolve: v });
   }, []);
 
   const onZoom = useCallback((dir: -1 | 0 | 1) => {
@@ -432,10 +440,12 @@ export function App(): JSX.Element {
       <TopBar
         cadence={cadence}
         acceptance={acceptance}
+        autoResolve={autoResolve}
         panes={panes}
         zoom={zoom}
         hasSelection={selectionText.length > 0}
         onMode={onModeChange}
+        onAutoResolve={onAutoResolve}
         onPanes={setPanes}
         onZoom={onZoom}
         onAddComment={openComposer}
@@ -580,6 +590,55 @@ function PaneIcon({ n }: { n: 1 | 2 | 3 }): JSX.Element {
   );
 }
 
+function SettingsMenu({
+  acceptance,
+  autoResolve,
+  onAcceptance,
+  onAutoResolve,
+}: {
+  acceptance: Acceptance;
+  autoResolve: boolean;
+  onAcceptance: (a: Acceptance) => void;
+  onAutoResolve: (v: boolean) => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, []);
+  return (
+    <div className="ap-settings" ref={ref}>
+      <button title="Settings" onClick={() => setOpen((v) => !v)}>
+        ⚙
+      </button>
+      {open && (
+        <div className="ap-settings-menu">
+          <div className="ap-settings-row">
+            <span>Agent changes</span>
+            <div className="ap-seg">
+              <button className={acceptance === "auto" ? "active" : ""} onClick={() => onAcceptance("auto")}>
+                Auto-accept
+              </button>
+              <button className={acceptance === "review" ? "active" : ""} onClick={() => onAcceptance("review")}>
+                Review
+              </button>
+            </div>
+          </div>
+          <label className="ap-settings-row">
+            <span>Agent auto-resolves a thread after incorporating it</span>
+            <input type="checkbox" checked={autoResolve} onChange={(e) => onAutoResolve(e.target.checked)} />
+          </label>
+          <div className="ap-settings-hint">When off, the agent replies that the thread can be resolved and leaves it for you.</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PaneTabs({ tab, onTab }: { tab: "comments" | "source"; onTab: (t: "comments" | "source") => void }): JSX.Element {
   return (
     <div className="ap-tabs">
@@ -596,10 +655,12 @@ function PaneTabs({ tab, onTab }: { tab: "comments" | "source"; onTab: (t: "comm
 function TopBar(props: {
   cadence: Cadence;
   acceptance: Acceptance;
+  autoResolve: boolean;
   panes: 1 | 2 | 3;
   zoom: number;
   hasSelection: boolean;
   onMode: (c: Cadence, a: Acceptance) => void;
+  onAutoResolve: (v: boolean) => void;
   onPanes: (p: 1 | 2 | 3) => void;
   onZoom: (dir: -1 | 0 | 1) => void;
   onAddComment: () => void;
@@ -621,14 +682,7 @@ function TopBar(props: {
           Instant
         </button>
       </div>
-      <div className="ap-seg" role="group" aria-label="acceptance">
-        <button className={acceptance === "auto" ? "active" : ""} onClick={() => onMode(cadence, "auto")}>
-          Auto-accept
-        </button>
-        <button className={acceptance === "review" ? "active" : ""} onClick={() => onMode(cadence, "review")}>
-          Review
-        </button>
-      </div>
+      <SettingsMenu acceptance={acceptance} autoResolve={props.autoResolve} onAcceptance={(a) => onMode(cadence, a)} onAutoResolve={props.onAutoResolve} />
       <div className="ap-seg" role="group" aria-label="panes">
         {([1, 2, 3] as const).map((n) => (
           <button key={n} className={panes === n ? "active" : ""} title={`${n} pane${n > 1 ? "s" : ""}`} onClick={() => props.onPanes(n)}>

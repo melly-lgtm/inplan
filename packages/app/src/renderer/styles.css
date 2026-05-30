@@ -25,6 +25,13 @@ body {
 .ap-seg button:last-child { border-right: 0; }
 .ap-seg button.active { background: var(--accent); color: #fff; }
 .ap-spacer { flex: 1; }
+
+/* settings menu */
+.ap-settings { position: relative; }
+.ap-settings > button { border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 4px 8px; cursor: pointer; }
+.ap-settings-menu { position: absolute; top: 34px; left: 0; z-index: 40; width: 300px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,0.18); padding: 10px; }
+.ap-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; font-size: 13px; }
+.ap-settings-hint { font-size: 11px; color: var(--muted); padding-top: 2px; }
 .ap-topbar button, .ap-tabs button { font: inherit; }
 .ap-topbar > button { border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 4px 12px; cursor: pointer; }
 .ap-primary { background: var(--accent) !important; color: #fff; border-color: var(--accent) !important; }
