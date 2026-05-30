@@ -49,6 +49,26 @@ anchored comment is an inline Markdown link whose href is the comment id:
   (checkbox); the human may also answer with free text.
 - Generate ids as `cmt-` + 6 base36 characters.
 
+## Turn-taking & control — read this first
+
+This is **turn-based**. The turn belongs to exactly one party at a time:
+
+- After you (the agent) `open` or revise and call `wait`, the turn is the
+  **human's** — the editor is theirs to use.
+- When the human clicks **Finish turn**, the turn becomes **yours**. In Turn mode
+  the human's editor **locks** ("Agent is thinking…"); they **cannot edit** until
+  you take your turn and hand control back.
+
+Therefore, when `wait` returns `actions`, **it is your turn and the human is
+blocked, waiting for you.** Do not idle and never tell the human to act. Promptly
+take your turn, then call `wait` again. **Calling `wait` is how you hand control
+back** — it logs an `agent_revised` event that unlocks the human's editor. You
+must call `wait` after *every* turn, **even if you changed nothing**; otherwise
+the human stays locked out.
+
+`wait` owns the cursor, diffs, and control-log writes. **Your only jobs are: edit
+the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
+
 ## The loop
 
 1. Write `<name>.plan.md` with the plan body and a comment block. Pre-populate
@@ -69,23 +89,27 @@ anchored comment is an inline Markdown link whose href is the comment id:
      restore the anchor link and try again.
    - `integrity_error` — the document violates the comment grammar (`errors`).
      Fix it and wait again.
-   - `closed` — the human ended the session. Stop.
-4. Act on the changes, **respecting the mode**:
+   - `editor_closed` — the editor window went away. The session is over; stop.
+   - `closed` — the human ended the session (Complete & quit). Stop.
+4. **It is now your turn; the human is locked, waiting.** Act on the changes,
+   **respecting the mode**:
    - **Turn mode**: you may revise the document body and reply/resolve comments.
    - **Instant mode**: only add to comment threads (reply/resolve/answer); do
      **not** rewrite the body.
    Reply by appending a comment with `parentId`. Resolve by setting
-   `"resolved": true`. Read `selected` on the human's answers.
-5. Continue the loop by waiting again, passing the previous `cursor` so you only
-   see new entries:
+   `"resolved": true`. Read `selected` on the human's answers. If nothing needs
+   changing, that's fine — you still take your (empty) turn and proceed to step 5.
+5. **Hand control back: call `wait` again** (no `--cursor` — it self-manages).
+   This unlocks the human's editor and blocks until their next turn. Do this
+   after *every* turn, even an empty one:
 
-       agent-planner wait <name>.plan.md --cursor <N>
+       agent-planner wait <name>.plan.md
 
 6. When you believe the plan is ready, signal it (the human still decides):
 
        agent-planner signal <name>.plan.md --done
 
-   Then wait again. Stop only on `status: closed`.
+   Then wait again. Stop only on `status: closed` or `editor_closed`.
 
 ## Authorship
 
