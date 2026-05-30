@@ -126,19 +126,19 @@ async function waitCycle(file: string, explicitCursor: number | null, confirmed:
 
   // The editor logs WHY it closed (completed / window_closed); a crash logs nothing.
   const closeEntry = result.entries.find((e) => e.type === LogEventType.SessionClosed);
-  // Control message per situation so the agent knows how to behave:
-  //   your_turn     — Turn mode: human finished their turn and is LOCKED; revise, then
-  //                   call wait to hand control back.
-  //   activity      — Instant mode: human is editing LIVE and is NOT blocked.
-  //   closed        — the editor closed cleanly; `reason` says completed vs window_closed.
-  //   editor_closed — the editor vanished with no close log (crashed/killed).
+  // One status per situation:
+  //   your_turn — Turn mode: human finished their turn and is LOCKED; revise, then
+  //               call wait to hand control back.
+  //   activity  — Instant mode: human is editing LIVE and is NOT blocked.
+  //   closed    — the session ended; stop. `reason` says how: completed / window_closed
+  //               / crashed_or_killed.
   let status: string;
   let reason: string | undefined;
   if (closeEntry) {
     status = "closed";
-    reason = (closeEntry.payload as { reason?: string } | undefined)?.reason ?? "closed";
+    reason = (closeEntry.payload as { reason?: string } | undefined)?.reason ?? "completed";
   } else if (result.editorGone) {
-    status = "editor_closed";
+    status = "closed";
     reason = "crashed_or_killed";
   } else {
     status = cadence === "turn" ? "your_turn" : "activity";
@@ -149,8 +149,7 @@ async function waitCycle(file: string, explicitCursor: number | null, confirmed:
     humanLocked: status === "your_turn",
     ...(reason ? { reason } : {}),
     cursor: result.cursor,
-    closed: !!closeEntry || !!result.editorGone,
-    editorGone: !!result.editorGone,
+    closed: status === "closed",
     entries: result.entries,
   });
 }

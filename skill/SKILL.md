@@ -94,10 +94,9 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
      restore the anchor link and try again.
    - `integrity_error` — the document violates the comment grammar (`errors`).
      Fix it and wait again.
-   - `closed` — the editor closed **cleanly**; `reason` is `completed` (Complete &
-     quit) or `window_closed` (window closed). The session is over; stop.
-   - `editor_closed` — the editor **vanished with no close log** (`reason:
-     crashed_or_killed`) — likely a crash. Stop, and surface it to the human.
+   - `closed` — the session is over; **stop**. `reason` tells you how it ended:
+     `completed` (Complete & quit), `window_closed` (window closed), or
+     `crashed_or_killed` (editor vanished with no close log — surface this to the human).
 4. Act on what changed (`your_turn` → the human is locked and waiting; `activity`
    → they're still editing live), **respecting the mode**:
    - **Turn mode**: you may revise the document body and reply/resolve comments.
@@ -116,7 +115,7 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
 
        agent-planner signal <name>.plan.md --done
 
-   Then wait again. Stop only on `status: closed` or `editor_closed`.
+   Then wait again. Stop only on `status: closed`.
 
 ## Authorship
 
