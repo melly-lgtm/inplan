@@ -70,7 +70,14 @@ export class Session {
     let lastLogSeq = readLog(this.paths.logPath).at(-1)?.seq ?? 0;
 
     const onFile = () => {
-      const content = readFileSync(this.paths.file, "utf8");
+      // The file may have just been deleted/moved (watcher fires on removal too).
+      if (!existsSync(this.paths.file)) return;
+      let content: string;
+      try {
+        content = readFileSync(this.paths.file, "utf8");
+      } catch {
+        return;
+      }
       if (content !== this.lastWritten) {
         this.lastWritten = content;
         handlers.onExternalChange(content);

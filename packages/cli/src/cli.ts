@@ -3,10 +3,11 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { appendLog, LogEventType } from "@agent-planner/core/node";
+import { appendLog, LogEventType, readLog } from "@agent-planner/core/node";
+import { runningEditorPid } from "./editorProcess";
 import { evaluateAgentEdit } from "./gate";
 import { docPaths } from "./paths";
-import { waitForActions } from "./wait";
+import { wakePredicate, waitForActions } from "./wait";
 
 const VERSION = "0.0.0";
 
@@ -38,6 +39,18 @@ function spawnApp(file: string): number | null {
   const child = spawn(cmd, [file], { detached: true, stdio: "ignore", shell: true });
   child.unref();
   return child.pid ?? null;
+}
+
+/** Latest cadence from the control log (Turn unless a mode_changed says otherwise). */
+function currentCadence(logPath: string): "turn" | "instant" {
+  const entries = readLog(logPath);
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i]!.type === LogEventType.ModeChanged) {
+      const c = (entries[i]!.payload as { cadence?: string } | undefined)?.cadence;
+      if (c === "instant" || c === "turn") return c;
+    }
+  }
+  return "turn";
 }
 
 /** Evaluate the agent's edit (gate), accept it as canonical, then block for user actions. */
@@ -77,7 +90,9 @@ async function waitCycle(file: string, cursor: number, confirmed: Set<string>): 
     appendLog(p.logPath, { actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: current.length } });
   }
 
-  const result = await waitForActions({ logPath: p.logPath, cursor, debounceMs, pollMs });
+  // Mode-aware wake: Turn mode wakes only on turn-end / session-close; Instant on any user action.
+  const isActionable = wakePredicate(currentCadence(p.logPath));
+  const result = await waitForActions({ logPath: p.logPath, cursor, debounceMs, pollMs, isActionable });
   const closed = result.entries.some((e) => e.type === LogEventType.SessionClosed);
   output({ status: closed ? "closed" : "actions", cursor: result.cursor, closed, entries: result.entries });
 }
@@ -128,9 +143,14 @@ async function main(): Promise<void> {
   if (cmd === "open") {
     const p = docPaths(file);
     mkdirSync(p.controlDir, { recursive: true });
-    const pid = spawnApp(file);
-    if (pid !== null) {
-      appendLog(p.logPath, { actor: "agent", type: LogEventType.EditorPid, payload: { pid } });
+    const existing = runningEditorPid(p.logPath);
+    if (existing !== null) {
+      process.stderr.write(`[agent-planner] an editor is already open for this document (pid ${existing}); attaching without launching another window\n`);
+    } else {
+      const pid = spawnApp(file);
+      if (pid !== null) {
+        appendLog(p.logPath, { actor: "agent", type: LogEventType.EditorPid, payload: { pid } });
+      }
     }
   }
 

@@ -187,8 +187,17 @@ export function App(): JSX.Element {
             className="ap-rendered"
             dangerouslySetInnerHTML={{ __html: renderMarkdown(doc.body) }}
             onClick={(e) => {
-              const el = (e.target as HTMLElement).closest("[data-cmt]");
-              if (el) setFocused(el.getAttribute("data-cmt"));
+              const a = (e.target as HTMLElement).closest("a");
+              if (!a) return;
+              // Never let a link navigate the editor window.
+              e.preventDefault();
+              const cmt = a.getAttribute("data-cmt");
+              if (cmt) {
+                setFocused(cmt);
+                return;
+              }
+              const href = a.getAttribute("href") ?? "";
+              if (/^https?:/.test(href)) window.open(href, "_blank");
             }}
           />
         </section>

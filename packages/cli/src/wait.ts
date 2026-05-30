@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { readLogSince, type LogEntry } from "@agent-planner/core/node";
+import { LogEventType, readLogSince, type LogEntry } from "@agent-planner/core/node";
 
 export interface WaitResult {
   entries: LogEntry[];
@@ -22,6 +22,17 @@ export interface WaitOptions {
 }
 
 const defaultActionable = (e: LogEntry): boolean => e.actor === "user";
+
+/**
+ * The wake condition for a given cadence:
+ *  - Turn mode wakes only on turn-end / session-close (not on every comment action);
+ *  - Instant mode wakes on any user-authored action.
+ */
+export function wakePredicate(cadence: "turn" | "instant"): (e: LogEntry) => boolean {
+  return cadence === "instant"
+    ? (e) => e.actor === "user"
+    : (e) => e.type === LogEventType.TurnEnded || e.type === LogEventType.SessionClosed;
+}
 
 /**
  * Block until the control log gains a new actionable entry past `cursor`, then —

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
@@ -8,6 +8,14 @@ import type { Acceptance, Cadence, SaveOptions } from "../shared/api";
 import { Session } from "./session";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Log main-process errors to stderr instead of Electron's default GUI error dialog.
+process.on("uncaughtException", (err) => {
+  process.stderr.write(`[agent-planner] uncaught exception: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);
+});
+process.on("unhandledRejection", (reason) => {
+  process.stderr.write(`[agent-planner] unhandled rejection: ${String(reason)}\n`);
+});
 
 /** The plan file to open is the first non-flag CLI argument. */
 function resolveTargetFile(): string | null {
@@ -28,9 +36,22 @@ function createWindow(): void {
     height: 800,
     title: "agent-planner",
     webPreferences: {
-      preload: join(__dirname, "../preload/index.js"),
+      preload: join(__dirname, "../preload/index.mjs"),
       sandbox: false,
     },
+  });
+
+  // Links must never navigate the editor window. Route external links to the
+  // system browser; block any in-window navigation away from the app.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/.test(url)) void shell.openExternal(url);
+    return { action: "deny" };
+  });
+  win.webContents.on("will-navigate", (event, url) => {
+    if (url !== win?.webContents.getURL()) {
+      event.preventDefault();
+      if (/^https?:/.test(url)) void shell.openExternal(url);
+    }
   });
 
   if (process.env.ELECTRON_RENDERER_URL) {
