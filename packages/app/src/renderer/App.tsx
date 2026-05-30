@@ -412,6 +412,16 @@ export function App(): JSX.Element {
     [proposal, cadence],
   );
 
+  // --- inline review state (shared by the preview + source panes and the bar) ---
+  // The diff hunks and per-hunk accept flags live here, so both panes render the
+  // same review and the preview alone is a complete review surface in 1-pane mode.
+  const reviewSegs = useMemo(() => (proposal ? lineSegments(proposal.baseBody, proposal.next.body) : []), [proposal]);
+  const changeCount = useMemo(() => reviewSegs.filter(isChange).length, [reviewSegs]);
+  const [accepted, setAccepted] = useState<boolean[]>([]);
+  useEffect(() => setAccepted(new Array(changeCount).fill(true)), [changeCount, proposal]);
+  const toggleHunk = useCallback((idx: number, val: boolean) => setAccepted((a) => a.map((v, k) => (k === idx ? val : v))), []);
+  const applyReview = useCallback(() => applyProposal(reviewSegs, accepted), [applyProposal, reviewSegs, accepted]);
+
   const threads = useMemo(() => buildThreads(doc.comments), [doc.comments]);
   const ordered = useMemo<OrderedThread[]>(() => {
     const annotate = (thread: Thread): OrderedThread => {
@@ -516,7 +526,20 @@ export function App(): JSX.Element {
         </div>
       )}
 
-      {proposal && reviewOpen && <ReviewPanel proposal={proposal} onApply={applyProposal} onClose={() => setReviewOpen(false)} />}
+      {proposal && reviewOpen && (
+        <div className="ap-review-bar">
+          <strong>Agent proposed changes</strong> — {changeCount} change{changeCount === 1 ? "" : "s"} shown inline below
+          <span className="ap-spacer" />
+          <button onClick={() => setAccepted(new Array(changeCount).fill(true))}>Accept all</button>
+          <button onClick={() => setAccepted(new Array(changeCount).fill(false))}>Reject all</button>
+          <button className="ap-primary" onClick={applyReview}>
+            Apply
+          </button>
+          <button className="ap-link" onClick={() => setReviewOpen(false)}>
+            later
+          </button>
+        </div>
+      )}
 
       {composer && (
         <ComposerPopover
@@ -533,6 +556,9 @@ export function App(): JSX.Element {
 
       <div className="ap-main" style={{ zoom }}>
         <section className="ap-preview" ref={previewRef}>
+          {proposal && reviewOpen ? (
+            <DiffPreview segs={reviewSegs} accepted={accepted} onToggle={toggleHunk} />
+          ) : (
           <div
             className="ap-rendered"
             dangerouslySetInnerHTML={{ __html: previewHtml }}
@@ -562,23 +588,28 @@ export function App(): JSX.Element {
               if (block) syncToLine(Number(block.getAttribute("data-line")));
             }}
           />
+          )}
         </section>
 
         {showSource && (
           <section className="ap-pane">
             {panes === 2 && <PaneTabs tab={rightTab} onTab={setRightTab} />}
-            <SourceEditor
-              ref={editorRef}
-              value={doc.body}
-              editable={!editingLocked}
-              onChange={(body) => {
-                // Typing has its own (CodeMirror) undo; don't push app-level history per keystroke.
-                const nd = { ...docRef.current, body };
-                setDoc(nd);
-                setDirty(serialize(nd) !== savedRef.current);
-              }}
-              onCursorLine={(line) => setActivePreviewLine(line)}
-            />
+            {proposal && reviewOpen ? (
+              <DiffSource segs={reviewSegs} accepted={accepted} onToggle={toggleHunk} />
+            ) : (
+              <SourceEditor
+                ref={editorRef}
+                value={doc.body}
+                editable={!editingLocked}
+                onChange={(body) => {
+                  // Typing has its own (CodeMirror) undo; don't push app-level history per keystroke.
+                  const nd = { ...docRef.current, body };
+                  setDoc(nd);
+                  setDirty(serialize(nd) !== savedRef.current);
+                }}
+                onCursorLine={(line) => setActivePreviewLine(line)}
+              />
+            )}
           </section>
         )}
 
@@ -593,7 +624,9 @@ export function App(): JSX.Element {
             </div>
             {visible.map((o, i) => (
               <Fragment key={o.thread.root.id}>
-                {i > 0 && visible[i - 1]!.group === 0 && o.group === 1 && <div className="ap-splitter">Anchored comments</div>}
+                {(i === 0 || visible[i - 1]!.group !== o.group) && (
+                  <div className="ap-section-title">{o.group === 0 ? "Document" : "Anchored"}</div>
+                )}
                 <ThreadCard
                   thread={o.thread}
                   body={doc.body}
@@ -906,47 +939,71 @@ function FindReplaceBar({
   );
 }
 
-function ReviewPanel({ proposal, onApply, onClose }: { proposal: Proposal; onApply: (segs: DiffSegment[], accepted: boolean[]) => void; onClose: () => void }): JSX.Element {
-  const segs = useMemo(() => lineSegments(proposal.baseBody, proposal.next.body), [proposal]);
-  const changeCount = segs.filter(isChange).length;
-  const [accepted, setAccepted] = useState<boolean[]>(() => new Array(changeCount).fill(true));
-
+/** Inline diff rendered in the PREVIEW pane: changed blocks shown in place as
+ *  rendered Markdown, with a per-hunk accept/reject toggle. This is the complete
+ *  review surface in 1-pane mode (where the source pane isn't visible). */
+function DiffPreview({ segs, accepted, onToggle }: { segs: DiffSegment[]; accepted: boolean[]; onToggle: (i: number, v: boolean) => void }): JSX.Element {
   let ci = -1;
   return (
-    <div className="ap-review">
-      <div className="ap-review-head">
-        <strong>Agent proposed changes</strong> — {changeCount} hunk{changeCount === 1 ? "" : "s"}
-        <span className="ap-spacer" />
-        <button onClick={() => setAccepted(new Array(changeCount).fill(true))}>Accept all</button>
-        <button onClick={() => setAccepted(new Array(changeCount).fill(false))}>Reject all</button>
-        <button className="ap-primary" onClick={() => onApply(segs, accepted)}>
-          Apply
-        </button>
-        <button className="ap-link" onClick={onClose}>
-          later
-        </button>
-      </div>
-      <div className="ap-review-body">
-        {segs.map((s, i) => {
-          if (s.same) {
-            return (
-              <pre key={i} className="ap-diff-same">
-                {s.same.slice(Math.max(0, s.same.length - 3)).join("\n")}
-              </pre>
-            );
-          }
-          ci++;
-          const idx = ci;
-          return (
-            <div key={i} className={`ap-hunk${accepted[idx] ? " accepted" : " rejected"}`}>
-              <label className="ap-hunk-toggle">
-                <input type="checkbox" checked={accepted[idx]} onChange={(e) => setAccepted((a) => a.map((v, k) => (k === idx ? e.target.checked : v)))} /> accept hunk {idx + 1}
-              </label>
-              <HunkLines removed={s.removed ?? []} added={s.added ?? []} />
+    <div className="ap-rendered ap-diffview">
+      {segs.map((s, i) => {
+        if (s.same) {
+          return <div key={i} className="ap-ctx" dangerouslySetInnerHTML={{ __html: renderMarkdown(s.same.join("\n"), () => false) }} />;
+        }
+        ci++;
+        const idx = ci;
+        const on = accepted[idx] ?? true;
+        return (
+          <div key={i} className={`ap-ihunk${on ? " accepted" : " rejected"}`}>
+            <div className="ap-ihunk-bar">
+              <span>change {idx + 1}</span>
+              <span className="ap-spacer" />
+              <button className={on ? "on" : ""} onClick={() => onToggle(idx, true)}>
+                accept
+              </button>
+              <button className={!on ? "on" : ""} onClick={() => onToggle(idx, false)}>
+                reject
+              </button>
             </div>
+            {s.removed && s.removed.length > 0 && (
+              <div className="ap-ihunk-del" dangerouslySetInnerHTML={{ __html: renderMarkdown(s.removed.join("\n"), () => false) }} />
+            )}
+            {s.added && s.added.length > 0 && (
+              <div className="ap-ihunk-add" dangerouslySetInnerHTML={{ __html: renderMarkdown(s.added.join("\n"), () => false) }} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Inline diff rendered in the SOURCE pane: a monospaced unified diff with the
+ *  same per-hunk accept/reject toggles, bound to the same accept state. */
+function DiffSource({ segs, accepted, onToggle }: { segs: DiffSegment[]; accepted: boolean[]; onToggle: (i: number, v: boolean) => void }): JSX.Element {
+  let ci = -1;
+  return (
+    <div className="ap-source ap-diffsource">
+      {segs.map((s, i) => {
+        if (s.same) {
+          return (
+            <pre key={i} className="ap-diff-same">
+              {s.same.slice(Math.max(0, s.same.length - 3)).join("\n")}
+            </pre>
           );
-        })}
-      </div>
+        }
+        ci++;
+        const idx = ci;
+        const on = accepted[idx] ?? true;
+        return (
+          <div key={i} className={`ap-hunk${on ? " accepted" : " rejected"}`}>
+            <label className="ap-hunk-toggle">
+              <input type="checkbox" checked={on} onChange={(e) => onToggle(idx, e.target.checked)} /> accept change {idx + 1}
+            </label>
+            <HunkLines removed={s.removed ?? []} added={s.added ?? []} />
+          </div>
+        );
+      })}
     </div>
   );
 }
