@@ -119,6 +119,7 @@ export class Session {
     onAgentDone: () => void;
     onAgentActive: () => void;
     onProposal: (content: string) => void;
+    onReload: () => void;
   }): () => void {
     let lastLogSeq = readLog(this.paths.logPath).at(-1)?.seq ?? 0;
 
@@ -141,6 +142,9 @@ export class Session {
       if (entries.length) lastLogSeq = entries.at(-1)!.seq;
       if (entries.some((e) => e.type === LogEventType.AgentDoneSuggested)) {
         handlers.onAgentDone();
+      }
+      if (entries.some((e) => e.type === LogEventType.ReloadSuggested)) {
+        handlers.onReload();
       }
       // A Review-mode proposal was parked by the CLI gate — surface it for review.
       if (entries.some((e) => e.type === LogEventType.AgentRevisionProposed)) {

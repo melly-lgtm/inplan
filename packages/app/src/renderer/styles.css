@@ -38,6 +38,7 @@ body {
 
 /* banner */
 .ap-banner { background: var(--accent-soft); border-bottom: 1px solid var(--line); padding: 8px 12px; display: flex; gap: 10px; align-items: center; }
+.ap-banner-reload { background: #fff4d6; }
 
 /* main layout */
 .ap-main { flex: 1; display: flex; min-height: 0; }
@@ -80,9 +81,16 @@ body {
 .ap-reply-box { margin-top: 8px; }
 .ap-edit { margin: 4px 0; }
 .ap-comment + .ap-reply, .ap-reply + .ap-reply { margin-top: 8px; }
-/* per-comment actions are quieter than the per-thread actions */
-.ap-comment > .ap-actions, .ap-reply > .ap-actions { gap: 10px; margin-top: 2px; font-size: 11px; }
 .ap-thread-actions { gap: 12px; margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line); }
+
+/* per-comment overflow (⋯) menu — Modify / Delete, folded to save space */
+.ap-comment, .ap-reply { position: relative; }
+.ap-cmenu { position: absolute; top: 2px; right: 2px; }
+.ap-cmenu-btn { border: 0; background: none; cursor: pointer; color: var(--muted); padding: 0 6px; font-size: 15px; line-height: 1; border-radius: 4px; }
+.ap-cmenu-btn:hover { background: var(--line); }
+.ap-cmenu-pop { position: absolute; right: 0; top: 20px; z-index: 25; display: flex; flex-direction: column; min-width: 96px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,0.16); overflow: hidden; }
+.ap-cmenu-pop button { border: 0; background: none; text-align: left; padding: 6px 12px; cursor: pointer; font: inherit; }
+.ap-cmenu-pop button:hover { background: var(--accent-soft); }
 .ap-link { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; }
 .ap-danger { color: var(--danger); }
 

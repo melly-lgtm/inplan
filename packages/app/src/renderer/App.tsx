@@ -64,6 +64,7 @@ export function App(): JSX.Element {
   const [status, setStatus] = useState("");
   const [agentThinking, setAgentThinking] = useState(false);
   const [agentDone, setAgentDone] = useState(false);
+  const [reloadReady, setReloadReady] = useState(false); // agent signalled a new build is ready to load
   const [showResolvedOrphaned, setShowResolvedOrphaned] = useState(false);
   const [selectionText, setSelectionText] = useState("");
   const [composer, setComposer] = useState<{ target: string | null; pos: { x: number; y: number } } | null>(null);
@@ -145,6 +146,7 @@ export function App(): JSX.Element {
     // Review-mode body changes arrive parked, as a proposal to accept/reject.
     window.api.onProposal(({ content }) => showProposal(content));
     window.api.onAgentDone(() => setAgentDone(true));
+    window.api.onReload(() => setReloadReady(true));
     window.api.onAgentActive(() => {
       setAgentThinking(false);
       setStatus("agent took its turn — your move");
@@ -516,6 +518,12 @@ export function App(): JSX.Element {
           <button className="ap-link" onClick={() => setAgentDone(false)}>
             dismiss
           </button>
+        </div>
+      )}
+
+      {reloadReady && (
+        <div className="ap-banner ap-banner-reload">
+          🔄 A new build is ready. <strong>Close this window (⌘W)</strong> to reload it — your turn edits will prompt to save first.
         </div>
       )}
 
@@ -1176,8 +1184,17 @@ function ThreadCard(props: {
   const [replying, setReplying] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null); // which comment's ⋯ menu is open
 
-  // One comment (the root or a reply): its text, with per-comment Modify/Delete.
+  // Close the ⋯ menu on any outside click (its own clicks stopPropagation).
+  useEffect(() => {
+    if (!menuOpenId) return;
+    const onDoc = () => setMenuOpenId(null);
+    document.addEventListener("click", onDoc);
+    return () => document.removeEventListener("click", onDoc);
+  }, [menuOpenId]);
+
+  // One comment (the root or a reply): its text, with a per-comment ⋯ (Modify/Delete) menu.
   const renderComment = (c: Comment, isReply: boolean): JSX.Element => (
     <div className={isReply ? "ap-reply" : "ap-comment"} key={c.id}>
       <div className="ap-meta">
@@ -1217,19 +1234,39 @@ function ThreadCard(props: {
         c.text && <div className="ap-text">{c.text}</div>
       )}
       {!disabled && editingId !== c.id && (
-        <div className="ap-row ap-actions">
+        <div className="ap-cmenu">
           <button
-            className="ap-link"
-            onClick={() => {
-              setEditingId(c.id);
-              setEditText(c.text);
+            className="ap-cmenu-btn"
+            title="More"
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenuOpenId((id) => (id === c.id ? null : c.id));
             }}
           >
-            Modify
+            ⋯
           </button>
-          <button className="ap-link ap-danger" onClick={() => props.onDelete(c.id)}>
-            Delete
-          </button>
+          {menuOpenId === c.id && (
+            <div className="ap-cmenu-pop" onClick={(e) => e.stopPropagation()}>
+              <button
+                onClick={() => {
+                  setEditingId(c.id);
+                  setEditText(c.text);
+                  setMenuOpenId(null);
+                }}
+              >
+                Modify
+              </button>
+              <button
+                className="ap-danger"
+                onClick={() => {
+                  props.onDelete(c.id);
+                  setMenuOpenId(null);
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

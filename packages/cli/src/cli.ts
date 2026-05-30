@@ -212,7 +212,7 @@ async function main(): Promise<void> {
   );
 
   if (!cmd || !["open", "wait", "signal"].includes(cmd)) {
-    process.stderr.write("usage: agent-planner <open|wait|signal> <file> [--cursor N] [--confirmed-comment-deletion=a,b] [--done]\n");
+    process.stderr.write("usage: agent-planner <open|wait|signal> <file> [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n");
     process.exit(64);
   }
   if (!file) {
@@ -225,6 +225,11 @@ async function main(): Promise<void> {
     mkdirSync(p.controlDir, { recursive: true });
     if (hasFlag(rest, "done")) {
       appendLog(p.logPath, { actor: "agent", type: LogEventType.AgentDoneSuggested });
+    }
+    // Ask the human to close the window so the agent can relaunch a new build —
+    // a clean, user-initiated shutdown instead of the agent killing the process.
+    if (hasFlag(rest, "reload")) {
+      appendLog(p.logPath, { actor: "agent", type: LogEventType.ReloadSuggested });
     }
     output({ status: "signaled" });
     return;

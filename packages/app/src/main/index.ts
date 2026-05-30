@@ -66,6 +66,7 @@ function createWindow(): void {
       onAgentDone: () => win?.webContents.send("agent:done"),
       onAgentActive: () => win?.webContents.send("agent:active"),
       onProposal: (content) => win?.webContents.send("doc:proposal", { content }),
+      onReload: () => win?.webContents.send("agent:reload"),
     });
   }
 
