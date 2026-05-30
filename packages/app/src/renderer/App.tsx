@@ -350,11 +350,14 @@ export function App(): JSX.Element {
   }, []);
 
   const focusComment = useCallback(
-    (id: string) => {
+    (id: string, fromPreview = false) => {
       setFocused(id);
       const line = anchorLine(docRef.current.body, id);
       if (line != null) editorRef.current?.scrollToLine(line);
-      previewRef.current?.querySelector(`[data-cmt="${id}"]`)?.scrollIntoView({ block: "center" });
+      // Re-center the anchor in the preview only when focus came from another
+      // pane (the rail). If the user clicked the anchor in the preview itself,
+      // don't yank the pane they just clicked.
+      if (!fromPreview) previewRef.current?.querySelector(`[data-cmt="${id}"]`)?.scrollIntoView({ block: "center" });
     },
     [],
   );
@@ -520,7 +523,7 @@ export function App(): JSX.Element {
                 e.preventDefault();
                 const cmt = a.getAttribute("data-cmt");
                 if (cmt) {
-                  focusComment(cmt);
+                  focusComment(cmt, true); // clicked in the preview — don't re-scroll the preview
                   return;
                 }
                 const href = a.getAttribute("href") ?? "";
