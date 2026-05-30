@@ -444,8 +444,10 @@ export function App(): JSX.Element {
 
   if (!loaded) return <div className="ap-loading">Loading…</div>;
 
+  // 1 pane = preview only; 2 panes = preview + one of {source, comments} (tabbed);
+  // 3 panes = preview + source + comments.
   const showSource = panes === 3 || (panes === 2 && rightTab === "source");
-  const showComments = panes === 3 || panes === 1 || (panes === 2 && rightTab === "comments");
+  const showComments = panes === 3 || (panes === 2 && rightTab === "comments");
 
   return (
     <div className="ap-app">
