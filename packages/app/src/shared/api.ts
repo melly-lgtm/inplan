@@ -11,8 +11,9 @@ export interface DocPayload {
 }
 
 export interface SaveOptions {
-  /** "canonical" wakes the agent (Finish turn / instant save); "backup" does not. */
-  kind: "canonical" | "backup";
+  /** "canonical" wakes the agent (Finish turn / instant save); "backup" does not;
+   *  "apply" persists canonical silently (accepting a proposal — does NOT end the turn). */
+  kind: "canonical" | "backup" | "apply";
   cadence: Cadence;
 }
 

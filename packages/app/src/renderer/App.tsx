@@ -405,8 +405,9 @@ export function App(): JSX.Element {
       savedRef.current = serialized;
       setDirty(false);
       const acceptedCount = accepted.filter(Boolean).length;
-      // Decision made → persist canonical and discard the parked proposal.
-      void window.api.save(serialized, { kind: "canonical", cadence });
+      // Decision made → persist canonical *silently* (accepting a proposal must
+      // not end your turn) and discard the parked proposal.
+      void window.api.save(serialized, { kind: "apply", cadence });
       void window.api.clearProposal();
       void window.api.logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", { accepted: acceptedCount, total: accepted.length });
       setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`);

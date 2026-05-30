@@ -54,10 +54,14 @@ export class Session {
       writeFileSync(path, content);
       return;
     }
-    // Canonical save: update the file + base and wake the agent.
+    // Update the file + base. "apply" (accepting a proposal) does this silently —
+    // it must NOT log turn_ended, so accepting doesn't end the human's turn / wake
+    // the agent; the human stays in control until they explicitly Finish turn.
     writeFileSync(this.paths.file, content);
     writeFileSync(this.paths.canonicalPath, content);
     this.lastWritten = content;
+    if (options.kind === "apply") return;
+    // Canonical save: wake the agent.
     const type = options.cadence === "turn" ? LogEventType.TurnEnded : LogEventType.DocumentEdited;
     appendLog(this.paths.logPath, { actor: "user", type, payload: { bytes: content.length } });
   }
