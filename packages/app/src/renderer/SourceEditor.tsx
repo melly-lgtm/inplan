@@ -59,8 +59,9 @@ export const SourceEditor = forwardRef<
       const len = v.state.doc.length;
       const f = Math.max(0, Math.min(from, len));
       const t = Math.max(0, Math.min(to, len));
+      // Select + scroll, but do NOT focus the editor — find navigation must leave
+      // focus on the find bar so Enter keeps stepping through matches.
       v.dispatch({ selection: { anchor: f, head: t }, effects: EditorView.scrollIntoView(f, { y: "center" }) });
-      v.focus();
     },
   }));
 

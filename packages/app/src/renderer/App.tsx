@@ -190,10 +190,12 @@ export function App(): JSX.Element {
         if (e.shiftKey) redo();
         else undo();
       } else if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "f" || e.key === "F")) {
-        // ⌘F opens the find bar. (Inside the source editor, CodeMirror's own ⌘F is
-        // overridden in SourceEditor to call this instead of its search panel.)
+        // ⌘F opens the find bar and focuses its input (even if already open).
+        // (Inside the source editor, CodeMirror's own ⌘F is overridden in
+        // SourceEditor to call this instead of its search panel.)
         e.preventDefault();
         setFindOpen(true);
+        requestAnimationFrame(() => document.getElementById("ap-find-input")?.focus());
       } else if (e.key === "Escape") {
         if (composer) setComposer(null);
         else if (findOpen) setFindOpen(false);
@@ -913,6 +915,7 @@ function FindReplaceBar({
         <input type="checkbox" checked={replaceMode} onChange={(e) => setReplaceMode(e.target.checked)} /> Replace
       </label>
       <input
+        id="ap-find-input"
         placeholder="Find…"
         value={find}
         onChange={(e) => {
@@ -920,7 +923,10 @@ function FindReplaceBar({
           setIdx(0);
         }}
         onKeyDown={(e) => {
-          if (e.key === "Enter") go(e.shiftKey ? idx - 1 : idx + 1);
+          if (e.key === "Enter") {
+            e.preventDefault();
+            go(e.shiftKey ? idx - 1 : idx + 1);
+          }
         }}
         autoFocus
       />
