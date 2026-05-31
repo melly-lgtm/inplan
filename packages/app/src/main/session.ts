@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { appendLog, CONTROL_LOG_VERSION, LogEventType, readGlobalSettings, readLog, writeGlobalSettings } from "@inplan/core/node";
+import { appendLog, CONTROL_LOG_VERSION, FsControlChannel, LogEventType, readGlobalSettings, readLog, writeGlobalSettings } from "@inplan/core/node";
 import type { Settings } from "../shared/api";
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -190,11 +190,15 @@ export class Session {
       }
     };
 
+    // The control-log watch goes through the ControlChannel seam (so a web
+    // backend can push via Realtime instead of polling). The working-file watch
+    // stays a direct fs watch — it's the desktop shell observing the agent's
+    // out-of-band edits, which a shared datastore models differently.
     watchFile(this.paths.file, { interval: 400 }, onFile);
-    watchFile(this.paths.logPath, { interval: 400 }, onLog);
+    const unsubLog = new FsControlChannel(this.paths).subscribe(onLog);
     return () => {
       unwatchFile(this.paths.file, onFile);
-      unwatchFile(this.paths.logPath, onLog);
+      unsubLog();
     };
   }
 }
