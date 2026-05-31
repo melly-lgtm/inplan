@@ -100,7 +100,10 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
      `crashed_or_killed` (editor vanished with no close log — surface this to the human).
    - `superseded` — a newer `wait` took over this document (only one waiter runs at
      a time). This one stepped down; **do nothing** — the live waiter is in charge.
-   **Run only one `wait` per document.** If your `wait` ever exits **without** a
+   **Run only one `wait` per document.** Launch `open` / `wait` as their **own
+   long-lived background process** — do **not** background them with a shell `&`
+   inside a short-lived wrapper command, or the wrapper exits and its process tree
+   (including your waiter) is reaped. If your `wait` ever exits **without** a
    `closed` status while the editor is still open — e.g. it was `superseded`, or the
    process was terminated by the environment — simply **call `wait` again** to resume
    monitoring; don't treat it as the session ending.
