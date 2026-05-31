@@ -110,4 +110,8 @@ describe("parse / serialize", () => {
   it("throws on invalid JSON in the data block", () => {
     expect(() => parse("text\n<!--inplan\n[ not json ]\n-->")).toThrow(ParseError);
   });
+
+  it("throws when the data block is valid JSON but not an array", () => {
+    expect(() => parse('text\n\n<!--inplan\n{ "id": "cmt-x" }\n-->\n')).toThrow(/must contain a JSON array/);
+  });
 });
