@@ -47,7 +47,7 @@ function isProcessAlive(pid: number): boolean {
 }
 
 export class FsControlChannel implements ControlChannel {
-  constructor(private readonly paths: FsBackendPaths) {}
+  constructor(private readonly paths: Pick<FsBackendPaths, "logPath" | "cursorPath" | "waitLockPath">) {}
 
   append(event: NewLogEntry): Promise<LogEntry> {
     return Promise.resolve(appendLog(this.paths.logPath, event));
@@ -97,7 +97,7 @@ export class FsControlChannel implements ControlChannel {
 }
 
 export class FsDocumentStore implements DocumentStore {
-  constructor(private readonly paths: FsBackendPaths) {}
+  constructor(private readonly paths: Pick<FsBackendPaths, "file" | "canonicalPath" | "proposedPath" | "backupsDir">) {}
 
   private readOrNull(path: string): string | null {
     return existsSync(path) ? readFileSync(path, "utf8") : null;

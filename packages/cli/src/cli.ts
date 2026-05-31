@@ -3,7 +3,7 @@
 
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { appendLog, CONTROL_LOG_VERSION, currentSettings, LogEventType, parse, readLog } from "@inplan/core/node";
+import { appendLog, CONTROL_LOG_VERSION, currentSettings, FsControlChannel, LogEventType, parse, readLog } from "@inplan/core/node";
 import { runningEditorPid } from "./editorProcess";
 import { evaluateAgentEdit } from "./gate";
 import { docPaths, type DocPaths } from "./paths";
@@ -184,7 +184,8 @@ async function waitCycle(file: string, explicitCursor: number | null, confirmed:
   // Mode-aware wake: Turn mode wakes only on turn-end / session-close; Instant on any user action.
   const cadence = currentCadence(p.logPath);
   const isActionable = wakePredicate(cadence);
-  const result = await waitForActions({ logPath: p.logPath, cursor, debounceMs, pollMs, isActionable, lockPath: p.waitLockPath, lockToken });
+  const channel = new FsControlChannel(p);
+  const result = await waitForActions({ channel, cursor, debounceMs, pollMs, isActionable, token: lockToken });
 
   // Superseded: a newer waiter owns the doc now. Step down quietly without
   // advancing the cursor (the live waiter handles it).

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { readFileSync } from "node:fs";
-import { LogEventType, readLogSince, type LogEntry } from "@inplan/core/node";
-import { isProcessAlive, latestEditorPid } from "./editorProcess";
+import { LogEventType, type ControlChannel, type LogEntry } from "@inplan/core/node";
 
 export interface WaitResult {
   entries: LogEntry[];
@@ -14,7 +12,8 @@ export interface WaitResult {
 }
 
 export interface WaitOptions {
-  logPath: string;
+  /** Backend the wait reads through (fs locally; a web channel elsewhere). */
+  channel: ControlChannel;
   /** Only entries with seq greater than this are considered. */
   cursor: number;
   /** Quiescence window before reporting, to batch sequential actions. Default 3000ms. */
@@ -23,12 +22,10 @@ export interface WaitOptions {
   pollMs?: number;
   /** Which entries should wake the agent. Default: any user-authored entry. */
   isActionable?: (e: LogEntry) => boolean;
-  /** Watch the editor pid and resolve (editorGone) if a once-alive editor dies. Default true. */
+  /** Watch editor presence and resolve (editorGone) if a once-alive editor dies. Default true. */
   watchEditor?: boolean;
-  /** Single-waiter lock file; if its contents stop matching `lockToken`, step down (superseded). */
-  lockPath?: string;
-  /** This waiter's token, written into `lockPath` when it claimed the doc. */
-  lockToken?: string;
+  /** This waiter's single-waiter token; if a newer waiter supersedes it, step down. */
+  token?: string;
   /** Abort the wait (e.g. on shutdown). */
   signal?: AbortSignal;
 }
@@ -56,68 +53,86 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
   const debounceMs = opts.debounceMs ?? 3000;
   const pollMs = opts.pollMs ?? 200;
   const isActionable = opts.isActionable ?? defaultActionable;
-
   const watchEditor = opts.watchEditor ?? true;
+  const ch = opts.channel;
 
   return new Promise<WaitResult>((resolve, reject) => {
     let deadline: number | null = null;
     let lastCount = -1;
     let sawEditorAlive = false;
+    let busy = false;
+    let done = false;
 
     const cleanup = () => {
       clearInterval(timer);
       opts.signal?.removeEventListener("abort", onAbort);
     };
+    const finish = (r: WaitResult) => {
+      if (done) return;
+      done = true;
+      cleanup();
+      resolve(r);
+    };
     const onAbort = () => {
+      if (done) return;
+      done = true;
       cleanup();
       reject(new Error("wait aborted"));
     };
 
-    const tick = () => {
-      const { entries, cursor } = readLogSince(opts.logPath, opts.cursor);
+    // Channel reads are async; guard against overlapping ticks and post-resolve work.
+    const tick = async () => {
+      if (busy || done) return;
+      busy = true;
+      try {
+        const { entries, cursor } = await ch.readSince(opts.cursor);
+        if (done) return;
 
-      // Single-waiter lock: if a newer waiter claimed the doc, step down so only
-      // one waiter is ever live (no racing / double-firing). A missing or
-      // unreadable lock is treated as "still ours" (don't step down on a blip).
-      if (opts.lockPath && opts.lockToken) {
-        try {
-          if (readFileSync(opts.lockPath, "utf8").trim() !== opts.lockToken) {
-            cleanup();
-            resolve({ entries, cursor, superseded: true });
+        // Single-waiter lock: if a newer waiter claimed the doc, step down so only
+        // one waiter is ever live. A read blip is treated as "still ours".
+        if (opts.token) {
+          try {
+            if (await ch.isSuperseded(opts.token)) {
+              finish({ entries, cursor, superseded: true });
+              return;
+            }
+          } catch {
+            /* lock unreadable — keep waiting */
+          }
+        }
+
+        // Editor liveness: once we've seen the editor present, exit if it goes
+        // away — so a wait never lingers as a zombie after the window is gone.
+        if (watchEditor) {
+          let alive = false;
+          try {
+            alive = await ch.presence();
+          } catch {
+            /* presence unknown — keep waiting */
+          }
+          if (alive) sawEditorAlive = true;
+          else if (sawEditorAlive) {
+            finish({ entries, cursor, editorGone: true });
             return;
           }
-        } catch {
-          /* lock unreadable — keep waiting */
         }
-      }
 
-      // Editor liveness: once we've seen the editor alive, exit if it goes away —
-      // so a wait never lingers as a zombie after the window is gone.
-      if (watchEditor) {
-        const pid = latestEditorPid(opts.logPath);
-        const alive = pid !== null && isProcessAlive(pid);
-        if (alive) sawEditorAlive = true;
-        else if (sawEditorAlive) {
-          cleanup();
-          resolve({ entries, cursor, editorGone: true });
-          return;
+        if (entries.some(isActionable)) {
+          if (entries.length !== lastCount) {
+            // New activity since last check — (re)start the debounce window.
+            lastCount = entries.length;
+            deadline = Date.now() + debounceMs;
+          } else if (deadline !== null && Date.now() >= deadline) {
+            finish({ entries, cursor });
+          }
         }
-      }
-
-      if (entries.some(isActionable)) {
-        if (entries.length !== lastCount) {
-          // New activity since last check — (re)start the debounce window.
-          lastCount = entries.length;
-          deadline = Date.now() + debounceMs;
-        } else if (deadline !== null && Date.now() >= deadline) {
-          cleanup();
-          resolve({ entries, cursor });
-        }
+      } finally {
+        busy = false;
       }
     };
 
-    const timer = setInterval(tick, pollMs);
+    const timer = setInterval(() => void tick(), pollMs);
     opts.signal?.addEventListener("abort", onAbort);
-    tick();
+    void tick();
   });
 }
