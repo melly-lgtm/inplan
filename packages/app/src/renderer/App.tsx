@@ -15,6 +15,7 @@ import {
   type Thread,
 } from "./docOps";
 import { renderMarkdown } from "./markdown";
+import { QuestionChips } from "./QuestionChips";
 import { SourceEditor, type SourceEditorHandle } from "./SourceEditor";
 import { StatusBar } from "./StatusBar";
 import { applySegments, isChange, lineSegments, wordDiff, type DiffSegment, type WordPart } from "./textdiff";
@@ -1513,36 +1514,3 @@ function ThreadCard(props: {
   );
 }
 
-function QuestionChips({ question, disabled, onAnswer }: { question: Question; disabled: boolean; onAnswer: (selected: string[], text: string) => void }): JSX.Element {
-  const [selected, setSelected] = useState<string[]>([]);
-  const [other, setOther] = useState("");
-  const toggle = (label: string) => {
-    if (question.multiSelect) {
-      setSelected((s) => (s.includes(label) ? s.filter((x) => x !== label) : [...s, label]));
-    } else {
-      setSelected([label]);
-    }
-  };
-  return (
-    <div className="ap-question">
-      {question.choices.map((c) => (
-        <label key={c.label} className={`ap-chip${selected.includes(c.label) ? " on" : ""}`}>
-          <input type={question.multiSelect ? "checkbox" : "radio"} name={`q-${c.label}`} checked={selected.includes(c.label)} disabled={disabled} onChange={() => toggle(c.label)} />
-          {c.label}
-          {c.description ? <span className="ap-muted"> — {c.description}</span> : null}
-        </label>
-      ))}
-      <input className="ap-other" placeholder="Other…" value={other} disabled={disabled} onChange={(e) => setOther(e.target.value)} />
-      <button
-        disabled={disabled || (selected.length === 0 && !other.trim())}
-        onClick={() => {
-          onAnswer(selected, other.trim());
-          setSelected([]);
-          setOther("");
-        }}
-      >
-        Answer
-      </button>
-    </div>
-  );
-}
