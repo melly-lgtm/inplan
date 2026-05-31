@@ -1,41 +1,23 @@
 # inplan
 
-Example comment [on here](#cmt-abfdb1)
-[Another example comment](#cmt-1e2lef)
+A commented span is an inline Markdown link whose href is the comment id; the
+comments themselves live in a single trailing HTML-comment block (one JSON array):
 
+The plan should [use Postgres](#cmt-abfdb1) for storage.
 
-<!--CommentData[
-{
-  "id": "cmt-abfdb1",
-  "text": "The comment content left by the user.",
-  "author": "User Name <email@email.com>",
-  "date": "2026-05-28T13:34:00Z",
-  "resolved": false
-}{
-  "id": "cmt-bbf137",
-  "parent-id", "cmt-abfdb1",
-  "text": "The reply",
-  "author": "User Name <email@email.com>",
-  "date": "2026-05-28T13:44:00Z",
-  "resolved": false
-},
-{
-  "id": "cmt-1e2lef",
-  "text": "The comment content left by the user.",
-  "author": "User Name <email@email.com>",
-  "date": "2026-05-28T14:34:00Z",
-  "resolved": false
-},
-{
-  "id": "cmt-1e2lef",
-  "parent-id": "#root",
-  "text": "A document level comment",
-  "author": "User Name <email@email.com>",
-  "date": "2026-05-28T14:34:00Z",
-  "resolved": false
-}
+<!--inplan
+[
+  { "id": "cmt-abfdb1", "author": "User Name <email@email.com>",
+    "date": "2026-05-28T13:34:00Z", "resolved": false,
+    "text": "The comment content left by the user." },
+
+  { "id": "cmt-bbf137", "parentId": "cmt-abfdb1", "author": "User Name <email@email.com>",
+    "date": "2026-05-28T13:44:00Z", "resolved": false, "text": "The reply." },
+
+  { "id": "cmt-1e2lef", "anchor": "doc", "author": "User Name <email@email.com>",
+    "date": "2026-05-28T14:34:00Z", "resolved": false, "text": "A document-level comment." }
 ]
-!-->
+-->
 
 ## License
 
