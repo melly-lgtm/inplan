@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -45,8 +45,13 @@ describe("global settings", () => {
     expect(readFileSync(globalSettingsPath(), "utf8")).toContain('"autoResolve": false');
   });
 
-  it("merges partial/corrupt files over defaults", () => {
+  it("merges partial files over defaults", () => {
     writeGlobalSettings({} as never);
+    expect(readGlobalSettings()).toEqual(DEFAULT_SETTINGS);
+  });
+
+  it("falls back to defaults when the settings file is corrupt (invalid JSON)", () => {
+    writeFileSync(globalSettingsPath(), "{ not valid json");
     expect(readGlobalSettings()).toEqual(DEFAULT_SETTINGS);
   });
 
