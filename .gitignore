@@ -7,6 +7,8 @@ out/
 
 # inplan runtime sidecars (per-document logs, backups, proposals)
 .inplan/
+# legacy sidecar dir name (pre-rename) — keep ignored so stale backups never return
+.agent-planner/
 
 # OS / editor cruft
 .DS_Store
