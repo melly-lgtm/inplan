@@ -26,7 +26,14 @@ BOT_RE='\[bot\]|cursoragent|bugbot|devin|copilot|claude|anthropic|chatgpt|openai
 MARK_RE="generated with .*(claude|copilot|codex|cursor|chatgpt|gpt)|🤖 generated|^ *co-authored-by:.*(${BOT_RE})"
 
 fail=0
-for sha in $(git rev-list "$BASE..$HEAD"); do
+# Fail closed: if rev-list errors (bad/missing refs, shallow clone), don't let the
+# empty substitution skip the loop and silently pass. An empty *range* (no commits)
+# is fine — that's a successful exit with no output.
+if ! revs="$(git rev-list "$BASE..$HEAD")"; then
+  echo "::error::git rev-list failed for ${BASE}..${HEAD} — cannot verify authorship"
+  exit 1
+fi
+for sha in $revs; do
   author=$(git show -s --format='%an <%ae>' "$sha")
   committer=$(git show -s --format='%cn <%ce>' "$sha")
   body=$(git show -s --format='%B' "$sha")
