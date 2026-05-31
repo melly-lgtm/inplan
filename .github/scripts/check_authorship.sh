@@ -18,10 +18,12 @@ HEAD="${2:?usage: check_authorship.sh <base-sha> <head-sha>}"
 # AI/bot identity clues, matched case-insensitively against author/committer
 # "name <email>". `[bot]` catches GitHub App bot accounts (cursor[bot], etc.).
 BOT_RE='\[bot\]|cursoragent|bugbot|devin|copilot|claude|anthropic|chatgpt|openai|gpt-[0-9]|codeium|tabnine|amazon[ -]?q|gemini-'
-# Machine-authorship markers in the commit body. The Co-authored-by branch reuses
-# BOT_RE so a co-author is screened against the exact same identity set as the
-# author/committer (no drift), plus "Generated with …" / 🤖 generation lines.
-MARK_RE="generated with .*(claude|copilot|codex|cursor|chatgpt|gpt)|🤖 generated|co-authored-by:.*(${BOT_RE})"
+# Machine-authorship markers in the commit body. The Co-authored-by branch is
+# anchored to line start (^) so it matches a real git trailer, not prose that
+# merely mentions "Co-authored-by:" (e.g. this script's own commit messages), and
+# reuses BOT_RE so a co-author is screened against the same identity set as the
+# author/committer (no drift). Plus "Generated with …" / 🤖 generation lines.
+MARK_RE="generated with .*(claude|copilot|codex|cursor|chatgpt|gpt)|🤖 generated|^ *co-authored-by:.*(${BOT_RE})"
 
 fail=0
 for sha in $(git rev-list "$BASE..$HEAD"); do
