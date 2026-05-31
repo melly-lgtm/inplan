@@ -228,22 +228,12 @@ export function App(): JSX.Element {
 
   const editingLocked = cadence === "turn" && agentThinking;
 
-  // Stuck-lock escape: if the editor stays locked (agent has the turn) for longer
-  // than this grace period, offer a manual "take back control" so a crashed or
-  // unresponsive agent can't strand the human in a permanently locked editor.
-  const [lockGracePassed, setLockGracePassed] = useState(false);
-  useEffect(() => {
-    if (!editingLocked) {
-      setLockGracePassed(false);
-      return;
-    }
-    const t = setTimeout(() => setLockGracePassed(true), 20000);
-    return () => clearTimeout(t);
-  }, [editingLocked]);
-
+  // Stuck-lock escape: while the editor is locked (the agent holds the turn), the
+  // status bar reveals a "take back control" button on hover over "Agent is
+  // thinking…", so a crashed or unresponsive agent can't strand the human in a
+  // permanently locked editor. (Hover-gated so it doesn't clutter or jitter.)
   const takeBackControl = useCallback(() => {
     setAgentThinking(false);
-    setLockGracePassed(false);
     setStatus("you took back control — the agent didn't hand it back");
     void window.api.logAction(LogEventType.HumanReclaimed);
   }, []);
@@ -811,7 +801,7 @@ export function App(): JSX.Element {
         status={status}
         dirty={dirty}
         agentThinking={agentThinking}
-        canTakeBack={editingLocked && lockGracePassed}
+        canTakeBack={editingLocked}
         onTakeBack={takeBackControl}
       />
     </div>
@@ -1278,11 +1268,17 @@ function StatusBar({
   }, [agentThinking]);
   return (
     <footer className="ap-statusbar">
-      <span>{agentThinking ? `Agent is thinking ${dots}` : status || "ready"}</span>
-      {canTakeBack && (
-        <button className="ap-takeback" onClick={onTakeBack} title="The agent hasn't handed control back. Reclaim the turn and keep editing.">
-          Agent not responding? Take back control
-        </button>
+      {agentThinking ? (
+        <span className="ap-thinking" title="Agent is working. Hover to take back control if it's not responding.">
+          Agent is thinking <span className="ap-dots">{dots}</span>
+          {canTakeBack && (
+            <button className="ap-takeback" onClick={onTakeBack} title="The agent hasn't handed control back. Reclaim the turn and keep editing.">
+              not responding? take back control
+            </button>
+          )}
+        </span>
+      ) : (
+        <span>{status || "ready"}</span>
       )}
       <span className="ap-spacer" />
       <span>{cadence} mode</span>
