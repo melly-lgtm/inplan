@@ -20,7 +20,10 @@ process.on("unhandledRejection", (reason) => {
 /** The plan file to open is the first non-flag CLI argument. */
 function resolveTargetFile(): string | null {
   const args = process.argv.slice(app.isPackaged ? 1 : 2);
-  const candidate = args.find((a) => !a.startsWith("-"));
+  // Prefer an arg that looks like a plan document; fall back to the first
+  // non-flag arg. (Some launchers — e.g. Playwright's _electron — prepend flags
+  // and the app path, so the bare "first non-flag" could be the app dir.)
+  const candidate = args.find((a) => !a.startsWith("-") && a.endsWith(".md")) ?? args.find((a) => !a.startsWith("-"));
   if (!candidate) return null;
   const abs = resolve(candidate);
   return existsSync(abs) ? abs : null;
