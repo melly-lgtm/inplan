@@ -3,6 +3,7 @@
 
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { CONTROL_LOG_VERSION, currentSettings, FsControlChannel, FsDocumentStore, LogEventType, parse, readLog } from "@inplan/core/node";
 import { runningEditorPid } from "./editorProcess";
 import { evaluateAgentEdit } from "./gate";
@@ -219,7 +220,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  const file = argv[1];
+  // Resolve to an absolute path up front so the CLI and the editor it spawns
+  // compute the same sidecar key (the editor resolves its arg against its own CWD).
+  const file = argv[1] ? resolve(argv[1]) : argv[1];
   const rest = argv.slice(2);
   const cursorFlag = getFlag(rest, "cursor");
   const explicitCursor = cursorFlag !== undefined ? Number(cursorFlag) : null; // optional override; wait self-manages otherwise
