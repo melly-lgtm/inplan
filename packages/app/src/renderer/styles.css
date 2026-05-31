@@ -133,6 +133,8 @@ body {
 
 /* find matches highlighted in the preview (CSS Custom Highlight API) */
 ::highlight(ap-find) { background: #ffe58a; color: inherit; }
+/* find matches highlighted inside the source editor (Editor find scope) */
+.cm-ap-find { background: #ffe58a; }
 
 /* cross-pane current-line highlight */
 .ap-active-line, .cm-line.ap-active-line { background: var(--accent-soft); }

@@ -76,7 +76,7 @@ export function App(): JSX.Element {
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false); // is the review panel visible (vs. parked behind a banner)
   const [findOpen, setFindOpen] = useState(false);
-  const [findOpts, setFindOpts] = useState<{ query: string; ci: boolean; inBody: boolean; inComments: boolean }>({ query: "", ci: false, inBody: true, inComments: false });
+  const [findOpts, setFindOpts] = useState<{ query: string; ci: boolean; inPreview: boolean; inEditor: boolean; inComments: boolean }>({ query: "", ci: false, inPreview: true, inEditor: false, inComments: false });
 
   const docRef = useRef(doc);
   docRef.current = doc;
@@ -383,7 +383,7 @@ export function App(): JSX.Element {
     [apply],
   );
 
-  const reportFind = useCallback((o: { query: string; ci: boolean; inBody: boolean; inComments: boolean }) => setFindOpts(o), []);
+  const reportFind = useCallback((o: { query: string; ci: boolean; inPreview: boolean; inEditor: boolean; inComments: boolean }) => setFindOpts(o), []);
 
   const openComposer = useCallback(() => {
     const sel = window.getSelection();
@@ -430,15 +430,36 @@ export function App(): JSX.Element {
   // and scroll the preview; comment matches focus the comment thread.
   const navigateMatch = useCallback(
     (m: FindMatch) => {
-      if (m.scope === "body") {
-        setRightTab((t) => (panes === 2 && t !== "source" ? "source" : t));
-        editorRef.current?.selectRange(m.from, m.to);
-        setActivePreviewLine(docRef.current.body.slice(0, m.from).split("\n").length - 1);
-      } else {
+      if (m.scope === "comment") {
         focusComment(m.id);
+        return;
+      }
+      const line = docRef.current.body.slice(0, m.from).split("\n").length - 1;
+      setActivePreviewLine(line);
+      if (findOpts.inEditor) {
+        // Editor scope: select + center the match in the source pane.
+        if (panes === 2) setRightTab("source");
+        editorRef.current?.selectRange(m.from, m.to);
+      } else {
+        // Preview scope: scroll the rendered block to center — directly, every
+        // navigation (don't rely on the active-line effect, which only fires when
+        // the line *changes*, so same-line matches wouldn't scroll).
+        const root = previewRef.current;
+        if (root) {
+          let best: Element | null = null;
+          let bl = -1;
+          root.querySelectorAll("[data-line]").forEach((el) => {
+            const l = Number(el.getAttribute("data-line") ?? -1);
+            if (l <= line && l >= bl) {
+              bl = l;
+              best = el;
+            }
+          });
+          (best as Element | null)?.scrollIntoView({ block: "center" });
+        }
       }
     },
-    [panes, focusComment],
+    [panes, focusComment, findOpts.inEditor],
   );
 
   // --- review apply ---
@@ -493,9 +514,14 @@ export function App(): JSX.Element {
     if (!changeCount) return;
     const n = (reviewCursor + 1) % changeCount;
     setReviewCursor(n);
-    previewRef.current?.querySelector(`[data-hunk="${n}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
-    document.querySelector(`.ap-diffsource [data-hunk="${n}"]`)?.scrollIntoView({ block: "center" });
-  }, [changeCount, reviewCursor]);
+    // Surface the source diff too (2-pane shows one side) so the SAME change is
+    // visible in both panes, then center the hunk in each.
+    if (panes === 2 && rightTab !== "source") setRightTab("source");
+    requestAnimationFrame(() => {
+      previewRef.current?.querySelector(`[data-hunk="${n}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+      document.querySelector(`.ap-diffsource [data-hunk="${n}"]`)?.scrollIntoView({ block: "center" });
+    });
+  }, [changeCount, reviewCursor, panes, rightTab]);
 
   const threads = useMemo(() => buildThreads(doc.comments), [doc.comments]);
   const ordered = useMemo<OrderedThread[]>(() => {
@@ -541,7 +567,9 @@ export function App(): JSX.Element {
         }
       }
     };
-    if (findOpts.inBody && previewRef.current) collect(previewRef.current);
+    // Preview + comments highlight here (CSS Custom Highlight); the Editor scope
+    // highlights inside CodeMirror via the SourceEditor `find` prop instead.
+    if (findOpts.inPreview && previewRef.current) collect(previewRef.current);
     if (findOpts.inComments && railRef.current) railRef.current.querySelectorAll(".ap-text").forEach((el) => collect(el));
     if (ranges.length) cssApi.highlights.set("ap-find", new HighlightCtor(...ranges));
   }, [findOpts, findOpen, previewHtml, doc.comments]);
@@ -713,6 +741,7 @@ export function App(): JSX.Element {
                 }}
                 onCursorLine={(line) => setActivePreviewLine(line)}
                 onFind={() => setFindOpen(true)}
+                find={findOpen && findOpts.inEditor && findOpts.query ? { query: findOpts.query, ci: findOpts.ci } : null}
               />
             )}
           </section>
@@ -936,12 +965,13 @@ function FindReplaceBar({
   onApply: (next: ParsedDocument, action?: { type: string; payload?: unknown }) => void;
   onClose: () => void;
   onNavigate: (m: FindMatch) => void;
-  onQuery: (opts: { query: string; ci: boolean; inBody: boolean; inComments: boolean }) => void;
+  onQuery: (opts: { query: string; ci: boolean; inPreview: boolean; inEditor: boolean; inComments: boolean }) => void;
 }): JSX.Element {
   const [find, setFind] = useState("");
   const [replace, setReplace] = useState("");
   const [replaceMode, setReplaceMode] = useState(false);
-  const [inBody, setInBody] = useState(true); // the document body (preview + editor)
+  const [inPreview, setInPreview] = useState(true); // search the rendered preview pane
+  const [inEditor, setInEditor] = useState(false); // search the source pane (mutually exclusive with preview)
   const [inComments, setInComments] = useState(false);
   const [ci, setCi] = useState(false);
   const [idx, setIdx] = useState(0);
@@ -949,9 +979,9 @@ function FindReplaceBar({
 
   // Report the query + scope up so the preview/rail can highlight matches; clear on unmount.
   useEffect(() => {
-    onQuery({ query: find, ci, inBody, inComments });
-  }, [find, ci, inBody, inComments, onQuery]);
-  useEffect(() => () => onQuery({ query: "", ci: false, inBody: true, inComments: false }), [onQuery]);
+    onQuery({ query: find, ci, inPreview, inEditor, inComments });
+  }, [find, ci, inPreview, inEditor, inComments, onQuery]);
+  useEffect(() => () => onQuery({ query: "", ci: false, inPreview: true, inEditor: false, inComments: false }), [onQuery]);
 
   const matches = useMemo<FindMatch[]>(() => {
     if (!find) return [];
@@ -965,10 +995,10 @@ function FindReplaceBar({
         if (m[0].length === 0) re.lastIndex++;
       }
     };
-    if (inBody) scan(doc.body, (from, to) => ({ scope: "body", from, to }));
+    if (inPreview || inEditor) scan(doc.body, (from, to) => ({ scope: "body", from, to }));
     if (inComments) for (const c of doc.comments) scan(c.text, (from, to) => ({ scope: "comment", id: c.id, from, to }));
     return out;
-  }, [find, doc, inBody, inComments, ci]);
+  }, [find, doc, inPreview, inEditor, inComments, ci]);
 
   const n = matches.length;
   useEffect(() => {
@@ -1004,7 +1034,7 @@ function FindReplaceBar({
   const replaceAll = () => {
     if (!find) return;
     const flags = "g" + (ci ? "i" : "");
-    const body = inBody ? doc.body.replace(new RegExp(escapeRegExp(find), flags), replace) : doc.body;
+    const body = inPreview || inEditor ? doc.body.replace(new RegExp(escapeRegExp(find), flags), replace) : doc.body;
     const comments = inComments ? doc.comments.map((c) => ({ ...c, text: c.text.replace(new RegExp(escapeRegExp(find), flags), replace) })) : doc.comments;
     onApply({ body, comments }, { type: "document_edited", payload: { findReplace: "all" } });
   };
@@ -1032,8 +1062,27 @@ function FindReplaceBar({
       />
       {replaceMode && <input placeholder="Replace…" value={replace} onChange={(e) => setReplace(e.target.value)} />}
       <span className="ap-find-scope">
-        <label>
-          <input type="checkbox" checked={inBody} onChange={(e) => setInBody(e.target.checked)} /> body
+        <label title="search the rendered preview">
+          <input
+            type="checkbox"
+            checked={inPreview}
+            onChange={(e) => {
+              setInPreview(e.target.checked);
+              if (e.target.checked) setInEditor(false); // preview ⊕ editor
+            }}
+          />{" "}
+          preview
+        </label>
+        <label title="search the source (editor) pane">
+          <input
+            type="checkbox"
+            checked={inEditor}
+            onChange={(e) => {
+              setInEditor(e.target.checked);
+              if (e.target.checked) setInPreview(false); // preview ⊕ editor
+            }}
+          />{" "}
+          editor
         </label>
         <label>
           <input type="checkbox" checked={inComments} onChange={(e) => setInComments(e.target.checked)} /> comments

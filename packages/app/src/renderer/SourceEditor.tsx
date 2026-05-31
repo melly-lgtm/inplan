@@ -31,10 +31,38 @@ const activeLineField = StateField.define<DecorationSet>({
   provide: (f) => EditorView.decorations.from(f),
 });
 
+// Find highlighting inside the source pane (the "Editor" find scope). The field
+// holds the query and re-derives match decorations on query change or doc edit.
+const setFind = StateEffect.define<{ query: string; ci: boolean }>();
+function findDeco(doc: { toString(): string }, query: string, ci: boolean): DecorationSet {
+  if (!query) return Decoration.none;
+  const text = doc.toString();
+  const hay = ci ? text.toLowerCase() : text;
+  const needle = ci ? query.toLowerCase() : query;
+  const ranges = [];
+  let i = hay.indexOf(needle);
+  while (i !== -1) {
+    ranges.push(Decoration.mark({ class: "cm-ap-find" }).range(i, i + needle.length));
+    i = hay.indexOf(needle, i + needle.length);
+  }
+  return Decoration.set(ranges, true);
+}
+const findField = StateField.define<{ deco: DecorationSet; query: string; ci: boolean }>({
+  create: () => ({ deco: Decoration.none, query: "", ci: false }),
+  update(val, tr) {
+    let { query, ci } = val;
+    let changed = false;
+    for (const e of tr.effects) if (e.is(setFind)) ({ query, ci } = e.value), (changed = true);
+    if (changed || tr.docChanged) return { deco: findDeco(tr.state.doc, query, ci), query, ci };
+    return val;
+  },
+  provide: (f) => EditorView.decorations.from(f, (v) => v.deco),
+});
+
 export const SourceEditor = forwardRef<
   SourceEditorHandle,
-  { value: string; editable: boolean; onChange: (v: string) => void; onCursorLine?: (line: number) => void; onFind?: () => void }
->(function SourceEditor({ value, editable, onChange, onCursorLine, onFind }, ref): JSX.Element {
+  { value: string; editable: boolean; onChange: (v: string) => void; onCursorLine?: (line: number) => void; onFind?: () => void; find?: { query: string; ci: boolean } | null }
+>(function SourceEditor({ value, editable, onChange, onCursorLine, onFind, find }, ref): JSX.Element {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const editableComp = useRef(new Compartment());
@@ -87,6 +115,7 @@ export const SourceEditor = forwardRef<
           basicSetup,
           markdown(),
           activeLineField,
+          findField,
           editableComp.current.of(EditorView.editable.of(editable)),
           EditorView.lineWrapping,
           EditorView.updateListener.of((u) => {
@@ -115,6 +144,11 @@ export const SourceEditor = forwardRef<
   useEffect(() => {
     view.current?.dispatch({ effects: editableComp.current.reconfigure(EditorView.editable.of(editable)) });
   }, [editable]);
+
+  // Drive the in-editor find highlight from the app's find bar (Editor scope).
+  useEffect(() => {
+    view.current?.dispatch({ effects: setFind.of({ query: find?.query ?? "", ci: find?.ci ?? false }) });
+  }, [find?.query, find?.ci]);
 
   return <div className="ap-source" ref={host} />;
 });
