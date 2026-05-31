@@ -17,6 +17,24 @@ requests — on your first PR you'll be prompted to sign by commenting:
 
 > I have read the CLA Document and I hereby sign the CLA
 
+## Human authorship & sign-off
+
+The project's IP value depends on an unambiguously **human-authored** history, so
+every contribution must be your own work, contributed under **your own real
+identity** — never an AI/bot account.
+
+- **Sign off every commit** with `git commit -s`, which appends a
+  `Signed-off-by: Your Name <you@example.com>` line. By signing off you attest to
+  the [Developer Certificate of Origin](https://developercertificate.org/) **and**
+  that the contribution is your own authorship — not machine-generated and passed
+  off as yours.
+- **No AI/bot attribution in history.** Do not commit, author, or co-author with
+  an AI/bot identity, and do not add `Co-authored-by:` an AI, "Generated with …",
+  or `🤖` markers. A CI check (`.github/workflows/authorship.yml`) **fails** any
+  PR whose commits carry such an author, committer, co-author, or marker.
+- AI tools may *assist* you, but the resulting work is yours: review, understand,
+  and take authorship of it. Maintainer review is the final gate.
+
 ## Source headers
 
 Add an SPDX header to the top of every new source file:

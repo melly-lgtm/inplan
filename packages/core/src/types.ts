@@ -43,6 +43,12 @@ export interface ParsedDocument {
   body: string;
   /** Comments parsed from the data block. */
   comments: Comment[];
+  /**
+   * Data-block schema version (from the `<!--inplan vN` marker). Absent on
+   * legacy documents, which `parse` reports as version 1; `serialize` always
+   * stamps it so future format changes can be detected and migrated.
+   */
+  version?: number;
 }
 
 /** A reply/answer carries a parentId. */

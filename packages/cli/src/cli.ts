@@ -3,7 +3,7 @@
 
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { appendLog, currentSettings, LogEventType, parse, readLog } from "@inplan/core/node";
+import { appendLog, CONTROL_LOG_VERSION, currentSettings, LogEventType, parse, readLog } from "@inplan/core/node";
 import { runningEditorPid } from "./editorProcess";
 import { evaluateAgentEdit } from "./gate";
 import { docPaths, type DocPaths } from "./paths";
@@ -288,7 +288,7 @@ async function main(): Promise<void> {
     } else {
       const pid = spawnApp(file);
       if (pid !== null) {
-        appendLog(p.logPath, { actor: "agent", type: LogEventType.EditorPid, payload: { pid } });
+        appendLog(p.logPath, { actor: "agent", type: LogEventType.EditorPid, payload: { pid, v: CONTROL_LOG_VERSION } });
       }
     }
   }

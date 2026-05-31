@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { appendLog, LogEventType, readGlobalSettings, readLog, writeGlobalSettings } from "@inplan/core/node";
+import { appendLog, CONTROL_LOG_VERSION, LogEventType, readGlobalSettings, readLog, writeGlobalSettings } from "@inplan/core/node";
 import type { Settings } from "../shared/api";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Acceptance, Cadence, SaveOptions } from "../shared/api";
 import { docPaths, type DocPaths } from "./paths";
@@ -12,6 +12,9 @@ import { docPaths, type DocPaths } from "./paths";
  * sidecars (canonical base, autosave backups), appending to the control log, and
  * watching for the agent's out-of-band edits and its "done" signal.
  */
+/** Most recent autosave backups to retain; older ones are pruned. */
+const MAX_BACKUPS = 25;
+
 export class Session {
   readonly paths: DocPaths;
   /** Content the editor last wrote, used to distinguish our writes from the agent's. */
@@ -37,6 +40,31 @@ export class Session {
     this.paths = docPaths(file);
     mkdirSync(this.paths.controlDir, { recursive: true });
     mkdirSync(this.paths.backupsDir, { recursive: true });
+    // Continue numbering past any backups from previous sessions so sequence
+    // numbers stay monotonic — otherwise restarts would reuse low numbers and
+    // pruning could drop the freshest files.
+    this.backupSeq = this.backupSeqs().at(-1) ?? 0;
+  }
+
+  /** Existing `autosave-<n>.md` sequence numbers in the backups dir, ascending. */
+  private backupSeqs(): number[] {
+    return readdirSync(this.paths.backupsDir)
+      .map((name) => /^autosave-(\d+)\.md$/.exec(name)?.[1])
+      .filter((n): n is string => n != null)
+      .map(Number)
+      .sort((a, b) => a - b);
+  }
+
+  /** Keep only the most recent MAX_BACKUPS autosave files. */
+  private pruneBackups(): void {
+    const seqs = this.backupSeqs();
+    for (const n of seqs.slice(0, Math.max(0, seqs.length - MAX_BACKUPS))) {
+      try {
+        unlinkSync(join(this.paths.backupsDir, `autosave-${n}.md`));
+      } catch {
+        // best-effort; a missing/locked backup must not break saving
+      }
+    }
   }
 
   load(): { path: string; content: string } {
@@ -52,6 +80,7 @@ export class Session {
     if (options.kind === "backup") {
       const path = join(this.paths.backupsDir, `autosave-${++this.backupSeq}.md`);
       writeFileSync(path, content);
+      this.pruneBackups();
       return;
     }
     // Update the file + base. "apply" (accepting a proposal) does this silently —
@@ -68,7 +97,7 @@ export class Session {
 
   /** Record this editor process's own pid (authoritative for liveness checks). */
   logEditorPid(pid: number): void {
-    appendLog(this.paths.logPath, { actor: "agent", type: LogEventType.EditorPid, payload: { pid } });
+    appendLog(this.paths.logPath, { actor: "agent", type: LogEventType.EditorPid, payload: { pid, v: CONTROL_LOG_VERSION } });
   }
 
   logAction(type: string, payload?: unknown): void {

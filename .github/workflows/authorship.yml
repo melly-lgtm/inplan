@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Rejects any pull request containing commits authored, committed, or co-authored
+# by an AI/bot identity, or carrying an AI-generation marker — the automated form
+# of keeping the repository's history human-authored (see CONTRIBUTING.md and the
+# docs "Licensing & IP"). Pairs with the CLA check (cla.yml) and the sign-off
+# attestation contributors make per commit.
+
+name: authorship
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  human-authorship:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Check commits are human-authored
+        run: bash .github/scripts/check_authorship.sh "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"

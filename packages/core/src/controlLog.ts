@@ -5,6 +5,13 @@
 // `@inplan/core/node` entry — keeping this package root importable in a
 // browser/renderer bundle.
 
+/**
+ * Control-log schema version. Stamped into the `editor_pid` event each session
+ * starts, so a reader can detect the format a log was written with and migrate
+ * older logs rather than guess. Bump on an incompatible log-format change.
+ */
+export const CONTROL_LOG_VERSION = 1;
+
 /** Who performed a logged action. */
 export type Actor = "user" | "agent";
 
@@ -28,6 +35,8 @@ export const LogEventType = {
   SettingsChanged: "settings_changed",
   AgentDoneSuggested: "agent_done_suggested",
   ReloadSuggested: "reload_suggested",
+  /** Turn-mode escape: the human reclaimed control after the agent failed to hand it back. */
+  HumanReclaimed: "human_reclaimed",
   SessionClosed: "session_closed",
 } as const;
 

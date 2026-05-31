@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Authorship guardrail. Fails the build if any commit in the PR range was
+# authored, committed, or co-authored by a known AI/bot identity, or carries an
+# AI-generation marker (a "Generated with …" line or the 🤖 trailer). This is the
+# automated form of keeping the repository's history unambiguously human-authored,
+# which the IP value depends on (see CONTRIBUTING.md and docs "Licensing & IP").
+#
+# Honest limit: no check can prove code wasn't AI-*assisted*. This enforces
+# explicit human attribution + a sign-off attestation + maintainer review, which
+# is the defensible, auditable bar.
+set -euo pipefail
+
+BASE="${1:?usage: check_authorship.sh <base-sha> <head-sha>}"
+HEAD="${2:?usage: check_authorship.sh <base-sha> <head-sha>}"
+
+# AI/bot identity clues, matched case-insensitively against author/committer
+# "name <email>". `[bot]` catches GitHub App bot accounts (cursor[bot], etc.).
+BOT_RE='\[bot\]|cursoragent|bugbot|devin|copilot|claude|anthropic|chatgpt|openai|gpt-[0-9]|codeium|tabnine|amazon-q|gemini-'
+# Machine-authorship markers in the commit body.
+MARK_RE='generated with .*(claude|copilot|codex|cursor|chatgpt|gpt)|🤖 generated|co-authored-by:.*(\[bot\]|claude|copilot|chatgpt|gpt-|devin|cursor|bugbot|anthropic|openai)'
+
+fail=0
+for sha in $(git rev-list "$BASE..$HEAD"); do
+  author=$(git show -s --format='%an <%ae>' "$sha")
+  committer=$(git show -s --format='%cn <%ce>' "$sha")
+  body=$(git show -s --format='%B' "$sha")
+  if printf '%s\n%s\n' "$author" "$committer" | grep -qiE "$BOT_RE"; then
+    echo "::error::commit ${sha} has an AI/bot author or committer — author: ${author}, committer: ${committer}"
+    fail=1
+  fi
+  if printf '%s\n' "$body" | grep -qiE "$MARK_RE"; then
+    echo "::error::commit ${sha} carries an AI-authorship marker (Co-authored-by / 'Generated with' / 🤖)"
+    fail=1
+  fi
+done
+
+if [ "$fail" -ne 0 ]; then
+  echo "Authorship check failed: all contributions must be human-authored under the contributor's own identity (see CONTRIBUTING.md)."
+  exit 1
+fi
+echo "Authorship check passed: no AI/bot author, committer, or co-author markers found in ${BASE}..${HEAD}."

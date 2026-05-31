@@ -175,4 +175,6 @@ body {
 .ap-diff-add { background: #e6f6ec; color: #18643a; margin: 0; white-space: pre-wrap; }
 
 /* status bar */
-.ap-statusbar { display: flex; gap: 8px; padding: 4px 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.ap-statusbar { display: flex; align-items: center; gap: 8px; padding: 4px 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.ap-takeback { font-size: 12px; padding: 1px 8px; border: 1px solid #d9a441; background: #fff4d6; color: #7a4b00; border-radius: 4px; cursor: pointer; }
+.ap-takeback:hover { background: #ffe9ad; }

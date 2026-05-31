@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { parse, serialize, type Comment, type ParsedDocument, type Question } from "@inplan/core";
+import { LogEventType, parse, serialize, type Comment, type ParsedDocument, type Question } from "@inplan/core";
 import { Fragment, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Acceptance, Cadence } from "../shared/api";
 import {
@@ -227,6 +227,26 @@ export function App(): JSX.Element {
   }, [composer, findOpen, proposal, reviewOpen, undo, redo]);
 
   const editingLocked = cadence === "turn" && agentThinking;
+
+  // Stuck-lock escape: if the editor stays locked (agent has the turn) for longer
+  // than this grace period, offer a manual "take back control" so a crashed or
+  // unresponsive agent can't strand the human in a permanently locked editor.
+  const [lockGracePassed, setLockGracePassed] = useState(false);
+  useEffect(() => {
+    if (!editingLocked) {
+      setLockGracePassed(false);
+      return;
+    }
+    const t = setTimeout(() => setLockGracePassed(true), 20000);
+    return () => clearTimeout(t);
+  }, [editingLocked]);
+
+  const takeBackControl = useCallback(() => {
+    setAgentThinking(false);
+    setLockGracePassed(false);
+    setStatus("you took back control — the agent didn't hand it back");
+    void window.api.logAction(LogEventType.HumanReclaimed);
+  }, []);
 
   // --- autosave ---
   useEffect(() => {
@@ -786,7 +806,14 @@ export function App(): JSX.Element {
         )}
       </div>
 
-      <StatusBar cadence={cadence} status={status} dirty={dirty} agentThinking={agentThinking} />
+      <StatusBar
+        cadence={cadence}
+        status={status}
+        dirty={dirty}
+        agentThinking={agentThinking}
+        canTakeBack={editingLocked && lockGracePassed}
+        onTakeBack={takeBackControl}
+      />
     </div>
   );
 }
@@ -1228,7 +1255,21 @@ function HunkLines({ removed, added }: { removed: string[]; added: string[] }): 
   return <>{rows}</>;
 }
 
-function StatusBar({ cadence, status, dirty, agentThinking }: { cadence: Cadence; status: string; dirty: boolean; agentThinking: boolean }): JSX.Element {
+function StatusBar({
+  cadence,
+  status,
+  dirty,
+  agentThinking,
+  canTakeBack,
+  onTakeBack,
+}: {
+  cadence: Cadence;
+  status: string;
+  dirty: boolean;
+  agentThinking: boolean;
+  canTakeBack: boolean;
+  onTakeBack: () => void;
+}): JSX.Element {
   const [dots, setDots] = useState(".");
   useEffect(() => {
     if (!agentThinking) return;
@@ -1238,6 +1279,11 @@ function StatusBar({ cadence, status, dirty, agentThinking }: { cadence: Cadence
   return (
     <footer className="ap-statusbar">
       <span>{agentThinking ? `Agent is thinking ${dots}` : status || "ready"}</span>
+      {canTakeBack && (
+        <button className="ap-takeback" onClick={onTakeBack} title="The agent hasn't handed control back. Reclaim the turn and keep editing.">
+          Agent not responding? Take back control
+        </button>
+      )}
       <span className="ap-spacer" />
       <span>{cadence} mode</span>
       {dirty && <span> · unsaved</span>}

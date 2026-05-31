@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Continuous-integration gate. Every push and pull request must build, type-check
+# and pass the unit tests before it can be merged — the license/provenance scan
+# (license-scan.yml) and CLA check (cla.yml) run alongside this.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      # Build first so cross-package imports (cli/app → @inplan/core dist) resolve
+      # for the type-check and test steps.
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm test

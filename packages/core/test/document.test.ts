@@ -5,6 +5,7 @@ import { parse, ParseError, serialize } from "../src/document";
 import type { Comment, ParsedDocument } from "../src/types";
 
 const sample: ParsedDocument = {
+  version: 1,
   body: "# Plan\n\nThe plan should [use Postgres](#cmt-abc123) for storage.",
   comments: [
     { id: "cmt-abc123", author: "Tim <tim@xl8.ai>", date: "2026-05-28T13:34:00Z", resolved: false, text: "Why not SQLite?" },
@@ -41,6 +42,7 @@ describe("parse / serialize", () => {
       },
     };
     const doc: ParsedDocument = {
+      version: 1,
       body: "Pick [targets](#cmt-q00001).",
       comments: [q],
     };
@@ -49,6 +51,7 @@ describe("parse / serialize", () => {
 
   it("parses an answer reply carrying `selected`", () => {
     const doc: ParsedDocument = {
+      version: 1,
       body: "no anchors",
       comments: [
         { id: "cmt-aaaaaa", author: "Tim <tim@xl8.ai>", date: "2026-05-28T14:00:00Z", resolved: false, selected: ["SQLite"], text: "go simple", parentId: "cmt-q00001" },
@@ -82,6 +85,22 @@ describe("parse / serialize", () => {
     // The fenced example must be preserved in the body, not consumed.
     expect(doc.body).toContain("```markdown");
     expect(doc.body).toContain("## Real content below the example");
+  });
+
+  it("defaults a version-less (legacy) block to version 1 and parses its comments", () => {
+    const doc = parse('text\n\n<!--inplan\n[ { "id": "cmt-leg001", "author": "x", "date": "d", "resolved": false, "text": "legacy" } ]\n-->\n');
+    expect(doc.version).toBe(1);
+    expect(doc.comments.map((c) => c.id)).toEqual(["cmt-leg001"]);
+  });
+
+  it("reads an explicit version token off the marker without consuming the JSON", () => {
+    const doc = parse('text\n\n<!--inplan v2\n[ { "id": "cmt-ver002", "author": "x", "date": "d", "resolved": false, "text": "v2" } ]\n-->\n');
+    expect(doc.version).toBe(2);
+    expect(doc.comments.map((c) => c.id)).toEqual(["cmt-ver002"]);
+  });
+
+  it("serialize stamps the current version onto the marker", () => {
+    expect(serialize({ body: "b", comments: [] })).toContain("<!--inplan v1");
   });
 
   it("throws on an unterminated data block", () => {
