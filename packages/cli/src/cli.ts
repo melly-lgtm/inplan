@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { appendLog, CONTROL_LOG_VERSION, currentSettings, FsControlChannel, LogEventType, parse, readLog } from "@inplan/core/node";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { CONTROL_LOG_VERSION, currentSettings, FsControlChannel, FsDocumentStore, LogEventType, parse, readLog } from "@inplan/core/node";
 import { runningEditorPid } from "./editorProcess";
 import { evaluateAgentEdit } from "./gate";
 import { docPaths, type DocPaths } from "./paths";
@@ -71,22 +71,6 @@ function maxSeq(logPath: string): number {
   return entries.length ? entries[entries.length - 1]!.seq : 0;
 }
 
-/** The persisted wait cursor (what the agent has already consumed), or null. */
-function readCursor(p: DocPaths): number | null {
-  if (!existsSync(p.cursorPath)) return null;
-  const n = Number(readFileSync(p.cursorPath, "utf8").trim());
-  return Number.isFinite(n) ? n : null;
-}
-
-function writeCursor(p: DocPaths, seq: number): void {
-  writeFileSync(p.cursorPath, String(seq));
-}
-
-/** Remove any stale parked proposal (after an auto-accept or confirmed deletion). */
-function clearProposed(p: DocPaths): void {
-  if (existsSync(p.proposedPath)) unlinkSync(p.proposedPath);
-}
-
 /** Record why a waiter exited (normal status / superseded / OS signal), for debugging
  *  the "waiter vanished" reports — a reaped process leaves a `signal:*` line here. */
 function logWaitExit(p: DocPaths, reason: string): void {
@@ -95,14 +79,6 @@ function logWaitExit(p: DocPaths, reason: string): void {
   } catch {
     /* best-effort */
   }
-}
-
-/** Claim the single-waiter lock for this doc; returns this waiter's token. Last
- *  writer wins — any older waiter sees the token change and steps down. */
-function claimWaitLock(p: DocPaths): string {
-  const token = `${process.pid}-${Date.now()}`;
-  writeFileSync(p.waitLockPath, token);
-  return token;
 }
 
 /**
@@ -114,16 +90,18 @@ function claimWaitLock(p: DocPaths): string {
 async function waitCycle(file: string, explicitCursor: number | null, confirmed: Set<string>): Promise<void> {
   const p = docPaths(file);
   mkdirSync(p.controlDir, { recursive: true });
+  const channel = new FsControlChannel(p);
+  const store = new FsDocumentStore(p);
 
-  const cursor = explicitCursor ?? readCursor(p) ?? maxSeq(p.logPath);
+  // Cursor: explicit override, else the persisted cursor, else "start from now".
+  // getCursor() returns 0 when unset, so `|| maxSeq` means begin at the latest seq.
+  const cursor = explicitCursor ?? ((await channel.getCursor()) || maxSeq(p.logPath));
 
-  const current = readFileSync(file, "utf8");
-  let canonicalText: string;
-  if (existsSync(p.canonicalPath)) {
-    canonicalText = readFileSync(p.canonicalPath, "utf8");
-  } else {
+  const current = await store.loadDoc();
+  let canonicalText = await store.getCanonical();
+  if (canonicalText === null) {
     canonicalText = current;
-    writeFileSync(p.canonicalPath, current);
+    await store.setCanonical(current);
   }
 
   const ev = evaluateAgentEdit(canonicalText, current, confirmed);
@@ -150,30 +128,32 @@ async function waitCycle(file: string, explicitCursor: number | null, confirmed:
 
   if (ev.removedIds.length > 0) {
     // Confirmed deletions: drop the orphaned comment objects from the document and canonical base.
-    writeFileSync(file, ev.acceptedText);
-    writeFileSync(p.canonicalPath, ev.acceptedText);
-    clearProposed(p);
-    appendLog(p.logPath, { actor: "agent", type: LogEventType.DocumentEdited, payload: { removed: ev.removedIds } });
+    await store.saveDoc(ev.acceptedText);
+    await store.setCanonical(ev.acceptedText);
+    await store.clearProposed();
+    await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { removed: ev.removedIds } });
   } else if (ev.changed && acceptance === "review" && bodyChanged) {
     // Quarantine: park the proposal, revert the working file to canonical.
-    writeFileSync(p.proposedPath, current);
-    writeFileSync(file, canonicalText);
-    appendLog(p.logPath, { actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: current.length } });
+    await store.setProposed(current);
+    await store.saveDoc(canonicalText);
+    await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: current.length } });
   } else if (ev.changed) {
     // Auto-accept (auto mode, or review mode with comment-only changes).
-    writeFileSync(p.canonicalPath, current);
-    clearProposed(p);
-    appendLog(p.logPath, { actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: current.length } });
+    await store.setCanonical(current);
+    await store.clearProposed();
+    await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: current.length } });
   }
 
   // Signal the agent has (re)engaged this round so the editor can clear its
   // "Agent is thinking…" indicator even when the agent made no body change.
-  appendLog(p.logPath, { actor: "agent", type: LogEventType.AgentRevised });
+  await channel.append({ actor: "agent", type: LogEventType.AgentRevised });
 
   // Single-waiter lock: claim the doc so any older waiter steps down (no racing
   // double-waiters). Log the exit reason — including OS signals — so a reaped
   // waiter is diagnosable instead of "vanishing" silently.
-  const lockToken = claimWaitLock(p);
+  // Last writer wins — any older waiter sees the token change and steps down.
+  const lockToken = `${process.pid}-${Date.now()}`;
+  await channel.claimLock(lockToken);
   for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"] as const) {
     process.on(sig, () => {
       logWaitExit(p, `signal:${sig}`);
@@ -184,7 +164,6 @@ async function waitCycle(file: string, explicitCursor: number | null, confirmed:
   // Mode-aware wake: Turn mode wakes only on turn-end / session-close; Instant on any user action.
   const cadence = currentCadence(p.logPath);
   const isActionable = wakePredicate(cadence);
-  const channel = new FsControlChannel(p);
   const result = await waitForActions({ channel, cursor, debounceMs, pollMs, isActionable, token: lockToken });
 
   // Superseded: a newer waiter owns the doc now. Step down quietly without
@@ -195,7 +174,7 @@ async function waitCycle(file: string, explicitCursor: number | null, confirmed:
     return;
   }
 
-  writeCursor(p, result.cursor); // advance the persisted cursor so the next call continues here
+  await channel.setCursor(result.cursor); // advance the persisted cursor so the next call continues here
 
   // The editor logs WHY it closed (completed / window_closed); a crash logs nothing.
   const closeEntry = result.entries.find((e) => e.type === LogEventType.SessionClosed);
@@ -263,13 +242,14 @@ async function main(): Promise<void> {
   if (cmd === "signal") {
     const p = docPaths(file);
     mkdirSync(p.controlDir, { recursive: true });
+    const channel = new FsControlChannel(p);
     if (hasFlag(rest, "done")) {
-      appendLog(p.logPath, { actor: "agent", type: LogEventType.AgentDoneSuggested });
+      await channel.append({ actor: "agent", type: LogEventType.AgentDoneSuggested });
     }
     // Ask the human to close the window so the agent can relaunch a new build —
     // a clean, user-initiated shutdown instead of the agent killing the process.
     if (hasFlag(rest, "reload")) {
-      appendLog(p.logPath, { actor: "agent", type: LogEventType.ReloadSuggested });
+      await channel.append({ actor: "agent", type: LogEventType.ReloadSuggested });
     }
     output({ status: "signaled" });
     return;
@@ -289,7 +269,7 @@ async function main(): Promise<void> {
     } else {
       const pid = spawnApp(file);
       if (pid !== null) {
-        appendLog(p.logPath, { actor: "agent", type: LogEventType.EditorPid, payload: { pid, v: CONTROL_LOG_VERSION } });
+        await new FsControlChannel(p).append({ actor: "agent", type: LogEventType.EditorPid, payload: { pid, v: CONTROL_LOG_VERSION } });
       }
     }
   }
