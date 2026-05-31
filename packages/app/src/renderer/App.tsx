@@ -428,7 +428,7 @@ export function App(): JSX.Element {
   // --- review apply ---
   const applyProposal = useCallback(
     (segs: DiffSegment[], accepted: boolean[]) => {
-      if (!proposal) return;
+      if (!proposal || editingLocked) return; // can't apply while the agent holds the turn
       const body = applySegments(segs, accepted);
       // Merge comments rather than overwrite with the proposal's stale snapshot:
       // keep everything in the live doc (incl. comments the human added during
@@ -436,7 +436,11 @@ export function App(): JSX.Element {
       // accepting a proposal never discards review-time comments.
       const live = docRef.current.comments;
       const have = new Set(live.map((c) => c.id));
-      const comments = [...live, ...proposal.next.comments.filter((c) => !have.has(c.id))];
+      const merged = [...live, ...proposal.next.comments.filter((c) => !have.has(c.id))];
+      // Safety net: a span comment whose anchor link didn't survive into the
+      // accepted body (e.g. added during review) would make the doc invalid —
+      // demote it to a doc-level comment instead of corrupting the document.
+      const comments = merged.map((c) => (!c.parentId && c.anchor !== "doc" && !body.includes(`](#${c.id})`) ? { ...c, anchor: "doc" as const } : c));
       const finalDoc: ParsedDocument = { body, comments };
       setDoc(finalDoc);
       setProposal(null);
@@ -452,7 +456,7 @@ export function App(): JSX.Element {
       void window.api.logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", { accepted: acceptedCount, total: accepted.length });
       setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`);
     },
-    [proposal, cadence],
+    [proposal, cadence, editingLocked],
   );
 
   // --- inline review state (shared by the preview + source panes and the bar) ---
@@ -594,14 +598,19 @@ export function App(): JSX.Element {
           <button onClick={reviewNext} disabled={!changeCount} title="Scroll to the next change">
             Review next{reviewCursor >= 0 ? ` (${reviewCursor + 1}/${changeCount})` : ""}
           </button>
-          <button onClick={() => setAccepted(new Array(changeCount).fill(true))}>Accept all</button>
-          <button onClick={() => setAccepted(new Array(changeCount).fill(false))}>Reject all</button>
-          <button className="ap-primary" onClick={applyReview}>
+          <button disabled={editingLocked} onClick={() => setAccepted(new Array(changeCount).fill(true))}>
+            Accept all
+          </button>
+          <button disabled={editingLocked} onClick={() => setAccepted(new Array(changeCount).fill(false))}>
+            Reject all
+          </button>
+          <button className="ap-primary" disabled={editingLocked} onClick={applyReview}>
             Apply
           </button>
           <button className="ap-link" onClick={() => setReviewOpen(false)}>
             later
           </button>
+          {editingLocked && <span className="ap-muted">— locked while the agent works; finish handing back to act</span>}
         </div>
       )}
 
