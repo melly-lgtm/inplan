@@ -16,6 +16,7 @@ import {
 } from "./docOps";
 import { renderMarkdown } from "./markdown";
 import { SourceEditor, type SourceEditorHandle } from "./SourceEditor";
+import { StatusBar } from "./StatusBar";
 import { applySegments, isChange, lineSegments, wordDiff, type DiffSegment, type WordPart } from "./textdiff";
 
 const USER_AUTHOR = "You";
@@ -1243,48 +1244,6 @@ function HunkLines({ removed, added }: { removed: string[]; added: string[] }): 
     );
   }
   return <>{rows}</>;
-}
-
-function StatusBar({
-  cadence,
-  status,
-  dirty,
-  agentThinking,
-  canTakeBack,
-  onTakeBack,
-}: {
-  cadence: Cadence;
-  status: string;
-  dirty: boolean;
-  agentThinking: boolean;
-  canTakeBack: boolean;
-  onTakeBack: () => void;
-}): JSX.Element {
-  const [dots, setDots] = useState(".");
-  useEffect(() => {
-    if (!agentThinking) return;
-    const t = setInterval(() => setDots((d) => (d.length >= 3 ? "." : d + " .")), 500);
-    return () => clearInterval(t);
-  }, [agentThinking]);
-  return (
-    <footer className="ap-statusbar">
-      {agentThinking ? (
-        <span className="ap-thinking" title="Agent is working. Hover to take back control if it's not responding.">
-          Agent is thinking <span className="ap-dots">{dots}</span>
-          {canTakeBack && (
-            <button className="ap-takeback" onClick={onTakeBack} title="The agent hasn't handed control back. Reclaim the turn and keep editing.">
-              not responding? take back control
-            </button>
-          )}
-        </span>
-      ) : (
-        <span>{status || "ready"}</span>
-      )}
-      <span className="ap-spacer" />
-      <span>{cadence} mode</span>
-      {dirty && <span> · unsaved</span>}
-    </footer>
-  );
 }
 
 function ComposerPopover({
