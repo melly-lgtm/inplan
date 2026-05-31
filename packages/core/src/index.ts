@@ -7,3 +7,4 @@ export * from "./document";
 export * from "./integrity";
 export * from "./diff";
 export * from "./controlLog";
+export * from "./channel";
