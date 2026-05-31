@@ -24,6 +24,7 @@ const api: Api = {
   onReload: (cb: () => void) => {
     ipcRenderer.on("agent:reload", () => cb());
   },
+  closeWindow: () => ipcRenderer.invoke("window:close"),
   getProposal: () => ipcRenderer.invoke("proposal:get"),
   clearProposal: () => ipcRenderer.invoke("proposal:clear"),
   onProposal: (cb: (payload: { content: string }) => void) => {

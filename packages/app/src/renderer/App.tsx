@@ -67,6 +67,7 @@ export function App(): JSX.Element {
   const [agentThinking, setAgentThinking] = useState(false);
   const [agentDone, setAgentDone] = useState(false);
   const [reloadReady, setReloadReady] = useState(false); // agent signalled a new build is ready to load
+  const [reloadIn, setReloadIn] = useState<number | null>(null); // seconds until auto-close (null = not counting)
   const [showResolvedOrphaned, setShowResolvedOrphaned] = useState(false);
   const [selectionText, setSelectionText] = useState("");
   const [composer, setComposer] = useState<{ target: string | null; pos: { x: number; y: number } } | null>(null);
@@ -150,7 +151,10 @@ export function App(): JSX.Element {
     // Review-mode body changes arrive parked, as a proposal to accept/reject.
     window.api.onProposal(({ content }) => showProposal(content));
     window.api.onAgentDone(() => setAgentDone(true));
-    window.api.onReload(() => setReloadReady(true));
+    window.api.onReload(() => {
+      setReloadReady(true);
+      setReloadIn(30); // start the auto-close countdown
+    });
     window.api.onAgentActive(() => {
       setAgentThinking(false);
       setStatus("agent took its turn — your move");
@@ -160,6 +164,18 @@ export function App(): JSX.Element {
     document.addEventListener("selectionchange", onSel);
     return () => document.removeEventListener("selectionchange", onSel);
   }, []);
+
+  // Reload countdown: once a new build is signalled, tick down and auto-close the
+  // window at zero (the agent relaunches) — unless the user cancels first.
+  useEffect(() => {
+    if (reloadIn === null) return;
+    if (reloadIn <= 0) {
+      void window.api.closeWindow();
+      return;
+    }
+    const t = setTimeout(() => setReloadIn((s) => (s === null ? null : s - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [reloadIn]);
 
   const undo = useCallback(() => {
     const prev = history.current.pop();
@@ -580,7 +596,20 @@ export function App(): JSX.Element {
 
       {reloadReady && (
         <div className="ap-banner ap-banner-reload">
-          🔄 A new build is ready. <strong>Close this window (⌘W)</strong> to reload it — your turn edits will prompt to save first.
+          🔄 A new build is ready — <strong>reloading in {reloadIn ?? 0}s</strong>{" "}
+          <span className="ap-spacer" />
+          <button className="ap-primary" onClick={() => void window.api.closeWindow()}>
+            Reload now
+          </button>
+          <button
+            className="ap-link"
+            onClick={() => {
+              setReloadIn(null); // cancel the countdown
+              setReloadReady(false);
+            }}
+          >
+            Cancel
+          </button>
         </div>
       )}
 

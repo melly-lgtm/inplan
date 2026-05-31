@@ -49,6 +49,8 @@ export interface Api {
   onAgentActive(cb: () => void): void;
   /** The agent has a new build ready and asks the human to close the window to reload. */
   onReload(cb: () => void): void;
+  /** Close the editor window (used by the reload countdown's auto-close). */
+  closeWindow(): Promise<void>;
   /** Read the parked Review-mode proposal pending decision (null if none) — for durable re-show on launch. */
   getProposal(): Promise<string | null>;
   /** Discard the parked proposal after the human accepts/rejects it. */

@@ -121,6 +121,7 @@ function registerIpc(): void {
   ipcMain.handle("settings:set", (_e, settings: Settings) => {
     session?.setSettings(settings);
   });
+  ipcMain.handle("window:close", () => win?.close());
   ipcMain.handle("proposal:get", () => session?.pendingProposal() ?? null);
   ipcMain.handle("proposal:clear", () => {
     session?.clearProposal();
