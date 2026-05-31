@@ -43,11 +43,16 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Fail on non-permissive dependency licenses
-        # Our own workspace packages are AGPL and private — excluded. Everything
-        # shipped must be permissive so the commercial relicense stays clean.
+        # Scan the full installed dependency graph and fail on anything that
+        # isn't permissive, so the commercial relicense stays clean. Our own
+        # @inplan/* workspace packages are AGPL and marked "private": true, so
+        # --excludePrivatePackages drops them (they'd otherwise trip the AGPL
+        # check). We intentionally do NOT pass --production: from the private
+        # monorepo root that scans nothing and passes vacuously. The trade-off
+        # is that build/dev tooling is scanned too — a future copyleft dev-only
+        # tool would trip this; allow it via --onlyAllow or --excludePackages.
         run: |
           npx --yes license-checker-rseidelsohn \
-            --production \
             --excludePrivatePackages \
             --onlyAllow "MIT;MIT-0;ISC;0BSD;BSD-2-Clause;BSD-3-Clause;Apache-2.0;CC0-1.0;Unlicense;BlueOak-1.0.0;Python-2.0;Zlib;CC-BY-4.0;WTFPL" \
             --summary
