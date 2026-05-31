@@ -60,7 +60,13 @@ def main(path):
         if f.get("type") != "file":
             continue
         for key in collect(f):
-            if key and key not in ALLOWED:
+            # ScanCode emits its own internal reference keys with a
+            # `licenseref-scancode-` prefix (e.g. licenseref-scancode-unknown-
+            # license-reference); normalize so they match the bare ALLOWED forms.
+            # (Slice rather than str.removeprefix for Python <3.9 portability.)
+            pfx = "licenseref-scancode-"
+            norm = key[len(pfx):] if key and key.startswith(pfx) else key
+            if norm and norm not in ALLOWED:
                 findings.append((f.get("path", "?"), key))
 
     if findings:
