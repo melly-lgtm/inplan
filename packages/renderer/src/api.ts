@@ -131,6 +131,11 @@ export interface Api {
   /** Identity + presence for the shared `<ProfileMenu>`, when the host wires one
    *  (web/cloud, and the signed-in desktop app). Absent on tests / single-writer. */
   profile?: ProfileController | null;
+  /** Desktop only: a newer published npm version exists (checked on launch).
+   *  Web auto-updates via reload; tests omit this. */
+  onUpdateAvailable?(cb: (info: { current: string; latest: string }) => void): void;
+  /** Desktop only: run the npm self-update; resolves `ok` on success (then restart). */
+  applyUpdate?(): Promise<{ ok: boolean }>;
 }
 
 declare global {

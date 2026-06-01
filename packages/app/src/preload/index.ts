@@ -79,6 +79,10 @@ const api: Api = {
   },
   openDoc: (target: string) => ipcRenderer.invoke("doc:open", target),
   profile: createProfileController(),
+  onUpdateAvailable: (cb: (info: { current: string; latest: string }) => void) => {
+    ipcRenderer.on("app:update-available", (_e, info: { current: string; latest: string }) => cb(info));
+  },
+  applyUpdate: () => ipcRenderer.invoke("app:apply-update"),
 };
 
 contextBridge.exposeInMainWorld("api", api);

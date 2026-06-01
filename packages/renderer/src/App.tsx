@@ -73,6 +73,8 @@ export function App(): JSX.Element {
   const [agentDone, setAgentDone] = useState(false);
   const [reloadReady, setReloadReady] = useState(false); // agent signalled a new build is ready to load
   const [reloadIn, setReloadIn] = useState<number | null>(null); // seconds until auto-close (null = not counting)
+  const [update, setUpdate] = useState<{ current: string; latest: string } | null>(null); // newer npm version
+  const [updating, setUpdating] = useState<"idle" | "running" | "done" | "failed">("idle");
   const [showResolvedOrphaned, setShowResolvedOrphaned] = useState(false);
   const [selectionText, setSelectionText] = useState("");
   const [composer, setComposer] = useState<{ target: string | null; pos: { x: number; y: number } } | null>(null);
@@ -166,6 +168,8 @@ export function App(): JSX.Element {
       setAgentThinking(false);
       setStatus("agent took its turn — your move");
     });
+    // Desktop only: a newer npm version is available.
+    window.api.onUpdateAvailable?.((info) => setUpdate(info));
 
     const onSel = () => setSelectionText(liveSelection());
     document.addEventListener("selectionchange", onSel);
@@ -655,6 +659,40 @@ export function App(): JSX.Element {
           >
             Cancel
           </button>
+        </div>
+      )}
+
+      {update && (
+        <div className="ap-banner">
+          {updating === "done" ? (
+            <>
+              ✅ Updated to <strong>v{update.latest}</strong> — restart inplan to apply.
+              <span className="ap-spacer" />
+              <button className="ap-primary" onClick={() => void window.api.closeWindow()}>
+                Restart
+              </button>
+            </>
+          ) : (
+            <>
+              ⬆️ A new version is available (<strong>v{update.current} → v{update.latest}</strong>).
+              {updating === "failed" && <span className="ap-update-err"> Update failed — try again.</span>}
+              <span className="ap-spacer" />
+              <button
+                className="ap-primary"
+                disabled={updating === "running"}
+                onClick={async () => {
+                  setUpdating("running");
+                  const r = await window.api.applyUpdate?.();
+                  setUpdating(r?.ok ? "done" : "failed");
+                }}
+              >
+                {updating === "running" ? "Updating…" : "Update now"}
+              </button>
+              <button className="ap-link" onClick={() => setUpdate(null)}>
+                Later
+              </button>
+            </>
+          )}
         </div>
       )}
 

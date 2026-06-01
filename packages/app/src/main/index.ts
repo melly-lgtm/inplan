@@ -117,6 +117,20 @@ async function collaborateOnCloud(): Promise<void> {
   app.quit();
 }
 
+/** On launch, ask the CLI whether a newer npm version is published; if so, tell
+ *  the renderer so it can offer an in-app update (inplan ships via `npm i -g`). */
+async function checkForUpdate(): Promise<void> {
+  const r = await runCli(["update", "--check"]);
+  try {
+    const out = JSON.parse(r.stdout.trim() || "{}") as { updateAvailable?: boolean; current?: string; latest?: string };
+    if (out.updateAvailable && out.latest) {
+      win?.webContents.send("app:update-available", { current: out.current ?? "?", latest: out.latest });
+    }
+  } catch {
+    /* no update info — ignore */
+  }
+}
+
 function createWindow(): void {
   win = new BrowserWindow({
     width: 1200,
@@ -146,6 +160,9 @@ function createWindow(): void {
   } else {
     void win.loadFile(join(__dirname, "../renderer/index.html"));
   }
+
+  // Once the renderer is up (and listening), check npm for a newer version.
+  win.webContents.once("did-finish-load", () => void checkForUpdate());
 
   if (session) {
     stopWatching = session.watch({
@@ -222,6 +239,16 @@ function registerIpc(): void {
     session?.complete(content);
     session?.logClose("completed");
     app.quit();
+  });
+
+  // Self-update over npm: run the global install; the renderer then offers a restart.
+  ipcMain.handle("app:apply-update", async () => {
+    const r = await runCli(["update"]);
+    try {
+      return { ok: (JSON.parse(r.stdout.trim() || "{}") as { status?: string }).status === "updated" };
+    } catch {
+      return { ok: false };
+    }
   });
 
   // Cloud profile menu: identity + host-injected actions for the shared <ProfileMenu>.
