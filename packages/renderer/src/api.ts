@@ -72,11 +72,17 @@ export interface ProfileState {
    * agent is implicit (no presence room), so this is omitted and those stay enabled.
    */
   presenceAware?: boolean;
-  /** The doc's current agent-provisioning policy (the badge doubles as its control).
-   *  Present + `onSetAgentPolicy` ⇒ the menu renders the picker. */
+  /** The doc's current agent-provisioning policy. Present + `onSetAgentPolicy` ⇒ the
+   *  menu-bar agent indicator renders the connection picker. */
   agentPolicy?: AgentPolicy;
   /** Change the provisioning policy (host persists it). */
   onSetAgentPolicy?: (policy: AgentPolicy) => void | Promise<void>;
+  /** The attached agent's model, for the indicator label (e.g. "Opus 4.8"). */
+  agentModel?: string;
+  /** Managed-agent quota for the indicator pie: fraction used [0..1] + overage flag. */
+  agentQuota?: { usedPct: number; overage: boolean };
+  /** True when the cloud agent runs on the org's own (BYO) key — indicator goes dark blue. */
+  agentByoKey?: boolean;
 }
 
 /** A reactive source of {@link ProfileState}. `get()` must return a referentially

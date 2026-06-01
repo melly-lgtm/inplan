@@ -1,5 +1,8 @@
 // @vitest-environment happy-dom
 // SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// ProfileMenu is now identity + host actions only — the agent connection badge +
+// policy picker moved to the menu-bar <AgentIndicator> (see AgentIndicator.test).
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +14,7 @@ const user = { name: "Diane Jung", email: "diane@example.com" };
 
 describe("ProfileMenu", () => {
   it("shows initials for a signed-in user and opens to name + email", () => {
-    render(<ProfileMenu user={user} agentLocation={null} actions={[]} />);
+    render(<ProfileMenu user={user} actions={[]} />);
     const avatar = screen.getByRole("button", { name: /account menu/i });
     expect(avatar.textContent).toContain("DJ");
     fireEvent.click(avatar);
@@ -20,7 +23,7 @@ describe("ProfileMenu", () => {
   });
 
   it("shows a signed-out affordance when there is no user", () => {
-    render(<ProfileMenu user={null} agentLocation={null} actions={[{ label: "Sign in", onSelect: () => {} }]} />);
+    render(<ProfileMenu user={null} actions={[{ label: "Sign in", onSelect: () => {} }]} />);
     const avatar = screen.getByRole("button", { name: /not signed in/i });
     expect(avatar.textContent).toContain("?");
     fireEvent.click(avatar);
@@ -28,53 +31,25 @@ describe("ProfileMenu", () => {
     expect(screen.getByRole("menuitem", { name: "Sign in" })).toBeTruthy();
   });
 
-  it("renders the agent-location badge", () => {
-    const { rerender } = render(<ProfileMenu user={user} agentLocation="local" actions={[]} />);
-    fireEvent.click(screen.getByRole("button", { name: /account menu/i }));
-    expect(document.body.textContent).toContain("Agent · your machine");
-
-    rerender(<ProfileMenu user={user} agentLocation="cloud" actions={[]} />);
-    expect(document.body.textContent).toContain("Agent · cloud");
-
-    rerender(<ProfileMenu user={user} agentLocation={null} actions={[]} />);
-    expect(document.body.textContent).toContain("No agent attached");
-  });
-
   it("invokes a host action and closes the menu", () => {
     const onSelect = vi.fn();
-    render(<ProfileMenu user={user} agentLocation="local" actions={[{ label: "Collaborate on Cloud", onSelect, primary: true }]} />);
+    render(<ProfileMenu user={user} actions={[{ label: "Collaborate on Cloud", onSelect, primary: true }]} />);
     fireEvent.click(screen.getByRole("button", { name: /account menu/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Collaborate on Cloud" }));
     expect(onSelect).toHaveBeenCalledTimes(1);
-    // menu closed → the action is gone from the DOM
-    expect(screen.queryByRole("menuitem", { name: "Collaborate on Cloud" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Collaborate on Cloud" })).toBeNull(); // menu closed
   });
 
   it("does not invoke a disabled action", () => {
     const onSelect = vi.fn();
-    render(<ProfileMenu user={user} agentLocation={null} actions={[{ label: "Save locally", onSelect, disabled: true }]} />);
+    render(<ProfileMenu user={user} actions={[{ label: "Save locally", onSelect, disabled: true }]} />);
     fireEvent.click(screen.getByRole("button", { name: /account menu/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Save locally" }));
     expect(onSelect).not.toHaveBeenCalled();
   });
 
-  it("renders the agent-policy picker and reports a change", () => {
-    const onSetAgentPolicy = vi.fn();
-    render(<ProfileMenu user={user} agentLocation="cloud" actions={[]} agentPolicy="auto" onSetAgentPolicy={onSetAgentPolicy} />);
-    fireEvent.click(screen.getByRole("button", { name: /account menu/i }));
-    expect(screen.getByRole("menuitemradio", { name: /Connect a cloud agent/ }).getAttribute("aria-checked")).toBe("true");
-    fireEvent.click(screen.getByRole("menuitemradio", { name: /Wait for my local agent/ }));
-    expect(onSetAgentPolicy).toHaveBeenCalledWith("local");
-  });
-
-  it("omits the policy picker when no policy/handler is provided", () => {
-    render(<ProfileMenu user={user} agentLocation={null} actions={[]} />);
-    fireEvent.click(screen.getByRole("button", { name: /account menu/i }));
-    expect(screen.queryByRole("radiogroup")).toBeNull();
-  });
-
   it("closes on an outside click", () => {
-    render(<ProfileMenu user={user} agentLocation={null} actions={[{ label: "Sign out", onSelect: () => {}, danger: true }]} />);
+    render(<ProfileMenu user={user} actions={[{ label: "Sign out", onSelect: () => {}, danger: true }]} />);
     fireEvent.click(screen.getByRole("button", { name: /account menu/i }));
     expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeTruthy();
     fireEvent.mouseDown(document.body);

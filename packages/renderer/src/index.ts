@@ -8,6 +8,7 @@ export { createMemoryApi } from "./memoryApi";
 export { renderMarkdown } from "./markdown";
 export { isInternalDocLink, resolveDocPath } from "./links";
 export { ProfileMenu } from "./ProfileMenu";
+export { AgentIndicator } from "./AgentIndicator";
 export type {
   Api,
   Cadence,

@@ -21,6 +21,7 @@ import { QuestionChips } from "./QuestionChips";
 import { SourceEditor, type SourceEditorHandle } from "./SourceEditor";
 import { StatusBar } from "./StatusBar";
 import { ProfileMenu } from "./ProfileMenu";
+import { AgentIndicator } from "./AgentIndicator";
 import { applySegments, isChange, lineSegments, wordDiff, type DiffSegment, type WordPart } from "./textdiff";
 
 const USER_AUTHOR = "You";
@@ -1042,15 +1043,17 @@ function TopBar(props: {
       <button className="ap-primary" onClick={props.onComplete}>
         Complete &amp; quit
       </button>
-      {profile && (
-        <ProfileMenu
-          user={profile.user}
-          agentLocation={profile.agentLocation}
-          actions={profile.actions}
-          agentPolicy={profile.agentPolicy}
-          onSetAgentPolicy={profile.onSetAgentPolicy}
+      {profile?.presenceAware && (
+        <AgentIndicator
+          location={profile.agentLocation}
+          model={profile.agentModel}
+          quota={profile.agentQuota}
+          byoKey={profile.agentByoKey}
+          policy={profile.agentPolicy}
+          onSetPolicy={profile.onSetAgentPolicy}
         />
       )}
+      {profile && <ProfileMenu user={profile.user} actions={profile.actions} />}
     </header>
   );
 }

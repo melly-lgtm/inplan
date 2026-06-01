@@ -1,18 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useEffect, useRef, useState } from "react";
-import type { AgentLocation, AgentPolicy, ProfileMenuItem } from "./api";
-
-const AGENT_LABEL: Record<AgentLocation, string> = {
-  local: "Agent · your machine",
-  cloud: "Agent · cloud",
-};
-
-const POLICY_OPTIONS: { value: AgentPolicy; label: string }[] = [
-  { value: "auto", label: "Connect a cloud agent" },
-  { value: "local", label: "Wait for my local agent" },
-  { value: "manual", label: "Don't auto-connect" },
-];
+import type { ProfileMenuItem } from "./api";
 
 /** Up to two initials from a display name, for the avatar. */
 function initialsOf(name: string): string {
@@ -28,23 +17,16 @@ function initialsOf(name: string): string {
  * The shared identity menu — one component, both hosts (it lives here in
  * `@inplan/renderer`; the Electron app and the web edition each mount it and
  * inject their own actions, exactly like the `Api` seam). It shows the signed-in
- * user (or a signed-out affordance), a live "where is the agent running" badge,
- * and a dropdown of host-supplied actions. Purely presentational: *who* is
- * attached and *what* the actions do are the host's call (see docs/PLAN.md
- * § Local ⇄ cloud session handoff).
+ * user (or a signed-out affordance) and a dropdown of host-supplied actions. The
+ * agent connection/quota indicator + its preference picker live separately in the
+ * menu-bar `<AgentIndicator>`. Purely presentational.
  */
 export function ProfileMenu({
   user,
-  agentLocation,
   actions,
-  agentPolicy,
-  onSetAgentPolicy,
 }: {
   user: { name: string; email?: string } | null;
-  agentLocation: AgentLocation | null;
   actions: ProfileMenuItem[];
-  agentPolicy?: AgentPolicy;
-  onSetAgentPolicy?: (policy: AgentPolicy) => void | Promise<void>;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -69,7 +51,6 @@ export function ProfileMenu({
         onClick={() => setOpen((v) => !v)}
       >
         <span className="ap-avatar-initials">{user ? initialsOf(user.name) : "?"}</span>
-        {agentLocation && <span className={`ap-agent-dot ap-agent-${agentLocation}`} title={AGENT_LABEL[agentLocation]} />}
       </button>
       {open && (
         <div className="ap-profile-menu" role="menu">
@@ -77,23 +58,6 @@ export function ProfileMenu({
             <div className="ap-profile-name">{accountLabel}</div>
             {user?.email && <div className="ap-profile-email">{user.email}</div>}
           </div>
-          <div className="ap-profile-agent">{agentLocation ? AGENT_LABEL[agentLocation] : "No agent attached"}</div>
-          {agentPolicy && onSetAgentPolicy && (
-            <div className="ap-profile-policy" role="radiogroup" aria-label="Agent connection">
-              {POLICY_OPTIONS.map((o) => (
-                <button
-                  key={o.value}
-                  role="menuitemradio"
-                  aria-checked={agentPolicy === o.value}
-                  className={`ap-profile-policy-opt${agentPolicy === o.value ? " active" : ""}`}
-                  onClick={() => void onSetAgentPolicy(o.value)}
-                >
-                  <span className="ap-policy-dot" aria-hidden="true" />
-                  {o.label}
-                </button>
-              ))}
-            </div>
-          )}
           <div className="ap-profile-actions">
             {actions.map((a, i) => (
               <button
