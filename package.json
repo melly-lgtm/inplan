@@ -6,7 +6,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @inplan/core && npm run build -w @inplan/renderer && npm run build -w @inplan/cli && npm run build -w @inplan/app",
+    "build": "npm run build -w @inplan/core && npm run build -w @inplan/backend-supabase && npm run build -w @inplan/renderer && npm run build -w @inplan/cli && npm run build -w @inplan/app",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "vitest run",
     "test:watch": "vitest",
