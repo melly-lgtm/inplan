@@ -57,6 +57,11 @@ export interface Api {
   clearProposal(): Promise<void>;
   /** A Review-mode proposal was parked by the agent this session — surface it for review. */
   onProposal(cb: (payload: { content: string }) => void): void;
+  /**
+   * Open another document by its resolved path (a relative Markdown link, joined
+   * against this doc's path). Local: the sibling file; web: /docs/<org>/<repo>/<path>.
+   */
+  openDoc(target: string): Promise<void>;
 }
 
 declare global {

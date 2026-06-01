@@ -129,6 +129,11 @@ function registerIpc(): void {
   ipcMain.handle("proposal:clear", () => {
     session?.clearProposal();
   });
+  ipcMain.handle("doc:open", (_e, target: string) => {
+    // `target` is the path the renderer resolved from a relative Markdown link.
+    // TODO(M4): open the linked sibling doc on desktop (new window / in-place swap).
+    process.stderr.write(`[inplan] open-doc requested: ${target}\n`);
+  });
   ipcMain.handle("doc:complete", (_e, content: string) => {
     session?.complete(content);
     session?.logClose("completed");

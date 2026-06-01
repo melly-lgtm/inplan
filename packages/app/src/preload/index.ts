@@ -30,6 +30,7 @@ const api: Api = {
   onProposal: (cb: (payload: { content: string }) => void) => {
     ipcRenderer.on("doc:proposal", (_e, payload: { content: string }) => cb(payload));
   },
+  openDoc: (target: string) => ipcRenderer.invoke("doc:open", target),
 };
 
 contextBridge.exposeInMainWorld("api", api);

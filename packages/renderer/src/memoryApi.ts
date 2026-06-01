@@ -99,6 +99,9 @@ export function createMemoryApi(opts: { content: string; settings?: Settings }):
     async clearProposal(): Promise<void> {
       await store.clearProposed();
     },
+    async openDoc(): Promise<void> {
+      /* in-memory harness: no navigation */
+    },
   };
 
   const agent: MemoryAgent = {

@@ -15,6 +15,7 @@ import {
   type Thread,
 } from "./docOps";
 import { renderMarkdown } from "./markdown";
+import { isInternalDocLink, resolveDocPath } from "./links";
 import { ComposerPopover } from "./ComposerPopover";
 import { QuestionChips } from "./QuestionChips";
 import { SourceEditor, type SourceEditorHandle } from "./SourceEditor";
@@ -84,6 +85,7 @@ export function App(): JSX.Element {
   const docRef = useRef(doc);
   docRef.current = doc;
   const previewRef = useRef<HTMLElement>(null);
+  const docPathRef = useRef<string>(""); // current doc's locator path, for resolving relative links
   const railRef = useRef<HTMLElement>(null);
   const editorRef = useRef<SourceEditorHandle>(null);
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -131,7 +133,8 @@ export function App(): JSX.Element {
 
     window.api
       .load()
-      .then(({ content }) => {
+      .then(({ content, path }) => {
+        docPathRef.current = path;
         const d = parse(content);
         setDoc(d);
         savedRef.current = serialize(d);
@@ -724,6 +727,10 @@ export function App(): JSX.Element {
                   return;
                 }
                 const href = a.getAttribute("href") ?? "";
+                if (isInternalDocLink(href)) {
+                  void window.api.openDoc(resolveDocPath(docPathRef.current, href));
+                  return;
+                }
                 if (/^https?:/.test(href)) window.open(href, "_blank");
                 return;
               }
