@@ -23,6 +23,7 @@ import {
 import { ***REMOVED***, ***REMOVED***Websocket } from "***REMOVED***";
 import * as Y from ***REMOVED***;
 import WebSocket from "ws";
+import { agentAuthorFor } from "./agentAuthor";
 import { authedSession, clearAuth, currentUser, remoteBackend, saveAuth } from "./cliAuth";
 import { checkForUpdate, selfUpdate, UPDATE_PKG } from "./update";
 import { runningEditorPid } from "./editorProcess";
@@ -59,13 +60,13 @@ const COLLAB_URL = process.env.INPLAN_COLLAB_URL || "wss://inplan-collab.fly.dev
  * wait exiting) clears it. Best-effort: presence must never break the wait, so
  * any failure is swallowed and the wait proceeds.
  */
-function announcePresence(docId: string, token: string): { destroy: () => void } {
+function announcePresence(docId: string, token: string, model?: string): { destroy: () => void } {
   try {
     const ydoc = new ***REMOVED***();
     // Node has no DOM WebSocket; hand the socket the `ws` polyfill.
     const socket = new ***REMOVED***Websocket({ url: COLLAB_URL, WebSocketPolyfill: WebSocket });
     const provider = new ***REMOVED***({ websocketProvider: socket, name: docId, document: ydoc, token });
-    provider.awareness?.setLocalStateField("inplanPresence", { kind: "agent", agentLocation: "local" });
+    provider.awareness?.setLocalStateField("inplanPresence", { kind: "agent", agentLocation: "local", ...(model ? { model } : {}) });
     return {
       destroy: () => {
         try {
@@ -175,7 +176,7 @@ function logWaitExit(p: DocPaths, reason: string): void {
  * cursor, else "start from now" (current max). It is persisted on return so the
  * agent never hand-manages it and turns can't be skipped.
  */
-async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>): Promise<void> {
+async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string): Promise<void> {
   const { channel, store } = backend;
   const history = await backend.history();
 
@@ -298,6 +299,9 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
     // Materialized current settings (global file + this session's settings_changed),
     // so the agent always has them without scanning the log history.
     settings: settingsFromEntries(history),
+    // The canonical name the agent should author comments under (model-qualified
+    // when --model was passed), so presence + authorship stay consistent.
+    agentAuthor: agentAuthorFor(model),
     ...(reason ? { reason } : {}),
     cursor: result.cursor,
     closed: status === "closed",
@@ -333,7 +337,7 @@ function doLogin(args: string[]): void {
  * file's status* — it enables the Save-locally handoff (download the doc back to
  * its original path on disk). The bare `--remote <docId>` case has no local file.
  */
-async function runRemote(cmd: string, docId: string, explicitCursor: number | null, confirmed: Set<string>, rest: string[], localFile?: string): Promise<void> {
+async function runRemote(cmd: string, docId: string, explicitCursor: number | null, confirmed: Set<string>, rest: string[], localFile?: string, model?: string): Promise<void> {
   const backend = await remoteBackend(docId, "cli-agent");
   if (!backend) {
     process.stderr.write("inplan: not logged in (or session expired) — run `inplan login`\n");
@@ -366,7 +370,7 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
 
   // While we hold the turn on a cloud doc, announce the local agent in the doc's
   // presence room so the web badge shows "agent · your machine"; clear it on exit.
-  const presence = announcePresence(docId, backend.token);
+  const presence = announcePresence(docId, backend.token, model);
   try {
     await waitCycle(
       {
@@ -378,6 +382,7 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       },
       explicitCursor,
       confirmed,
+      model,
     );
   } finally {
     presence.destroy();
@@ -580,6 +585,7 @@ async function main(): Promise<void> {
   const args = argv.slice(1);
   const cursorFlag = getFlag(args, "cursor");
   const explicitCursor = cursorFlag !== undefined ? Number(cursorFlag) : null; // optional override; wait self-manages otherwise
+  const model = getFlag(args, "model"); // the agent declares its model (presence badge + comment author)
   const confirmed = new Set(
     (getFlag(args, "confirmed-comment-deletion") ?? "")
       .split(",")
@@ -589,7 +595,7 @@ async function main(): Promise<void> {
 
   if (!cmd || !["open", "wait", "signal", "status", "promote", "demote", "upload"].includes(cmd)) {
     process.stderr.write(
-      "usage: inplan <open|wait|signal> <file|--remote DOC_ID> [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n" +
+      "usage: inplan <open|wait|signal> <file|--remote DOC_ID> [--model NAME] [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n" +
         "       inplan status  <file>\n" +
         "       inplan upload  <file> [--org <slug>] [--repo <name>]      (Collaborate on Cloud)\n" +
         "       inplan promote <file> --cloud-doc <docId> [--locator org/repo/path]\n" +
@@ -604,7 +610,7 @@ async function main(): Promise<void> {
   // resolving a local file/sidecar.
   const remoteDocId = getFlag(args, "remote");
   if (remoteDocId) {
-    await runRemote(cmd, remoteDocId, explicitCursor, confirmed, args);
+    await runRemote(cmd, remoteDocId, explicitCursor, confirmed, args, undefined, model);
     return;
   }
 
@@ -650,7 +656,7 @@ async function main(): Promise<void> {
   if (route.kind === "cloud") {
     // `file` is this promoted local doc — pass it so a Save-locally request can
     // bring the body back to disk here.
-    await runRemote(cmd, route.docId, explicitCursor, confirmed, args, file);
+    await runRemote(cmd, route.docId, explicitCursor, confirmed, args, file, model);
     return;
   }
 
@@ -689,7 +695,7 @@ async function main(): Promise<void> {
     }
   }
 
-  await waitCycle(fsBackend(file), explicitCursor, confirmed);
+  await waitCycle(fsBackend(file), explicitCursor, confirmed, model);
 }
 
 main().catch((err) => {
