@@ -20,6 +20,9 @@ import {
   settingsFromEntries,
   writeStatus,
 } from "@inplan/core/node";
+import { ***REMOVED***, ***REMOVED***Websocket } from "***REMOVED***";
+import * as Y from ***REMOVED***;
+import WebSocket from "ws";
 import { authedSession, clearAuth, currentUser, remoteBackend, saveAuth } from "./cliAuth";
 import { runningEditorPid } from "./editorProcess";
 import { evaluateAgentEdit } from "./gate";
@@ -46,6 +49,37 @@ function hasFlag(args: string[], name: string): boolean {
 
 const debounceMs = Number(process.env.INPLAN_DEBOUNCE_MS ?? 3000);
 const pollMs = Number(process.env.INPLAN_POLL_MS ?? 200);
+const COLLAB_URL = process.env.INPLAN_COLLAB_URL || "wss://inplan-collab.fly.dev";
+
+/**
+ * Announce this local agent in a cloud doc's awareness room (***REMOVED*** presence), so
+ * the web shows an "agent · your machine" badge while the CLI is attached. Agent
+ * attachment is **derived from live presence, not stored** — disconnecting (the
+ * wait exiting) clears it. Best-effort: presence must never break the wait, so
+ * any failure is swallowed and the wait proceeds.
+ */
+function announcePresence(docId: string, token: string): { destroy: () => void } {
+  try {
+    const ydoc = new ***REMOVED***();
+    // Node has no DOM WebSocket; hand the socket the `ws` polyfill.
+    const socket = new ***REMOVED***Websocket({ url: COLLAB_URL, WebSocketPolyfill: WebSocket });
+    const provider = new ***REMOVED***({ websocketProvider: socket, name: docId, document: ydoc, token });
+    provider.awareness?.setLocalStateField("inplanPresence", { kind: "agent", agentLocation: "local" });
+    return {
+      destroy: () => {
+        try {
+          provider.destroy();
+          socket.destroy();
+          ydoc.destroy();
+        } catch {
+          /* best-effort teardown */
+        }
+      },
+    };
+  } catch {
+    return { destroy: () => {} };
+  }
+}
 
 function spawnApp(file: string): number | null {
   const cmd = process.env.INPLAN_APP_CMD;
@@ -299,16 +333,23 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     return;
   }
 
-  await waitCycle(
-    {
-      channel: backend.channel,
-      store: backend.store,
-      history: async () => (await backend.channel.readSince(0)).entries,
-      logExit: () => {}, // no local sidecar for a cloud doc
-    },
-    explicitCursor,
-    confirmed,
-  );
+  // While we hold the turn on a cloud doc, announce the local agent in the doc's
+  // presence room so the web badge shows "agent · your machine"; clear it on exit.
+  const presence = announcePresence(docId, backend.token);
+  try {
+    await waitCycle(
+      {
+        channel: backend.channel,
+        store: backend.store,
+        history: async () => (await backend.channel.readSince(0)).entries,
+        logExit: () => {}, // no local sidecar for a cloud doc
+      },
+      explicitCursor,
+      confirmed,
+    );
+  } finally {
+    presence.destroy();
+  }
 }
 
 /** Print where a document currently lives (local vs cloud) and its cloud pointer. */

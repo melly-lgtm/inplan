@@ -118,6 +118,8 @@ export interface RemoteBackend {
   db: SupabaseClient;
   channel: ControlChannel;
   store: DocumentStore;
+  /** The user's JWT — authenticates the collab websocket (for presence). */
+  token: string;
 }
 
 /**
@@ -131,5 +133,6 @@ export async function remoteBackend(docId: string, consumerId = "cli-agent"): Pr
     db: s.db,
     channel: new SupabaseControlChannel(s.db, docId, consumerId),
     store: new SupabaseDocumentStore(s.db, docId),
+    token: s.session.access_token,
   };
 }
