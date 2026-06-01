@@ -4,7 +4,19 @@
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { CONTROL_LOG_VERSION, currentSettings, FsControlChannel, FsDocumentStore, LogEventType, parse, readLog } from "@inplan/core/node";
+import {
+  type ControlChannel,
+  CONTROL_LOG_VERSION,
+  type DocumentStore,
+  FsControlChannel,
+  FsDocumentStore,
+  type LogEntry,
+  LogEventType,
+  parse,
+  readLog,
+  settingsFromEntries,
+} from "@inplan/core/node";
+import { remoteBackend, saveAuth } from "./cliAuth";
 import { runningEditorPid } from "./editorProcess";
 import { evaluateAgentEdit } from "./gate";
 import { docPaths, type DocPaths } from "./paths";
@@ -42,9 +54,8 @@ function spawnApp(file: string): number | null {
   return child.pid ?? null;
 }
 
-/** Latest cadence from the control log (Turn unless a mode_changed says otherwise). */
-function currentCadence(logPath: string): "turn" | "instant" {
-  const entries = readLog(logPath);
+/** Latest cadence from the protocol history (Turn unless a mode_changed says otherwise). */
+function cadenceFrom(entries: LogEntry[]): "turn" | "instant" {
   for (let i = entries.length - 1; i >= 0; i--) {
     if (entries[i]!.type === LogEventType.ModeChanged) {
       const c = (entries[i]!.payload as { cadence?: string } | undefined)?.cadence;
@@ -54,9 +65,8 @@ function currentCadence(logPath: string): "turn" | "instant" {
   return "turn";
 }
 
-/** Latest agent-change acceptance from the control log (Auto unless a mode_changed says Review). */
-function currentAcceptance(logPath: string): "auto" | "review" {
-  const entries = readLog(logPath);
+/** Latest agent-change acceptance from the protocol history (Auto unless a mode_changed says Review). */
+function acceptanceFrom(entries: LogEntry[]): "auto" | "review" {
   for (let i = entries.length - 1; i >= 0; i--) {
     if (entries[i]!.type === LogEventType.ModeChanged) {
       const a = (entries[i]!.payload as { acceptance?: string } | undefined)?.acceptance;
@@ -66,10 +76,37 @@ function currentAcceptance(logPath: string): "auto" | "review" {
   return "auto";
 }
 
-/** The highest seq in the control log (0 if empty). */
-function maxSeq(logPath: string): number {
-  const entries = readLog(logPath);
+/** The highest seq in the protocol history (0 if empty). */
+function maxSeqFrom(entries: LogEntry[]): number {
   return entries.length ? entries[entries.length - 1]!.seq : 0;
+}
+
+/**
+ * A document's control channel + store, plus storage-agnostic providers for the
+ * protocol history and exit logging. The desktop edition backs this with sidecar
+ * files; the cloud edition backs it with Supabase — `waitCycle` runs unchanged
+ * over either, since it consumes only the {@link ControlChannel}/{@link DocumentStore}
+ * interfaces.
+ */
+interface WaitBackend {
+  channel: ControlChannel;
+  store: DocumentStore;
+  /** Full protocol history, for deriving cadence/acceptance/settings/start cursor. */
+  history(): Promise<LogEntry[]>;
+  /** Record why a waiter exited (sidecar file on the desktop; no-op for cloud). */
+  logExit(reason: string): void;
+}
+
+/** Local sidecar-file backend for a document on disk. */
+function fsBackend(file: string): WaitBackend {
+  const p = docPaths(file);
+  mkdirSync(p.controlDir, { recursive: true });
+  return {
+    channel: new FsControlChannel(p),
+    store: new FsDocumentStore(p),
+    history: async () => readLog(p.logPath),
+    logExit: (reason) => logWaitExit(p, reason),
+  };
 }
 
 /** Record why a waiter exited (normal status / superseded / OS signal), for debugging
@@ -88,15 +125,13 @@ function logWaitExit(p: DocPaths, reason: string): void {
  * cursor, else "start from now" (current max). It is persisted on return so the
  * agent never hand-manages it and turns can't be skipped.
  */
-async function waitCycle(file: string, explicitCursor: number | null, confirmed: Set<string>): Promise<void> {
-  const p = docPaths(file);
-  mkdirSync(p.controlDir, { recursive: true });
-  const channel = new FsControlChannel(p);
-  const store = new FsDocumentStore(p);
+async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>): Promise<void> {
+  const { channel, store } = backend;
+  const history = await backend.history();
 
   // Cursor: explicit override, else the persisted cursor, else "start from now".
-  // getCursor() returns 0 when unset, so `|| maxSeq` means begin at the latest seq.
-  const cursor = explicitCursor ?? ((await channel.getCursor()) || maxSeq(p.logPath));
+  // getCursor() returns 0 when unset, so `|| maxSeqFrom` means begin at the latest seq.
+  const cursor = explicitCursor ?? ((await channel.getCursor()) || maxSeqFrom(history));
 
   const current = await store.loadDoc();
   let canonicalText = await store.getCanonical();
@@ -124,7 +159,7 @@ async function waitCycle(file: string, explicitCursor: number | null, confirmed:
   // accepts/rejects in the editor (which then writes canonical). This makes the
   // file the source of truth WITHOUT auto-applying — killing the app before a
   // decision leaves the proposal pending, never silently accepted.
-  const acceptance = currentAcceptance(p.logPath);
+  const acceptance = acceptanceFrom(history);
   const bodyChanged = parse(canonicalText).body !== parse(current).body;
 
   if (ev.removedIds.length > 0) {
@@ -157,20 +192,20 @@ async function waitCycle(file: string, explicitCursor: number | null, confirmed:
   await channel.claimLock(lockToken);
   for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"] as const) {
     process.on(sig, () => {
-      logWaitExit(p, `signal:${sig}`);
+      backend.logExit(`signal:${sig}`);
       process.exit(0);
     });
   }
 
   // Mode-aware wake: Turn mode wakes only on turn-end / session-close; Instant on any user action.
-  const cadence = currentCadence(p.logPath);
+  const cadence = cadenceFrom(history);
   const isActionable = wakePredicate(cadence);
   const result = await waitForActions({ channel, cursor, debounceMs, pollMs, isActionable, token: lockToken });
 
   // Superseded: a newer waiter owns the doc now. Step down quietly without
   // advancing the cursor (the live waiter handles it).
   if (result.superseded) {
-    logWaitExit(p, "superseded");
+    backend.logExit("superseded");
     output({ status: "superseded" });
     return;
   }
@@ -196,19 +231,72 @@ async function waitCycle(file: string, explicitCursor: number | null, confirmed:
   } else {
     status = cadence === "turn" ? "your_turn" : "activity";
   }
-  logWaitExit(p, `status:${status}${reason ? `/${reason}` : ""}`);
+  backend.logExit(`status:${status}${reason ? `/${reason}` : ""}`);
   output({
     status,
     mode: cadence,
     humanLocked: status === "your_turn",
     // Materialized current settings (global file + this session's settings_changed),
     // so the agent always has them without scanning the log history.
-    settings: currentSettings(p.logPath),
+    settings: settingsFromEntries(history),
     ...(reason ? { reason } : {}),
     cursor: result.cursor,
     closed: status === "closed",
     entries: result.entries,
   });
+}
+
+/**
+ * Store cloud credentials for `--remote` commands. Flags win over env so a shell
+ * can pre-seed the deployment (`INPLAN_SUPABASE_URL` / `_ANON_KEY`) and only the
+ * per-user `--refresh` token need be passed. (The browser handoff — `inplan login`
+ * opens `/cli-auth` and receives the token — is a later slice; this is the seam.)
+ */
+function doLogin(args: string[]): void {
+  const url = getFlag(args, "url") ?? process.env.INPLAN_SUPABASE_URL;
+  const anonKey = getFlag(args, "anon") ?? process.env.INPLAN_SUPABASE_ANON_KEY;
+  const refreshToken = getFlag(args, "refresh");
+  if (!url || !anonKey || !refreshToken) {
+    process.stderr.write("usage: inplan login --url <url> --anon <anon-key> --refresh <refresh-token>\n");
+    process.exit(64);
+  }
+  saveAuth({ url, anonKey, refreshToken });
+  output({ status: "logged_in", url });
+}
+
+/**
+ * Drive a *cloud* document as the logged-in agent. There is no local editor to
+ * spawn (a cloud doc opens in the browser), so `open`/`wait` both attach + wait
+ * over the Supabase backend, and `signal` appends the agent's protocol events.
+ */
+async function runRemote(cmd: string, docId: string, explicitCursor: number | null, confirmed: Set<string>, rest: string[]): Promise<void> {
+  const backend = await remoteBackend(docId, "cli-agent");
+  if (!backend) {
+    process.stderr.write("inplan: not logged in (or session expired) — run `inplan login`\n");
+    process.exit(1);
+  }
+
+  if (cmd === "signal") {
+    if (hasFlag(rest, "done")) {
+      await backend.channel.append({ actor: "agent", type: LogEventType.AgentDoneSuggested });
+    }
+    if (hasFlag(rest, "reload")) {
+      await backend.channel.append({ actor: "agent", type: LogEventType.ReloadSuggested });
+    }
+    output({ status: "signaled" });
+    return;
+  }
+
+  await waitCycle(
+    {
+      channel: backend.channel,
+      store: backend.store,
+      history: async () => (await backend.channel.readSince(0)).entries,
+      logExit: () => {}, // no local sidecar for a cloud doc
+    },
+    explicitCursor,
+    confirmed,
+  );
 }
 
 async function main(): Promise<void> {
@@ -220,23 +308,40 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Resolve to an absolute path up front so the CLI and the editor it spawns
-  // compute the same sidecar key (the editor resolves its arg against its own CWD).
-  const file = argv[1] ? resolve(argv[1]) : argv[1];
-  const rest = argv.slice(2);
-  const cursorFlag = getFlag(rest, "cursor");
+  if (cmd === "login") {
+    doLogin(argv.slice(1));
+    return;
+  }
+
+  // Flags are parsed from everything after the subcommand (`argv.slice(1)`), so a
+  // cloud invocation (`wait --remote DOC_ID`) and a local one (`wait file.md --cursor N`)
+  // both resolve their flags regardless of whether arg 1 is a path or a flag.
+  const args = argv.slice(1);
+  const cursorFlag = getFlag(args, "cursor");
   const explicitCursor = cursorFlag !== undefined ? Number(cursorFlag) : null; // optional override; wait self-manages otherwise
   const confirmed = new Set(
-    (getFlag(rest, "confirmed-comment-deletion") ?? "")
+    (getFlag(args, "confirmed-comment-deletion") ?? "")
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean),
   );
 
   if (!cmd || !["open", "wait", "signal"].includes(cmd)) {
-    process.stderr.write("usage: inplan <open|wait|signal> <file> [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n");
+    process.stderr.write("usage: inplan <open|wait|signal> <file|--remote DOC_ID> [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n       inplan login --url <url> --anon <anon-key> --refresh <refresh-token>\n");
     process.exit(64);
   }
+
+  // Cloud target: `--remote DOC_ID` routes to the Supabase backend instead of
+  // resolving a local file/sidecar.
+  const remoteDocId = getFlag(args, "remote");
+  if (remoteDocId) {
+    await runRemote(cmd, remoteDocId, explicitCursor, confirmed, args);
+    return;
+  }
+
+  // Resolve to an absolute path up front so the CLI and the editor it spawns
+  // compute the same sidecar key (the editor resolves its arg against its own CWD).
+  const file = argv[1] ? resolve(argv[1]) : argv[1];
   if (!file) {
     process.stderr.write(`inplan ${cmd}: missing <file>\n`);
     process.exit(64);
@@ -246,12 +351,12 @@ async function main(): Promise<void> {
     const p = docPaths(file);
     mkdirSync(p.controlDir, { recursive: true });
     const channel = new FsControlChannel(p);
-    if (hasFlag(rest, "done")) {
+    if (hasFlag(args, "done")) {
       await channel.append({ actor: "agent", type: LogEventType.AgentDoneSuggested });
     }
     // Ask the human to close the window so the agent can relaunch a new build —
     // a clean, user-initiated shutdown instead of the agent killing the process.
-    if (hasFlag(rest, "reload")) {
+    if (hasFlag(args, "reload")) {
       await channel.append({ actor: "agent", type: LogEventType.ReloadSuggested });
     }
     output({ status: "signaled" });
@@ -277,7 +382,7 @@ async function main(): Promise<void> {
     }
   }
 
-  await waitCycle(file, explicitCursor, confirmed);
+  await waitCycle(fsBackend(file), explicitCursor, confirmed);
 }
 
 main().catch((err) => {

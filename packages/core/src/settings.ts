@@ -11,7 +11,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { LogEventType } from "./controlLog";
+import { type LogEntry, LogEventType } from "./controlLog";
 import { readLog } from "./controlLogFs";
 
 /** Settings that influence how the agent acts (kept minimal and additive). */
@@ -55,8 +55,18 @@ export function writeGlobalSettings(settings: Settings): void {
  * log folded on top (the log is authoritative for changes made this session).
  */
 export function currentSettings(logPath: string): Settings {
-  const settings = readGlobalSettings();
-  for (const e of readLog(logPath)) {
+  return settingsFromEntries(readLog(logPath));
+}
+
+/**
+ * Fold any `settings_changed` events over a base (the global file by default).
+ * The storage-agnostic core of {@link currentSettings}: the desktop edition
+ * passes its file-read log; the cloud edition passes the document's `events`
+ * history, so both materialize identical settings without a local sidecar.
+ */
+export function settingsFromEntries(entries: LogEntry[], base: Settings = readGlobalSettings()): Settings {
+  const settings = { ...base };
+  for (const e of entries) {
     if (e.type === LogEventType.SettingsChanged && e.payload && typeof e.payload === "object") {
       Object.assign(settings, e.payload as Partial<Settings>);
     }

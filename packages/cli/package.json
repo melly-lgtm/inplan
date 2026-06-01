@@ -10,7 +10,9 @@
   },
   "files": ["dist"],
   "dependencies": {
-    "@inplan/core": "0.0.0"
+    "@inplan/backend-supabase": "0.0.0",
+    "@inplan/core": "0.0.0",
+    "@supabase/supabase-js": "^2.45.0"
   },
   "scripts": {
     "build": "tsup src/cli.ts --format esm --clean",
