@@ -153,26 +153,36 @@ function sendNavState(): void {
 }
 
 /**
- * Follow an in-window link to a sibling doc: park `navigated_to` on the CURRENT
- * doc's log (so its attached agent steps down + re-attaches at `file`), swap the
- * window's session to `file`, and tell the renderer to load it. `push` extends the
- * history (a fresh link); back/forward replay it with `push=false`.
+ * Follow an in-window link to a sibling doc: prompt to save unsaved edits, park
+ * `navigated_to` on the CURRENT doc's log (so its attached agent steps down +
+ * re-attaches at `file`), swap the window's session to `file`, and tell the
+ * renderer to load it. Returns whether it actually navigated — the caller owns the
+ * history/index and only advances it on success (so Cancel can't desync them).
  */
-function navigateTo(file: string, push: boolean): void {
-  if (!session || !win) return;
-  if (resolve(file) === resolve(session.paths.file)) return; // already here
+function navigateTo(file: string): boolean {
+  if (!session || !win) return false;
+  if (resolve(file) === resolve(session.paths.file)) return false; // already here
+  // Don't silently drop the human's in-progress edits when leaving the doc.
+  if (session.hasUnsaved) {
+    const choice = dialog.showMessageBoxSync(win, {
+      type: "question",
+      buttons: ["Save", "Don't Save", "Cancel"],
+      defaultId: 0,
+      cancelId: 2,
+      message: "Save changes before leaving this plan?",
+      detail: "Your edits this turn aren't saved to the plan yet.",
+    });
+    if (choice === 2) return false; // Cancel — stay put
+    if (choice === 0) session.complete(session.pending); // Save → write file + canonical
+    // "Don't Save" → proceed; the autosave backups remain as a safety net.
+  }
   session.logNavigatedAway(file);
   stopWatching?.();
   session = new Session(file);
   session.logEditorPid(process.pid);
   stopWatching = watchSession();
-  if (push) {
-    navHistory.splice(navIdx + 1); // drop any forward entries past the current point
-    navHistory.push(file);
-    navIdx = navHistory.length - 1;
-  }
   win.webContents.send("doc:navigated", session.load());
-  sendNavState();
+  return true;
 }
 
 function createWindow(): void {
@@ -275,11 +285,20 @@ function registerIpc(): void {
       process.stderr.write(`[inplan] open-doc: no such .md file: ${abs}\n`);
       return;
     }
-    navigateTo(abs, true);
+    if (navigateTo(abs)) {
+      navHistory.splice(navIdx + 1); // a fresh link drops any forward entries
+      navHistory.push(abs);
+      navIdx = navHistory.length - 1;
+      sendNavState();
+    }
   });
   ipcMain.handle("nav:go", (_e, dir: "back" | "forward") => {
-    if (dir === "back" && navIdx > 0) navigateTo(navHistory[--navIdx]!, false);
-    else if (dir === "forward" && navIdx < navHistory.length - 1) navigateTo(navHistory[++navIdx]!, false);
+    const target = dir === "back" ? navIdx - 1 : navIdx + 1;
+    if (target < 0 || target >= navHistory.length) return;
+    if (navigateTo(navHistory[target]!)) {
+      navIdx = target; // advance the index only if we actually moved (Cancel keeps it)
+      sendNavState();
+    }
   });
   ipcMain.handle("doc:complete", (_e, content: string) => {
     session?.complete(content);
