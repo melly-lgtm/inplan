@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { LogEventType, parse, serialize, type Comment, type ParsedDocument, type Question } from "@inplan/core";
-import { Fragment, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Acceptance, Cadence, ProfileState } from "./api";
 import {
   addAnswer,
@@ -913,13 +913,19 @@ function PaneTabs({ tab, onTab }: { tab: "comments" | "source"; onTab: (t: "comm
 }
 
 /** Subscribe to the host's profile controller (identity + live agent presence).
- *  Returns null when the host wires no profile (tests / single-writer desktop). */
+ *  Returns null when the host wires no profile (tests / single-writer desktop).
+ *  Uses state-push rather than `useSyncExternalStore` because a host may proxy the
+ *  controller across a contextBridge (Electron), where `get()` need not return a
+ *  referentially stable snapshot. */
 function useProfile(): ProfileState | null {
   const controller = window.api.profile;
-  return useSyncExternalStore(
-    (cb) => (controller ? controller.subscribe(cb) : () => {}),
-    () => (controller ? controller.get() : null),
-  );
+  const [state, setState] = useState<ProfileState | null>(() => controller?.get() ?? null);
+  useEffect(() => {
+    if (!controller) return;
+    setState(controller.get());
+    return controller.subscribe(setState);
+  }, [controller]);
+  return state;
 }
 
 function TopBar(props: {

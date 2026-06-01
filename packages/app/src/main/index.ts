@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
@@ -32,6 +33,89 @@ function resolveTargetFile(): string | null {
 let session: Session | null = null;
 let win: BrowserWindow | null = null;
 let stopWatching: (() => void) | null = null;
+
+// --- Cloud profile (the shared <ProfileMenu>) ------------------------------
+// The editor stays free of Supabase: cloud identity + actions are delegated to
+// the `inplan` CLI (the same one that launched us), run as plain Node via
+// ELECTRON_RUN_AS_NODE. `INPLAN_CLI` is the CLI's entry path, passed on spawn.
+
+interface ActionDescriptor {
+  id: string;
+  label: string;
+  primary?: boolean;
+  danger?: boolean;
+}
+interface ProfileSnapshot {
+  user: { name: string; email?: string } | null;
+  agentLocation: "local" | "cloud" | null;
+  actions: ActionDescriptor[];
+}
+
+/** Run an `inplan` subcommand under Electron's bundled Node, returning stdout JSON. */
+function runCli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((res) => {
+    const cli = process.env.INPLAN_CLI;
+    if (!cli) {
+      res({ code: -1, stdout: "", stderr: "INPLAN_CLI not set" });
+      return;
+    }
+    execFile(
+      process.execPath,
+      [cli, ...args],
+      { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } },
+      (err, stdout, stderr) => {
+        const code = err && typeof (err as NodeJS.ErrnoException & { code?: number }).code === "number" ? Number((err as { code: number }).code) : err ? 1 : 0;
+        res({ code, stdout, stderr });
+      },
+    );
+  });
+}
+
+/** The current cloud profile: who is signed in + the actions to offer. */
+async function readProfile(): Promise<ProfileSnapshot> {
+  const r = await runCli(["whoami"]);
+  let who: { signedIn?: boolean; email?: string } = {};
+  try {
+    who = JSON.parse(r.stdout.trim() || "{}");
+  } catch {
+    /* treat unparseable as signed out */
+  }
+  if (who.signedIn) {
+    return {
+      user: { name: who.email ?? "Signed in", ...(who.email ? { email: who.email } : {}) },
+      agentLocation: null, // desktop has no live presence room; the web derives it (slice 2c-iv)
+      actions: [
+        { id: "collaborate", label: "Collaborate on Cloud", primary: true },
+        { id: "signout", label: "Sign out", danger: true },
+      ],
+    };
+  }
+  return { user: null, agentLocation: null, actions: [{ id: "signin", label: "Sign in…" }] };
+}
+
+/** Collaborate on Cloud: persist the latest body, upload+promote via the CLI,
+ *  open the cloud URL, and quit so the agent's next `wait` follows it to the cloud. */
+async function collaborateOnCloud(): Promise<void> {
+  if (!session) return;
+  if (session.hasUnsaved) session.complete(session.pending); // upload the latest on-disk body
+  const r = await runCli(["upload", session.paths.file]);
+  let out: { status?: string; cloudDocId?: string; locator?: { org: string; repo: string; path: string } } = {};
+  try {
+    out = JSON.parse(r.stdout.trim() || "{}");
+  } catch {
+    /* fall through to the error dialog */
+  }
+  if (out.status !== "uploaded" || !out.cloudDocId) {
+    dialog.showMessageBoxSync(win!, { type: "error", message: "Couldn't move this plan to the cloud.", detail: r.stderr.trim() || "Are you signed in? Run `inplan login`." });
+    return;
+  }
+  const base = (process.env.INPLAN_WEB_URL || "https://inplan.ai").replace(/\/$/, "");
+  const url = out.locator ? `${base}/docs/${out.locator.org}/${out.locator.repo}/${out.locator.path}` : `${base}/?doc=${out.cloudDocId}`;
+  await shell.openExternal(url);
+  // The doc now lives in the cloud; close this window (the running wait reconnects there).
+  session.logClose("window_closed");
+  app.quit();
+}
 
 function createWindow(): void {
   win = new BrowserWindow({
@@ -138,6 +222,24 @@ function registerIpc(): void {
     session?.complete(content);
     session?.logClose("completed");
     app.quit();
+  });
+
+  // Cloud profile menu: identity + host-injected actions for the shared <ProfileMenu>.
+  ipcMain.handle("profile:get", () => readProfile());
+  ipcMain.handle("profile:action", async (_e, id: string) => {
+    if (id === "collaborate") {
+      await collaborateOnCloud();
+    } else if (id === "signout") {
+      await runCli(["logout"]);
+      win?.webContents.send("profile:changed");
+    } else if (id === "signin") {
+      dialog.showMessageBoxSync(win!, {
+        type: "info",
+        message: "Sign in to inplan.ai",
+        detail: "Run `inplan login` in your terminal to connect this app to your inplan.ai account, then reopen this menu.",
+      });
+      win?.webContents.send("profile:changed"); // refresh in case they just signed in
+    }
   });
 }
 

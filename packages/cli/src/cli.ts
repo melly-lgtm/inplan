@@ -53,7 +53,14 @@ function spawnApp(file: string): number | null {
     process.stderr.write("[inplan] no editor configured (set INPLAN_APP_CMD); running headless\n");
     return null;
   }
-  const child = spawn(cmd, [file], { detached: true, stdio: "ignore", shell: true });
+  // Pass our own entry path so the editor can shell back out to the CLI for the
+  // cloud actions (whoami / upload / logout) it surfaces in the profile menu.
+  const child = spawn(cmd, [file], {
+    detached: true,
+    stdio: "ignore",
+    shell: true,
+    env: { ...process.env, INPLAN_CLI: process.argv[1] ?? "" },
+  });
   child.unref();
   return child.pid ?? null;
 }

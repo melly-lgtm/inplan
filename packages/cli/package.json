@@ -12,7 +12,11 @@
   "dependencies": {
     "@inplan/backend-supabase": "0.0.0",
     "@inplan/core": "0.0.0",
-    "@supabase/supabase-js": "^2.45.0"
+    "@supabase/supabase-js": "^2.45.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.10"
   },
   "scripts": {
     "build": "tsup src/cli.ts --format esm --clean",

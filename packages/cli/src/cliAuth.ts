@@ -10,8 +10,18 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
+import WebSocket from "ws";
 import type { ControlChannel, DocumentStore } from "@inplan/core";
 import { SupabaseControlChannel, SupabaseDocumentStore } from "@inplan/backend-supabase";
+
+// supabase-js builds a RealtimeClient eagerly in createClient, which throws on a
+// Node without a global WebSocket (e.g. Electron's bundled Node 20, used when the
+// desktop app shells back out to the CLI). The CLI never opens a Realtime socket —
+// it polls — but we still hand it a `ws` transport so construction can't fail.
+// `ws`'s WebSocket type differs structurally from the DOM lib's; supabase-js only
+// needs a constructor it can `new`, so cast past the cosmetic mismatch.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const realtimeTransport = { transport: WebSocket } as any;
 
 /** Persisted CLI credentials. The anon key + URL identify the deployment; the
  *  refresh token is the user's session (rotated on each refresh). The email is a
@@ -80,6 +90,7 @@ export async function authedSession(): Promise<AuthedSession | null> {
 
   const db = createClient(auth.url, auth.anonKey, {
     auth: { persistSession: false, autoRefreshToken: true, detectSessionInUrl: false },
+    realtime: realtimeTransport,
   });
   const { data, error } = await db.auth.refreshSession({ refresh_token: auth.refreshToken });
   if (error || !data.session) return null;
