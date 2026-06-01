@@ -24,6 +24,7 @@ import { ***REMOVED***, ***REMOVED***Websocket } from "***REMOVED***";
 import * as Y from ***REMOVED***;
 import WebSocket from "ws";
 import { authedSession, clearAuth, currentUser, remoteBackend, saveAuth } from "./cliAuth";
+import { checkForUpdate, selfUpdate, UPDATE_PKG } from "./update";
 import { runningEditorPid } from "./editorProcess";
 import { evaluateAgentEdit } from "./gate";
 import { docPaths, type DocPaths } from "./paths";
@@ -558,6 +559,18 @@ async function main(): Promise<void> {
   }
   if (cmd === "logout") {
     doLogout();
+    return;
+  }
+  // Self-update over npm (inplan ships as a global npm install).
+  if (cmd === "update") {
+    const updArgs = argv.slice(1);
+    const pkg = getFlag(updArgs, "pkg") ?? UPDATE_PKG;
+    if (hasFlag(updArgs, "check")) {
+      output({ status: "update_check", pkg, ...(await checkForUpdate({ pkg, current: VERSION })) });
+    } else {
+      const r = await selfUpdate(pkg);
+      output({ status: r.ok ? "updated" : "update_failed", pkg, output: r.output });
+    }
     return;
   }
 
