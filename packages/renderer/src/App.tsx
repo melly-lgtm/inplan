@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { LogEventType, parse, serialize, type Comment, type ParsedDocument, type Question } from "@inplan/core";
-import { Fragment, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Acceptance, Cadence } from "./api";
+import { Fragment, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { Acceptance, Cadence, ProfileState } from "./api";
 import {
   addAnswer,
   addDocComment,
@@ -20,6 +20,7 @@ import { ComposerPopover } from "./ComposerPopover";
 import { QuestionChips } from "./QuestionChips";
 import { SourceEditor, type SourceEditorHandle } from "./SourceEditor";
 import { StatusBar } from "./StatusBar";
+import { ProfileMenu } from "./ProfileMenu";
 import { applySegments, isChange, lineSegments, wordDiff, type DiffSegment, type WordPart } from "./textdiff";
 
 const USER_AUTHOR = "You";
@@ -911,6 +912,16 @@ function PaneTabs({ tab, onTab }: { tab: "comments" | "source"; onTab: (t: "comm
   );
 }
 
+/** Subscribe to the host's profile controller (identity + live agent presence).
+ *  Returns null when the host wires no profile (tests / single-writer desktop). */
+function useProfile(): ProfileState | null {
+  const controller = window.api.profile;
+  return useSyncExternalStore(
+    (cb) => (controller ? controller.subscribe(cb) : () => {}),
+    () => (controller ? controller.get() : null),
+  );
+}
+
 function TopBar(props: {
   cadence: Cadence;
   acceptance: Acceptance;
@@ -931,6 +942,7 @@ function TopBar(props: {
   locked: boolean;
 }): JSX.Element {
   const { cadence, acceptance, panes, onMode } = props;
+  const profile = useProfile();
   return (
     <header className="ap-topbar">
       <div className="ap-seg" role="group" aria-label="cadence">
@@ -976,6 +988,7 @@ function TopBar(props: {
       <button className="ap-primary" onClick={props.onComplete}>
         Complete &amp; quit
       </button>
+      {profile && <ProfileMenu user={profile.user} agentLocation={profile.agentLocation} actions={profile.actions} />}
     </header>
   );
 }

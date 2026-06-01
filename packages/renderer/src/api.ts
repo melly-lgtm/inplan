@@ -34,6 +34,40 @@ export interface Settings {
   autoResolve: boolean;
 }
 
+/** Where an agent is attached right now — derived from live presence by the host
+ *  (the local CLI joins as `local`; the managed runtime as `cloud`), never stored. */
+export type AgentLocation = "local" | "cloud";
+
+/** A host-injected profile-menu action (DI, like the rest of the Api): the local
+ *  app supplies "Collaborate on Cloud" + sign-in/out; the web "Save locally" /
+ *  "Download" + sign-out. The shared menu just renders and invokes them. */
+export interface ProfileMenuItem {
+  label: string;
+  onSelect: () => void | Promise<void>;
+  /** Visual emphasis for the primary call-to-action (e.g. Collaborate on Cloud). */
+  primary?: boolean;
+  /** Secondary/destructive treatment (e.g. Sign out). */
+  danger?: boolean;
+  disabled?: boolean;
+}
+
+/** Reactive identity + presence state behind the shared `<ProfileMenu>`. */
+export interface ProfileState {
+  /** The signed-in user, or null when not authenticated (host supplies a Sign in action). */
+  user: { name: string; email?: string } | null;
+  /** Where an agent is attached, for the badge; null when none is. */
+  agentLocation: AgentLocation | null;
+  /** Host-injected menu actions, rendered in order. */
+  actions: ProfileMenuItem[];
+}
+
+/** A reactive source of {@link ProfileState}. `get()` must return a referentially
+ *  stable snapshot until the state actually changes (it backs `useSyncExternalStore`). */
+export interface ProfileController {
+  get(): ProfileState;
+  subscribe(cb: (s: ProfileState) => void): () => void;
+}
+
 /** The API exposed to the renderer via the preload contextBridge (`window.api`). */
 export interface Api {
   /** Load the document this window was opened with. */
@@ -76,6 +110,9 @@ export interface Api {
   /** Live-collaboration binding for the source editor, if the host provides one
    *  (web/cloud). Absent/null on desktop + tests (single-writer). */
   collab?: CollabBinding | null;
+  /** Identity + presence for the shared `<ProfileMenu>`, when the host wires one
+   *  (web/cloud, and the signed-in desktop app). Absent on tests / single-writer. */
+  profile?: ProfileController | null;
 }
 
 declare global {

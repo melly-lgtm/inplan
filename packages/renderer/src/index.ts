@@ -7,4 +7,17 @@ export { App } from "./App";
 export { createMemoryApi } from "./memoryApi";
 export { renderMarkdown } from "./markdown";
 export { isInternalDocLink, resolveDocPath } from "./links";
-export type { Api, Cadence, Acceptance, SaveOptions, Settings, DocPayload, CollabBinding } from "./api";
+export { ProfileMenu } from "./ProfileMenu";
+export type {
+  Api,
+  Cadence,
+  Acceptance,
+  SaveOptions,
+  Settings,
+  DocPayload,
+  CollabBinding,
+  AgentLocation,
+  ProfileMenuItem,
+  ProfileState,
+  ProfileController,
+} from "./api";

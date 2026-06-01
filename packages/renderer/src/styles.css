@@ -32,6 +32,25 @@ body {
 .ap-settings-menu { position: absolute; top: 34px; left: 0; z-index: 40; width: 300px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,0.18); padding: 10px; }
 .ap-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; font-size: 13px; }
 .ap-settings-hint { font-size: 11px; color: var(--muted); padding-top: 2px; }
+
+/* profile menu (shared between the desktop app + the web edition) */
+.ap-profile { position: relative; margin-left: 4px; }
+.ap-avatar { position: relative; width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line); background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+.ap-avatar-initials { line-height: 1; }
+.ap-agent-dot { position: absolute; right: -2px; bottom: -2px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--bg); }
+.ap-agent-local { background: #2bb673; }   /* agent on your machine */
+.ap-agent-cloud { background: var(--accent); } /* managed cloud agent */
+.ap-profile-menu { position: absolute; top: 36px; right: 0; z-index: 40; width: 240px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,0.18); padding: 8px; }
+.ap-profile-id { padding: 4px 6px 6px; }
+.ap-profile-name { font-size: 13px; font-weight: 600; }
+.ap-profile-email { font-size: 11px; color: var(--muted); }
+.ap-profile-agent { font-size: 11px; color: var(--muted); padding: 4px 6px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 4px 0; }
+.ap-profile-actions { display: flex; flex-direction: column; gap: 4px; }
+.ap-profile-action { text-align: left; border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 13px; cursor: pointer; }
+.ap-profile-action:hover:not(:disabled) { background: var(--accent-soft); }
+.ap-profile-action:disabled { opacity: 0.5; cursor: default; }
+.ap-profile-action.ap-danger { color: #c0392b; }
+
 .ap-topbar button, .ap-tabs button { font: inherit; }
 .ap-topbar > button { border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 4px 12px; cursor: pointer; }
 .ap-primary { background: var(--accent) !important; color: #fff; border-color: var(--accent) !important; }
