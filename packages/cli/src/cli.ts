@@ -24,6 +24,7 @@ import { ***REMOVED***, ***REMOVED***Websocket } from "***REMOVED***";
 import * as Y from ***REMOVED***;
 import WebSocket from "ws";
 import { agentAuthorFor } from "./agentAuthor";
+import { gitProvenance } from "./provenance";
 import { authedSession, clearAuth, currentUser, remoteBackend, saveAuth } from "./cliAuth";
 import { checkForUpdate, selfUpdate, UPDATE_PKG } from "./update";
 import { runningEditorPid } from "./editorProcess";
@@ -492,9 +493,12 @@ async function doUpload(file: string, args: string[]): Promise<void> {
   const org = orgOf(pick);
 
   const body = existsSync(file) ? readFileSync(file, "utf8") : "";
-  const repo = getFlag(args, "repo") ?? "local";
-  const path = basename(file);
-  const title = firstHeading(body) ?? path;
+  // Provenance: stamp the doc with its git repo + repo-relative path so the cloud
+  // locator mirrors the source (relative MD links then resolve the same on the web).
+  const prov = gitProvenance(file);
+  const repo = getFlag(args, "repo") ?? prov.repo;
+  const path = getFlag(args, "path") ?? prov.path;
+  const title = firstHeading(body) ?? basename(path);
 
   const { data: doc, error: de } = await s.db
     .from("documents")
@@ -597,7 +601,7 @@ async function main(): Promise<void> {
     process.stderr.write(
       "usage: inplan <open|wait|signal> <file|--remote DOC_ID> [--model NAME] [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n" +
         "       inplan status  <file>\n" +
-        "       inplan upload  <file> [--org <slug>] [--repo <name>]      (Collaborate on Cloud)\n" +
+        "       inplan upload  <file> [--org <slug>] [--repo <name>] [--path <p>]   (Collaborate on Cloud)\n" +
         "       inplan promote <file> --cloud-doc <docId> [--locator org/repo/path]\n" +
         "       inplan demote  <file>\n" +
         "       inplan login --url <url> --anon <anon-key> --refresh <refresh-token> [--email <e>]\n" +
