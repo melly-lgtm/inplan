@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { appendLog, CONTROL_LOG_VERSION, FsControlChannel, LogEventType, readGlobalSettings, readLog, writeGlobalSettings } from "@inplan/core/node";
+import { appendLog, CONTROL_LOG_VERSION, FsControlChannel, type LogEntry, LogEventType, readGlobalSettings, readLog, writeGlobalSettings } from "@inplan/core/node";
 import type { Settings } from "@inplan/renderer";
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Acceptance, Cadence, SaveOptions } from "@inplan/renderer";
 import { docPaths, type DocPaths } from "./paths";
@@ -17,8 +17,6 @@ const MAX_BACKUPS = 25;
 
 export class Session {
   readonly paths: DocPaths;
-  /** Content the editor last wrote, used to distinguish our writes from the agent's. */
-  private lastWritten = "";
   private backupSeq = 0;
   private closed = false;
   /** Latest unsaved state reported by the renderer, for the close prompt. */
@@ -69,7 +67,6 @@ export class Session {
 
   load(): { path: string; content: string } {
     const content = readFileSync(this.paths.file, "utf8");
-    this.lastWritten = content;
     if (!existsSync(this.paths.canonicalPath)) {
       writeFileSync(this.paths.canonicalPath, content);
     }
@@ -88,7 +85,6 @@ export class Session {
     // the agent; the human stays in control until they explicitly Finish turn.
     writeFileSync(this.paths.file, content);
     writeFileSync(this.paths.canonicalPath, content);
-    this.lastWritten = content;
     if (options.kind === "apply") return;
     // Canonical save: wake the agent.
     const type = options.cadence === "turn" ? LogEventType.TurnEnded : LogEventType.DocumentEdited;
@@ -122,7 +118,6 @@ export class Session {
   complete(content: string): void {
     writeFileSync(this.paths.file, content);
     writeFileSync(this.paths.canonicalPath, content);
-    this.lastWritten = content;
   }
 
   /** The parked Review-mode proposal, if one is pending (the file exists ⇔ undecided). */
@@ -143,62 +138,63 @@ export class Session {
   }
 
   /**
-   * Watch for the agent rewriting the file out from under us, and for its
-   * `agent_done_suggested` signal in the control log. Polling-based for
-   * cross-platform reliability.
+   * Drive the editor from the control-log protocol — NOT a raw working-file watch
+   * — so the desktop behaves identically to the web/cloud `pump`. The CLI gate is
+   * the single source of truth: it appends `document_edited` (agent) only for an
+   * accepted edit (the working file then holds it), and `agent_revision_proposed`
+   * for a parked Review proposal (with the working file already reverted to
+   * canonical). Reacting to those events — instead of watching the file — means we
+   * never adopt the agent's body write before the gate decides, which is what used
+   * to produce the empty-diff race in Review (the baseline stayed put).
    */
-  watch(handlers: {
-    onExternalChange: (content: string) => void;
-    onAgentDone: () => void;
-    onAgentActive: () => void;
-    onProposal: (content: string) => void;
-    onReload: () => void;
-  }): () => void {
+  watch(handlers: WatchHandlers): () => void {
     let lastLogSeq = readLog(this.paths.logPath).at(-1)?.seq ?? 0;
-
-    const onFile = () => {
-      // The file may have just been deleted/moved (watcher fires on removal too).
-      if (!existsSync(this.paths.file)) return;
-      let content: string;
-      try {
-        content = readFileSync(this.paths.file, "utf8");
-      } catch {
-        return;
-      }
-      if (content !== this.lastWritten) {
-        this.lastWritten = content;
-        handlers.onExternalChange(content);
-      }
-    };
     const onLog = () => {
       const entries = readLog(this.paths.logPath).filter((e) => e.seq > lastLogSeq);
       if (entries.length) lastLogSeq = entries.at(-1)!.seq;
-      if (entries.some((e) => e.type === LogEventType.AgentDoneSuggested)) {
-        handlers.onAgentDone();
-      }
-      if (entries.some((e) => e.type === LogEventType.ReloadSuggested)) {
-        handlers.onReload();
-      }
-      // A Review-mode proposal was parked by the CLI gate — surface it for review.
-      if (entries.some((e) => e.type === LogEventType.AgentRevisionProposed)) {
-        const proposed = this.pendingProposal();
-        if (proposed != null) handlers.onProposal(proposed);
-      }
-      // The agent re-engaged (revised the doc or just re-attached) — clear "thinking".
-      if (entries.some((e) => e.actor === "agent" && (e.type === LogEventType.AgentRevised || e.type === LogEventType.DocumentEdited))) {
-        handlers.onAgentActive();
-      }
+      this.dispatchLog(entries, handlers);
     };
-
-    // The control-log watch goes through the ControlChannel seam (so a web
-    // backend can push via Realtime instead of polling). The working-file watch
-    // stays a direct fs watch — it's the desktop shell observing the agent's
-    // out-of-band edits, which a shared datastore models differently.
-    watchFile(this.paths.file, { interval: 400 }, onFile);
-    const unsubLog = new FsControlChannel(this.paths).subscribe(onLog);
-    return () => {
-      unwatchFile(this.paths.file, onFile);
-      unsubLog();
-    };
+    // The ControlChannel seam (a web backend pushes via Realtime instead of polling).
+    return new FsControlChannel(this.paths).subscribe(onLog);
   }
+
+  /**
+   * Fan a batch of new control-log entries out to the editor callbacks. Pure given
+   * the on-disk sidecars (no watchers) — exposed for tests. An accepted agent edit
+   * (`document_edited`) loads the working file (it now holds the revision); a parked
+   * proposal (`agent_revision_proposed`) loads `proposed.md` for the diff — and is
+   * NOT loaded as an external change, so the editor keeps its doc + the canonical
+   * baseline, and the diff is never empty.
+   */
+  dispatchLog(entries: LogEntry[], handlers: WatchHandlers): void {
+    if (!entries.length) return;
+    if (entries.some((e) => e.type === LogEventType.AgentDoneSuggested)) handlers.onAgentDone();
+    if (entries.some((e) => e.type === LogEventType.ReloadSuggested)) handlers.onReload();
+    if (entries.some((e) => e.type === LogEventType.AgentRevisionProposed)) {
+      const proposed = this.pendingProposal();
+      if (proposed != null) handlers.onProposal(proposed);
+    }
+    // An accepted agent edit: the working file holds the agent's revision (the gate
+    // set canonical to it). Load it — this replaces the old raw working-file watch.
+    if (entries.some((e) => e.actor === "agent" && e.type === LogEventType.DocumentEdited) && existsSync(this.paths.file)) {
+      try {
+        handlers.onExternalChange(readFileSync(this.paths.file, "utf8"));
+      } catch {
+        /* file mid-write — the next event will resync */
+      }
+    }
+    // The agent re-engaged (revised the doc or just re-attached) — clear "thinking".
+    if (entries.some((e) => e.actor === "agent" && (e.type === LogEventType.AgentRevised || e.type === LogEventType.DocumentEdited))) {
+      handlers.onAgentActive();
+    }
+  }
+}
+
+/** The editor-facing callbacks the desktop shell relays to the renderer over IPC. */
+export interface WatchHandlers {
+  onExternalChange: (content: string) => void;
+  onAgentDone: () => void;
+  onAgentActive: () => void;
+  onProposal: (content: string) => void;
+  onReload: () => void;
 }
