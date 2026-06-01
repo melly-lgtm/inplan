@@ -32,6 +32,8 @@ export interface DocPaths {
   waitLockPath: string;
   /** Append-only record of why each waiter exited (normal / superseded / signal). */
   waitDebugPath: string;
+  /** Where this document currently lives (local vs cloud) + the cloud pointer. */
+  statusPath: string;
 }
 
 /**
@@ -82,5 +84,6 @@ export function docPaths(file: string): DocPaths {
     cursorPath: join(controlDir, "cursor"),
     waitLockPath: join(controlDir, "waitlock"),
     waitDebugPath: join(controlDir, "wait-debug.log"),
+    statusPath: join(controlDir, "status.json"),
   };
 }

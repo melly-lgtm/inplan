@@ -9,3 +9,4 @@ export * from "./controlLogFs";
 export * from "./fsBackend";
 export * from "./paths";
 export * from "./settings";
+export * from "./status";

@@ -2,19 +2,23 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   type ControlChannel,
   CONTROL_LOG_VERSION,
+  type DocStatus,
   type DocumentStore,
   FsControlChannel,
   FsDocumentStore,
+  hashBody,
   type LogEntry,
   LogEventType,
   parse,
   readLog,
+  readStatus,
   settingsFromEntries,
+  writeStatus,
 } from "@inplan/core/node";
 import { remoteBackend, saveAuth } from "./cliAuth";
 import { runningEditorPid } from "./editorProcess";
@@ -299,6 +303,85 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
   );
 }
 
+/** Print where a document currently lives (local vs cloud) and its cloud pointer. */
+function doStatus(file: string): void {
+  output(readStatus(docPaths(file).statusPath));
+}
+
+/**
+ * Record that a local file is now collaborated on in the cloud — the status side
+ * of "Collaborate on Cloud". (The upload + seed of the `documents` row is the
+ * editor's job at promote time; this writes the local pointer so the running
+ * `wait` and future `open`/`wait` calls follow the doc to the cloud.)
+ */
+function doPromote(file: string, args: string[]): void {
+  const cloudDocId = getFlag(args, "cloud-doc");
+  if (!cloudDocId) {
+    process.stderr.write("usage: inplan promote <file> --cloud-doc <docId> [--locator org/repo/path]\n");
+    process.exit(64);
+  }
+  const body = existsSync(file) ? readFileSync(file, "utf8") : "";
+  const status: DocStatus = { location: "cloud", cloudDocId, originalPath: file, lastSyncedHash: hashBody(body) };
+  const locator = getFlag(args, "locator");
+  if (locator) {
+    const [org, repo, ...rest] = locator.split("/");
+    if (org && repo && rest.length) status.cloudLocator = { org, repo, path: rest.join("/") };
+  }
+  writeStatus(docPaths(file).statusPath, status);
+  output({ status: "promoted", location: "cloud", cloudDocId });
+}
+
+/**
+ * Bring a cloud doc back to disk — the CLI side of "Save locally" / "Download":
+ * download the live body to its original path and flip the status to local, so
+ * subsequent `open`/`wait` runs the file locally again.
+ */
+async function doDemote(file: string, args: string[]): Promise<void> {
+  const p = docPaths(file);
+  const st = readStatus(p.statusPath);
+  if (st.location !== "cloud" || !st.cloudDocId) {
+    process.stderr.write("inplan demote: document is not in the cloud\n");
+    process.exit(1);
+  }
+  const backend = await remoteBackend(st.cloudDocId, "cli-agent");
+  if (!backend) {
+    process.stderr.write("inplan: not logged in (or session expired) — run `inplan login`\n");
+    process.exit(1);
+  }
+  const body = await backend.store.loadDoc();
+  const dest = st.originalPath ?? file;
+  writeFileSync(dest, body);
+  writeStatus(p.statusPath, { location: "local", originalPath: dest, lastSyncedHash: hashBody(body) });
+  output({ status: "demoted", location: "local", path: dest });
+}
+
+/** Where an `open`/`wait`/`signal` on a local path should run, per the doc's status. */
+type Route = { kind: "local" } | { kind: "cloud"; docId: string } | { kind: "reconcile"; docId: string };
+
+/**
+ * Decide whether a local-path command runs locally or follows the doc to the
+ * cloud. A `cloud` status routes to the Supabase backend — unless the on-disk
+ * file has diverged from the last sync (downloaded or hand-edited), in which case
+ * we surface a reconcile so the human can choose to continue locally. `signal`
+ * and a missing file never reconcile (there is nothing to compare).
+ */
+function routeFor(file: string, cmd: string, args: string[]): Route {
+  const p = docPaths(file);
+  const status = readStatus(p.statusPath);
+  if (status.location !== "cloud" || !status.cloudDocId) return { kind: "local" };
+  const docId = status.cloudDocId;
+  if (cmd === "signal" || !existsSync(file)) return { kind: "cloud", docId };
+
+  const local = readFileSync(file, "utf8");
+  const diverged = status.lastSyncedHash !== undefined && hashBody(local) !== status.lastSyncedHash;
+  if (!diverged || hasFlag(args, "use-cloud")) return { kind: "cloud", docId };
+  if (hasFlag(args, "continue-locally")) {
+    writeStatus(p.statusPath, { location: "local", originalPath: file, lastSyncedHash: hashBody(local) });
+    return { kind: "local" };
+  }
+  return { kind: "reconcile", docId };
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const cmd = argv[0];
@@ -326,8 +409,14 @@ async function main(): Promise<void> {
       .filter(Boolean),
   );
 
-  if (!cmd || !["open", "wait", "signal"].includes(cmd)) {
-    process.stderr.write("usage: inplan <open|wait|signal> <file|--remote DOC_ID> [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n       inplan login --url <url> --anon <anon-key> --refresh <refresh-token>\n");
+  if (!cmd || !["open", "wait", "signal", "status", "promote", "demote"].includes(cmd)) {
+    process.stderr.write(
+      "usage: inplan <open|wait|signal> <file|--remote DOC_ID> [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n" +
+        "       inplan status  <file>\n" +
+        "       inplan promote <file> --cloud-doc <docId> [--locator org/repo/path]\n" +
+        "       inplan demote  <file>\n" +
+        "       inplan login --url <url> --anon <anon-key> --refresh <refresh-token>\n",
+    );
     process.exit(64);
   }
 
@@ -345,6 +434,38 @@ async function main(): Promise<void> {
   if (!file) {
     process.stderr.write(`inplan ${cmd}: missing <file>\n`);
     process.exit(64);
+  }
+
+  // Location-state commands operate on the local sidecar pointer.
+  if (cmd === "status") {
+    doStatus(file);
+    return;
+  }
+  if (cmd === "promote") {
+    doPromote(file, args);
+    return;
+  }
+  if (cmd === "demote") {
+    await doDemote(file, args);
+    return;
+  }
+
+  // Follow the doc to wherever it lives: a `cloud` status drives the Supabase
+  // backend (reconciling first if the on-disk copy diverged); otherwise local.
+  const route = routeFor(file, cmd, args);
+  if (route.kind === "reconcile") {
+    output({
+      status: "reconcile_required",
+      message:
+        "Local file differs from the last cloud sync. Re-run with --continue-locally to switch this doc back to local, or --use-cloud to keep collaborating in the cloud.",
+      path: file,
+      cloudDocId: route.docId,
+    });
+    return;
+  }
+  if (route.kind === "cloud") {
+    await runRemote(cmd, route.docId, explicitCursor, confirmed, args);
+    return;
   }
 
   if (cmd === "signal") {
