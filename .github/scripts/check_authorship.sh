@@ -17,7 +17,7 @@ HEAD="${2:?usage: check_authorship.sh <base-sha> <head-sha>}"
 
 # AI/bot identity clues, matched case-insensitively against author/committer
 # "name <email>". `[bot]` catches GitHub App bot accounts (cursor[bot], etc.).
-BOT_RE='\[bot\]|cursoragent|bugbot|devin|copilot|claude|anthropic|chatgpt|openai|gpt-[0-9]|codeium|tabnine|amazon[ -]?q|gemini-'
+BOT_RE='\[bot\]|cursoragent|bugbot|devin|copilot|claude|anthropic|chatgpt|openai|gpt-[0-9]|codeium|tabnine|amazon[- ]?q|gemini-'
 # Machine-authorship markers in the commit body. BOTH the "generated with …" and
 # the Co-authored-by branches reuse BOT_RE so they screen against the same identity
 # set as the author/committer (no drift — adding a tool to BOT_RE covers all three).
