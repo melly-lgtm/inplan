@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { authPath, loadAuth, saveAuth } from "../src/cliAuth";
+import { authPath, clearAuth, loadAuth, saveAuth } from "../src/cliAuth";
 
 let home: string;
 
@@ -29,6 +29,21 @@ describe("cliAuth", () => {
     expect(loadAuth()).toEqual(auth);
     // 0o600 — the file holds a session token, so it must not be group/world readable.
     expect(statSync(authPath()).mode & 0o077).toBe(0);
+  });
+
+  it("round-trips the optional email label", () => {
+    const auth = { url: "https://x.supabase.co", anonKey: "anon-123", refreshToken: "r", email: "diane@example.com" };
+    saveAuth(auth);
+    expect(loadAuth()).toEqual(auth);
+  });
+
+  it("clearAuth signs out (removes the file)", () => {
+    saveAuth({ url: "https://x.supabase.co", anonKey: "a", refreshToken: "r" });
+    expect(loadAuth()).not.toBeNull();
+    clearAuth();
+    expect(existsSync(authPath())).toBe(false);
+    expect(loadAuth()).toBeNull();
+    clearAuth(); // idempotent — no throw when already signed out
   });
 
   it("returns null when not logged in", () => {

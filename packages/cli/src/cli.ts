@@ -3,7 +3,7 @@
 
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import {
   type ControlChannel,
   CONTROL_LOG_VERSION,
@@ -20,7 +20,7 @@ import {
   settingsFromEntries,
   writeStatus,
 } from "@inplan/core/node";
-import { remoteBackend, saveAuth } from "./cliAuth";
+import { authedSession, clearAuth, currentUser, remoteBackend, saveAuth } from "./cliAuth";
 import { runningEditorPid } from "./editorProcess";
 import { evaluateAgentEdit } from "./gate";
 import { docPaths, type DocPaths } from "./paths";
@@ -261,11 +261,12 @@ function doLogin(args: string[]): void {
   const anonKey = getFlag(args, "anon") ?? process.env.INPLAN_SUPABASE_ANON_KEY;
   const refreshToken = getFlag(args, "refresh");
   if (!url || !anonKey || !refreshToken) {
-    process.stderr.write("usage: inplan login --url <url> --anon <anon-key> --refresh <refresh-token>\n");
+    process.stderr.write("usage: inplan login --url <url> --anon <anon-key> --refresh <refresh-token> [--email <e>]\n");
     process.exit(64);
   }
-  saveAuth({ url, anonKey, refreshToken });
-  output({ status: "logged_in", url });
+  const email = getFlag(args, "email");
+  saveAuth({ url, anonKey, refreshToken, ...(email ? { email } : {}) });
+  output({ status: "logged_in", url, ...(email ? { email } : {}) });
 }
 
 /**
@@ -355,6 +356,83 @@ async function doDemote(file: string, args: string[]): Promise<void> {
   output({ status: "demoted", location: "local", path: dest });
 }
 
+/** First Markdown H1 in the body, for a cloud doc's title (falls back to the filename). */
+function firstHeading(body: string): string | null {
+  return body.match(/^#\s+(.+?)\s*$/m)?.[1]?.trim() || null;
+}
+
+/** Print the signed-in identity (the desktop app reads this for its profile menu). */
+async function doWhoami(): Promise<void> {
+  const user = await currentUser();
+  if (!user) {
+    output({ signedIn: false });
+    return;
+  }
+  output({ signedIn: true, id: user.id, ...(user.email ? { email: user.email } : {}) });
+}
+
+/** Forget stored credentials (sign out). */
+function doLogout(): void {
+  clearAuth();
+  output({ status: "logged_out" });
+}
+
+/**
+ * Collaborate on Cloud: create + seed a cloud `documents` row from a local file in
+ * one of the user's writable orgs, then promote the local file's status to point
+ * at it. After this, the running `wait` (and future `open`/`wait`) follow the doc
+ * into the cloud (slice 2b). The editor's "Collaborate on Cloud" menu item shells
+ * out to this.
+ */
+async function doUpload(file: string, args: string[]): Promise<void> {
+  const s = await authedSession();
+  if (!s) {
+    process.stderr.write("inplan: not logged in (or session expired) — run `inplan login`\n");
+    process.exit(1);
+  }
+  const orgSlug = getFlag(args, "org");
+  const { data: mems, error } = await s.db.from("memberships").select("org_id, role, orgs(slug, name)").in("role", ["owner", "editor"]);
+  if (error) {
+    process.stderr.write(`inplan upload: ${error.message}\n`);
+    process.exit(1);
+  }
+  type Row = { org_id: string; orgs: { slug: string | null; name: string } | { slug: string | null; name: string }[] | null };
+  const rows = (mems ?? []) as Row[];
+  const orgOf = (r: Row) => (Array.isArray(r.orgs) ? r.orgs[0] : r.orgs) ?? null;
+  const pick = rows.find((r) => (orgSlug ? orgOf(r)?.slug === orgSlug : true));
+  if (!pick) {
+    process.stderr.write(`inplan upload: no organization you can write to${orgSlug ? ` matching "${orgSlug}"` : ""}\n`);
+    process.exit(1);
+  }
+  const org = orgOf(pick);
+
+  const body = existsSync(file) ? readFileSync(file, "utf8") : "";
+  const repo = getFlag(args, "repo") ?? "local";
+  const path = basename(file);
+  const title = firstHeading(body) ?? path;
+
+  const { data: doc, error: de } = await s.db
+    .from("documents")
+    .insert({ org_id: pick.org_id, title, repo, path, body })
+    .select("id")
+    .single();
+  if (de || !doc) {
+    process.stderr.write(`inplan upload: ${de?.message ?? "could not create the cloud document"}\n`);
+    process.exit(1);
+  }
+  const cloudDocId = (doc as { id: string }).id;
+
+  const status: DocStatus = {
+    location: "cloud",
+    cloudDocId,
+    originalPath: file,
+    lastSyncedHash: hashBody(body),
+    ...(org?.slug ? { cloudLocator: { org: org.slug, repo, path } } : {}),
+  };
+  writeStatus(docPaths(file).statusPath, status);
+  output({ status: "uploaded", cloudDocId, ...(org?.slug ? { locator: { org: org.slug, repo, path } } : {}) });
+}
+
 /** Where an `open`/`wait`/`signal` on a local path should run, per the doc's status. */
 type Route = { kind: "local" } | { kind: "cloud"; docId: string } | { kind: "reconcile"; docId: string };
 
@@ -395,6 +473,14 @@ async function main(): Promise<void> {
     doLogin(argv.slice(1));
     return;
   }
+  if (cmd === "whoami") {
+    await doWhoami();
+    return;
+  }
+  if (cmd === "logout") {
+    doLogout();
+    return;
+  }
 
   // Flags are parsed from everything after the subcommand (`argv.slice(1)`), so a
   // cloud invocation (`wait --remote DOC_ID`) and a local one (`wait file.md --cursor N`)
@@ -409,13 +495,15 @@ async function main(): Promise<void> {
       .filter(Boolean),
   );
 
-  if (!cmd || !["open", "wait", "signal", "status", "promote", "demote"].includes(cmd)) {
+  if (!cmd || !["open", "wait", "signal", "status", "promote", "demote", "upload"].includes(cmd)) {
     process.stderr.write(
       "usage: inplan <open|wait|signal> <file|--remote DOC_ID> [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n" +
         "       inplan status  <file>\n" +
+        "       inplan upload  <file> [--org <slug>] [--repo <name>]      (Collaborate on Cloud)\n" +
         "       inplan promote <file> --cloud-doc <docId> [--locator org/repo/path]\n" +
         "       inplan demote  <file>\n" +
-        "       inplan login --url <url> --anon <anon-key> --refresh <refresh-token>\n",
+        "       inplan login --url <url> --anon <anon-key> --refresh <refresh-token> [--email <e>]\n" +
+        "       inplan whoami | logout\n",
     );
     process.exit(64);
   }
@@ -439,6 +527,10 @@ async function main(): Promise<void> {
   // Location-state commands operate on the local sidecar pointer.
   if (cmd === "status") {
     doStatus(file);
+    return;
+  }
+  if (cmd === "upload") {
+    await doUpload(file, args);
     return;
   }
   if (cmd === "promote") {
