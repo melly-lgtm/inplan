@@ -100,6 +100,12 @@ export class Session {
     appendLog(this.paths.logPath, { actor: "user", type, ...(payload !== undefined ? { payload } : {}) });
   }
 
+  /** Record that the editor followed a link away to `path`, so the agent attached
+   *  to THIS doc steps down (its `wait` returns `navigated`) and re-attaches there. */
+  logNavigatedAway(path: string): void {
+    appendLog(this.paths.logPath, { actor: "user", type: LogEventType.NavigatedTo, payload: { path } });
+  }
+
   setMode(cadence: Cadence, acceptance: Acceptance): void {
     appendLog(this.paths.logPath, { actor: "user", type: LogEventType.ModeChanged, payload: { cadence, acceptance } });
   }

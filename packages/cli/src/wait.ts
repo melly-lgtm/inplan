@@ -38,11 +38,12 @@ const defaultActionable = (e: LogEntry): boolean => e.actor === "user";
  *  - Instant mode wakes on any user-authored action.
  */
 export function wakePredicate(cadence: "turn" | "instant"): (e: LogEntry) => boolean {
-  // A save-locally request is a control directive (the human is moving the doc
-  // back to disk), so it wakes the agent in either cadence — not just instant.
+  // Save-locally and navigate-to are control directives (the human is moving the
+  // doc back to disk, or following a link to a sibling doc), so they wake the agent
+  // in either cadence — not just instant.
   return cadence === "instant"
     ? (e) => e.actor === "user"
-    : (e) => e.type === LogEventType.TurnEnded || e.type === LogEventType.SessionClosed || e.type === LogEventType.SaveLocallyRequested;
+    : (e) => e.type === LogEventType.TurnEnded || e.type === LogEventType.SessionClosed || e.type === LogEventType.SaveLocallyRequested || e.type === LogEventType.NavigatedTo;
 }
 
 /**

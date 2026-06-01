@@ -131,6 +131,15 @@ export interface Api {
    * against this doc's path). Local: the sibling file; web: /docs/<org>/<repo>/<path>.
    */
   openDoc(target: string): Promise<void>;
+  /** Desktop only: navigate the window's back/forward history of opened docs.
+   *  Absent on web (the browser's own history handles it) + tests. */
+  navigate?(dir: "back" | "forward"): Promise<void>;
+  /** Desktop only: whether back/forward navigation is currently possible (drives
+   *  the nav buttons' enabled state). */
+  onNavState?(cb: (s: { canBack: boolean; canForward: boolean }) => void): void;
+  /** Desktop only: the window swapped to another doc (in-window link follow); the
+   *  renderer resets to this payload like a fresh load. */
+  onNavigated?(cb: (payload: DocPayload) => void): void;
   /** Live-collaboration binding for the source editor, if the host provides one
    *  (web/cloud). Absent/null on desktop + tests (single-writer). */
   collab?: CollabBinding | null;

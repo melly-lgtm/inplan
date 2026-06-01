@@ -78,6 +78,13 @@ const api: Api = {
     ipcRenderer.on("doc:proposal", (_e, payload: { content: string }) => cb(payload));
   },
   openDoc: (target: string) => ipcRenderer.invoke("doc:open", target),
+  navigate: (dir: "back" | "forward") => ipcRenderer.invoke("nav:go", dir),
+  onNavState: (cb: (s: { canBack: boolean; canForward: boolean }) => void) => {
+    ipcRenderer.on("nav:state", (_e, s: { canBack: boolean; canForward: boolean }) => cb(s));
+  },
+  onNavigated: (cb: (payload: DocPayload) => void) => {
+    ipcRenderer.on("doc:navigated", (_e, payload: DocPayload) => cb(payload));
+  },
   profile: createProfileController(),
   onUpdateAvailable: (cb: (info: { current: string; latest: string }) => void) => {
     ipcRenderer.on("app:update-available", (_e, info: { current: string; latest: string }) => cb(info));

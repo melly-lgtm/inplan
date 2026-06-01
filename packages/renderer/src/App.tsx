@@ -72,6 +72,7 @@ export function App(): JSX.Element {
   const [status, setStatus] = useState("");
   const [agentThinking, setAgentThinking] = useState(false);
   const [agentDone, setAgentDone] = useState(false);
+  const [navState, setNavState] = useState<{ canBack: boolean; canForward: boolean }>({ canBack: false, canForward: false });
   const [reloadReady, setReloadReady] = useState(false); // agent signalled a new build is ready to load
   const [reloadIn, setReloadIn] = useState<number | null>(null); // seconds until auto-close (null = not counting)
   const [update, setUpdate] = useState<{ current: string; latest: string } | null>(null); // newer npm version
@@ -169,6 +170,22 @@ export function App(): JSX.Element {
       setAgentThinking(false);
       setStatus("agent took its turn — your move");
     });
+    // Desktop only: the window followed a link to another doc — reset to it (a fresh
+    // load), clearing any in-flight proposal/turn state, then re-show a parked proposal.
+    window.api.onNavigated?.(({ content, path }) => {
+      docPathRef.current = path;
+      const d = parse(content);
+      setDoc(d);
+      savedRef.current = serialize(d);
+      setDirty(false);
+      setProposal(null);
+      setReviewOpen(false);
+      setAgentThinking(false);
+      setAgentDone(false);
+      setStatus(`opened ${path.split("/").pop() ?? path}`);
+      void window.api.getProposal().then((parked) => parked != null && showProposal(parked));
+    });
+    window.api.onNavState?.((s) => setNavState(s));
     // Desktop only: a newer npm version is available.
     window.api.onUpdateAvailable?.((info) => setUpdate(info));
 
@@ -623,6 +640,11 @@ export function App(): JSX.Element {
         onFinishTurn={finishTurn}
         onComplete={complete}
         locked={editingLocked}
+        nav={
+          typeof window.api.navigate === "function"
+            ? { canBack: navState.canBack, canForward: navState.canForward, onBack: () => void window.api.navigate?.("back"), onForward: () => void window.api.navigate?.("forward") }
+            : undefined
+        }
       />
 
       {findOpen && (
@@ -985,6 +1007,7 @@ function TopBar(props: {
   onFinishTurn: () => void;
   onComplete: () => void;
   locked: boolean;
+  nav?: { canBack: boolean; canForward: boolean; onBack: () => void; onForward: () => void };
 }): JSX.Element {
   const { cadence, acceptance, panes, onMode } = props;
   const profile = useProfile();
@@ -995,6 +1018,16 @@ function TopBar(props: {
   const noAgentTitle = noAgent ? "Connect an agent (open this doc with a local or cloud agent) to use this" : undefined;
   return (
     <header className="ap-topbar">
+      {props.nav && (
+        <div className="ap-seg" role="group" aria-label="navigation">
+          <button title="Back" aria-label="Back" disabled={!props.nav.canBack} onClick={props.nav.onBack}>
+            ‹
+          </button>
+          <button title="Forward" aria-label="Forward" disabled={!props.nav.canForward} onClick={props.nav.onForward}>
+            ›
+          </button>
+        </div>
+      )}
       <div className="ap-seg" role="group" aria-label="cadence">
         <button className={cadence === "turn" ? "active" : ""} onClick={() => onMode("turn", acceptance)}>
           Turn

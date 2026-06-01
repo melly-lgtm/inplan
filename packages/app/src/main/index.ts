@@ -33,6 +33,9 @@ function resolveTargetFile(): string | null {
 let session: Session | null = null;
 let win: BrowserWindow | null = null;
 let stopWatching: (() => void) | null = null;
+/** Back/forward navigation history of opened doc paths (in-window link following). */
+const navHistory: string[] = [];
+let navIdx = -1;
 
 // --- Cloud profile (the shared <ProfileMenu>) ------------------------------
 // The editor stays free of Supabase: cloud identity + actions are delegated to
@@ -131,6 +134,47 @@ async function checkForUpdate(): Promise<void> {
   }
 }
 
+/** Wire the current session's control-log watch to the renderer IPC channels. */
+function watchSession(): (() => void) | null {
+  if (!session) return null;
+  const s = session;
+  return s.watch({
+    onExternalChange: (content) => win?.webContents.send("doc:external-change", { path: s.paths.file, content }),
+    onAgentDone: () => win?.webContents.send("agent:done"),
+    onAgentActive: () => win?.webContents.send("agent:active"),
+    onProposal: (content) => win?.webContents.send("doc:proposal", { content }),
+    onReload: () => win?.webContents.send("agent:reload"),
+  });
+}
+
+/** Tell the renderer whether back/forward navigation is currently possible. */
+function sendNavState(): void {
+  win?.webContents.send("nav:state", { canBack: navIdx > 0, canForward: navIdx < navHistory.length - 1 });
+}
+
+/**
+ * Follow an in-window link to a sibling doc: park `navigated_to` on the CURRENT
+ * doc's log (so its attached agent steps down + re-attaches at `file`), swap the
+ * window's session to `file`, and tell the renderer to load it. `push` extends the
+ * history (a fresh link); back/forward replay it with `push=false`.
+ */
+function navigateTo(file: string, push: boolean): void {
+  if (!session || !win) return;
+  if (resolve(file) === resolve(session.paths.file)) return; // already here
+  session.logNavigatedAway(file);
+  stopWatching?.();
+  session = new Session(file);
+  session.logEditorPid(process.pid);
+  stopWatching = watchSession();
+  if (push) {
+    navHistory.splice(navIdx + 1); // drop any forward entries past the current point
+    navHistory.push(file);
+    navIdx = navHistory.length - 1;
+  }
+  win.webContents.send("doc:navigated", session.load());
+  sendNavState();
+}
+
 function createWindow(): void {
   win = new BrowserWindow({
     width: 1200,
@@ -164,15 +208,7 @@ function createWindow(): void {
   // Once the renderer is up (and listening), check npm for a newer version.
   win.webContents.once("did-finish-load", () => void checkForUpdate());
 
-  if (session) {
-    stopWatching = session.watch({
-      onExternalChange: (content) => win?.webContents.send("doc:external-change", { path: session!.paths.file, content }),
-      onAgentDone: () => win?.webContents.send("agent:done"),
-      onAgentActive: () => win?.webContents.send("agent:active"),
-      onProposal: (content) => win?.webContents.send("doc:proposal", { content }),
-      onReload: () => win?.webContents.send("agent:reload"),
-    });
-  }
+  stopWatching = watchSession();
 
   // Prompt to Save / Don't Save / Cancel when closing with unsaved edits.
   let forceClose = false;
@@ -231,9 +267,19 @@ function registerIpc(): void {
     session?.clearProposal();
   });
   ipcMain.handle("doc:open", (_e, target: string) => {
-    // `target` is the path the renderer resolved from a relative Markdown link.
-    // TODO(M4): open the linked sibling doc on desktop (new window / in-place swap).
-    process.stderr.write(`[inplan] open-doc requested: ${target}\n`);
+    // `target` is the link path the renderer resolved against the current doc
+    // (joined + `..`-normalized, relative to the filesystem root). Recover the
+    // absolute path and swap the window to it if it's an existing .md file.
+    const abs = resolve("/", target);
+    if (!abs.endsWith(".md") || !existsSync(abs)) {
+      process.stderr.write(`[inplan] open-doc: no such .md file: ${abs}\n`);
+      return;
+    }
+    navigateTo(abs, true);
+  });
+  ipcMain.handle("nav:go", (_e, dir: "back" | "forward") => {
+    if (dir === "back" && navIdx > 0) navigateTo(navHistory[--navIdx]!, false);
+    else if (dir === "forward" && navIdx < navHistory.length - 1) navigateTo(navHistory[++navIdx]!, false);
   });
   ipcMain.handle("doc:complete", (_e, content: string) => {
     session?.complete(content);
@@ -276,6 +322,8 @@ void app.whenReady().then(() => {
     session = new Session(target);
     // Authoritative editor pid for the CLI's liveness/duplicate checks.
     session.logEditorPid(process.pid);
+    navHistory.push(target);
+    navIdx = 0;
   }
   registerIpc();
   createWindow();

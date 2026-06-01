@@ -40,6 +40,10 @@ export const LogEventType = {
   SaveLocallyRequested: "save_locally_requested",
   /** Turn-mode escape: the human reclaimed control after the agent failed to hand it back. */
   HumanReclaimed: "human_reclaimed",
+  /** In-window navigation: the editor followed a Markdown link to a sibling doc.
+   *  Payload `{ path }` is the new doc; the attached agent's `wait` steps down and
+   *  the human's agent re-attaches there (the local analogue of save-locally). */
+  NavigatedTo: "navigated_to",
   SessionClosed: "session_closed",
 } as const;
 

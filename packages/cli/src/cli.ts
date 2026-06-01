@@ -273,6 +273,17 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
     return;
   }
 
+  // In-window navigation: the editor followed a link to a sibling doc and parked a
+  // `navigated_to {path}`. Step down here and report the new path so the agent loop
+  // re-attaches there (`wait <path>`), following the human across docs.
+  const navEntry = result.entries.find((e) => e.type === LogEventType.NavigatedTo);
+  if (navEntry) {
+    const path = (navEntry.payload as { path?: string } | undefined)?.path;
+    backend.logExit("navigated");
+    output({ status: "navigated", ...(path ? { path } : {}), cursor: result.cursor, closed: false });
+    return;
+  }
+
   // The editor logs WHY it closed (completed / window_closed); a crash logs nothing.
   const closeEntry = result.entries.find((e) => e.type === LogEventType.SessionClosed);
   // One status per situation:

@@ -81,6 +81,10 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
 
    It opens the editor and blocks until the human acts, then prints one JSON
    line to stdout and exits. Re-invoke yourself when it returns.
+
+   **Pass `--model <your-model-name>`** on `open`/`wait` (e.g. `--model "Opus 4.8"`)
+   so the editor shows which model is attached and stamps your comments with a
+   model-qualified author. Use the same value every turn.
 3. Read the printed JSON `status` (it also carries `mode`, `humanLocked`, and
    `settings` — the current materialized user settings, e.g. `autoResolve`):
    - `your_turn` — **Turn mode**: the human finished their turn and their editor
@@ -100,6 +104,10 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
      `crashed_or_killed` (editor vanished with no close log — surface this to the human).
    - `superseded` — a newer `wait` took over this document (only one waiter runs at
      a time). This one stepped down; **do nothing** — the live waiter is in charge.
+   - `navigated` — the human followed an in-window link to a **different document**;
+     `path` is the new file. This `wait` stepped down. **Follow them:** call
+     `wait <path>` (pass your `--model`) to re-attach there and resume the loop —
+     you move with the human to the linked doc.
    **Run only one `wait` per document.** Launch `open` / `wait` as their **own
    long-lived background process** — do **not** background them with a shell `&`
    inside a short-lived wrapper command, or the wrapper exits and its process tree

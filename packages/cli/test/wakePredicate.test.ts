@@ -17,6 +17,12 @@ describe("wakePredicate", () => {
     expect(turn(entry({ type: LogEventType.SessionClosed }))).toBe(true);
   });
 
+  it("Turn mode also wakes on control directives (save-locally, navigate-to)", () => {
+    const turn = wakePredicate("turn");
+    expect(turn(entry({ type: LogEventType.SaveLocallyRequested }))).toBe(true);
+    expect(turn(entry({ type: LogEventType.NavigatedTo, payload: { path: "/x/B.md" } }))).toBe(true);
+  });
+
   it("Instant mode wakes on any user action but not on agent entries", () => {
     const instant = wakePredicate("instant");
     expect(instant(entry({ actor: "user", type: LogEventType.CommentAnswered }))).toBe(true);
