@@ -88,7 +88,7 @@ describe("remoteBackend", () => {
     refreshResult = { data: { session: session() }, error: null };
     const b = await remoteBackend("doc-1", "cli-agent");
     expect(b?.token).toBe("jwt-123");
-    expect((b?.channel as { docId: string }).docId).toBe("doc-1");
-    expect((b?.store as { docId: string }).docId).toBe("doc-1");
+    expect((b?.channel as unknown as { docId: string }).docId).toBe("doc-1");
+    expect((b?.store as unknown as { docId: string }).docId).toBe("doc-1");
   });
 });
