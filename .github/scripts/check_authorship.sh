@@ -18,12 +18,14 @@ HEAD="${2:?usage: check_authorship.sh <base-sha> <head-sha>}"
 # AI/bot identity clues, matched case-insensitively against author/committer
 # "name <email>". `[bot]` catches GitHub App bot accounts (cursor[bot], etc.).
 BOT_RE='\[bot\]|cursoragent|bugbot|devin|copilot|claude|anthropic|chatgpt|openai|gpt-[0-9]|codeium|tabnine|amazon[ -]?q|gemini-'
-# Machine-authorship markers in the commit body. The Co-authored-by branch is
-# anchored to line start (^) so it matches a real git trailer, not prose that
-# merely mentions "Co-authored-by:" (e.g. this script's own commit messages), and
-# reuses BOT_RE so a co-author is screened against the same identity set as the
-# author/committer (no drift). Plus "Generated with …" / 🤖 generation lines.
-MARK_RE="generated with .*(claude|copilot|codex|cursor|chatgpt|gpt)|🤖 generated|^ *co-authored-by:.*(${BOT_RE})"
+# Machine-authorship markers in the commit body. BOTH the "generated with …" and
+# the Co-authored-by branches reuse BOT_RE so they screen against the same identity
+# set as the author/committer (no drift — adding a tool to BOT_RE covers all three).
+# The Co-authored-by branch is anchored to line start (^) so it matches a real git
+# trailer, not prose that merely mentions "Co-authored-by:" (e.g. this script's own
+# commit messages). `codex`/`gpt` are marker-only extras: too generic to match a
+# human's name/email, but unambiguous after the literal "generated with ".
+MARK_RE="generated with .*(${BOT_RE}|codex|gpt)|🤖 generated|^ *co-authored-by:.*(${BOT_RE})"
 
 fail=0
 # Fail closed: if rev-list errors (bad/missing refs, shallow clone), don't let the

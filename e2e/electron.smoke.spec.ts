@@ -34,7 +34,9 @@ test("renders the loaded plan in the preview", async () => {
 });
 
 test("find registers a real CSS Custom Highlight (happy-dom can't)", async () => {
-  await win.locator("body").press("Meta+f");
+  // ControlOrMeta maps to Cmd on macOS and Ctrl elsewhere; the app's find handler
+  // accepts either, so this opens the find bar on every CI platform.
+  await win.locator("body").press("ControlOrMeta+f");
   const input = win.locator("#ap-find-input");
   await expect(input).toBeVisible();
   await input.fill("alpha");
