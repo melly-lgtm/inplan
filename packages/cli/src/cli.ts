@@ -140,6 +140,10 @@ interface WaitBackend {
   history(): Promise<LogEntry[]>;
   /** Record why a waiter exited (sidecar file on the desktop; no-op for cloud). */
   logExit(reason: string): void;
+  /** Handle a `save_locally_requested` directive (cloud→local handoff). When set
+   *  and that event wakes the wait, this runs instead of the normal status output
+   *  and is responsible for emitting its own result. Absent on the desktop. */
+  onSaveLocally?: () => Promise<void>;
 }
 
 /** Local sidecar-file backend for a document on disk. */
@@ -257,6 +261,15 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
 
   await channel.setCursor(result.cursor); // advance the persisted cursor so the next call continues here
 
+  // Cloud→local handoff: a human on the web asked us to bring the doc back to disk.
+  // The backend's handler downloads + relocates + flips status and emits its own
+  // result, so we hand off instead of printing the normal turn status.
+  if (backend.onSaveLocally && result.entries.some((e) => e.type === LogEventType.SaveLocallyRequested)) {
+    backend.logExit("save_locally");
+    await backend.onSaveLocally();
+    return;
+  }
+
   // The editor logs WHY it closed (completed / window_closed); a crash logs nothing.
   const closeEntry = result.entries.find((e) => e.type === LogEventType.SessionClosed);
   // One status per situation:
@@ -314,8 +327,12 @@ function doLogin(args: string[]): void {
  * Drive a *cloud* document as the logged-in agent. There is no local editor to
  * spawn (a cloud doc opens in the browser), so `open`/`wait` both attach + wait
  * over the Supabase backend, and `signal` appends the agent's protocol events.
+ *
+ * `localFile` is set only when we reached the cloud by *following a promoted local
+ * file's status* — it enables the Save-locally handoff (download the doc back to
+ * its original path on disk). The bare `--remote <docId>` case has no local file.
  */
-async function runRemote(cmd: string, docId: string, explicitCursor: number | null, confirmed: Set<string>, rest: string[]): Promise<void> {
+async function runRemote(cmd: string, docId: string, explicitCursor: number | null, confirmed: Set<string>, rest: string[], localFile?: string): Promise<void> {
   const backend = await remoteBackend(docId, "cli-agent");
   if (!backend) {
     process.stderr.write("inplan: not logged in (or session expired) — run `inplan login`\n");
@@ -333,6 +350,19 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     return;
   }
 
+  // Save-locally handoff (only when following a promoted local file): download the
+  // live body to its original path, flip the status back to local, reopen the local
+  // editor, and report — the inverse of "Collaborate on Cloud".
+  const onSaveLocally = localFile
+    ? async () => {
+        const body = await backend.store.loadDoc();
+        writeFileSync(localFile, body);
+        writeStatus(docPaths(localFile).statusPath, { location: "local", originalPath: localFile, lastSyncedHash: hashBody(body) });
+        const pid = spawnApp(localFile); // reopen the doc in the local editor
+        output({ status: "moved_local", path: localFile, reopened: pid !== null });
+      }
+    : undefined;
+
   // While we hold the turn on a cloud doc, announce the local agent in the doc's
   // presence room so the web badge shows "agent · your machine"; clear it on exit.
   const presence = announcePresence(docId, backend.token);
@@ -343,6 +373,7 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
         store: backend.store,
         history: async () => (await backend.channel.readSince(0)).entries,
         logExit: () => {}, // no local sidecar for a cloud doc
+        ...(onSaveLocally ? { onSaveLocally } : {}),
       },
       explicitCursor,
       confirmed,
@@ -604,7 +635,9 @@ async function main(): Promise<void> {
     return;
   }
   if (route.kind === "cloud") {
-    await runRemote(cmd, route.docId, explicitCursor, confirmed, args);
+    // `file` is this promoted local doc — pass it so a Save-locally request can
+    // bring the body back to disk here.
+    await runRemote(cmd, route.docId, explicitCursor, confirmed, args, file);
     return;
   }
 

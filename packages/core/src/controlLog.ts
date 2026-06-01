@@ -35,6 +35,9 @@ export const LogEventType = {
   SettingsChanged: "settings_changed",
   AgentDoneSuggested: "agent_done_suggested",
   ReloadSuggested: "reload_suggested",
+  /** Cloud→local handoff: a human on the web asked the attached local agent to
+   *  bring the doc back to disk (the inverse of "Collaborate on Cloud"). */
+  SaveLocallyRequested: "save_locally_requested",
   /** Turn-mode escape: the human reclaimed control after the agent failed to hand it back. */
   HumanReclaimed: "human_reclaimed",
   SessionClosed: "session_closed",
