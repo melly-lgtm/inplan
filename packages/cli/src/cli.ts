@@ -513,7 +513,10 @@ async function doUpload(file: string, args: string[]): Promise<void> {
 
   const { data: doc, error: de } = await s.db
     .from("documents")
-    .insert({ org_id: pick.org_id, title, repo, path, body })
+    // Stamp the owner (M4.8 doc scope): the uploader owns the doc, so it can later be
+    // made `access=personal` (owner-only) vs the default `org` (shared). Additive —
+    // new docs stay org-shared until the owner narrows them.
+    .insert({ org_id: pick.org_id, owner_id: s.session.user.id, title, repo, path, body })
     .select("id")
     .single();
   if (de || !doc) {
