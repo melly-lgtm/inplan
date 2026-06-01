@@ -27,13 +27,23 @@ ALLOWED = {
     "spdx-license-identifier",
 }
 
-SPLIT = re.compile(r"\s+(?:and|or|with)\s+|[()]", re.IGNORECASE)
+# Boolean combinators that join independent license terms. `WITH` is NOT one of
+# them — in SPDX it attaches an exception to a license (`apache-2.0 WITH
+# llvm-exception`), forming a single unit, so we strip the exception and check the
+# base license rather than splitting out a bare (never-allowlisted) exception id.
+SPLIT = re.compile(r"\s+(?:and|or)\s+|[()]", re.IGNORECASE)
+WITH_EXCEPTION = re.compile(r"\s+with\s+.*$", re.IGNORECASE)
 
 
 def keys_from_expression(expr):
     if not expr:
         return []
-    return [t.strip().lower() for t in SPLIT.split(str(expr)) if t.strip()]
+    keys = []
+    for term in SPLIT.split(str(expr)):
+        key = WITH_EXCEPTION.sub("", term).strip().lower()
+        if key:
+            keys.append(key)
+    return keys
 
 
 def collect(file_obj):
