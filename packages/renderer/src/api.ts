@@ -38,6 +38,12 @@ export interface Settings {
  *  (the local CLI joins as `local`; the managed runtime as `cloud`), never stored. */
 export type AgentLocation = "local" | "cloud";
 
+/** How a cloud doc auto-provisions an agent when a human opens it:
+ *  - `auto`   — attach a managed cloud agent when no local agent is present;
+ *  - `local`  — wait for the user's local agent; never auto-attach a cloud one;
+ *  - `manual` — don't auto-attach; the user connects an agent explicitly. */
+export type AgentPolicy = "auto" | "local" | "manual";
+
 /** A host-injected profile-menu action (DI, like the rest of the Api): the local
  *  app supplies "Collaborate on Cloud" + sign-in/out; the web "Save locally" /
  *  "Download" + sign-out. The shared menu just renders and invokes them. */
@@ -66,6 +72,11 @@ export interface ProfileState {
    * agent is implicit (no presence room), so this is omitted and those stay enabled.
    */
   presenceAware?: boolean;
+  /** The doc's current agent-provisioning policy (the badge doubles as its control).
+   *  Present + `onSetAgentPolicy` ⇒ the menu renders the picker. */
+  agentPolicy?: AgentPolicy;
+  /** Change the provisioning policy (host persists it). */
+  onSetAgentPolicy?: (policy: AgentPolicy) => void | Promise<void>;
 }
 
 /** A reactive source of {@link ProfileState}. `get()` must return a referentially

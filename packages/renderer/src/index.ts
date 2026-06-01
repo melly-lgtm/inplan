@@ -17,6 +17,7 @@ export type {
   DocPayload,
   CollabBinding,
   AgentLocation,
+  AgentPolicy,
   ProfileMenuItem,
   ProfileState,
   ProfileController,

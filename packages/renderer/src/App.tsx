@@ -1004,7 +1004,15 @@ function TopBar(props: {
       <button className="ap-primary" onClick={props.onComplete}>
         Complete &amp; quit
       </button>
-      {profile && <ProfileMenu user={profile.user} agentLocation={profile.agentLocation} actions={profile.actions} />}
+      {profile && (
+        <ProfileMenu
+          user={profile.user}
+          agentLocation={profile.agentLocation}
+          actions={profile.actions}
+          agentPolicy={profile.agentPolicy}
+          onSetAgentPolicy={profile.onSetAgentPolicy}
+        />
+      )}
     </header>
   );
 }

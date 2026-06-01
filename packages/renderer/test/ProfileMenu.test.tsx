@@ -58,6 +58,21 @@ describe("ProfileMenu", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+  it("renders the agent-policy picker and reports a change", () => {
+    const onSetAgentPolicy = vi.fn();
+    render(<ProfileMenu user={user} agentLocation="cloud" actions={[]} agentPolicy="auto" onSetAgentPolicy={onSetAgentPolicy} />);
+    fireEvent.click(screen.getByRole("button", { name: /account menu/i }));
+    expect(screen.getByRole("menuitemradio", { name: /Connect a cloud agent/ }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Wait for my local agent/ }));
+    expect(onSetAgentPolicy).toHaveBeenCalledWith("local");
+  });
+
+  it("omits the policy picker when no policy/handler is provided", () => {
+    render(<ProfileMenu user={user} agentLocation={null} actions={[]} />);
+    fireEvent.click(screen.getByRole("button", { name: /account menu/i }));
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+  });
+
   it("closes on an outside click", () => {
     render(<ProfileMenu user={user} agentLocation={null} actions={[{ label: "Sign out", onSelect: () => {}, danger: true }]} />);
     fireEvent.click(screen.getByRole("button", { name: /account menu/i }));
