@@ -949,13 +949,23 @@ function TopBar(props: {
 }): JSX.Element {
   const { cadence, acceptance, panes, onMode } = props;
   const profile = useProfile();
+  // In a presence-aware host (web/cloud), no attached agent ⇒ Instant + Finish-turn
+  // are disabled (there's nothing to hand the turn to). The desktop's local agent is
+  // implicit, so it isn't presence-aware and these stay enabled.
+  const noAgent = profile?.presenceAware === true && profile.agentLocation == null;
+  const noAgentTitle = noAgent ? "Connect an agent (open this doc with a local or cloud agent) to use this" : undefined;
   return (
     <header className="ap-topbar">
       <div className="ap-seg" role="group" aria-label="cadence">
         <button className={cadence === "turn" ? "active" : ""} onClick={() => onMode("turn", acceptance)}>
           Turn
         </button>
-        <button className={cadence === "instant" ? "active" : ""} onClick={() => onMode("instant", acceptance)}>
+        <button
+          className={cadence === "instant" ? "active" : ""}
+          disabled={noAgent}
+          title={noAgentTitle}
+          onClick={() => onMode("instant", acceptance)}
+        >
           Instant
         </button>
       </div>
@@ -987,7 +997,7 @@ function TopBar(props: {
       <div className="ap-spacer" />
       <button onClick={props.onSave}>Save{props.dirty ? " •" : ""}</button>
       {cadence === "turn" && (
-        <button onClick={props.onFinishTurn} disabled={props.locked}>
+        <button onClick={props.onFinishTurn} disabled={props.locked || noAgent} title={noAgentTitle}>
           Finish turn
         </button>
       )}

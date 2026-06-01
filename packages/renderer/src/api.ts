@@ -59,6 +59,13 @@ export interface ProfileState {
   agentLocation: AgentLocation | null;
   /** Host-injected menu actions, rendered in order. */
   actions: ProfileMenuItem[];
+  /**
+   * True when this host derives agent attachment from live presence (the web/cloud):
+   * then a null `agentLocation` means *no agent is connected*, so the editor disables
+   * Instant mode + Finish-turn (nothing to hand the turn to). On the desktop the local
+   * agent is implicit (no presence room), so this is omitted and those stay enabled.
+   */
+  presenceAware?: boolean;
 }
 
 /** A reactive source of {@link ProfileState}. `get()` must return a referentially
