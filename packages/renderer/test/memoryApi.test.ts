@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import { LogEventType } from "@inplan/core";
+import { describe, expect, it } from "vitest";
+import { createMemoryApi } from "../src/memoryApi";
+
+describe("createMemoryApi", () => {
+  it("loads the initial document and seeds canonical", async () => {
+    const { api } = createMemoryApi({ content: "# Plan" });
+    expect((await api.load()).content).toBe("# Plan");
+  });
+
+  it("surfaces a Review proposal and applies it silently on accept", async () => {
+    const { api, agent } = createMemoryApi({ content: "# Plan\n\nold" });
+    await api.load();
+    let surfaced: string | null = null;
+    api.onProposal((p) => (surfaced = p.content));
+
+    agent.proposeRevision("# Plan\n\nnew");
+    expect(surfaced).toBe("# Plan\n\nnew"); // onProposal fired with the proposed content
+    expect(await api.getProposal()).toBe("# Plan\n\nnew"); // durable, re-readable
+
+    // Accepting = a silent "apply" save: writes canonical, does NOT wake the agent.
+    await api.save("# Plan\n\nnew", { kind: "apply", cadence: "turn" });
+    await api.clearProposal();
+    expect(await api.getProposal()).toBeNull();
+    const types = (await agent.log()).map((e) => e.type);
+    expect(types).toContain(LogEventType.AgentRevisionProposed);
+    expect(types).not.toContain(LogEventType.TurnEnded); // apply stayed silent
+  });
+
+  it("fires onExternalChange for an auto-accept edit", async () => {
+    const { api, agent } = createMemoryApi({ content: "a" });
+    let got: string | null = null;
+    api.onExternalChange((p) => (got = p.content));
+    agent.externalChange("b");
+    expect(got).toBe("b");
+  });
+
+  it("Finish turn (canonical save) wakes the agent; backup does not", async () => {
+    const { api, agent } = createMemoryApi({ content: "x" });
+    await api.save("x2", { kind: "backup", cadence: "turn" });
+    expect((await agent.log()).some((e) => e.type === LogEventType.TurnEnded)).toBe(false);
+    await api.save("x3", { kind: "canonical", cadence: "turn" });
+    expect((await agent.log()).some((e) => e.type === LogEventType.TurnEnded)).toBe(true);
+  });
+
+  it("routes done / active / reload signals to their callbacks", async () => {
+    const { api, agent } = createMemoryApi({ content: "x" });
+    const hit = { done: false, active: false, reload: false };
+    api.onAgentDone(() => (hit.done = true));
+    api.onAgentActive(() => (hit.active = true));
+    api.onReload(() => (hit.reload = true));
+    agent.suggestDone();
+    agent.markActive();
+    agent.suggestReload();
+    expect(hit).toEqual({ done: true, active: true, reload: true });
+  });
+
+  it("complete() writes canonical, logs session_closed, and marks the session closed", async () => {
+    const session = createMemoryApi({ content: "x" });
+    await session.api.complete("final");
+    expect(session.isClosed()).toBe(true);
+    expect((await session.agent.log()).some((e) => e.type === LogEventType.SessionClosed)).toBe(true);
+  });
+});

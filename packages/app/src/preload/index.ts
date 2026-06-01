@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { contextBridge, ipcRenderer } from "electron";
-import type { Acceptance, Api, Cadence, DocPayload, SaveOptions, Settings } from "../shared/api";
+import type { Acceptance, Api, Cadence, DocPayload, SaveOptions, Settings } from "@inplan/renderer";
 
 const api: Api = {
   load: () => ipcRenderer.invoke("doc:load"),

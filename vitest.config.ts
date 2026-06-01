@@ -19,7 +19,7 @@ export default defineConfig({
       exclude: [
         "**/*.d.ts",
         // Pure type/interface declarations — no executable statements to cover.
-        "packages/app/src/shared/api.ts",
+        "packages/renderer/src/api.ts",
         "packages/core/src/channel.ts",
         // Need a real runtime the harness can't provide:
         //  - Electron main process + preload bridge (Playwright _electron smoke covers these),
@@ -27,7 +27,7 @@ export default defineConfig({
         "packages/app/src/main/**",
         "packages/app/src/preload/**",
         "packages/app/src/renderer/main.tsx",
-        "packages/app/src/renderer/SourceEditor.tsx",
+        "packages/renderer/src/SourceEditor.tsx",
         // Binary entry: runs main() on import + forks Electron / calls process.exit,
         // so it can't be imported in-process. Its logic units (gate, wait, paths,
         // editorProcess) are unit-tested and the orchestration is smoke-tested;

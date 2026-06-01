@@ -4,7 +4,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import type { Acceptance, Cadence, SaveOptions, Settings } from "../shared/api";
+import type { Acceptance, Cadence, SaveOptions, Settings } from "@inplan/renderer";
 import { Session } from "./session";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

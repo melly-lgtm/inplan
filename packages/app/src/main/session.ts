@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { appendLog, CONTROL_LOG_VERSION, FsControlChannel, LogEventType, readGlobalSettings, readLog, writeGlobalSettings } from "@inplan/core/node";
-import type { Settings } from "../shared/api";
+import type { Settings } from "@inplan/renderer";
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Acceptance, Cadence, SaveOptions } from "../shared/api";
+import type { Acceptance, Cadence, SaveOptions } from "@inplan/renderer";
 import { docPaths, type DocPaths } from "./paths";
 
 /**
