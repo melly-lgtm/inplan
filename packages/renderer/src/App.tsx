@@ -751,6 +751,7 @@ export function App(): JSX.Element {
             ) : (
               <SourceEditor
                 ref={editorRef}
+                collab={window.api.collab ?? null}
                 value={doc.body}
                 editable={!editingLocked}
                 onChange={(body) => {

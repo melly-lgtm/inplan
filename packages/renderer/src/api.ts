@@ -1,5 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import type { Text as YText } from ***REMOVED***;
+import type { Awareness } from "***REMOVED***/awareness";
+
+/** A live-collaboration binding: a shared ***REMOVED*** + presence awareness. When a host
+ *  exposes one (web/cloud), the source editor binds to it (multiplayer); otherwise
+ *  the editor is the usual controlled single-writer (desktop / tests). */
+export interface CollabBinding {
+  ytext: YText;
+  awareness: Awareness;
+}
+
 /** Collaboration cadence. */
 export type Cadence = "turn" | "instant";
 /** Agent-change acceptance policy. */
@@ -62,6 +73,9 @@ export interface Api {
    * against this doc's path). Local: the sibling file; web: /docs/<org>/<repo>/<path>.
    */
   openDoc(target: string): Promise<void>;
+  /** Live-collaboration binding for the source editor, if the host provides one
+   *  (web/cloud). Absent/null on desktop + tests (single-writer). */
+  collab?: CollabBinding | null;
 }
 
 declare global {

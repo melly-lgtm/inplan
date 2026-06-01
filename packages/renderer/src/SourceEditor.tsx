@@ -4,7 +4,9 @@ import { markdown } from "@codemirror/lang-markdown";
 import { Compartment, EditorState, Prec, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
 import { basicSetup } from "codemirror";
+import { yCollab } from "y-codemirror.next";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import type { CollabBinding } from "./api";
 
 export interface SourceEditorHandle {
   /** Scroll to a 0-based source line and highlight it. */
@@ -61,8 +63,8 @@ const findField = StateField.define<{ deco: DecorationSet; query: string; ci: bo
 
 export const SourceEditor = forwardRef<
   SourceEditorHandle,
-  { value: string; editable: boolean; onChange: (v: string) => void; onCursorLine?: (line: number) => void; onFind?: () => void; find?: { query: string; ci: boolean } | null }
->(function SourceEditor({ value, editable, onChange, onCursorLine, onFind, find }, ref): JSX.Element {
+  { value: string; editable: boolean; onChange: (v: string) => void; onCursorLine?: (line: number) => void; onFind?: () => void; find?: { query: string; ci: boolean } | null; collab?: CollabBinding | null }
+>(function SourceEditor({ value, editable, onChange, onCursorLine, onFind, find, collab }, ref): JSX.Element {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const editableComp = useRef(new Compartment());
@@ -72,6 +74,8 @@ export const SourceEditor = forwardRef<
   onCursorLineRef.current = onCursorLine;
   const onFindRef = useRef(onFind);
   onFindRef.current = onFind;
+  const collabRef = useRef(collab);
+  collabRef.current = collab;
 
   useImperativeHandle(ref, () => ({
     scrollToLine(line: number) {
@@ -98,7 +102,8 @@ export const SourceEditor = forwardRef<
     const v = new EditorView({
       parent: host.current,
       state: EditorState.create({
-        doc: value,
+        // In collab mode ***REMOVED*** owns the content; otherwise it's the controlled value.
+        doc: collab ? collab.ytext.toString() : value,
         extensions: [
           // ⌘F should open the app's find bar, not CodeMirror's own search panel.
           Prec.highest(
@@ -124,6 +129,8 @@ export const SourceEditor = forwardRef<
               onCursorLineRef.current(u.state.doc.lineAt(u.state.selection.main.head).number - 1);
             }
           }),
+          // Live collaboration: bind to the shared ***REMOVED*** + render remote cursors.
+          ...(collab ? [yCollab(collab.ytext, collab.awareness)] : []),
         ],
       }),
     });
@@ -134,7 +141,7 @@ export const SourceEditor = forwardRef<
 
   useEffect(() => {
     const v = view.current;
-    if (!v) return;
+    if (!v || collabRef.current) return; // in collab mode ***REMOVED*** is the source of truth
     const current = v.state.doc.toString();
     if (value !== current) {
       v.dispatch({ changes: { from: 0, to: current.length, insert: value } });
