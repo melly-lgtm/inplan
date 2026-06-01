@@ -13,3 +13,6 @@ out/
 # OS / editor cruft
 .DS_Store
 *.log
+
+# Local Claude Code config (not part of the product)
+.claude/settings.json

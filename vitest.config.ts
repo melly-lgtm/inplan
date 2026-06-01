@@ -21,6 +21,9 @@ export default defineConfig({
         // Pure type/interface declarations — no executable statements to cover.
         "packages/renderer/src/api.ts",
         "packages/core/src/channel.ts",
+        // Re-export barrels (no logic — just the package's public surface).
+        "packages/renderer/src/index.ts",
+        "packages/backend-supabase/src/index.ts",
         // Need a real runtime the harness can't provide:
         //  - Electron main process + preload bridge (Playwright _electron smoke covers these),
         //  - the renderer entry, and the CodeMirror editor (real layout APIs).
