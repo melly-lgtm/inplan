@@ -1,103 +1,121 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* Editor visual language: "editorial planning paper" — warm paper + ink, one pine
+   accent, an amber for warnings. Fonts gracefully fall back to system fonts on the
+   desktop app; the web edition additionally loads Fraunces / Hanken Grotesk /
+   JetBrains Mono, so it renders with the full type system. */
 :root {
-  --bg: #ffffff;
-  --fg: #1c1c1e;
-  --muted: #8a8a8e;
-  --line: #e2e2e6;
-  --accent: #2f6feb;
-  --accent-soft: #eaf1ff;
-  --danger: #c0392b;
+  --paper: #f1ebdc;        /* recessed surface (the comment rail) */
+  --bg: #fdfbf6;           /* primary surface (panes, cards, inputs) */
+  --fg: #1c1a17;           /* ink */
+  --muted: #6f6857;        /* ink-soft */
+  --faint: #a8a08c;        /* ink-faint */
+  --line: #e6dfce;
+  --line-strong: #d8cfb8;
+  --accent: #1f5c4d;       /* pine */
+  --accent-press: #184a3e;
+  --accent-soft: #e9f0ec;  /* pine tint */
+  --danger: #a3331f;
+  --amber: #9a5f23;
+  --shadow-sm: 0 1px 2px rgba(28, 26, 23, 0.05);
+  --shadow: 0 1px 2px rgba(28, 26, 23, 0.04), 0 8px 22px -14px rgba(28, 26, 23, 0.30);
+  --serif: "Fraunces", Georgia, "Times New Roman", serif;
+  --sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
 body {
-  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font: 14px/1.55 var(--sans);
   color: var(--fg);
   background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 .ap-app { display: flex; flex-direction: column; height: 100%; }
 .ap-loading { padding: 2rem; color: var(--muted); }
 
 /* top bar */
-.ap-topbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
-.ap-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-.ap-seg button { border: 0; background: var(--bg); padding: 4px 10px; cursor: pointer; border-right: 1px solid var(--line); }
+.ap-topbar { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--line); background: var(--bg); }
+.ap-seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 7px; overflow: hidden; }
+.ap-seg button { border: 0; background: var(--bg); padding: 4px 10px; cursor: pointer; border-right: 1px solid var(--line); color: var(--fg); }
 .ap-seg button:last-child { border-right: 0; }
-.ap-seg button.active { background: var(--accent); color: #fff; }
+.ap-seg button:hover:not(.active) { background: var(--accent-soft); }
+.ap-seg button.active { background: var(--accent); color: #fbfaf6; }
 .ap-spacer { flex: 1; }
 
 /* settings menu */
 .ap-settings { position: relative; }
-.ap-settings > button { border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 4px 8px; cursor: pointer; }
-.ap-settings-menu { position: absolute; top: 34px; left: 0; z-index: 40; width: 300px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,0.18); padding: 10px; }
+.ap-settings > button { border: 1px solid var(--line-strong); background: var(--bg); border-radius: 7px; padding: 4px 8px; cursor: pointer; color: var(--fg); }
+.ap-settings-menu { position: absolute; top: 36px; left: 0; z-index: 40; width: 300px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 12px; }
 .ap-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; font-size: 13px; }
 .ap-settings-hint { font-size: 11px; color: var(--muted); padding-top: 2px; }
 
 /* profile menu (shared between the desktop app + the web edition) */
 .ap-profile { position: relative; margin-left: 4px; }
-.ap-avatar { position: relative; width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line); background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+.ap-avatar { position: relative; width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line-strong); background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
 .ap-avatar-initials { line-height: 1; }
-.ap-profile-menu { position: absolute; top: 36px; right: 0; z-index: 40; width: 240px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,0.18); padding: 8px; }
+.ap-profile-menu { position: absolute; top: 38px; right: 0; z-index: 40; width: 240px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 8px; }
 .ap-profile-id { padding: 4px 6px 6px; }
 .ap-profile-name { font-size: 13px; font-weight: 600; }
-.ap-profile-email { font-size: 11px; color: var(--muted); }
+.ap-profile-email { font-size: 11px; color: var(--muted); font-family: var(--mono); }
 .ap-profile-actions { display: flex; flex-direction: column; gap: 4px; }
-.ap-profile-action { text-align: left; border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 13px; cursor: pointer; }
+.ap-profile-action { text-align: left; border: 1px solid var(--line-strong); background: var(--bg); border-radius: 7px; padding: 6px 8px; font: inherit; font-size: 13px; cursor: pointer; }
 .ap-profile-action:hover:not(:disabled) { background: var(--accent-soft); }
 .ap-profile-action:disabled { opacity: 0.5; cursor: default; }
-.ap-profile-action.ap-danger { color: #c0392b; }
+.ap-profile-action.ap-danger { color: var(--danger); }
 
 /* menu-bar agent connection indicator */
 .ap-agent { position: relative; }
-.ap-agent-btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 3px 8px; font: inherit; font-size: 12px; cursor: pointer; color: var(--muted); }
+.ap-agent-btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line-strong); background: var(--bg); border-radius: 7px; padding: 3px 8px; font: inherit; font-size: 12px; cursor: pointer; color: var(--muted); }
 .ap-agent-btn:hover { background: var(--accent-soft); }
 .ap-agent-label { line-height: 1; }
 .ap-agent-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
 .ap-agent-local { background: #2bb673; }   /* agent on your machine */
-.ap-agent-off { background: #c0392b; }      /* no agent connected */
+.ap-agent-off { background: var(--danger); } /* no agent connected */
 .ap-agent-pie { width: 13px; height: 13px; border-radius: 50%; flex: 0 0 auto; }
-.ap-agent-menu { position: absolute; top: 32px; left: 0; z-index: 40; width: 220px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,0.18); padding: 8px; }
+.ap-agent-menu { position: absolute; top: 34px; left: 0; z-index: 40; width: 220px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 8px; }
 .ap-agent-detail { font-size: 12px; padding: 2px 6px 6px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
 .ap-agent-quota { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .ap-agent-policy { display: flex; flex-direction: column; gap: 2px; }
-.ap-agent-policy-opt { display: flex; align-items: center; gap: 7px; text-align: left; border: 0; background: none; padding: 5px 6px; font: inherit; font-size: 12px; cursor: pointer; border-radius: 5px; color: var(--muted); }
+.ap-agent-policy-opt { display: flex; align-items: center; gap: 7px; text-align: left; border: 0; background: none; padding: 5px 6px; font: inherit; font-size: 12px; cursor: pointer; border-radius: 6px; color: var(--muted); }
 .ap-agent-policy-opt:hover { background: var(--accent-soft); }
-.ap-policy-dot { width: 9px; height: 9px; border-radius: 50%; border: 1px solid var(--line); flex: 0 0 auto; }
+.ap-policy-dot { width: 9px; height: 9px; border-radius: 50%; border: 1px solid var(--line-strong); flex: 0 0 auto; }
 .ap-agent-policy-opt.active { color: inherit; font-weight: 600; }
 .ap-agent-policy-opt.active .ap-policy-dot { background: var(--accent); border-color: var(--accent); }
 
 .ap-topbar button, .ap-tabs button { font: inherit; }
-.ap-topbar > button { border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 4px 12px; cursor: pointer; }
-.ap-primary { background: var(--accent) !important; color: #fff; border-color: var(--accent) !important; }
+.ap-topbar > button { border: 1px solid var(--line-strong); background: var(--bg); border-radius: 7px; padding: 4px 12px; cursor: pointer; color: var(--fg); }
+.ap-primary { background: var(--accent) !important; color: #fbfaf6; border-color: var(--accent) !important; }
 
 /* iconified top-bar controls: uniform 30px height; SVGs inherit button color so
    they tint on hover/active. Secondary actions are icon-only (label via title +
    aria-label); the primary keeps a short label. */
 .ap-topbar svg { width: 16px; height: 16px; display: block; }
 .ap-topbar .ap-seg button, .ap-settings > button { height: 30px; display: inline-flex; align-items: center; justify-content: center; }
-.ap-zoom-val { min-width: 46px; font-variant-numeric: tabular-nums; }
+.ap-zoom-val { min-width: 46px; font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted); }
 .ap-iconrow { display: inline-flex; align-items: center; gap: 6px; }
-.ap-iconbtn { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 1px solid var(--line); background: var(--bg); border-radius: 6px; color: var(--fg); cursor: pointer; transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease; }
+.ap-iconbtn { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 1px solid var(--line-strong); background: var(--bg); border-radius: 7px; color: var(--fg); cursor: pointer; transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease; }
 .ap-iconbtn:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .ap-iconbtn:disabled { opacity: 0.4; cursor: default; }
 .ap-iconbtn .ap-dirty { position: absolute; top: 2px; right: 2px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); border: 1.5px solid var(--bg); }
 .ap-iconbtn--primary { width: auto; gap: 6px; font-weight: 500; }
 /* Scoped to beat the more-specific `.ap-topbar > button` rule above (the primary is a
-   direct child of the bar), so the accent fill + white text always win. */
-.ap-topbar > button.ap-iconbtn--primary { height: 30px; padding: 0 14px; background: var(--accent); border: 1px solid var(--accent); color: #fff; border-radius: 6px; }
-.ap-topbar > button.ap-iconbtn--primary:hover:not(:disabled) { background: #2860d8; border-color: #2860d8; color: #fff; }
+   direct child of the bar), so the accent fill + light text always win. */
+.ap-topbar > button.ap-iconbtn--primary { height: 30px; padding: 0 14px; background: var(--accent); border: 1px solid var(--accent); color: #fbfaf6; border-radius: 7px; }
+.ap-topbar > button.ap-iconbtn--primary:hover:not(:disabled) { background: var(--accent-press); border-color: var(--accent-press); color: #fbfaf6; }
 .ap-topbar > button.ap-iconbtn--primary svg { width: 15px; height: 15px; }
-.ap-update-err { color: #c0392b; }
+.ap-update-err { color: var(--danger); }
 
 /* banner */
-.ap-banner { background: var(--accent-soft); border-bottom: 1px solid var(--line); padding: 8px 12px; display: flex; gap: 10px; align-items: center; }
-.ap-banner-reload { background: #fff4d6; }
+.ap-banner { background: var(--accent-soft); border-bottom: 1px solid var(--line); padding: 9px 14px; display: flex; gap: 10px; align-items: center; }
+.ap-banner-reload { background: #f6ecdd; }
 
 /* main layout */
 .ap-main { flex: 1; display: flex; min-height: 0; }
-.ap-preview { flex: 1; min-width: 0; overflow: auto; padding: 24px 32px; border-right: 1px solid var(--line); }
+.ap-preview { flex: 1; min-width: 0; overflow: auto; padding: 28px 36px; border-right: 1px solid var(--line); background: var(--bg); }
 .ap-rendered { max-width: 760px; }
-.ap-rendered .ap-anchor { background: #fff3b0; border-bottom: 2px solid #e6c200; color: inherit; text-decoration: none; cursor: pointer; border-radius: 2px; }
+.ap-rendered h1, .ap-rendered h2, .ap-rendered h3 { font-family: var(--serif); font-weight: 500; letter-spacing: -0.01em; line-height: 1.15; }
+.ap-rendered .ap-anchor { background: #f6eccb; border-bottom: 2px solid var(--amber); color: inherit; text-decoration: none; cursor: pointer; border-radius: 2px; }
 .ap-pane { width: 380px; flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); overflow: hidden; }
 /* draggable vertical splitter between panes */
 .ap-vsplit { flex: 0 0 6px; cursor: col-resize; background: var(--line); }
@@ -105,56 +123,70 @@ body {
 .ap-pane:last-child { border-right: 0; }
 .ap-source { flex: 1; overflow: auto; }
 
-.ap-tabs { display: flex; border-bottom: 1px solid var(--line); }
-.ap-tabs button { flex: 1; border: 0; background: var(--bg); padding: 6px; cursor: pointer; }
-.ap-tabs button.active { border-bottom: 2px solid var(--accent); font-weight: 600; }
+.ap-tabs { display: flex; border-bottom: 1px solid var(--line); background: var(--bg); }
+.ap-tabs button { flex: 1; border: 0; background: transparent; padding: 8px; cursor: pointer; color: var(--muted); }
+.ap-tabs button:hover { color: var(--fg); }
+.ap-tabs button.active { border-bottom: 2px solid var(--accent); font-weight: 600; color: var(--fg); }
 
-/* rail */
-/* dark-gray rail surface so the comment cards read as separate, floating cards */
-.ap-rail { overflow: auto; background: #45474d; }
-.ap-rail-head { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); background: var(--bg); position: sticky; top: 0; z-index: 1; }
-.ap-composer { padding: 10px; border-bottom: 1px solid var(--line); }
+/* rail — a soft recessed paper surface so the comment cards read as light, floating
+   cards rather than rows. */
+.ap-rail { overflow: auto; background: var(--paper); }
+.ap-rail-head { display: flex; justify-content: space-between; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--line); background: var(--bg); position: sticky; top: 0; z-index: 1; font-size: 12px; }
+.ap-composer { padding: 12px; border-bottom: 1px solid var(--line); background: var(--bg); }
 .ap-composer textarea { width: 100%; min-height: 48px; resize: vertical; }
 .ap-quote { font-size: 12px; color: var(--accent); margin-bottom: 4px; }
 .ap-muted { color: var(--muted); }
 .ap-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
 
-.ap-thread { padding: 10px; cursor: pointer; margin: 0 8px 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.32); }
+textarea, input[type="text"], input[type="email"], input[type="number"], select {
+  font: inherit; color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line-strong); border-radius: 7px; padding: 7px 9px;
+}
+textarea:focus, input[type="text"]:focus, input[type="email"]:focus, input[type="number"]:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(31, 92, 77, 0.22); }
+/* keep a clearly-visible native focus ring on checkboxes/radios + anything else */
+input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.ap-thread { padding: 12px; cursor: pointer; margin: 0 10px 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-sm); transition: box-shadow 0.14s ease, transform 0.14s ease; }
+.ap-thread:hover { box-shadow: var(--shadow); }
 /* rail section titles (Document / Anchored) with 10px between sections */
-.ap-section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: #d2d3d8; font-weight: 600; padding: 4px 10px; margin-top: 8px; }
-.ap-section-title:first-child { margin-top: 6px; }
-.ap-thread.focused { background: var(--accent-soft); }
-.ap-thread.synced { box-shadow: inset 3px 0 0 var(--accent); }
+.ap-section-title { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); font-weight: 500; padding: 4px 12px; margin-top: 10px; }
+.ap-section-title:first-child { margin-top: 8px; }
+/* `focused` uses background + border and `synced` uses box-shadow, so a thread that is
+   both keeps both signals (they don't fight over the same property). */
+.ap-thread.focused { border-color: var(--accent); background: var(--accent-soft); }
+.ap-thread.synced { box-shadow: inset 3px 0 0 var(--accent), var(--shadow-sm); }
 .ap-diff-del .w, .ap-diff-add .w { border-radius: 2px; padding: 0 1px; }
-.ap-diff-del .w { background: #ffc9c2; }
-.ap-diff-add .w { background: #b6e6c6; }
+.ap-diff-del .w { background: #f3c9c2; }
+.ap-diff-add .w { background: #bfe3cb; }
 .ap-thread.resolved { opacity: 0.55; }
 .ap-thread-quote { font-size: 12px; color: var(--accent); }
 .ap-meta { font-size: 11px; color: var(--muted); margin: 2px 0; }
 .ap-text { white-space: pre-wrap; }
-.ap-reply { margin: 6px 0 0 10px; padding-left: 8px; border-left: 2px solid var(--line); }
+.ap-reply { margin: 6px 0 0 10px; padding-left: 10px; border-left: 2px solid var(--line); }
 .ap-selected { font-weight: 600; }
 .ap-other { width: 100%; }
 .ap-reply-box { margin-top: 8px; }
 .ap-edit { margin: 4px 0; }
 .ap-comment + .ap-reply, .ap-reply + .ap-reply { margin-top: 8px; }
-.ap-thread-actions { gap: 12px; margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line); }
+.ap-thread-actions { gap: 12px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
 
 /* per-comment overflow (⋯) menu — Modify / Delete, folded to save space */
 .ap-comment, .ap-reply { position: relative; }
 .ap-cmenu { position: absolute; top: 2px; right: 2px; }
-.ap-cmenu-btn { border: 0; background: none; cursor: pointer; color: var(--muted); padding: 0 6px; font-size: 15px; line-height: 1; border-radius: 4px; }
-.ap-cmenu-btn:hover { background: var(--line); }
-.ap-cmenu-pop { position: absolute; right: 0; top: 20px; z-index: 25; display: flex; flex-direction: column; min-width: 96px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,0.16); overflow: hidden; }
-.ap-cmenu-pop button { border: 0; background: none; text-align: left; padding: 6px 12px; cursor: pointer; font: inherit; }
+.ap-cmenu-btn { border: 0; background: none; cursor: pointer; color: var(--faint); padding: 0 6px; font-size: 15px; line-height: 1; border-radius: 5px; }
+.ap-cmenu-btn:hover { background: var(--line); color: var(--fg); }
+.ap-cmenu-pop { position: absolute; right: 0; top: 20px; z-index: 25; display: flex; flex-direction: column; min-width: 96px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); overflow: hidden; }
+.ap-cmenu-pop button { border: 0; background: none; text-align: left; padding: 7px 12px; cursor: pointer; font: inherit; }
 .ap-cmenu-pop button:hover { background: var(--accent-soft); }
-.ap-link { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; }
+.ap-link { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
+.ap-link:hover { text-decoration: underline; text-underline-offset: 2px; }
 .ap-danger { color: var(--danger); }
 
 /* question chips */
-.ap-question { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
-.ap-chip { border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; cursor: pointer; }
-.ap-chip.on { border-color: var(--accent); background: var(--accent-soft); }
+.ap-question { display: flex; flex-direction: column; gap: 5px; margin: 8px 0; }
+.ap-chip { border: 1px solid var(--line-strong); border-radius: 7px; padding: 5px 9px; cursor: pointer; background: var(--bg); }
+.ap-chip:hover { border-color: var(--faint); }
+.ap-chip.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 500; }
 
 /* pane-selector icons (vertically-long rectangles) */
 .ap-pane-ic { display: inline-flex; gap: 2px; vertical-align: middle; }
@@ -164,75 +196,75 @@ body {
 /* floating contextual composer (position set inline; draggable by its header) */
 .ap-composer-float {
   position: fixed; z-index: 30; width: 340px;
-  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
-  box-shadow: 0 6px 24px rgba(0,0,0,0.16); padding: 10px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow); padding: 12px;
 }
 .ap-composer-head { display: flex; align-items: center; justify-content: space-between; cursor: move; user-select: none; margin-bottom: 6px; }
 .ap-composer-head .ap-quote { margin-bottom: 0; }
-.ap-drag { color: var(--muted); cursor: move; }
+.ap-drag { color: var(--faint); cursor: move; }
 .ap-grow { width: 100%; min-height: 44px; max-height: 176px; resize: none; overflow-y: auto; }
 
 /* rail splitter + empty + orphaned */
-.ap-splitter { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding: 8px 10px 2px; border-top: 2px solid var(--line); margin-top: 4px; }
-.ap-empty { padding: 16px 10px; color: #d2d3d8; font-size: 13px; }
-.ap-thread.orphaned { background: #fff6f4; }
+.ap-splitter { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); padding: 8px 12px 2px; border-top: 1px solid var(--line-strong); margin-top: 4px; }
+.ap-empty { padding: 18px 12px; color: var(--muted); font-size: 13px; }
+.ap-thread.orphaned { background: #fbeeea; border-color: #ecc9bf; }
 .ap-thread.orphaned .ap-thread-quote { color: var(--danger); }
 
 /* find & replace bar */
-.ap-find { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--accent-soft); flex-wrap: wrap; }
-.ap-find input[type="text"], .ap-find > input { border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; }
+.ap-find { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--line); background: var(--accent-soft); flex-wrap: wrap; }
+.ap-find input[type="text"], .ap-find > input { border: 1px solid var(--line-strong); border-radius: 6px; padding: 4px 7px; }
 .ap-find-scope { display: inline-flex; gap: 10px; font-size: 12px; }
-.ap-find-mode { font-size: 12px; font-weight: 600; border-right: 1px solid var(--line); padding-right: 8px; }
+.ap-find-mode { font-size: 12px; font-weight: 600; border-right: 1px solid var(--line-strong); padding-right: 8px; }
 
 /* find matches highlighted in the preview (CSS Custom Highlight API) */
-::highlight(ap-find) { background: #ffe58a; color: inherit; }
+::highlight(ap-find) { background: #f3dba0; color: inherit; }
 /* find matches highlighted inside the source editor (Editor find scope) */
-.cm-ap-find { background: #ffe58a; }
+.cm-ap-find { background: #f3dba0; }
 
 /* cross-pane current-line highlight */
 .ap-active-line, .cm-line.ap-active-line { background: var(--accent-soft); }
 .ap-rendered [data-line] { scroll-margin-top: 12px; }
 
 /* inline review: slim sticky bar (replaces the floating popup) */
-.ap-review-bar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--accent-soft); font-size: 13px; }
-.ap-review-bar button { font: inherit; border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+.ap-review-bar { display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-bottom: 1px solid var(--line); background: var(--accent-soft); font-size: 13px; }
+.ap-review-bar button { font: inherit; border: 1px solid var(--line-strong); background: var(--bg); border-radius: 7px; padding: 4px 11px; cursor: pointer; }
 
 /* inline diff in the PREVIEW pane (rendered markdown, per-hunk accept/reject) */
 .ap-diffview { max-width: 760px; }
 .ap-ctx { opacity: 0.72; }
-.ap-ihunk { border: 1px solid var(--line); border-radius: 7px; margin: 10px 0; overflow: hidden; }
-.ap-ihunk-bar { display: flex; align-items: center; gap: 6px; padding: 3px 10px; background: #f4f6fa; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
-.ap-ihunk-bar button { font: inherit; border: 1px solid var(--line); background: var(--bg); border-radius: 5px; padding: 1px 9px; cursor: pointer; }
-.ap-ihunk-bar button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
-.ap-ihunk-del { background: #ffece9; padding: 2px 10px; }
+.ap-ihunk { border: 1px solid var(--line); border-radius: 9px; margin: 12px 0; overflow: hidden; }
+.ap-ihunk-bar { display: flex; align-items: center; gap: 6px; padding: 4px 10px; background: #f3eee1; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.ap-ihunk-bar button { font: inherit; border: 1px solid var(--line-strong); background: var(--bg); border-radius: 6px; padding: 2px 10px; cursor: pointer; }
+.ap-ihunk-bar button.on { background: var(--accent); color: #fbfaf6; border-color: var(--accent); }
+.ap-ihunk-del { background: #fbeae6; padding: 3px 12px; }
 .ap-ihunk-del :where(p, h1, h2, h3, h4, li, blockquote) { text-decoration: line-through; }
-.ap-ihunk-add { background: #e9f7ef; padding: 2px 10px; }
+.ap-ihunk-add { background: #e9f3ec; padding: 3px 12px; }
 .ap-ihunk.rejected .ap-ihunk-add { opacity: 0.4; }
 .ap-ihunk.accepted .ap-ihunk-del { opacity: 0.5; }
 .ap-ihunk.focused { outline: 2px solid var(--accent); outline-offset: 1px; }
 .ap-hunk.focused { background: var(--accent-soft); }
 
 /* inline diff in the SOURCE pane (monospaced unified diff) */
-.ap-diffsource { padding: 8px 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow: auto; }
+.ap-diffsource { padding: 10px 12px; font-family: var(--mono); font-size: 12px; overflow: auto; }
 
 /* review-mode diff panel */
-.ap-review { position: absolute; left: 50%; transform: translateX(-50%); top: 48px; z-index: 25; width: min(820px, 92vw); max-height: 70vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.22); }
-.ap-review-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
-.ap-review-body { overflow: auto; padding: 8px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.ap-review { position: absolute; left: 50%; transform: translateX(-50%); top: 48px; z-index: 25; width: min(820px, 92vw); max-height: 70vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 18px 50px -18px rgba(28, 26, 23, 0.4); }
+.ap-review-head { display: flex; align-items: center; gap: 8px; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+.ap-review-body { overflow: auto; padding: 9px 14px; font-family: var(--mono); font-size: 12px; }
 .ap-hunk { border-left: 3px solid var(--line); margin: 8px 0; padding-left: 8px; }
 .ap-hunk.accepted { border-left-color: #2e9e5b; }
 .ap-hunk.rejected { border-left-color: var(--danger); opacity: 0.7; }
-.ap-hunk-toggle { display: block; font-family: -apple-system, sans-serif; font-size: 12px; margin-bottom: 4px; }
+.ap-hunk-toggle { display: block; font-family: var(--sans); font-size: 12px; margin-bottom: 4px; }
 .ap-diff-same { color: var(--muted); margin: 0; white-space: pre-wrap; }
-.ap-diff-del { background: #ffe9e6; color: #8a1c10; margin: 0; white-space: pre-wrap; }
-.ap-diff-add { background: #e6f6ec; color: #18643a; margin: 0; white-space: pre-wrap; }
+.ap-diff-del { background: #fbeae6; color: #8a1c10; margin: 0; white-space: pre-wrap; }
+.ap-diff-add { background: #e9f3ec; color: #18643a; margin: 0; white-space: pre-wrap; }
 
 /* status bar */
-.ap-statusbar { display: flex; align-items: center; gap: 8px; padding: 4px 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.ap-statusbar { display: flex; align-items: center; gap: 8px; padding: 5px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); background: var(--bg); }
 /* "Agent is thinking …" indicator: fixed-width dots so the animation never
    shifts neighbouring content, and a take-back button revealed only on hover. */
 .ap-thinking { display: inline-flex; align-items: baseline; gap: 8px; cursor: default; }
 .ap-dots { display: inline-block; width: 2.5em; text-align: left; }
-.ap-takeback { display: none; font-size: 12px; padding: 1px 8px; border: 1px solid #d9a441; background: #fff4d6; color: #7a4b00; border-radius: 4px; cursor: pointer; }
+.ap-takeback { display: none; font-size: 12px; padding: 1px 8px; border: 1px solid #d9a441; background: #f6ecdd; color: #7a4b00; border-radius: 5px; cursor: pointer; }
 .ap-thinking:hover .ap-takeback { display: inline-block; }
-.ap-takeback:hover { background: #ffe9ad; }
+.ap-takeback:hover { background: #efdcb8; }

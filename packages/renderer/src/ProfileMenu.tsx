@@ -39,6 +39,12 @@ export function ProfileMenu({
     return () => document.removeEventListener("mousedown", onDown);
   }, []);
 
+  // When the menu has nothing to show (it renders null below), make sure it isn't
+  // left "open" — otherwise it would pop open on its own if it reappears later.
+  useEffect(() => {
+    if (!user && actions.length === 0) setOpen(false);
+  }, [user, actions.length]);
+
   // Nothing to show — no identity and no actions (e.g. a local-only/offline desktop
   // session where the cloud is unreachable). Render no profile chrome at all.
   if (!user && actions.length === 0) return null;
