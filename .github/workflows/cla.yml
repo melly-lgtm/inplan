@@ -38,6 +38,8 @@ jobs:
           path-to-signatures: 'signatures/cla.json'
           path-to-document: 'https://github.com/melly-lgtm/inplan/blob/main/CLA.md'
           branch: 'main'
-          allowlist: 'dependabot[bot]'
+          # The company's own maintainer account is the licensor, not a third-party
+          # contributor — it doesn't sign its own CLA. External contributors still must.
+          allowlist: 'melly-lgtm,dependabot[bot]'
           custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
           custom-notsigned-prcomment: 'Thanks for your PR! Before we can merge it, please sign our [Contributor License Agreement](https://github.com/melly-lgtm/inplan/blob/main/CLA.md) by commenting below:'
