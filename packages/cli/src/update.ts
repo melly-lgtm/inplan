@@ -9,7 +9,7 @@
 import { spawn } from "node:child_process";
 
 /** The npm package the global install resolves to (override for forks / scoped names). */
-export const UPDATE_PKG = process.env.INPLAN_PKG || "agent-planner";
+export const UPDATE_PKG = process.env.INPLAN_PKG || "inplan";
 
 /** Compare dotted versions numerically (prerelease suffixes ignored). <0 if a<b. */
 export function compareVersions(a: string, b: string): number {

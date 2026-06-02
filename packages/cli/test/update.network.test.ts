@@ -16,7 +16,7 @@ afterEach(() => vi.restoreAllMocks());
 describe("latestVersion", () => {
   it("returns the published version on a 2xx", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ version: "1.4.2" }) })));
-    expect(await latestVersion("agent-planner")).toBe("1.4.2");
+    expect(await latestVersion("inplan")).toBe("1.4.2");
   });
   it("encodes a scoped name in the registry URL", async () => {
     const f = vi.fn(async () => ({ ok: true, json: async () => ({ version: "2.0.0" }) }));
@@ -46,12 +46,12 @@ describe("selfUpdate", () => {
   it("resolves ok on exit 0, collecting stdout/stderr", async () => {
     const child = fakeChild();
     spawnMock.mockReturnValueOnce(child);
-    const p = selfUpdate("agent-planner");
+    const p = selfUpdate("inplan");
     child.stdout.emit("data", "added 1 package");
     child.stderr.emit("data", "");
     child.emit("close", 0);
     await expect(p).resolves.toEqual({ ok: true, output: "added 1 package" });
-    expect(spawnMock).toHaveBeenCalledWith("npm", ["install", "-g", "agent-planner@latest"], expect.anything());
+    expect(spawnMock).toHaveBeenCalledWith("npm", ["install", "-g", "inplan@latest"], expect.anything());
   });
   it("resolves not-ok on a non-zero exit", async () => {
     const child = fakeChild();
