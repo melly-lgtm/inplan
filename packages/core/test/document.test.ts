@@ -8,9 +8,9 @@ const sample: ParsedDocument = {
   version: 1,
   body: "# Plan\n\nThe plan should [use Postgres](#cmt-abc123) for storage.",
   comments: [
-    { id: "cmt-abc123", author: "Tim <tim@xl8.ai>", date: "2026-05-28T13:34:00Z", resolved: false, text: "Why not SQLite?" },
+    { id: "cmt-abc123", author: "Dana Lee <dana@example.com>", date: "2026-05-28T13:34:00Z", resolved: false, text: "Why not SQLite?" },
     { id: "cmt-def456", parentId: "cmt-abc123", author: "Agent <agent@inplan>", date: "2026-05-28T13:40:00Z", resolved: false, text: "JSONB + scale." },
-    { id: "cmt-doc111", anchor: "doc", author: "Tim <tim@xl8.ai>", date: "2026-05-28T14:00:00Z", resolved: false, text: "Looks close." },
+    { id: "cmt-doc111", anchor: "doc", author: "Dana Lee <dana@example.com>", date: "2026-05-28T14:00:00Z", resolved: false, text: "Looks close." },
   ],
 };
 
@@ -54,7 +54,7 @@ describe("parse / serialize", () => {
       version: 1,
       body: "no anchors",
       comments: [
-        { id: "cmt-aaaaaa", author: "Tim <tim@xl8.ai>", date: "2026-05-28T14:00:00Z", resolved: false, selected: ["SQLite"], text: "go simple", parentId: "cmt-q00001" },
+        { id: "cmt-aaaaaa", author: "Dana Lee <dana@example.com>", date: "2026-05-28T14:00:00Z", resolved: false, selected: ["SQLite"], text: "go simple", parentId: "cmt-q00001" },
       ],
     };
     expect(parse(serialize(doc))).toEqual(doc);
@@ -76,7 +76,7 @@ describe("parse / serialize", () => {
       "Body text with [a span](#cmt-real01).",
       "",
       "<!--inplan",
-      '[ { "id": "cmt-real01", "author": "Tim", "date": "d", "resolved": false, "text": "the real comment" } ]',
+      '[ { "id": "cmt-real01", "author": "Dana Lee", "date": "d", "resolved": false, "text": "the real comment" } ]',
       "-->",
       "",
     ].join("\n");

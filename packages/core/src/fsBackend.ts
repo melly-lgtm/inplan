@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// Filesystem implementation of the deployment-portability seam (Milestone M1):
+// Filesystem implementation of the deployment-portability seam:
 // the local desktop backend. It wraps today's sidecar-file mechanics behind the
 // `ControlChannel` / `DocumentStore` interfaces so `cli` / `app` can depend on
 // the interface and a web backend (Supabase) can be dropped in unchanged.

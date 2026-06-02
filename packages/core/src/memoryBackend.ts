@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// In-process implementations of the deployment-portability seam (Milestone M3).
+// In-process implementations of the deployment-portability seam.
 // They hold all state in memory — no filesystem, no Electron — so the renderer
 // can be mounted in a headless browser with a scripted "test agent" pushing
 // control events straight into the channel, and so the same contract-test suite

@@ -10,7 +10,7 @@
 // (`~/.inplan/sidecars/<key>/status.json`), keyed by the document's *original*
 // absolute path — never in the repo, same rule as the control log. There is no
 // agent-attachment flag here: who is driving the doc is derived from live
-// presence, not persisted (see docs/PLAN.md § Local ⇄ cloud session handoff).
+// presence, not persisted.
 //
 // fs-backed: import from `@inplan/core/node`, never the browser root.
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// Deployment-portability seam (Milestone M1). The file-based control mechanics
+// Deployment-portability seam. The file-based control mechanics
 // (JSONL log, watch polling, `.waitlock`, sidecar versions) assume the agent and
 // editor share one filesystem — true for the Electron desktop app, but not for a
 // web service (different hosts, multi-user, no shared disk). Routing all control

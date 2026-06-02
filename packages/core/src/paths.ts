@@ -64,7 +64,7 @@ function repoRootOf(absFile: string): string | null {
  * document's absolute path: a readable label plus a short hash of the full
  * absolute path (the hash is what guarantees uniqueness and stability). The label
  * is `<repoName>-<path-within-repo>` when the document lives in a git repo (e.g.
- * `agent-planner-docs-PLAN.md`, so two docs in one project — even with the same
+ * `inplan-docs-roadmap.md`, so two docs in one project — even with the same
  * filename in different folders — read distinctly), else `<parentFolder>-<filename>`.
  */
 export function docPaths(file: string): DocPaths {

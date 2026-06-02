@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // A browser-safe implementation of the renderer's `Api` (window.api) backed by
-// the in-memory ControlChannel / DocumentStore (Milestone M3). It lets the React
+// the in-memory ControlChannel / DocumentStore. It lets the React
 // renderer run WITHOUT Electron — mounted in a headless browser for Playwright,
 // or driven directly in a unit test — with a scripted "agent" pushing control
 // events (auto-accept edits, Review proposals, done/reload signals) into it.
