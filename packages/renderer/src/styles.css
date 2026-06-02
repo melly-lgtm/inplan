@@ -69,6 +69,24 @@ body {
 .ap-topbar button, .ap-tabs button { font: inherit; }
 .ap-topbar > button { border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 4px 12px; cursor: pointer; }
 .ap-primary { background: var(--accent) !important; color: #fff; border-color: var(--accent) !important; }
+
+/* iconified top-bar controls: uniform 30px height; SVGs inherit button color so
+   they tint on hover/active. Secondary actions are icon-only (label via title +
+   aria-label); the primary keeps a short label. */
+.ap-topbar svg { width: 16px; height: 16px; display: block; }
+.ap-topbar .ap-seg button, .ap-settings > button { height: 30px; display: inline-flex; align-items: center; justify-content: center; }
+.ap-zoom-val { min-width: 46px; font-variant-numeric: tabular-nums; }
+.ap-iconrow { display: inline-flex; align-items: center; gap: 6px; }
+.ap-iconbtn { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 1px solid var(--line); background: var(--bg); border-radius: 6px; color: var(--fg); cursor: pointer; transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease; }
+.ap-iconbtn:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.ap-iconbtn:disabled { opacity: 0.4; cursor: default; }
+.ap-iconbtn .ap-dirty { position: absolute; top: 2px; right: 2px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); border: 1.5px solid var(--bg); }
+.ap-iconbtn--primary { width: auto; gap: 6px; font-weight: 500; }
+/* Scoped to beat the more-specific `.ap-topbar > button` rule above (the primary is a
+   direct child of the bar), so the accent fill + white text always win. */
+.ap-topbar > button.ap-iconbtn--primary { height: 30px; padding: 0 14px; background: var(--accent); border: 1px solid var(--accent); color: #fff; border-radius: 6px; }
+.ap-topbar > button.ap-iconbtn--primary:hover:not(:disabled) { background: #2860d8; border-color: #2860d8; color: #fff; }
+.ap-topbar > button.ap-iconbtn--primary svg { width: 15px; height: 15px; }
 .ap-update-err { color: #c0392b; }
 
 /* banner */

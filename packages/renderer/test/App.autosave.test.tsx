@@ -170,7 +170,7 @@ describe("App autosave / dirty / Save (memory-backed)", () => {
     await editBody("# Plan\n\nManual save body.\n\n<!--inplan v1\n[]\n-->\n");
     expect(document.body.textContent).toContain("unsaved");
     const saveBtn = () => screen.getByRole("button", { name: /^Save/ });
-    expect(saveBtn().textContent).toContain("•");
+    expect(saveBtn().querySelector(".ap-dirty")).toBeTruthy(); // dirty dot on the Save icon
 
     const saveSpy = vi.spyOn(window.api, "save");
 
@@ -181,7 +181,7 @@ describe("App autosave / dirty / Save (memory-backed)", () => {
     expect(saveSpy).toHaveBeenLastCalledWith(expect.any(String), { kind: "backup", cadence: "turn" });
     expect(document.body.textContent).toContain("checkpoint saved");
     expect(document.body.textContent).toContain("unsaved");
-    expect(saveBtn().textContent).toContain("•");
+    expect(saveBtn().querySelector(".ap-dirty")).toBeTruthy(); // still dirty after a backup
 
     // Switch to Instant and Save again → canonical save clears dirty.
     await act(async () => {
@@ -193,6 +193,6 @@ describe("App autosave / dirty / Save (memory-backed)", () => {
     expect(saveSpy).toHaveBeenLastCalledWith(expect.any(String), { kind: "canonical", cadence: "instant" });
     expect(document.body.textContent).toContain("saved");
     expect(document.body.textContent).not.toContain("unsaved");
-    expect(saveBtn().textContent).not.toContain("•");
+    expect(saveBtn().querySelector(".ap-dirty")).toBeNull(); // canonical save cleared the dirty dot
   });
 });

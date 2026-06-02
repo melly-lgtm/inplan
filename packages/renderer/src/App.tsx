@@ -22,6 +22,7 @@ import { SourceEditor, type SourceEditorHandle } from "./SourceEditor";
 import { StatusBar } from "./StatusBar";
 import { ProfileMenu } from "./ProfileMenu";
 import { AgentIndicator } from "./AgentIndicator";
+import { IconBack, IconForward, IconSettings, IconZoomOut, IconZoomIn, IconFind, IconComment, IconSave, IconFinishTurn, IconComplete } from "./Icons";
 import { applySegments, isChange, lineSegments, wordDiff, type DiffSegment, type WordPart } from "./textdiff";
 
 const USER_AUTHOR = "You";
@@ -913,8 +914,8 @@ function SettingsMenu({
   }, []);
   return (
     <div className="ap-settings" ref={ref}>
-      <button title="Settings" onClick={() => setOpen((v) => !v)}>
-        ⚙
+      <button title="Settings" aria-label="Settings" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <IconSettings />
       </button>
       {open && (
         <div className="ap-settings-menu">
@@ -1021,10 +1022,10 @@ function TopBar(props: {
       {props.nav && (
         <div className="ap-seg" role="group" aria-label="navigation">
           <button title="Back" aria-label="Back" disabled={!props.nav.canBack} onClick={props.nav.onBack}>
-            ‹
+            <IconBack />
           </button>
           <button title="Forward" aria-label="Forward" disabled={!props.nav.canForward} onClick={props.nav.onForward}>
-            ›
+            <IconForward />
           </button>
         </div>
       )}
@@ -1050,31 +1051,51 @@ function TopBar(props: {
         ))}
       </div>
       <div className="ap-seg" role="group" aria-label="zoom">
-        <button title="Zoom out" onClick={() => props.onZoom(-1)}>
-          −
+        <button title="Zoom out" aria-label="Zoom out" onClick={() => props.onZoom(-1)}>
+          <IconZoomOut />
         </button>
-        <button title="Reset zoom" onClick={() => props.onZoom(0)}>
+        <button className="ap-zoom-val" title="Reset zoom" aria-label="Reset zoom" onClick={() => props.onZoom(0)}>
           {Math.round(props.zoom * 100)}%
         </button>
-        <button title="Zoom in" onClick={() => props.onZoom(1)}>
-          +
+        <button title="Zoom in" aria-label="Zoom in" onClick={() => props.onZoom(1)}>
+          <IconZoomIn />
         </button>
       </div>
-      <button onClick={props.onToggleFind} title="Find &amp; replace">
-        Find
-      </button>
-      <button onClick={props.onAddComment} disabled={props.locked}>
-        {props.hasSelection ? "+ Add Comment" : "+ Add Doc Comment"}
-      </button>
       <div className="ap-spacer" />
-      <button onClick={props.onSave}>Save{props.dirty ? " •" : ""}</button>
-      {cadence === "turn" && (
-        <button onClick={props.onFinishTurn} disabled={props.locked || noAgent} title={noAgentTitle}>
-          Finish turn
+      <div className="ap-iconrow" role="group" aria-label="document tools">
+        <button className="ap-iconbtn" onClick={props.onToggleFind} title="Find &amp; replace  (⌘/Ctrl+F)" aria-label="Find &amp; replace">
+          <IconFind />
         </button>
-      )}
-      <button className="ap-primary" onClick={props.onComplete}>
-        Complete &amp; quit
+        <button
+          className="ap-iconbtn"
+          onClick={props.onAddComment}
+          disabled={props.locked}
+          title={props.hasSelection ? "Add a comment on the selection" : "Add a document-level comment"}
+          aria-label={props.hasSelection ? "Add Comment" : "Add Doc Comment"}
+        >
+          <IconComment />
+        </button>
+      </div>
+      <div className="ap-iconrow" role="group" aria-label="save and turn">
+        <button className="ap-iconbtn" onClick={props.onSave} title={props.dirty ? "Save — unsaved changes" : "Save"} aria-label="Save">
+          <IconSave />
+          {props.dirty && <span className="ap-dirty" aria-hidden="true" />}
+        </button>
+        {cadence === "turn" && (
+          <button
+            className="ap-iconbtn"
+            onClick={props.onFinishTurn}
+            disabled={props.locked || noAgent}
+            title={noAgentTitle ?? "Finish turn — hand off to the agent"}
+            aria-label="Finish turn"
+          >
+            <IconFinishTurn />
+          </button>
+        )}
+      </div>
+      <button className="ap-iconbtn ap-iconbtn--primary" onClick={props.onComplete} title="Complete &amp; quit" aria-label="Complete &amp; quit">
+        <IconComplete />
+        <span>Complete</span>
       </button>
       {profile?.presenceAware && (
         <AgentIndicator
