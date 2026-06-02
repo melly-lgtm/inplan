@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { contextBridge, ipcRenderer } from "electron";
-import type { Acceptance, Api, Cadence, DocPayload, ProfileController, ProfileState, SaveOptions, Settings } from "@inplan/renderer";
+import type { Acceptance, Api, Cadence, DocPayload, I18nController, I18nState, ProfileController, ProfileState, SaveOptions, Settings } from "@inplan/renderer";
 
 /** Action shapes main sends (no functions cross IPC); the preload turns each into
  *  an `onSelect` that invokes the matching main-side action by id. */
@@ -50,6 +50,36 @@ function createProfileController(): ProfileController {
   };
 }
 
+/** The localization snapshot main sends (no functions cross IPC). */
+interface I18nSnapshot {
+  locale: string;
+  catalogs: Record<string, Record<string, string>>;
+  available: { code: string; label: string }[];
+}
+
+/** i18n controller: caches main's snapshot, adds a `setLocale` that calls back into
+ *  main, and re-fetches when main pushes `i18n:changed` (a locale switch or a refresh
+ *  after the cloud catalogs load). English-only until main reports a paid session. */
+function createI18nController(): I18nController {
+  const setLocale = (locale: string) => void ipcRenderer.invoke("i18n:set-locale", locale);
+  const toState = (snap: I18nSnapshot): I18nState => ({ locale: snap.locale, catalogs: snap.catalogs, available: snap.available, setLocale });
+  let cached: I18nState = toState({ locale: "en", catalogs: {}, available: [{ code: "en", label: "English" }] });
+  const subs = new Set<(s: I18nState) => void>();
+  const refresh = async () => {
+    cached = toState((await ipcRenderer.invoke("i18n:get")) as I18nSnapshot);
+    for (const cb of subs) cb(cached);
+  };
+  ipcRenderer.on("i18n:changed", () => void refresh());
+  void refresh();
+  return {
+    get: () => cached,
+    subscribe: (cb) => {
+      subs.add(cb);
+      return () => void subs.delete(cb);
+    },
+  };
+}
+
 const api: Api = {
   load: () => ipcRenderer.invoke("doc:load"),
   save: (content: string, options: SaveOptions) => ipcRenderer.invoke("doc:save", content, options),
@@ -86,6 +116,7 @@ const api: Api = {
     ipcRenderer.on("doc:navigated", (_e, payload: DocPayload) => cb(payload));
   },
   profile: createProfileController(),
+  i18n: createI18nController(),
   onUpdateAvailable: (cb: (info: { current: string; latest: string }) => void) => {
     ipcRenderer.on("app:update-available", (_e, info: { current: string; latest: string }) => cb(info));
   },

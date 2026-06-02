@@ -468,6 +468,15 @@ async function doWhoami(): Promise<void> {
   output({ signedIn: true, id: user.id, ...(user.email ? { email: user.email } : {}) });
 }
 
+/** Print a fresh access token for the signed-in session, for callers that talk to the
+ *  cloud HTTP endpoints directly (the desktop app uses it to fetch entitlement-gated
+ *  i18n catalogs). Refreshes via the stored session so the token is current. Prints an
+ *  empty object when logged out — "no token" means not-signed-in, never an error. */
+async function doToken(): Promise<void> {
+  const s = await authedSession();
+  output(s ? { token: s.session.access_token } : {});
+}
+
 /** Forget stored credentials (sign out). */
 function doLogout(): void {
   clearAuth();
@@ -578,6 +587,10 @@ async function main(): Promise<void> {
   }
   if (cmd === "whoami") {
     await doWhoami();
+    return;
+  }
+  if (cmd === "token") {
+    await doToken();
     return;
   }
   if (cmd === "logout") {

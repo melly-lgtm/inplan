@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import type { Acceptance, Cadence, SaveOptions, Settings } from "@inplan/renderer";
 import { Session } from "./session";
+import { createI18nController } from "./i18nController";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -76,6 +77,14 @@ function runCli(args: string[]): Promise<{ code: number; stdout: string; stderr:
 
 /** Base URL of the cloud edition (inplan.ai), for the reachability probe + cloud links. */
 const CLOUD_BASE = (process.env.INPLAN_WEB_URL || "https://inplan.ai").replace(/\/$/, "");
+
+// Localization (paid perk): fetched from the cloud via the CLI's token, entitlement-gated.
+// English-only until a signed-in, entitled session is verified online. See i18nController.
+const i18n = createI18nController({
+  runCli: (args) => runCli(args).then((r) => ({ stdout: r.stdout })),
+  cloudBase: CLOUD_BASE,
+  onChange: () => win?.webContents.send("i18n:changed"),
+});
 
 // Cloud reachability. The desktop app is local-first, so cloud affordances (sign in,
 // collaborate) only appear when inplan.ai is actually reachable. We probe its health
@@ -257,6 +266,7 @@ function createWindow(): void {
   win.webContents.once("did-finish-load", () => {
     void checkForUpdate();
     void probeCloud();
+    void i18n.bootstrap(); // load cached locale + refresh catalogs from the cloud (paid perk)
   });
 
   stopWatching = watchSession();
@@ -365,6 +375,7 @@ function registerIpc(): void {
     } else if (id === "signout") {
       await runCli(["logout"]);
       win?.webContents.send("profile:changed");
+      void i18n.bootstrap(); // credentials cleared → re-resolve to English-only (drop the paid perk)
     } else if (id === "signin") {
       dialog.showMessageBoxSync(win!, {
         type: "info",
@@ -372,8 +383,13 @@ function registerIpc(): void {
         detail: "Run `inplan login` in your terminal to connect this app to your inplan.ai account, then reopen this menu.",
       });
       win?.webContents.send("profile:changed"); // refresh in case they just signed in
+      void i18n.bootstrap(); // pick up the new session's locales/entitlement if they just logged in
     }
   });
+
+  // Localization seam (paid perk): the renderer reads the snapshot + switches locale.
+  ipcMain.handle("i18n:get", () => i18n.getSnapshot());
+  ipcMain.handle("i18n:set-locale", (_e, code: string) => i18n.setLocale(code));
 }
 
 void app.whenReady().then(() => {
