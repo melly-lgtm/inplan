@@ -31,6 +31,12 @@ describe("ProfileMenu", () => {
     expect(screen.getByRole("menuitem", { name: "Sign in" })).toBeTruthy();
   });
 
+  it("renders nothing when there is no user and no actions (local-only / cloud unreachable)", () => {
+    const { container } = render(<ProfileMenu user={null} actions={[]} />);
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
   it("invokes a host action and closes the menu", () => {
     const onSelect = vi.fn();
     render(<ProfileMenu user={user} actions={[{ label: "Collaborate on Cloud", onSelect, primary: true }]} />);

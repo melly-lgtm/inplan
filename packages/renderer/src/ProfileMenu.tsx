@@ -27,7 +27,7 @@ export function ProfileMenu({
 }: {
   user: { name: string; email?: string } | null;
   actions: ProfileMenuItem[];
-}): JSX.Element {
+}): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -38,6 +38,10 @@ export function ProfileMenu({
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, []);
+
+  // Nothing to show — no identity and no actions (e.g. a local-only/offline desktop
+  // session where the cloud is unreachable). Render no profile chrome at all.
+  if (!user && actions.length === 0) return null;
 
   const accountLabel = user ? user.name : "Not signed in";
   return (
