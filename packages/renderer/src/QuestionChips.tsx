@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { Question } from "@inplan/core";
+import { useT } from "./i18n";
 
 /**
  * Choice-answer UI (FR4). `multiSelect:false` → radio (pick one); `true` →
@@ -9,6 +10,7 @@ import type { Question } from "@inplan/core";
  * "Answer" posts the selected labels + the trimmed Other text, then resets.
  */
 export function QuestionChips({ question, disabled, onAnswer }: { question: Question; disabled: boolean; onAnswer: (selected: string[], text: string) => void }): JSX.Element {
+  const t = useT();
   const [selected, setSelected] = useState<string[]>([]);
   const [other, setOther] = useState("");
   const toggle = (label: string) => {
@@ -27,7 +29,7 @@ export function QuestionChips({ question, disabled, onAnswer }: { question: Ques
           {c.description ? <span className="ap-muted"> — {c.description}</span> : null}
         </label>
       ))}
-      <input className="ap-other" placeholder="Other…" value={other} disabled={disabled} onChange={(e) => setOther(e.target.value)} />
+      <input className="ap-other" placeholder={t("question.other")} value={other} disabled={disabled} onChange={(e) => setOther(e.target.value)} />
       <button
         disabled={disabled || (selected.length === 0 && !other.trim())}
         onClick={() => {
@@ -36,7 +38,7 @@ export function QuestionChips({ question, disabled, onAnswer }: { question: Ques
           setOther("");
         }}
       >
-        Answer
+        {t("question.answer")}
       </button>
     </div>
   );

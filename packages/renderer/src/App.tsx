@@ -23,6 +23,7 @@ import { StatusBar } from "./StatusBar";
 import { ProfileMenu } from "./ProfileMenu";
 import { AgentIndicator } from "./AgentIndicator";
 import { IconBack, IconForward, IconSettings, IconZoomOut, IconZoomIn, IconFind, IconComment, IconSave, IconFinishTurn, IconComplete } from "./Icons";
+import { useT } from "./i18n";
 import { applySegments, isChange, lineSegments, wordDiff, type DiffSegment, type WordPart } from "./textdiff";
 
 const USER_AUTHOR = "You";
@@ -59,6 +60,7 @@ interface Proposal {
 type FindMatch = { scope: "body"; from: number; to: number } | { scope: "comment"; id: string; from: number; to: number };
 
 export function App(): JSX.Element {
+  const t = useT();
   const [loaded, setLoaded] = useState(false);
   const [doc, setDoc] = useState<ParsedDocument>(EMPTY);
   const [cadence, setCadence] = useState<Cadence>("turn");
@@ -134,7 +136,7 @@ export function App(): JSX.Element {
       setProposal({ baseBody: docRef.current.body, next: parse(content) });
       setReviewOpen(true);
       setAgentThinking(false);
-      setStatus("agent proposed changes — review below");
+      setStatus(t("msg.proposedReview"));
     };
 
     window.api
@@ -158,7 +160,7 @@ export function App(): JSX.Element {
       setDoc(next);
       savedRef.current = serialize(next);
       setDirty(false);
-      setStatus("agent updated the document");
+      setStatus(t("msg.agentUpdated"));
     });
     // Review-mode body changes arrive parked, as a proposal to accept/reject.
     window.api.onProposal(({ content }) => showProposal(content));
@@ -169,7 +171,7 @@ export function App(): JSX.Element {
     });
     window.api.onAgentActive(() => {
       setAgentThinking(false);
-      setStatus("agent took its turn — your move");
+      setStatus(t("msg.agentTook"));
     });
     // Desktop only: the window followed a link to another doc — reset to it (a fresh
     // load), clearing any in-flight proposal/turn state, then re-show a parked proposal.
@@ -203,31 +205,31 @@ export function App(): JSX.Element {
       void window.api.closeWindow();
       return;
     }
-    const t = setTimeout(() => setReloadIn((s) => (s === null ? null : s - 1)), 1000);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => setReloadIn((s) => (s === null ? null : s - 1)), 1000);
+    return () => clearTimeout(timer);
   }, [reloadIn]);
 
   const undo = useCallback(() => {
     const prev = history.current.pop();
     if (!prev) {
-      setStatus("nothing to undo");
+      setStatus(t("msg.nothingUndo"));
       return;
     }
     future.current.push(docRef.current);
     setDoc(prev);
     setDirty(serialize(prev) !== savedRef.current);
-    setStatus("undid last change");
+    setStatus(t("msg.undid"));
   }, []);
   const redo = useCallback(() => {
     const next = future.current.pop();
     if (!next) {
-      setStatus("nothing to redo");
+      setStatus(t("msg.nothingRedo"));
       return;
     }
     history.current.push(docRef.current);
     setDoc(next);
     setDirty(serialize(next) !== savedRef.current);
-    setStatus("redid change");
+    setStatus(t("msg.redid"));
   }, []);
 
   // --- keyboard ergonomics ---
@@ -264,7 +266,7 @@ export function App(): JSX.Element {
   // permanently locked editor. (Hover-gated so it doesn't clutter or jitter.)
   const takeBackControl = useCallback(() => {
     setAgentThinking(false);
-    setStatus("you took back control — the agent didn't hand it back");
+    setStatus(t("msg.tookBack"));
     void window.api.logAction(LogEventType.HumanReclaimed);
   }, []);
 
@@ -279,10 +281,10 @@ export function App(): JSX.Element {
         void window.api.save(content, { kind: "canonical", cadence });
         savedRef.current = content;
         setDirty(false);
-        setStatus("auto-saving…");
+        setStatus(t("msg.autosaving"));
       } else {
         void window.api.save(content, { kind: "backup", cadence });
-        setStatus("autosaved (backup)");
+        setStatus(t("msg.autosaved"));
       }
     }, delay);
     return () => {
@@ -396,7 +398,7 @@ export function App(): JSX.Element {
     savedRef.current = content;
     setDirty(false);
     setAgentThinking(true);
-    setStatus("turn finished — waiting for agent");
+    setStatus(t("msg.turnFinished"));
   }, []);
 
   const complete = useCallback(() => {
@@ -409,7 +411,7 @@ export function App(): JSX.Element {
       if (target) {
         const res = addSpanComment(docRef.current, target, { text, author: USER_AUTHOR, question });
         if (!res) {
-          setStatus("could not anchor the selected text in the source");
+          setStatus(t("msg.cantAnchor"));
           return;
         }
         apply(res.doc, { type: "comment_created", payload: { id: res.id } });
@@ -614,7 +616,7 @@ export function App(): JSX.Element {
     if (ranges.length) cssApi.highlights.set("ap-find", new HighlightCtor(...ranges));
   }, [findOpts, findOpen, previewHtml, doc.comments]);
 
-  if (!loaded) return <div className="ap-loading">Loading…</div>;
+  if (!loaded) return <div className="ap-loading">{t("app.loading")}</div>;
 
   // 1 pane = preview only; 2 panes = preview + one of {source, comments} (tabbed);
   // 3 panes = preview + source + comments.
@@ -660,19 +662,19 @@ export function App(): JSX.Element {
 
       {agentDone && (
         <div className="ap-banner">
-          The agent thinks the plan is ready. <button onClick={complete}>Complete &amp; quit</button>
+          {t("banner.agentReady")} <button onClick={complete}>{t("topbar.completeQuit")}</button>
           <button className="ap-link" onClick={() => setAgentDone(false)}>
-            dismiss
+            {t("banner.dismiss")}
           </button>
         </div>
       )}
 
       {reloadReady && (
         <div className="ap-banner ap-banner-reload">
-          🔄 A new build is ready — <strong>reloading in {reloadIn ?? 0}s</strong>{" "}
+          {t("banner.newBuild")} <strong>{t("banner.reloadingIn", { n: reloadIn ?? 0 })}</strong>{" "}
           <span className="ap-spacer" />
           <button className="ap-primary" onClick={() => void window.api.closeWindow()}>
-            Reload now
+            {t("banner.reloadNow")}
           </button>
           <button
             className="ap-link"
@@ -681,7 +683,7 @@ export function App(): JSX.Element {
               setReloadReady(false);
             }}
           >
-            Cancel
+            {t("banner.cancel")}
           </button>
         </div>
       )}
@@ -690,16 +692,16 @@ export function App(): JSX.Element {
         <div className="ap-banner">
           {updating === "done" ? (
             <>
-              ✅ Updated to <strong>v{update.latest}</strong> — restart inplan to apply.
+              {t("banner.updated")} <strong>v{update.latest}</strong> {t("banner.restartToApply")}
               <span className="ap-spacer" />
               <button className="ap-primary" onClick={() => void window.api.closeWindow()}>
-                Restart
+                {t("banner.restart")}
               </button>
             </>
           ) : (
             <>
-              ⬆️ A new version is available (<strong>v{update.current} → v{update.latest}</strong>).
-              {updating === "failed" && <span className="ap-update-err"> Update failed — try again.</span>}
+              {t("banner.newVersion")} (<strong>v{update.current} → v{update.latest}</strong>).
+              {updating === "failed" && <span className="ap-update-err"> {t("banner.updateFailed")}</span>}
               <span className="ap-spacer" />
               <button
                 className="ap-primary"
@@ -710,10 +712,10 @@ export function App(): JSX.Element {
                   setUpdating(r?.ok ? "done" : "failed");
                 }}
               >
-                {updating === "running" ? "Updating…" : "Update now"}
+                {updating === "running" ? t("banner.updating") : t("banner.updateNow")}
               </button>
               <button className="ap-link" onClick={() => setUpdate(null)}>
-                Later
+                {t("banner.later")}
               </button>
             </>
           )}
@@ -722,31 +724,33 @@ export function App(): JSX.Element {
 
       {proposal && !reviewOpen && (
         <div className="ap-banner">
-          The agent proposed changes awaiting your review.{" "}
-          <button onClick={() => setReviewOpen(true)}>Review</button>
+          {t("banner.proposalPending")}{" "}
+          <button onClick={() => setReviewOpen(true)}>{t("banner.review")}</button>
         </div>
       )}
 
       {proposal && reviewOpen && (
         <div className="ap-review-bar">
-          <strong>Agent proposed changes</strong> — {changeCount} change{changeCount === 1 ? "" : "s"} shown inline below
+          <strong>{t("banner.proposedChanges")}</strong>{" "}
+          {t(changeCount === 1 ? "banner.changesShown" : "banner.changesShownPlural", { n: changeCount })}
           <span className="ap-spacer" />
-          <button onClick={reviewNext} disabled={!changeCount} title="Scroll to the next change">
-            Review next{reviewCursor >= 0 ? ` (${reviewCursor + 1}/${changeCount})` : ""}
+          <button onClick={reviewNext} disabled={!changeCount} title={t("banner.scrollToNext")}>
+            {t("banner.reviewNext")}
+            {reviewCursor >= 0 ? ` (${reviewCursor + 1}/${changeCount})` : ""}
           </button>
           <button disabled={editingLocked} onClick={() => setAccepted(new Array(changeCount).fill(true))}>
-            Accept all
+            {t("banner.acceptAll")}
           </button>
           <button disabled={editingLocked} onClick={() => setAccepted(new Array(changeCount).fill(false))}>
-            Reject all
+            {t("banner.rejectAll")}
           </button>
           <button className="ap-primary" disabled={editingLocked} onClick={applyReview}>
-            Apply
+            {t("banner.apply")}
           </button>
           <button className="ap-link" onClick={() => setReviewOpen(false)}>
-            later
+            {t("banner.laterLower")}
           </button>
-          {editingLocked && <span className="ap-muted">— locked while the agent works; finish handing back to act</span>}
+          {editingLocked && <span className="ap-muted">{t("banner.locked")}</span>}
         </div>
       )}
 
@@ -838,9 +842,9 @@ export function App(): JSX.Element {
           <section className="ap-pane ap-rail" ref={railRef} style={{ width: cmtW }}>
             {panes === 2 && <PaneTabs tab={rightTab} onTab={setRightTab} />}
             <div className="ap-rail-head">
-              <strong>Comments</strong>
+              <strong>{t("rail.comments")}</strong>
               <label>
-                <input type="checkbox" checked={showResolvedOrphaned} onChange={(e) => setShowResolvedOrphaned(e.target.checked)} /> resolved &amp; orphaned
+                <input type="checkbox" checked={showResolvedOrphaned} onChange={(e) => setShowResolvedOrphaned(e.target.checked)} /> {t("rail.showResolved")}
               </label>
             </div>
             {visible.map((o, i) => (
@@ -905,6 +909,7 @@ function SettingsMenu({
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const t = useT();
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
@@ -914,27 +919,27 @@ function SettingsMenu({
   }, []);
   return (
     <div className="ap-settings" ref={ref}>
-      <button title="Settings" aria-label="Settings" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+      <button title={t("settings.title")} aria-label={t("settings.title")} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         <IconSettings />
       </button>
       {open && (
         <div className="ap-settings-menu">
           <div className="ap-settings-row">
-            <span>Agent changes</span>
+            <span>{t("settings.agentChanges")}</span>
             <div className="ap-seg">
               <button className={acceptance === "auto" ? "active" : ""} onClick={() => onAcceptance("auto")}>
-                Auto-accept
+                {t("settings.autoAccept")}
               </button>
               <button className={acceptance === "review" ? "active" : ""} onClick={() => onAcceptance("review")}>
-                Review
+                {t("settings.review")}
               </button>
             </div>
           </div>
           <label className="ap-settings-row">
-            <span>Agent auto-resolves a thread after incorporating it</span>
+            <span>{t("settings.autoResolve")}</span>
             <input type="checkbox" checked={autoResolve} onChange={(e) => onAutoResolve(e.target.checked)} />
           </label>
-          <div className="ap-settings-hint">When off, the agent replies that the thread can be resolved and leaves it for you.</div>
+          <div className="ap-settings-hint">{t("settings.autoResolveHint")}</div>
         </div>
       )}
     </div>
@@ -944,6 +949,7 @@ function SettingsMenu({
 // Draggable vertical splitter sitting on a side pane's left edge. Dragging left
 // widens the pane to its right (the flexible preview absorbs the rest).
 function VSplitter({ width, setWidth }: { width: number; setWidth: (w: number) => void }): JSX.Element {
+  const t = useT();
   const onDown = (e: ReactMouseEvent) => {
     e.preventDefault();
     const startX = e.clientX;
@@ -958,17 +964,18 @@ function VSplitter({ width, setWidth }: { width: number; setWidth: (w: number) =
     document.addEventListener("mouseup", onUp);
     document.body.style.cursor = "col-resize";
   };
-  return <div className="ap-vsplit" onMouseDown={onDown} title="Drag to resize" role="separator" aria-orientation="vertical" />;
+  return <div className="ap-vsplit" onMouseDown={onDown} title={t("splitter.resize")} role="separator" aria-orientation="vertical" />;
 }
 
 function PaneTabs({ tab, onTab }: { tab: "comments" | "source"; onTab: (t: "comments" | "source") => void }): JSX.Element {
+  const t = useT();
   return (
     <div className="ap-tabs">
       <button className={tab === "comments" ? "active" : ""} onClick={() => onTab("comments")}>
-        Comments
+        {t("tabs.comments")}
       </button>
       <button className={tab === "source" ? "active" : ""} onClick={() => onTab("source")}>
-        Source
+        {t("tabs.source")}
       </button>
     </div>
   );
@@ -1012,26 +1019,27 @@ function TopBar(props: {
 }): JSX.Element {
   const { cadence, acceptance, panes, onMode } = props;
   const profile = useProfile();
+  const t = useT();
   // In a presence-aware host (web/cloud), no attached agent ⇒ Instant + Finish-turn
   // are disabled (there's nothing to hand the turn to). The desktop's local agent is
   // implicit, so it isn't presence-aware and these stay enabled.
   const noAgent = profile?.presenceAware === true && profile.agentLocation == null;
-  const noAgentTitle = noAgent ? "Connect an agent (open this doc with a local or cloud agent) to use this" : undefined;
+  const noAgentTitle = noAgent ? t("topbar.noAgent") : undefined;
   return (
     <header className="ap-topbar">
       {props.nav && (
         <div className="ap-seg" role="group" aria-label="navigation">
-          <button title="Back" aria-label="Back" disabled={!props.nav.canBack} onClick={props.nav.onBack}>
+          <button title={t("topbar.back")} aria-label={t("topbar.back")} disabled={!props.nav.canBack} onClick={props.nav.onBack}>
             <IconBack />
           </button>
-          <button title="Forward" aria-label="Forward" disabled={!props.nav.canForward} onClick={props.nav.onForward}>
+          <button title={t("topbar.forward")} aria-label={t("topbar.forward")} disabled={!props.nav.canForward} onClick={props.nav.onForward}>
             <IconForward />
           </button>
         </div>
       )}
       <div className="ap-seg" role="group" aria-label="cadence">
         <button className={cadence === "turn" ? "active" : ""} onClick={() => onMode("turn", acceptance)}>
-          Turn
+          {t("topbar.turn")}
         </button>
         <button
           className={cadence === "instant" ? "active" : ""}
@@ -1039,45 +1047,50 @@ function TopBar(props: {
           title={noAgentTitle}
           onClick={() => onMode("instant", acceptance)}
         >
-          Instant
+          {t("topbar.instant")}
         </button>
       </div>
       <SettingsMenu acceptance={acceptance} autoResolve={props.autoResolve} onAcceptance={(a) => onMode(cadence, a)} onAutoResolve={props.onAutoResolve} />
       <div className="ap-seg" role="group" aria-label="panes">
         {([1, 2, 3] as const).map((n) => (
-          <button key={n} className={panes === n ? "active" : ""} title={`${n} pane${n > 1 ? "s" : ""}`} onClick={() => props.onPanes(n)}>
+          <button
+            key={n}
+            className={panes === n ? "active" : ""}
+            title={t(n > 1 ? "topbar.panesPlural" : "topbar.panes", { n })}
+            onClick={() => props.onPanes(n)}
+          >
             <PaneIcon n={n} />
           </button>
         ))}
       </div>
       <div className="ap-seg" role="group" aria-label="zoom">
-        <button title="Zoom out" aria-label="Zoom out" onClick={() => props.onZoom(-1)}>
+        <button title={t("topbar.zoomOut")} aria-label={t("topbar.zoomOut")} onClick={() => props.onZoom(-1)}>
           <IconZoomOut />
         </button>
-        <button className="ap-zoom-val" title="Reset zoom" aria-label="Reset zoom" onClick={() => props.onZoom(0)}>
+        <button className="ap-zoom-val" title={t("topbar.resetZoom")} aria-label={t("topbar.resetZoom")} onClick={() => props.onZoom(0)}>
           {Math.round(props.zoom * 100)}%
         </button>
-        <button title="Zoom in" aria-label="Zoom in" onClick={() => props.onZoom(1)}>
+        <button title={t("topbar.zoomIn")} aria-label={t("topbar.zoomIn")} onClick={() => props.onZoom(1)}>
           <IconZoomIn />
         </button>
       </div>
       <div className="ap-spacer" />
       <div className="ap-iconrow" role="group" aria-label="document tools">
-        <button className="ap-iconbtn" onClick={props.onToggleFind} title="Find &amp; replace  (⌘/Ctrl+F)" aria-label="Find &amp; replace">
+        <button className="ap-iconbtn" onClick={props.onToggleFind} title={`${t("topbar.find")}  (⌘/Ctrl+F)`} aria-label={t("topbar.find")}>
           <IconFind />
         </button>
         <button
           className="ap-iconbtn"
           onClick={props.onAddComment}
           disabled={props.locked}
-          title={props.hasSelection ? "Add a comment on the selection" : "Add a document-level comment"}
-          aria-label={props.hasSelection ? "Add Comment" : "Add Doc Comment"}
+          title={props.hasSelection ? t("topbar.addCommentTitle") : t("topbar.addDocCommentTitle")}
+          aria-label={props.hasSelection ? t("topbar.addComment") : t("topbar.addDocComment")}
         >
           <IconComment />
         </button>
       </div>
       <div className="ap-iconrow" role="group" aria-label="save and turn">
-        <button className="ap-iconbtn" onClick={props.onSave} title={props.dirty ? "Save — unsaved changes" : "Save"} aria-label="Save">
+        <button className="ap-iconbtn" onClick={props.onSave} title={props.dirty ? t("topbar.saveUnsaved") : t("topbar.save")} aria-label={t("topbar.save")}>
           <IconSave />
           {props.dirty && <span className="ap-dirty" aria-hidden="true" />}
         </button>
@@ -1086,16 +1099,16 @@ function TopBar(props: {
             className="ap-iconbtn"
             onClick={props.onFinishTurn}
             disabled={props.locked || noAgent}
-            title={noAgentTitle ?? "Finish turn — hand off to the agent"}
-            aria-label="Finish turn"
+            title={noAgentTitle ?? t("topbar.finishTurnTitle")}
+            aria-label={t("topbar.finishTurn")}
           >
             <IconFinishTurn />
           </button>
         )}
       </div>
-      <button className="ap-iconbtn ap-iconbtn--primary" onClick={props.onComplete} title="Complete &amp; quit" aria-label="Complete &amp; quit">
+      <button className="ap-iconbtn ap-iconbtn--primary" onClick={props.onComplete} title={t("topbar.completeQuit")} aria-label={t("topbar.completeQuit")}>
         <IconComplete />
-        <span>Complete</span>
+        <span>{t("topbar.complete")}</span>
       </button>
       {profile?.presenceAware && (
         <AgentIndicator
@@ -1127,6 +1140,7 @@ function FindReplaceBar({
   onNavigate: (m: FindMatch) => void;
   onQuery: (opts: { query: string; ci: boolean; inPreview: boolean; inEditor: boolean; inComments: boolean }) => void;
 }): JSX.Element {
+  const t = useT();
   const [find, setFind] = useState("");
   const [replace, setReplace] = useState("");
   const [replaceMode, setReplaceMode] = useState(false);
@@ -1201,12 +1215,12 @@ function FindReplaceBar({
 
   return (
     <div className="ap-find">
-      <label className="ap-find-mode" title="toggle replace">
-        <input type="checkbox" checked={replaceMode} onChange={(e) => setReplaceMode(e.target.checked)} /> Replace
+      <label className="ap-find-mode" title={t("find.toggleReplace")}>
+        <input type="checkbox" checked={replaceMode} onChange={(e) => setReplaceMode(e.target.checked)} /> {t("find.replace")}
       </label>
       <input
         id="ap-find-input"
-        placeholder="Find…"
+        placeholder={t("find.findPlaceholder")}
         value={find}
         onChange={(e) => {
           setFind(e.target.value);
@@ -1220,9 +1234,9 @@ function FindReplaceBar({
         }}
         autoFocus
       />
-      {replaceMode && <input placeholder="Replace…" value={replace} onChange={(e) => setReplace(e.target.value)} />}
+      {replaceMode && <input placeholder={t("find.replacePlaceholder")} value={replace} onChange={(e) => setReplace(e.target.value)} />}
       <span className="ap-find-scope">
-        <label title="search the rendered preview">
+        <label title={t("find.searchPreview")}>
           <input
             type="checkbox"
             checked={inPreview}
@@ -1231,9 +1245,9 @@ function FindReplaceBar({
               if (e.target.checked) setInEditor(false); // preview ⊕ editor
             }}
           />{" "}
-          preview
+          {t("find.preview")}
         </label>
-        <label title="search the source (editor) pane">
+        <label title={t("find.searchEditor")}>
           <input
             type="checkbox"
             checked={inEditor}
@@ -1242,12 +1256,12 @@ function FindReplaceBar({
               if (e.target.checked) setInPreview(false); // preview ⊕ editor
             }}
           />{" "}
-          editor
+          {t("find.editor")}
         </label>
         <label>
-          <input type="checkbox" checked={inComments} onChange={(e) => setInComments(e.target.checked)} /> comments
+          <input type="checkbox" checked={inComments} onChange={(e) => setInComments(e.target.checked)} /> {t("find.comments")}
         </label>
-        <label title="case-insensitive">
+        <label title={t("find.caseInsensitive")}>
           <input type="checkbox" checked={ci} onChange={(e) => setCi(e.target.checked)} /> Aa
         </label>
       </span>
@@ -1255,27 +1269,27 @@ function FindReplaceBar({
       {replaceMode ? (
         <>
           <button onClick={() => replaceCurrent(-1)} disabled={!n}>
-            Replace Prev
+            {t("find.replacePrev")}
           </button>
           <button onClick={() => replaceCurrent(1)} disabled={!n}>
-            Replace Next
+            {t("find.replaceNext")}
           </button>
           <button onClick={replaceAll} disabled={!n}>
-            Replace All
+            {t("find.replaceAll")}
           </button>
         </>
       ) : (
         <>
           <button onClick={() => go(idx - 1)} disabled={!n}>
-            Find Prev
+            {t("find.findPrev")}
           </button>
           <button onClick={() => go(idx + 1)} disabled={!n}>
-            Find Next
+            {t("find.findNext")}
           </button>
         </>
       )}
       <button className="ap-link" onClick={onClose}>
-        close
+        {t("find.close")}
       </button>
     </div>
   );
@@ -1404,10 +1418,11 @@ function ThreadCard(props: {
   onDelete: (id: string) => void;
 }): JSX.Element {
   const { thread, body, disabled, orphaned } = props;
+  const t = useT();
   const root = thread.root;
   const isDoc = root.anchor === "doc";
   // Doc comments carry no anchor, so skip the anchor/quote line entirely.
-  const quote = isDoc ? null : orphaned ? "⚠ anchor removed (orphaned)" : (anchoredText(body, root.id) ?? "(anchor missing)");
+  const quote = isDoc ? null : orphaned ? t("thread.orphaned") : (anchoredText(body, root.id) ?? t("thread.anchorMissing"));
   const [replyText, setReplyText] = useState("");
   const [replying, setReplying] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1451,10 +1466,10 @@ function ThreadCard(props: {
                 setEditingId(null);
               }}
             >
-              Save
+              {t("thread.save")}
             </button>
             <button className="ap-link" onClick={() => setEditingId(null)}>
-              Cancel
+              {t("thread.cancel")}
             </button>
           </div>
         </div>
@@ -1465,7 +1480,7 @@ function ThreadCard(props: {
         <div className="ap-cmenu">
           <button
             className="ap-cmenu-btn"
-            title="More"
+            title={t("thread.more")}
             onClick={(e) => {
               e.stopPropagation();
               setMenuOpenId((id) => (id === c.id ? null : c.id));
@@ -1482,7 +1497,7 @@ function ThreadCard(props: {
                   setMenuOpenId(null);
                 }}
               >
-                Modify
+                {t("thread.modify")}
               </button>
               <button
                 className="ap-danger"
@@ -1491,7 +1506,7 @@ function ThreadCard(props: {
                   setMenuOpenId(null);
                 }}
               >
-                Delete
+                {t("thread.delete")}
               </button>
             </div>
           )}
@@ -1514,11 +1529,11 @@ function ThreadCard(props: {
       {/* Resolve is per thread; Reply opens a box with explicit Comment / Cancel. */}
       <div className="ap-row ap-thread-actions">
         <button className="ap-link" disabled={disabled} onClick={() => props.onResolve(!root.resolved)}>
-          {root.resolved ? "Reopen thread" : "Resolve thread"}
+          {root.resolved ? t("rail.reopenThread") : t("rail.resolveThread")}
         </button>
         {!replying && (
           <button className="ap-link" disabled={disabled} onClick={() => setReplying(true)}>
-            Reply
+            {t("rail.reply")}
           </button>
         )}
       </div>
@@ -1526,7 +1541,7 @@ function ThreadCard(props: {
         <div className="ap-reply-box">
           <textarea
             className="ap-grow"
-            placeholder="Reply…"
+            placeholder={t("thread.replyPlaceholder")}
             value={replyText}
             disabled={disabled}
             autoFocus
@@ -1548,7 +1563,7 @@ function ThreadCard(props: {
                 setReplying(false);
               }}
             >
-              Comment
+              {t("thread.comment")}
             </button>
             <button
               className="ap-link"
@@ -1557,7 +1572,7 @@ function ThreadCard(props: {
                 setReplying(false);
               }}
             >
-              Cancel
+              {t("thread.cancel")}
             </button>
           </div>
         </div>

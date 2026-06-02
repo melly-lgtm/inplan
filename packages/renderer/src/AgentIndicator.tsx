@@ -2,19 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { AgentLocation, AgentPolicy } from "./api";
-
-const POLICY_OPTIONS: { value: AgentPolicy; label: string }[] = [
-  { value: "auto", label: "Connect a cloud agent" },
-  { value: "local", label: "Wait for my local agent" },
-  { value: "manual", label: "Don't auto-connect" },
-];
-
-/** The label next to the icon: `remote (model)` / `local (model)` / `disconnected`. */
-function labelFor(location: AgentLocation | null, model?: string): string {
-  if (location === "cloud") return `remote${model ? ` (${model})` : ""}`;
-  if (location === "local") return `local${model ? ` (${model})` : ""}`;
-  return "disconnected";
-}
+import { useT } from "./i18n";
 
 /** Quota pie (a conic-gradient donut), like Claude's "Plan 42%". `pct` ∈ [0..1]. */
 function QuotaPie({ pct, color }: { pct: number; color: string }): JSX.Element {
@@ -50,8 +38,20 @@ export function AgentIndicator({
   policy?: AgentPolicy;
   onSetPolicy?: (p: AgentPolicy) => void | Promise<void>;
 }): JSX.Element {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const POLICY_OPTIONS: { value: AgentPolicy; label: string }[] = [
+    { value: "auto", label: t("agent.connectCloud") },
+    { value: "local", label: t("agent.waitLocal") },
+    { value: "manual", label: t("agent.dontConnect") },
+  ];
+  // The label next to the icon: `remote (model)` / `local (model)` / `disconnected`.
+  const labelFor = (loc: AgentLocation | null, m?: string): string => {
+    if (loc === "cloud") return `${t("agent.remote")}${m ? ` (${m})` : ""}`;
+    if (loc === "local") return `${t("agent.local")}${m ? ` (${m})` : ""}`;
+    return t("agent.disconnected");
+  };
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
@@ -71,21 +71,25 @@ export function AgentIndicator({
   }
 
   const label = labelFor(location, model);
-  const quotaText = quota ? ` · ${Math.round(quota.usedPct * 100)}%${quota.overage ? " (over)" : ""}` : "";
+  const quotaText = quota ? ` · ${Math.round(quota.usedPct * 100)}%${quota.overage ? ` ${t("agent.over")}` : ""}` : "";
   return (
     <div className="ap-agent" ref={ref}>
-      <button className="ap-agent-btn" title={`Agent: ${label}${quotaText}`} aria-label={`Agent connection — ${label}`} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+      <button className="ap-agent-btn" title={`${t("agent.title", { label })}${quotaText}`} aria-label={t("agent.connectionLabel", { label })} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         {icon}
         <span className="ap-agent-label">{label}</span>
       </button>
       {open && (
         <div className="ap-agent-menu" role="menu">
           <div className="ap-agent-detail">
-            {location ? `Agent · ${location === "cloud" ? "cloud" : "your machine"}${model ? ` · ${model}` : ""}` : "No agent connected"}
-            {quota && <div className="ap-agent-quota">{`Plan ${Math.round(quota.usedPct * 100)}%${quota.overage ? " — over included" : ""}`}</div>}
+            {location
+              ? `${t("agent.detail", { where: location === "cloud" ? t("agent.whereCloud") : t("agent.whereLocal") })}${model ? ` · ${model}` : ""}`
+              : t("agent.none")}
+            {quota && (
+              <div className="ap-agent-quota">{`${t("agent.plan", { pct: Math.round(quota.usedPct * 100) })}${quota.overage ? ` ${t("agent.overIncluded")}` : ""}`}</div>
+            )}
           </div>
           {policy && onSetPolicy && (
-            <div className="ap-agent-policy" role="radiogroup" aria-label="Agent connection">
+            <div className="ap-agent-policy" role="radiogroup" aria-label={t("agent.connection")}>
               {POLICY_OPTIONS.map((o) => (
                 <button
                   key={o.value}

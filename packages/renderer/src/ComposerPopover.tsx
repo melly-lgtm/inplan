@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useEffect, useRef, useState } from "react";
+import { useT } from "./i18n";
 
 /**
  * Floating comment composer. Multi-line textarea that grows to 8 lines;
@@ -20,6 +21,7 @@ export function ComposerPopover({
   onSubmit: (text: string) => void;
   onClose: () => void;
 }): JSX.Element {
+  const t = useT();
   const [text, setText] = useState("");
   const [p, setP] = useState(pos);
   const box = useRef<HTMLDivElement>(null);
@@ -65,13 +67,13 @@ export function ComposerPopover({
   return (
     <div className="ap-composer ap-composer-float" ref={box} style={{ left: p.x, top: p.y, right: "auto" }}>
       <div className="ap-composer-head" onMouseDown={(e) => (drag.current = { dx: e.clientX - p.x, dy: e.clientY - p.y })}>
-        <span className="ap-quote">{target ? `on “${target}”` : "document-level comment"}</span>
-        <span className="ap-drag" title="drag to move">⠿</span>
+        <span className="ap-quote">{target ? t("composer.on", { target }) : t("composer.docLevel")}</span>
+        <span className="ap-drag" title={t("composer.dragToMove")}>⠿</span>
       </div>
       <textarea
         ref={ta}
         className="ap-grow"
-        placeholder="Add a comment…  (⌘/Ctrl+Enter to submit)"
+        placeholder={t("composer.placeholder")}
         value={text}
         disabled={disabled}
         onChange={(e) => {
@@ -87,10 +89,10 @@ export function ComposerPopover({
       />
       <div className="ap-row">
         <button onClick={submit} disabled={disabled || !text.trim()}>
-          Comment
+          {t("composer.comment")}
         </button>
         <button className="ap-link" onClick={onClose}>
-          cancel
+          {t("composer.cancel")}
         </button>
       </div>
     </div>
