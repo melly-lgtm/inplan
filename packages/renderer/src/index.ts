@@ -9,6 +9,8 @@ export { renderMarkdown } from "./markdown";
 export { isInternalDocLink, resolveDocPath } from "./links";
 export { ProfileMenu } from "./ProfileMenu";
 export { AgentIndicator } from "./AgentIndicator";
+// The English base catalog — hosts register it (and key their own locales off it).
+export { EN as enCatalog } from "./i18n";
 export type {
   Api,
   Cadence,
@@ -22,4 +24,7 @@ export type {
   ProfileMenuItem,
   ProfileState,
   ProfileController,
+  Catalog,
+  I18nState,
+  I18nController,
 } from "./api";

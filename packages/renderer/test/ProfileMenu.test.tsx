@@ -54,6 +54,24 @@ describe("ProfileMenu", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+  it("shows a language picker in the menu when the host offers more than one locale", () => {
+    const setLocale = vi.fn();
+    // get() must return a STABLE snapshot (the I18nController contract — useSyncExternalStore).
+    const i18nState = { locale: "en", catalogs: { en: {} }, available: [{ code: "en", label: "English" }, { code: "ja", label: "日本語" }], setLocale };
+    (window as unknown as { api: unknown }).api = {
+      i18n: { get: () => i18nState, subscribe: () => () => {} },
+    };
+    try {
+      render(<ProfileMenu user={user} actions={[]} />);
+      fireEvent.click(screen.getByRole("button", { name: /account menu/i }));
+      const sel = screen.getByRole("combobox", { name: /language/i });
+      fireEvent.change(sel, { target: { value: "ja" } });
+      expect(setLocale).toHaveBeenCalledWith("ja");
+    } finally {
+      delete (window as unknown as { api?: unknown }).api;
+    }
+  });
+
   it("closes on an outside click", () => {
     render(<ProfileMenu user={user} actions={[{ label: "Sign out", onSelect: () => {}, danger: true }]} />);
     fireEvent.click(screen.getByRole("button", { name: /account menu/i }));

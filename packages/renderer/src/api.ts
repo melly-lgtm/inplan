@@ -92,6 +92,32 @@ export interface ProfileController {
   subscribe(cb: (s: ProfileState) => void): () => void;
 }
 
+/** A flat catalog of UI strings for one locale: key → translated text. Values may
+ *  contain `{name}` placeholders, interpolated by `t()`. */
+export type Catalog = Record<string, string>;
+
+/** Reactive i18n state supplied by the host (the seam). The open core ships English
+ *  only; hosts register additional locale catalogs and choose the active locale — the
+ *  web for everyone, the desktop only for paid users (so non-English local UI is the
+ *  paid perk). `t()` falls back to the built-in English base, so the editor is always
+ *  fully functional even with no host i18n. */
+export interface I18nState {
+  /** Active BCP-47 locale (e.g. "en", "fr", "ja"). */
+  locale: string;
+  /** Catalogs by locale (the active one is consulted first, then English). */
+  catalogs: Record<string, Catalog>;
+  /** Locales to offer in the picker (those with catalogs), in display order. */
+  available: { code: string; label: string }[];
+  /** Switch the active locale (the host persists it + re-renders). */
+  setLocale(locale: string): void | Promise<void>;
+}
+
+/** A reactive source of {@link I18nState} (same contract as ProfileController). */
+export interface I18nController {
+  get(): I18nState;
+  subscribe(cb: (s: I18nState) => void): () => void;
+}
+
 /** The API exposed to the renderer via the preload contextBridge (`window.api`). */
 export interface Api {
   /** Load the document this window was opened with. */
@@ -146,6 +172,9 @@ export interface Api {
   /** Identity + presence for the shared `<ProfileMenu>`, when the host wires one
    *  (web/cloud, and the signed-in desktop app). Absent on tests / single-writer. */
   profile?: ProfileController | null;
+  /** Localization seam, when the host wires one (web for everyone; paid desktop).
+   *  Absent ⇒ the editor runs in its built-in English. */
+  i18n?: I18nController | null;
   /** Desktop only: a newer published npm version exists (checked on launch).
    *  Web auto-updates via reload; tests omit this. */
   onUpdateAvailable?(cb: (info: { current: string; latest: string }) => void): void;

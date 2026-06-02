@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ProfileMenuItem } from "./api";
+import { useI18n, translate } from "./i18n";
 
 /** Up to two initials from a display name, for the avatar. */
 function initialsOf(name: string): string {
@@ -30,6 +31,8 @@ export function ProfileMenu({
 }): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const i18n = useI18n(); // one subscription; strings via translate(), picker via i18n.available
+  const t = (key: string, vars?: Record<string, string | number>) => translate(i18n, key, vars);
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
@@ -49,13 +52,13 @@ export function ProfileMenu({
   // session where the cloud is unreachable). Render no profile chrome at all.
   if (!user && actions.length === 0) return null;
 
-  const accountLabel = user ? user.name : "Not signed in";
+  const accountLabel = user ? user.name : t("profile.notSignedIn");
   return (
     <div className="ap-profile" ref={ref}>
       <button
         className="ap-avatar"
-        title={user ? `${user.name}${user.email ? ` <${user.email}>` : ""}` : "Not signed in"}
-        aria-label={`Account menu — ${accountLabel}`}
+        title={user ? `${user.name}${user.email ? ` <${user.email}>` : ""}` : t("profile.notSignedIn")}
+        aria-label={`${t("profile.account")} — ${accountLabel}`}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
@@ -84,6 +87,21 @@ export function ProfileMenu({
               </button>
             ))}
           </div>
+          {i18n.available.length > 1 && (
+            <label className="ap-profile-lang">
+              <span>{t("profile.language")}</span>
+              <select
+                className="ap-profile-lang-select"
+                value={i18n.locale}
+                aria-label={t("profile.language")}
+                onChange={(e) => void i18n.setLocale(e.target.value)}
+              >
+                {i18n.available.map((l) => (
+                  <option key={l.code} value={l.code}>{l.label}</option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
       )}
     </div>
