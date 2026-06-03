@@ -1059,6 +1059,7 @@ export function App(): JSX.Element {
             <VSplitter width={cmtW} setWidth={setCmtW} />
           <section className="ap-pane ap-rail" ref={railRef} style={{ width: cmtW }}>
             {panes === 2 && <PaneTabs tab={rightTab} onTab={setRightTab} />}
+            <div className="ap-rail-scroll">
             <div className="ap-rail-head">
               <strong>{t("rail.comments")}</strong>
               {(resolvedCount > 0 || orphanedCount > 0) && (
@@ -1096,6 +1097,7 @@ export function App(): JSX.Element {
               </Fragment>
             ))}
             {visible.length === 0 && <div className="ap-empty">No comments. Select text and use “+ Add Comment”.</div>}
+            </div>
           </section>
           </>
         )}

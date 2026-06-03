@@ -148,7 +148,8 @@ body {
 
 /* rail — a soft recessed paper surface so the comment cards read as light, floating
    cards rather than rows. */
-.ap-rail { overflow: auto; background: var(--paper); }
+.ap-rail { background: var(--paper); } /* flex column (from .ap-pane); the inner scroller below scrolls, so PaneTabs stays pinned */
+.ap-rail-scroll { flex: 1; min-height: 0; overflow: auto; }
 .ap-rail-head { display: flex; justify-content: space-between; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--line); background: var(--bg); position: sticky; top: 0; z-index: 1; font-size: 12px; }
 .ap-composer { padding: 12px; border-bottom: 1px solid var(--line); background: var(--bg); }
 .ap-composer textarea { width: 100%; min-height: 48px; resize: vertical; }
