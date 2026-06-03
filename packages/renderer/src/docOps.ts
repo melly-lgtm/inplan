@@ -38,7 +38,7 @@ function buildNormalized(source: string): { text: string; map: number[] } {
   let prevSpace = false;
   for (let i = 0; i < source.length; i++) {
     const ch = source[i]!;
-    if (ch === "*" || ch === "_" || ch === "`") {
+    if (ch === "*" || ch === "_" || ch === "`" || ch === "~") {
       prevSpace = false;
       continue;
     }
@@ -56,50 +56,122 @@ function buildNormalized(source: string): { text: string; map: number[] } {
   return { text, map };
 }
 
-const normalizeNeedle = (s: string): string => s.replace(/[*_`]/g, "").replace(/\s+/g, " ").trim();
-
-const EMPH = "*_`";
-
-/**
- * When a span begins right after inline-emphasis markers that OPEN a run, pull them
- * in — but ONLY when the matching closing run is also captured, so the anchored label
- * stays balanced. The preview shows no markers, so a selection that starts on a bold
- * word maps to source *after* the `**`. Two balanced cases pull the opener in:
- *   - the closing run is already inside the selection ("Bold** rest"), or
- *   - it immediately abuts the end ("Bold" out of "**Bold**") — then pull it in too.
- * If the bold run continues past the selection (e.g. selecting the first word of a long
- * bold span), the closing `**` isn't captured, so we leave the opener out rather than
- * orphan it (which would render as a broken "[**word" link). Only leading markers that
- * OPEN a run count (preceded by whitespace / body start), never ones closing a word.
- */
-function expandEmphasis(body: string, start: number, end: number): { start: number; end: number } {
-  let s = start;
-  while (s > 0 && EMPH.includes(body[s - 1]!)) s--;
-  const lead = body.slice(s, start);
-  const before = s > 0 ? body[s - 1]! : "";
-  const opensRun = lead && (s === 0 || /\s/.test(before) || "([\"'".includes(before));
-  if (!opensRun) return { start, end };
-  if (body.slice(start, end).includes(lead)) return { start: s, end }; // closing run already inside
-  if (body.slice(end, end + lead.length) === lead) return { start: s, end: end + lead.length }; // closing run abuts the end
-  return { start, end }; // matching close not captured → don't orphan the opener
-}
+const normalizeNeedle = (s: string): string => s.replace(/[*_`~]/g, "").replace(/\s+/g, " ").trim();
 
 /**
  * Locate the source range to anchor for `selected` (the user's preview selection).
  * Tries a verbatim match first; falls back to a markup- and whitespace-insensitive
  * match so a selection like "showing resolved and orphaned" still maps to source
- * "showing resolved *and* orphaned". Returns null if not found.
+ * "showing resolved *and* orphaned". Returns null if not found. (Inline-markup balancing
+ * around the inserted link is handled separately by wrapSpanWithComment.)
  */
 export function findSpanRange(body: string, selected: string): { start: number; end: number } | null {
   const direct = findPlainOccurrence(body, selected);
-  if (direct >= 0) return expandEmphasis(body, direct, direct + selected.length);
+  if (direct >= 0) return { start: direct, end: direct + selected.length };
 
   const needle = normalizeNeedle(selected);
   if (!needle) return null;
   const { text, map } = buildNormalized(body);
   const idx = text.indexOf(needle);
   if (idx < 0) return null;
-  return expandEmphasis(body, map[idx]!, map[idx + needle.length - 1]! + 1);
+  return { start: map[idx]!, end: map[idx + needle.length - 1]! + 1 };
+}
+
+// --- inline-markup balancing around an inserted comment link ------------------
+//
+// Inserting `[label](#id)` can split a paired inline run (bold/italic/strike/code)
+// so an opener ends up outside the link and its closer inside (or vice versa), which
+// corrupts the rendering. We balance it: pull markers that abut the selection into the
+// label, then for any run that still crosses a boundary, close it before the link and
+// reopen it after. deleteComment reverses this by merging the split runs back.
+
+/** Paired inline-emphasis markers we balance (code spans handled separately). */
+const PAIRED = ["~~", "**", "__", "*", "_"] as const;
+
+/** The stack of inline-emphasis markers open at `pos`, respecting escapes + code spans.
+ *  Markers are LIFO-matched (a marker equal to the stack top closes it, else opens). */
+export function scanOpenMarkers(body: string, pos: number): string[] {
+  const stack: string[] = [];
+  let i = 0;
+  while (i < pos) {
+    const ch = body[i]!;
+    if (ch === "\\") { i += 2; continue; } // escaped char — skip the pair
+    if (ch === "`") {
+      let n = 0;
+      while (body[i + n] === "`") n++;
+      const close = body.indexOf("`".repeat(n), i + n);
+      if (close !== -1) {
+        const codeEnd = close + n;
+        if (pos <= codeEnd) return stack; // pos is inside the code span — emphasis unchanged
+        i = codeEnd;
+        continue;
+      }
+      i += n;
+      continue; // unmatched backticks → literal
+    }
+    if (ch === "*" || ch === "_" || ch === "~") {
+      let n = 0;
+      while (body[i + n] === ch) n++;
+      if (ch === "~" && n < 2) { i += n; continue; } // a single ~ isn't strikethrough
+      const t = ch === "~" ? "~~" : ch.repeat(n); // run string is the marker (covers *, **, ***, _, __)
+      if (stack[stack.length - 1] === t) stack.pop();
+      else stack.push(t);
+      i += n;
+      continue;
+    }
+    i++;
+  }
+  return stack;
+}
+
+const closeOf = (st: string[]): string => [...st].reverse().join(""); // innermost closes first
+const openOf = (st: string[]): string => st.join(""); // outermost opens first
+
+/** Wrap body[start,end) in a comment link, keeping all crossed inline markup balanced. */
+export function wrapSpanWithComment(body: string, start: number, end: number, id: string): string {
+  // 1. Pull markers that abut the selection into the label (so a fully-contained run like
+  //    **Bold** anchors as [**Bold**] rather than emitting an empty `****`).
+  for (;;) {
+    const m = scanOpenMarkers(body, start).at(-1);
+    if (m && body.slice(start - m.length, start) === m) start -= m.length;
+    else break;
+  }
+  for (;;) {
+    const m = scanOpenMarkers(body, end).at(-1);
+    if (m && body.slice(end, end + m.length) === m) end += m.length;
+    else break;
+  }
+  const openStart = scanOpenMarkers(body, start);
+  const openEnd = scanOpenMarkers(body, end);
+  // Runs open at BOTH boundaries wrap the whole link (leave them); the rest cross one
+  // boundary and must be split: close before the link / reopen inside (start), or close
+  // at the label end / reopen after the link (end).
+  let c = 0;
+  while (c < openStart.length && c < openEnd.length && openStart[c] === openEnd[c]) c++;
+  const startCross = openStart.slice(c);
+  const endCross = openEnd.slice(c);
+  return (
+    body.slice(0, start) +
+    closeOf(startCross) +
+    "[" +
+    openOf(startCross) +
+    body.slice(start, end) +
+    closeOf(endCross) +
+    `](#${id})` +
+    openOf(endCross) +
+    body.slice(end)
+  );
+}
+
+/** Merge a split inline run at a seam: a closing marker immediately followed by the same
+ *  opening marker (left by wrapSpanWithComment) collapses back into one run. */
+function mergeSeam(s: string, at: number): string {
+  for (const m of [...PAIRED].sort((a, b) => b.length - a.length)) {
+    if (s.slice(at - m.length, at) === m && s.slice(at, at + m.length) === m) {
+      return s.slice(0, at - m.length) + s.slice(at + m.length);
+    }
+  }
+  return s;
 }
 
 const ANCHOR_RE = /\[[^\]]*\]\(#cmt-[0-9a-z]+\)/gi;
@@ -134,8 +206,7 @@ export function addSpanComment(doc: ParsedDocument, selectedText: string, fields
   const range = findSpanRange(doc.body, selectedText);
   if (!range) return null;
   const id = genId(takenIds(doc));
-  const sourceSpan = doc.body.slice(range.start, range.end); // keep original markup in the label
-  const body = `${doc.body.slice(0, range.start)}[${sourceSpan}](#${id})${doc.body.slice(range.end)}`;
+  const body = wrapSpanWithComment(doc.body, range.start, range.end, id); // balances crossed inline markup
   const comment: Comment = { id, author: fields.author, date: nowIso(), resolved: false, text: fields.text, ...(fields.question ? { question: fields.question } : {}) };
   return { doc: { body, comments: [...doc.comments, comment] }, id };
 }
@@ -169,10 +240,20 @@ export function editCommentText(doc: ParsedDocument, id: string, text: string): 
   return { ...doc, comments: doc.comments.map((c) => (c.id === id ? { ...c, text } : c)) };
 }
 
-/** Delete a comment (and its descendant replies); strip its anchor link back to plain text. */
+/** Delete a comment (and its descendant replies); strip its anchor link back to plain text,
+ *  merging any inline run that wrapSpanWithComment split across the link boundaries. */
 export function deleteComment(doc: ParsedDocument, id: string): ParsedDocument {
-  const link = new RegExp(`\\[([^\\]]*)\\]\\(#${id}\\)`, "g");
-  const body = doc.body.replace(link, "$1");
+  const link = new RegExp(`\\[([^\\]]*)\\]\\(#${id}\\)`);
+  const m = link.exec(doc.body);
+  let body = doc.body;
+  if (m) {
+    const label = m[1] ?? "";
+    let merged = doc.body.slice(0, m.index) + label + doc.body.slice(m.index + m[0].length);
+    // Merge at the end seam first so the start-seam offset stays valid.
+    merged = mergeSeam(merged, m.index + label.length);
+    merged = mergeSeam(merged, m.index);
+    body = merged;
+  }
   const removed = new Set<string>([id]);
   // Cascade to descendants.
   let changed = true;

@@ -1,62 +1,71 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// Inserting a comment link must keep crossed inline markup (bold/italic/strike/code)
+// balanced — close a run before the boundary, reopen it after — and deleting the comment
+// must merge the split runs back (round-trip).
 
 import { describe, expect, it } from "vitest";
-import { findSpanRange, addSpanComment } from "../src/docOps";
+import { addSpanComment, deleteComment, scanOpenMarkers } from "../src/docOps";
 
 const doc = (body: string) => ({ body, comments: [] });
 const fields = { text: "c", author: "me" };
+const wrap = (body: string, sel: string) => addSpanComment(doc(body), sel, fields)!.doc.body;
+function roundtrip(body: string, sel: string): string {
+  const r = addSpanComment(doc(body), sel, fields)!;
+  return deleteComment(r.doc, r.id).body;
+}
 
-describe("findSpanRange — leading-emphasis inclusion (item 7)", () => {
-  it("pulls in the leading ** when the selection starts on a bold run", () => {
-    // preview shows "Bold text"; selecting "Bold" must anchor "**Bold**", not "Bold".
-    const body = "**Bold** text";
-    const r = findSpanRange(body, "Bold")!;
-    expect(body.slice(r.start, r.end)).toBe("**Bold**");
+describe("comment link keeps inline markup balanced", () => {
+  it("crossing the end of a bold run splits it (the reported bug)", () => {
+    expect(wrap("for **human 9**", "for human")).toMatch(/^\[for \*\*human\*\*\]\(#cmt-[0-9a-z]+\)\*\* 9\*\*$/);
   });
-
-  it("includes the opening ** when the selection starts bold and runs into plain text", () => {
-    const body = "**Bold** rest";
-    const r = findSpanRange(body, "Bold rest")!;
-    expect(body.slice(r.start, r.end)).toBe("**Bold** rest");
+  it("a fully-contained bold word keeps its markers inside the label", () => {
+    expect(wrap("**Bold**", "Bold")).toMatch(/^\[\*\*Bold\*\*\]\(#cmt-[0-9a-z]+\)$/);
   });
-
-  it("handles italic and code markers the same way", () => {
-    const it1 = findSpanRange("*it* x", "it")!;
-    expect("*it* x".slice(it1.start, it1.end)).toBe("*it*");
-    const c1 = findSpanRange("`code` x", "code")!;
-    expect("`code` x".slice(c1.start, c1.end)).toBe("`code`");
+  it("a bold word at the start of a longer run", () => {
+    expect(wrap("**human and more**", "human")).toMatch(/^\[\*\*human\*\*\]\(#cmt-[0-9a-z]+\)\*\* and more\*\*$/);
   });
-
-  it("does NOT pull in markers that close the previous word (preceded by a word char)", () => {
-    const body = "x**y** z"; // not valid bold; the ** before y is not an opener
-    const r = findSpanRange(body, "y")!;
-    expect(body.slice(r.start, r.end)).toBe("y");
+  it("plain text is wrapped as-is", () => {
+    expect(wrap("plain text here", "text")).toMatch(/^plain \[text\]\(#cmt-[0-9a-z]+\) here$/);
   });
-
-  it("leaves a plain-text selection unchanged", () => {
-    const body = "plain words here";
-    const r = findSpanRange(body, "words")!;
-    expect(body.slice(r.start, r.end)).toBe("words");
+  it("contained italic", () => {
+    expect(wrap("say *hi* there", "hi")).toMatch(/^say \[\*hi\*\]\(#cmt-[0-9a-z]+\) there$/);
   });
-
-  it("does NOT pull in the opening ** when the closing ** is past the selection", () => {
-    // Selecting just the first word of a long bold run: capturing the opening ** would
-    // orphan it ("[**human"). The matching close isn't captured, so leave it out.
-    const body = "**human and more words**";
-    const r = findSpanRange(body, "human")!;
-    expect(body.slice(r.start, r.end)).toBe("human");
+  it("contained strikethrough", () => {
+    expect(wrap("a ~~b~~ c", "b")).toMatch(/^a \[~~b~~\]\(#cmt-[0-9a-z]+\) c$/);
+  });
+  it("crossing a strikethrough boundary splits it", () => {
+    expect(wrap("a ~~b c~~ d", "a b")).toMatch(/^\[a ~~b~~\]\(#cmt-[0-9a-z]+\)~~ c~~ d$/);
+  });
+  it("nested bold+italic — bold wraps the link, italic stays in the label", () => {
+    expect(wrap("**a *b* c**", "b")).toMatch(/^\*\*a \[\*b\*\]\(#cmt-[0-9a-z]+\) c\*\*$/);
   });
 });
 
-describe("addSpanComment — wraps the emphasis-expanded span", () => {
-  it("keeps the bold markers inside the anchor label", () => {
-    const res = addSpanComment(doc("**Bold** text"), "Bold", fields)!;
-    expect(res.doc.body).toMatch(/^\[\*\*Bold\*\*\]\(#cmt-[0-9a-z]+\) text$/);
+describe("deleting a comment merges the split run back (round-trip)", () => {
+  it.each([
+    ["for **human 9**", "for human"],
+    ["**Bold**", "Bold"],
+    ["**human and more**", "human"],
+    ["plain text here", "text"],
+    ["say *hi* there", "hi"],
+    ["a ~~b~~ c", "b"],
+    ["a ~~b c~~ d", "a b"],
+    ["**a *b* c**", "b"],
+  ])("%s / select %s round-trips", (body, sel) => {
+    expect(roundtrip(body, sel)).toBe(body);
   });
+});
 
-  it("anchors only the word (markers stay outside) when the bold run extends past it", () => {
-    const res = addSpanComment(doc("**human and more**"), "human", fields)!;
-    // **[human](#id) and more** — bold preserved, label clean (no orphaned **).
-    expect(res.doc.body).toMatch(/^\*\*\[human\]\(#cmt-[0-9a-z]+\) and more\*\*$/);
+describe("scanOpenMarkers", () => {
+  it("tracks open emphasis at a position", () => {
+    expect(scanOpenMarkers("**a b** c", 3)).toEqual(["**"]); // inside the bold run
+    expect(scanOpenMarkers("**a b** c", 8)).toEqual([]); // after it closes
+    expect(scanOpenMarkers("*a* **b", 7)).toEqual(["**"]); // first run closed, second open
+    expect(scanOpenMarkers("**a *b*", 7)).toEqual(["**"]); // italic closed, bold still open
+  });
+  it("ignores markers inside code spans and escapes", () => {
+    expect(scanOpenMarkers("`**not bold**` x", 15)).toEqual([]); // code content is opaque
+    expect(scanOpenMarkers("\\*a\\* x", 7)).toEqual([]); // both stars escaped
   });
 });
