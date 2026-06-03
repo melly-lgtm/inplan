@@ -22,7 +22,7 @@ import { SourceEditor, type SourceEditorHandle } from "./SourceEditor";
 import { StatusBar } from "./StatusBar";
 import { ProfileMenu } from "./ProfileMenu";
 import { AgentIndicator } from "./AgentIndicator";
-import { IconBack, IconForward, IconSettings, IconZoomOut, IconZoomIn, IconFind, IconComment, IconSave, IconFinishTurn, IconComplete } from "./Icons";
+import { IconBack, IconForward, IconSettings, IconZoomOut, IconZoomIn, IconFind, IconComment, IconSave, IconFinishTurn, IconComplete, IconRevealArchive } from "./Icons";
 import { useT } from "./i18n";
 import { applySegments, isChange, lineSegments, wordDiff, type DiffSegment, type WordPart } from "./textdiff";
 
@@ -447,7 +447,7 @@ export function App(): JSX.Element {
   }, []);
 
   const focusComment = useCallback(
-    (id: string, fromPreview = false) => {
+    (id: string, fromPreview = false, fromRail = false) => {
       setFocused(id);
       const line = anchorLine(docRef.current.body, id);
       if (line != null) editorRef.current?.scrollToLine(line);
@@ -455,8 +455,11 @@ export function App(): JSX.Element {
       // pane (the rail). If the user clicked the anchor in the preview itself,
       // don't yank the pane they just clicked.
       if (!fromPreview) previewRef.current?.querySelector(`[data-cmt="${id}"]`)?.scrollIntoView({ block: "center" });
-      // Scroll the comment rail to this thread, showing its LAST comment (the
-      // newest reply / reply box). This is the only path that scrolls the rail.
+      // Reveal the thread in the rail ONLY when focus came from elsewhere (a
+      // preview anchor or a find match). When the user clicked the card in the
+      // rail itself, never scroll the rail — they're already looking at it (a
+      // comment taller than the pane would otherwise jump under their cursor).
+      if (fromRail) return;
       const c = docRef.current.comments.find((x) => x.id === id);
       const rootId = c?.parentId ?? id;
       const card = railRef.current?.querySelector(`[data-cmt-card="${rootId}"]`);
@@ -559,9 +562,13 @@ export function App(): JSX.Element {
     // Surface the source diff too (2-pane shows one side) so the SAME change is
     // visible in both panes, then center the hunk in each.
     if (panes === 2 && rightTab !== "source") setRightTab("source");
+    // Top-align the hunk in BOTH panes (block:"start"): a hunk taller than the
+    // pane would, with block:"center", scroll its middle to the centre and push
+    // its top off-screen — so the change appears not to have scrolled into view.
+    // Aligning the top to the pane top shows the start of the diff in each pane.
     requestAnimationFrame(() => {
-      previewRef.current?.querySelector(`[data-hunk="${n}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
-      document.querySelector(`.ap-diffsource [data-hunk="${n}"]`)?.scrollIntoView({ block: "center" });
+      previewRef.current?.querySelector(`[data-hunk="${n}"]`)?.scrollIntoView({ block: "start", behavior: "smooth" });
+      document.querySelector(`.ap-diffsource [data-hunk="${n}"]`)?.scrollIntoView({ block: "start", behavior: "smooth" });
     });
   }, [changeCount, reviewCursor, panes, rightTab]);
 
@@ -575,6 +582,8 @@ export function App(): JSX.Element {
     return threads.map(annotate).sort((a, b) => a.group - b.group || a.pos - b.pos);
   }, [threads, doc.body]);
   const visible = ordered.filter((o) => showResolvedOrphaned || (!o.thread.root.resolved && !o.orphaned));
+  const resolvedCount = ordered.filter((o) => o.thread.root.resolved).length;
+  const orphanedCount = ordered.filter((o) => o.orphaned).length;
 
   const resolvedIds = useMemo(() => new Set(doc.comments.filter((c) => c.resolved).map((c) => c.id)), [doc.comments]);
   const previewHtml = useMemo(
@@ -843,9 +852,16 @@ export function App(): JSX.Element {
             {panes === 2 && <PaneTabs tab={rightTab} onTab={setRightTab} />}
             <div className="ap-rail-head">
               <strong>{t("rail.comments")}</strong>
-              <label>
-                <input type="checkbox" checked={showResolvedOrphaned} onChange={(e) => setShowResolvedOrphaned(e.target.checked)} /> {t("rail.showResolved")}
-              </label>
+              <button
+                type="button"
+                className={`ap-iconbtn ap-reveal${showResolvedOrphaned ? " on" : ""}`}
+                aria-pressed={showResolvedOrphaned}
+                title={t("rail.showResolved", { resolved: resolvedCount, orphaned: orphanedCount })}
+                aria-label={t("rail.showResolved", { resolved: resolvedCount, orphaned: orphanedCount })}
+                onClick={() => setShowResolvedOrphaned((v) => !v)}
+              >
+                <IconRevealArchive />
+              </button>
             </div>
             {visible.map((o, i) => (
               <Fragment key={o.thread.root.id}>
@@ -859,7 +875,7 @@ export function App(): JSX.Element {
                   focused={focused === o.thread.root.id}
                   synced={syncedCommentId === o.thread.root.id}
                   disabled={editingLocked}
-                  onFocus={() => focusComment(o.thread.root.id)}
+                  onFocus={() => focusComment(o.thread.root.id, false, true)}
                   onReply={(text) => apply(addReply(docRef.current, o.thread.root.id, text, USER_AUTHOR).doc, { type: "comment_created", payload: { parentId: o.thread.root.id } })}
                   onAnswer={(selected, text) => apply(addAnswer(docRef.current, o.thread.root.id, selected, text, USER_AUTHOR).doc, { type: "comment_answered", payload: { parentId: o.thread.root.id, selected } })}
                   onResolve={(r) => apply(setResolved(docRef.current, o.thread.root.id, r), { type: "comment_resolved", payload: { id: o.thread.root.id, resolved: r } })}

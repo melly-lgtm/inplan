@@ -81,8 +81,9 @@ describe("App comment-thread actions (memory-backed)", () => {
     await waitFor(() => expect(document.querySelector('[data-cmt-card="cmt-abc123"]')).toBeNull());
 
     // Reveal resolved & orphaned threads; the now-resolved card returns offering
-    // to reopen, confirming the resolve actually took.
-    const toggle = screen.getByRole("checkbox", { name: /resolved/i });
+    // to reopen, confirming the resolve actually took. (The reveal control is the
+    // eye-on-a-closed-box toggle button, labelled with the live hidden counts.)
+    const toggle = screen.getByRole("button", { name: /resolved/i });
     await act(async () => {
       fireEvent.click(toggle);
     });

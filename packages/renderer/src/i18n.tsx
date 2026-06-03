@@ -101,7 +101,7 @@ export const EN: Catalog = {
   "agent.connection": "Agent connection",
   // comment rail
   "rail.comments": "Comments",
-  "rail.showResolved": "resolved & orphaned",
+  "rail.showResolved": "Show resolved ({resolved}) & orphaned ({orphaned}) comments",
   "rail.resolveThread": "Resolve thread",
   "rail.reopenThread": "Reopen thread",
   "rail.reply": "Reply",

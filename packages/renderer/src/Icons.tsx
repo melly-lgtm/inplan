@@ -59,3 +59,14 @@ export const IconFinishTurn = (): JSX.Element => (
 export const IconComplete = (): JSX.Element => (
   <Glyph><polyline points="20 6 9 17 4 12" /></Glyph>
 );
+/** An eye resting on a closed box — "peek into" the hidden (resolved + orphaned) comments. */
+export const IconRevealArchive = (): JSX.Element => (
+  <Glyph>
+    {/* eye, above */}
+    <path d="M4 7c2.6-3.2 13.4-3.2 16 0c-2.6 3.2-13.4 3.2-16 0Z" />
+    <circle cx="12" cy="7" r="1.6" />
+    {/* closed box, below — body + lid seam */}
+    <rect x="5" y="13" width="14" height="7" rx="1" />
+    <line x1="5" y1="16" x2="19" y2="16" />
+  </Glyph>
+);

@@ -58,6 +58,26 @@ function buildNormalized(source: string): { text: string; map: number[] } {
 
 const normalizeNeedle = (s: string): string => s.replace(/[*_`]/g, "").replace(/\s+/g, " ").trim();
 
+const EMPH = "*_`";
+
+/**
+ * When a span begins right after inline-emphasis markers that OPEN a run, pull
+ * them in (and the matching closing run if it abuts the end). The preview shows
+ * no markers, so a selection that starts on a bold word maps to source *after*
+ * the `**`; without this, anchoring it would orphan the opening `**`. Only treat
+ * the leading markers as openers when they start a new inline run (preceded by
+ * whitespace or the body start), never when they close the previous word.
+ */
+function expandEmphasis(body: string, start: number, end: number): { start: number; end: number } {
+  let s = start;
+  while (s > 0 && EMPH.includes(body[s - 1]!)) s--;
+  const lead = body.slice(s, start);
+  const before = s > 0 ? body[s - 1]! : "";
+  if (!lead || !(s === 0 || /\s/.test(before) || "([\"'".includes(before))) return { start, end };
+  const e = body.slice(end, end + lead.length) === lead ? end + lead.length : end;
+  return { start: s, end: e };
+}
+
 /**
  * Locate the source range to anchor for `selected` (the user's preview selection).
  * Tries a verbatim match first; falls back to a markup- and whitespace-insensitive
@@ -66,14 +86,14 @@ const normalizeNeedle = (s: string): string => s.replace(/[*_`]/g, "").replace(/
  */
 export function findSpanRange(body: string, selected: string): { start: number; end: number } | null {
   const direct = findPlainOccurrence(body, selected);
-  if (direct >= 0) return { start: direct, end: direct + selected.length };
+  if (direct >= 0) return expandEmphasis(body, direct, direct + selected.length);
 
   const needle = normalizeNeedle(selected);
   if (!needle) return null;
   const { text, map } = buildNormalized(body);
   const idx = text.indexOf(needle);
   if (idx < 0) return null;
-  return { start: map[idx]!, end: map[idx + needle.length - 1]! + 1 };
+  return expandEmphasis(body, map[idx]!, map[idx + needle.length - 1]! + 1);
 }
 
 export interface NewCommentFields {
