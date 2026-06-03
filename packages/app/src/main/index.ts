@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from "electron";
+import { APP_ICON_DATA_URL } from "./appIcon";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -238,11 +239,15 @@ function navigateTo(file: string): boolean {
   return true;
 }
 
+/** The inplan mark (same as inplan.ai), for the window + dock icon. */
+const appIcon = nativeImage.createFromDataURL(APP_ICON_DATA_URL);
+
 function createWindow(): void {
   win = new BrowserWindow({
     width: 1200,
     height: 800,
     title: "inplan",
+    icon: appIcon, // window/taskbar icon on Windows + Linux (macOS uses the dock icon below)
     webPreferences: {
       preload: join(__dirname, "../preload/index.mjs"),
       sandbox: false,
@@ -400,6 +405,10 @@ function registerIpc(): void {
 }
 
 void app.whenReady().then(() => {
+  // macOS shows the dock icon from the app bundle / running binary (not the window's
+  // `icon`); set it explicitly so we don't show the default Electron icon when run via
+  // the bundled `electron` dependency.
+  if (process.platform === "darwin" && !appIcon.isEmpty()) app.dock?.setIcon(appIcon);
   const target = resolveTargetFile();
   if (target) {
     session = new Session(target);
