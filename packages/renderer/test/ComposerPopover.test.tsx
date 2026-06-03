@@ -4,6 +4,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ComposerPopover } from "../src/ComposerPopover";
+import { MOD_KEY } from "../src/platform";
 
 afterEach(cleanup);
 
@@ -35,6 +36,13 @@ describe("ComposerPopover", () => {
     expect(commentBtn().disabled).toBe(false);
     fireEvent.click(commentBtn());
     expect(onSubmit).toHaveBeenCalledWith("hi");
+  });
+
+  it("shows the OS-specific modifier in the placeholder, not the dual 'Cmd/Ctrl'", () => {
+    render(<ComposerPopover {...base} />);
+    const ph = textarea().placeholder;
+    expect(ph).toContain(`${MOD_KEY}+Enter`);
+    expect(ph).not.toContain("/Ctrl"); // no longer the dual "⌘/Ctrl" form
   });
 
   it("cancel closes without submitting", () => {

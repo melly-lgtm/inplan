@@ -19,6 +19,7 @@ import { renderMarkdown } from "./markdown";
 import { isInternalDocLink, resolveDocPath } from "./links";
 import { ComposerPopover } from "./ComposerPopover";
 import { ContextMenu } from "./ContextMenu";
+import { MOD_KEY } from "./platform";
 import { QuestionChips } from "./QuestionChips";
 import { SourceEditor, type SourceEditorHandle } from "./SourceEditor";
 import { StatusBar } from "./StatusBar";
@@ -1189,7 +1190,7 @@ function TopBar(props: {
       </div>
       <div className="ap-spacer" />
       <div className="ap-iconrow" role="group" aria-label="document tools">
-        <button className="ap-iconbtn" onClick={props.onToggleFind} title={`${t("topbar.find")}  (⌘/Ctrl+F)`} aria-label={t("topbar.find")}>
+        <button className="ap-iconbtn" onClick={props.onToggleFind} title={`${t("topbar.find")}  (${MOD_KEY}+F)`} aria-label={t("topbar.find")}>
           <IconFind />
         </button>
         <button

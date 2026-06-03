@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useT } from "./i18n";
+import { MOD_KEY } from "./platform";
 
 /**
  * Floating comment composer. Multi-line textarea that grows to 8 lines;
@@ -73,7 +74,7 @@ export function ComposerPopover({
       <textarea
         ref={ta}
         className="ap-grow"
-        placeholder={t("composer.placeholder")}
+        placeholder={t("composer.placeholder", { mod: MOD_KEY })}
         value={text}
         disabled={disabled}
         onChange={(e) => {

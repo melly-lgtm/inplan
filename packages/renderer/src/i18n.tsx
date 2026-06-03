@@ -80,7 +80,7 @@ export const EN: Catalog = {
   "composer.on": "on “{target}”",
   "composer.docLevel": "document-level comment",
   "composer.dragToMove": "drag to move",
-  "composer.placeholder": "Add a comment…  (⌘/Ctrl+Enter to submit)",
+  "composer.placeholder": "Add a comment…  ({mod}+Enter to submit)",
   "composer.comment": "Comment",
   "composer.cancel": "cancel",
   // agent connection indicator
