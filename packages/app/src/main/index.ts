@@ -86,11 +86,14 @@ const i18n = createI18nController({
   onChange: () => win?.webContents.send("i18n:changed"),
 });
 
-// Cloud reachability. The desktop app is local-first, so cloud affordances (sign in,
-// collaborate) only appear when inplan.ai is actually reachable. We probe its health
-// endpoint and cache the result; readProfile reads the cache (never blocks), and a
-// background re-probe refreshes the menu whenever reachability flips.
-let cloudReachable = false;
+// Cloud linking. The desktop app is local-first, so cloud affordances (sign in,
+// collaborate) only appear when inplan.ai is both reachable AND advertising the cloud
+// link as enabled — its health endpoint returns `link_enabled`, a server-side kill
+// switch. While it's false (the default), the app shows nothing cloud-related, so
+// open-core users aren't funneled toward the cloud. We cache the result; readProfile
+// reads the cache (never blocks), and a background re-probe refreshes the menu whenever
+// the flag flips.
+let cloudLinkEnabled = false;
 let lastCloudProbe = 0;
 const CLOUD_PROBE_TTL_MS = 60_000;
 
@@ -98,18 +101,19 @@ async function probeCloud(): Promise<void> {
   lastCloudProbe = Date.now();
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 2500);
-  let ok = false;
+  let enabled = false;
   try {
     const res = await fetch(`${CLOUD_BASE}/api/v1/healthz`, { signal: ctrl.signal });
-    ok = res.ok;
+    const body = (res.ok ? await res.json().catch(() => null) : null) as { link_enabled?: boolean } | null;
+    enabled = body?.link_enabled === true; // reachable AND link explicitly enabled
   } catch {
-    ok = false; // offline / DNS failure / timeout / cloud down → unreachable
+    enabled = false; // offline / DNS failure / timeout / cloud down → no cloud chrome
   } finally {
     clearTimeout(timer);
   }
-  if (ok !== cloudReachable) {
-    cloudReachable = ok;
-    win?.webContents.send("profile:changed"); // re-render the menu (cloud item on/off)
+  if (enabled !== cloudLinkEnabled) {
+    cloudLinkEnabled = enabled;
+    win?.webContents.send("profile:changed"); // re-render the menu (cloud chrome on/off)
   }
 }
 
@@ -121,6 +125,10 @@ function ensureCloudProbe(): void {
 /** The current cloud profile: who is signed in + the actions to offer. */
 async function readProfile(): Promise<ProfileSnapshot> {
   ensureCloudProbe();
+  // Cloud kill switch: while the link isn't enabled (server flag off, or unreachable),
+  // show no cloud chrome at all — regardless of any existing CLI session — so nothing
+  // funnels the user toward the cloud.
+  if (!cloudLinkEnabled) return { user: null, agentLocation: null, actions: [] };
   const r = await runCli(["whoami"]);
   let who: { signedIn?: boolean; email?: string } = {};
   try {
@@ -138,9 +146,8 @@ async function readProfile(): Promise<ProfileSnapshot> {
       ],
     };
   }
-  // Signed out: only offer cloud sign-in when inplan.ai is actually reachable, so a
-  // purely-local / offline session shows no cloud chrome at all.
-  return { user: null, agentLocation: null, actions: cloudReachable ? [{ id: "signin", label: "Sign in…" }] : [] };
+  // Signed out but link enabled: offer cloud sign-in.
+  return { user: null, agentLocation: null, actions: [{ id: "signin", label: "Sign in…" }] };
 }
 
 /** Collaborate on Cloud: persist the latest body, upload+promote via the CLI,
