@@ -1,0 +1,42 @@
+# Publish the `inplan` package to npm via OIDC Trusted Publishing — no long-lived token.
+#
+# Setup (one-time, on npmjs.com → the `inplan` package → Settings → Trusted Publisher →
+# Add GitHub Actions): owner `melly-lgtm`, repository `inplan`, workflow `release.yml`.
+# Then publishing happens here, authenticated by GitHub's OIDC token (id-token: write) —
+# no NPM_TOKEN. Provenance attestation is attached automatically.
+#
+# To release: bump the version (packages/cli/package.json + the VERSION const in
+# packages/cli/src/cli.ts), then publish a GitHub Release (or run this workflow manually).
+# npm versions are immutable, so the version must be new or `npm publish` will fail.
+
+name: release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required for npm OIDC trusted publishing + provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          # NOTE: intentionally NO `registry-url` — it makes setup-node write an empty
+          # `//registry.npmjs.org/:_authToken=` into .npmrc, which npm reads as "auth already
+          # configured" and SKIPS OIDC trusted publishing (→ ENEEDAUTH). Without it, npm uses
+          # the default registry and the OIDC flow (id-token below) authenticates the publish.
+      # Trusted publishing + provenance need a recent npm CLI.
+      - run: npm install -g npm@latest
+      - run: npm ci
+      # Assemble release/ (CLI bundle + bundled Electron app + skill + generated package.json).
+      - run: node scripts/build-release.mjs
+      - name: Publish (OIDC trusted publisher)
+        working-directory: release
+        run: npm publish --provenance --access public

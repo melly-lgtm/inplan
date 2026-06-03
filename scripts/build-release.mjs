@@ -58,6 +58,10 @@ writeFileSync(
       version: cli.version,
       description: "inplan — a Markdown editor for human ⇄ coding-agent planning. CLI + desktop editor.",
       license: "AGPL-3.0-or-later",
+      // Required for npm provenance (--provenance): the URL must match the GitHub repo the
+      // trusted-publishing workflow runs in, or publish fails with E422.
+      repository: { type: "git", url: "git+https://github.com/melly-lgtm/inplan.git" },
+      homepage: "https://inplan.ai",
       type: "module",
       bin: { inplan: "bin/cli.js" },
       files: ["bin", "app", "skill", "LICENSE"],
