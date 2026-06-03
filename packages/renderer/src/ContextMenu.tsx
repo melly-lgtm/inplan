@@ -6,6 +6,7 @@ export interface ContextMenuItem {
   label: string;
   onSelect: () => void;
   disabled?: boolean;
+  title?: string; // tooltip — e.g. why a disabled item can't be used
 }
 
 /**
@@ -47,6 +48,7 @@ export function ContextMenu({
           role="menuitem"
           className="ap-ctxmenu-item"
           disabled={it.disabled}
+          {...(it.title ? { title: it.title } : {})}
           onClick={() => {
             onClose();
             it.onSelect();

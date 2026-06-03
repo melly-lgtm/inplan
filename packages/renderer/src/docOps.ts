@@ -102,6 +102,27 @@ export function findSpanRange(body: string, selected: string): { start: number; 
   return expandEmphasis(body, map[idx]!, map[idx + needle.length - 1]! + 1);
 }
 
+const ANCHOR_RE = /\[[^\]]*\]\(#cmt-[0-9a-z]+\)/gi;
+
+/**
+ * Why the current selection can't become a span comment, or null if it can.
+ *  - "overlap": the source range intersects an existing comment anchor. Markdown links
+ *    can't nest, so wrapping it would corrupt the document.
+ *  - "not-found": the rendered selection doesn't map to a contiguous source range
+ *    (spans block boundaries / table cells / rendered-only text like decoded entities).
+ * An empty selection is anchorable=null here (callers treat it as a doc-level comment).
+ */
+export function spanCommentBlocker(body: string, selected: string): "overlap" | "not-found" | null {
+  if (!selected.trim()) return null;
+  const range = findSpanRange(body, selected);
+  if (!range) return "not-found";
+  for (const m of body.matchAll(ANCHOR_RE)) {
+    const aStart = m.index;
+    if (range.start < aStart + m[0].length && aStart < range.end) return "overlap";
+  }
+  return null;
+}
+
 export interface NewCommentFields {
   text: string;
   author: string;

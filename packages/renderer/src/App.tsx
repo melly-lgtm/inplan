@@ -12,6 +12,7 @@ import {
   deleteComment,
   editCommentText,
   setResolved,
+  spanCommentBlocker,
   type Thread,
 } from "./docOps";
 import { renderMarkdown } from "./markdown";
@@ -84,7 +85,7 @@ export function App(): JSX.Element {
   const [showResolvedOrphaned, setShowResolvedOrphaned] = useState(false);
   const [selectionText, setSelectionText] = useState("");
   const [composer, setComposer] = useState<{ target: string | null; pos: { x: number; y: number } } | null>(null);
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; hasSel: boolean } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; hasSel: boolean; block: "overlap" | "not-found" | null } | null>(null);
   const [findSeed, setFindSeed] = useState(""); // pre-fills the find box (e.g. from the preview "Find text" menu item)
   const [focused, setFocused] = useState<string | null>(null);
   const [activePreviewLine, setActivePreviewLine] = useState<number | null>(null);
@@ -415,6 +416,13 @@ export function App(): JSX.Element {
   const addComment = useCallback(
     (text: string, target: string | null, question?: Question) => {
       if (target) {
+        // Guard against an un-anchorable or OVERLAPPING span (nested links would
+        // corrupt the doc) even if the UI's disabled state was bypassed.
+        const blocker = spanCommentBlocker(docRef.current.body, target);
+        if (blocker) {
+          setStatus(blocker === "overlap" ? t("topbar.cantOverlap") : t("msg.cantAnchor"));
+          return;
+        }
         const res = addSpanComment(docRef.current, target, { text, author: USER_AUTHOR, question });
         if (!res) {
           setStatus(t("msg.cantAnchor"));
@@ -645,6 +653,8 @@ export function App(): JSX.Element {
   const visible = ordered.filter((o) => showResolvedOrphaned || (!o.thread.root.resolved && !o.orphaned));
   const resolvedCount = ordered.filter((o) => o.thread.root.resolved).length;
   const orphanedCount = ordered.filter((o) => o.orphaned).length;
+  // Why the current selection can't be commented on (null = it can, or no selection).
+  const selBlocker = useMemo(() => spanCommentBlocker(doc.body, selectionText), [doc.body, selectionText]);
 
   const resolvedIds = useMemo(() => new Set(doc.comments.filter((c) => c.resolved).map((c) => c.id)), [doc.comments]);
   const previewHtml = useMemo(
@@ -702,6 +712,7 @@ export function App(): JSX.Element {
         panes={panes}
         zoom={zoom}
         hasSelection={selectionText.length > 0}
+        commentBlock={selBlocker}
         onMode={onModeChange}
         onAutoResolve={onAutoResolve}
         onPanes={setPanes}
@@ -843,7 +854,12 @@ export function App(): JSX.Element {
           pos={{ x: ctxMenu.x, y: ctxMenu.y }}
           onClose={() => setCtxMenu(null)}
           items={[
-            { label: t("topbar.addComment"), disabled: editingLocked, onSelect: openComposerFromCapture },
+            {
+              label: t("topbar.addComment"),
+              disabled: editingLocked || (ctxMenu.hasSel && ctxMenu.block !== null),
+              ...(ctxMenu.hasSel && ctxMenu.block ? { title: ctxMenu.block === "overlap" ? t("topbar.cantOverlap") : t("msg.cantAnchor") } : {}),
+              onSelect: openComposerFromCapture,
+            },
             { label: t("menu.findText"), disabled: !ctxMenu.hasSel, onSelect: () => { setFindSeed(ctxSelTextRef.current); setFindOpen(true); } },
             { label: t("menu.copy"), disabled: !ctxMenu.hasSel, onSelect: () => void navigator.clipboard?.writeText?.(ctxSelTextRef.current) },
             { label: t("menu.selectLine"), disabled: !ctxBlockRef.current, onSelect: () => selectNodeContents(ctxBlockRef.current) },
@@ -870,7 +886,7 @@ export function App(): JSX.Element {
               const text = sel?.toString().trim() ?? "";
               ctxSelTextRef.current = text;
               commentRangeRef.current = text && sel && sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null;
-              setCtxMenu({ x: Math.max(8, Math.min(e.clientX, window.innerWidth - 200)), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 220)), hasSel: text.length > 0 });
+              setCtxMenu({ x: Math.max(8, Math.min(e.clientX, window.innerWidth - 200)), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 220)), hasSel: text.length > 0, block: spanCommentBlocker(docRef.current.body, text) });
             }}
             onClick={(e) => {
               const target = e.target as HTMLElement;
@@ -1100,6 +1116,7 @@ function TopBar(props: {
   panes: 1 | 2 | 3;
   zoom: number;
   hasSelection: boolean;
+  commentBlock: "overlap" | "not-found" | null;
   onMode: (c: Cadence, a: Acceptance) => void;
   onAutoResolve: (v: boolean) => void;
   onPanes: (p: 1 | 2 | 3) => void;
@@ -1178,8 +1195,16 @@ function TopBar(props: {
         <button
           className="ap-iconbtn"
           onClick={props.onAddComment}
-          disabled={props.locked}
-          title={props.hasSelection ? t("topbar.addCommentTitle") : t("topbar.addDocCommentTitle")}
+          disabled={props.locked || (props.hasSelection && props.commentBlock !== null)}
+          title={
+            props.hasSelection && props.commentBlock
+              ? props.commentBlock === "overlap"
+                ? t("topbar.cantOverlap")
+                : t("msg.cantAnchor")
+              : props.hasSelection
+                ? t("topbar.addCommentTitle")
+                : t("topbar.addDocCommentTitle")
+          }
           aria-label={props.hasSelection ? t("topbar.addComment") : t("topbar.addDocComment")}
         >
           <IconComment />

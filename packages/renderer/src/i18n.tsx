@@ -28,6 +28,7 @@ export const EN: Catalog = {
   "topbar.addDocComment": "Add Doc Comment",
   "topbar.addCommentTitle": "Add a comment on the selection",
   "topbar.addDocCommentTitle": "Add a document-level comment",
+  "topbar.cantOverlap": "Comments can't overlap",
   "topbar.save": "Save",
   "topbar.saveUnsaved": "Save — unsaved changes",
   "topbar.finishTurn": "Finish turn",
