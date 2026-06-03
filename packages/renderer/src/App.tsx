@@ -64,6 +64,35 @@ function selectionOverlapsComment(range: Range | null | undefined, root: HTMLEle
   return false;
 }
 
+type BlockReason = "whitespace" | "overlap" | "blocks" | "table" | "rendered";
+
+/** Classify WHY an un-anchorable selection failed, from its DOM range, so the tooltip
+ *  can be specific: it crosses table cells, spans multiple blocks, or hits rendered-only
+ *  text (decoded entities / stripped markers) that has no single contiguous source span. */
+function anchorFailureReason(range: Range | null | undefined): "blocks" | "table" | "rendered" {
+  const elOf = (n: Node | null | undefined): Element | null => (n ? (n.nodeType === 1 ? (n as Element) : n.parentElement) : null);
+  const s = elOf(range?.startContainer);
+  const e = elOf(range?.endContainer);
+  if (s?.closest("table") || e?.closest("table")) return "table";
+  const sb = s?.closest("[data-line]");
+  const eb = e?.closest("[data-line]");
+  if (sb && eb && sb !== eb) return "blocks";
+  return "rendered";
+}
+
+/** Why the selection can't become a comment (null = it can, or no selection → doc-level).
+ *  Whitespace-only and overlapping selections are blocked; otherwise an un-anchorable
+ *  span is classified by anchorFailureReason. */
+function commentBlockReason(raw: string, body: string, range: Range | null | undefined, root: HTMLElement | null): BlockReason | null {
+  if (!raw) return null;
+  if (!raw.trim()) return "whitespace";
+  if (selectionOverlapsComment(range, root)) return "overlap";
+  const b = spanCommentBlocker(body, raw.trim());
+  if (b === "overlap") return "overlap";
+  if (b === "not-found") return anchorFailureReason(range);
+  return null;
+}
+
 interface OrderedThread {
   thread: Thread;
   group: 0 | 1;
@@ -102,7 +131,7 @@ export function App(): JSX.Element {
   const [showResolvedOrphaned, setShowResolvedOrphaned] = useState(false);
   const [selectionText, setSelectionText] = useState("");
   const [composer, setComposer] = useState<{ target: string | null; pos: { x: number; y: number } } | null>(null);
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; hasSel: boolean; block: "overlap" | "not-found" | null } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; hasSel: boolean; block: BlockReason | null } | null>(null);
   const [findSeed, setFindSeed] = useState(""); // pre-fills the find box (e.g. from the preview "Find text" menu item)
   const [focused, setFocused] = useState<string | null>(null);
   const [activePreviewLine, setActivePreviewLine] = useState<number | null>(null);
@@ -116,6 +145,7 @@ export function App(): JSX.Element {
   const previewRef = useRef<HTMLElement>(null);
   const ctxBlockRef = useRef<HTMLElement | null>(null); // block under the last right-click (for "Select line")
   const ctxSelTextRef = useRef(""); // selection text captured at right-click (the menu acts on this, not a re-read)
+  const tryAddCommentRef = useRef<() => void>(() => {}); // latest ⌘/Ctrl+/ handler (the keydown effect calls via this)
   const commentRangeRef = useRef<Range | null>(null); // the selection range being commented on (kept highlighted while composing)
   const docPathRef = useRef<string>(""); // current doc's locator path, for resolving relative links
   const railRef = useRef<HTMLElement>(null);
@@ -216,7 +246,9 @@ export function App(): JSX.Element {
     // Desktop only: a newer npm version is available.
     window.api.onUpdateAvailable?.((info) => setUpdate(info));
 
-    const onSel = () => setSelectionText(liveSelection());
+    // Store the RAW selection (untrimmed) so a whitespace-only selection is distinguishable
+    // from no selection at all (the former blocks commenting; the latter → doc-level).
+    const onSel = () => setSelectionText(window.getSelection()?.toString() ?? "");
     document.addEventListener("selectionchange", onSel);
     return () => document.removeEventListener("selectionchange", onSel);
   }, []);
@@ -271,7 +303,17 @@ export function App(): JSX.Element {
         // SourceEditor to call this instead of its search panel.)
         e.preventDefault();
         setFindOpen(true);
-        requestAnimationFrame(() => document.getElementById("ap-find-input")?.focus());
+        // Focus the find input AND select its current text, so re-pressing ⌘/Ctrl+F lets
+        // you type over the previous query instead of appending to it.
+        requestAnimationFrame(() => {
+          const el = document.getElementById("ap-find-input") as HTMLInputElement | null;
+          el?.focus();
+          el?.select();
+        });
+      } else if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key === "/") {
+        // ⌘/Ctrl+/ — add a comment on the selection (devs' "toggle comment" muscle memory).
+        e.preventDefault();
+        tryAddCommentRef.current();
       } else if (e.key === "Escape") {
         if (composer) setComposer(null);
         else if (findOpen) setFindOpen(false);
@@ -671,12 +713,38 @@ export function App(): JSX.Element {
   const resolvedCount = ordered.filter((o) => o.thread.root.resolved).length;
   const orphanedCount = ordered.filter((o) => o.orphaned).length;
   // Why the current selection can't be commented on (null = it can, or no selection).
-  const selBlocker = useMemo<"overlap" | "not-found" | null>(() => {
-    if (!selectionText.trim()) return null;
+  const selBlocker = useMemo<BlockReason | null>(() => {
     const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0 && selectionOverlapsComment(sel.getRangeAt(0), previewRef.current)) return "overlap";
-    return spanCommentBlocker(doc.body, selectionText);
+    const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+    return commentBlockReason(selectionText, doc.body, range, previewRef.current);
   }, [doc.body, selectionText]);
+  // Map a block reason to its tooltip / status message.
+  const blockerTip = useCallback(
+    (r: BlockReason | null): string | null => {
+      switch (r) {
+        case "whitespace": return t("topbar.cantWhitespace");
+        case "overlap": return t("topbar.cantOverlap");
+        case "blocks": return t("topbar.cantSpanBlocks");
+        case "table": return t("topbar.cantSpanTable");
+        case "rendered": return t("topbar.cantRendered");
+        default: return null;
+      }
+    },
+    [t],
+  );
+  // ⌘/Ctrl+/ entry point: open the composer unless the selection is blocked (then explain).
+  const tryAddComment = useCallback(() => {
+    const sel = window.getSelection();
+    const raw = sel?.toString() ?? "";
+    const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+    const reason = commentBlockReason(raw, docRef.current.body, range, previewRef.current);
+    if (reason) {
+      setStatus(blockerTip(reason) ?? "");
+      return;
+    }
+    openComposer();
+  }, [blockerTip, openComposer]);
+  tryAddCommentRef.current = tryAddComment; // keep the keydown handler pointing at the latest
 
   const resolvedIds = useMemo(() => new Set(doc.comments.filter((c) => c.resolved).map((c) => c.id)), [doc.comments]);
   const previewHtml = useMemo(
@@ -734,7 +802,7 @@ export function App(): JSX.Element {
         panes={panes}
         zoom={zoom}
         hasSelection={selectionText.length > 0}
-        commentBlock={selBlocker}
+        commentBlockTip={blockerTip(selBlocker)}
         onMode={onModeChange}
         onAutoResolve={onAutoResolve}
         onPanes={setPanes}
@@ -878,8 +946,8 @@ export function App(): JSX.Element {
           items={[
             {
               label: t("topbar.addComment"),
-              disabled: editingLocked || (ctxMenu.hasSel && ctxMenu.block !== null),
-              ...(ctxMenu.hasSel && ctxMenu.block ? { title: ctxMenu.block === "overlap" ? t("topbar.cantOverlap") : t("msg.cantAnchor") } : {}),
+              disabled: editingLocked || ctxMenu.block !== null,
+              ...(ctxMenu.block ? { title: blockerTip(ctxMenu.block) ?? "" } : {}),
               onSelect: openComposerFromCapture,
             },
             { label: t("menu.findText"), disabled: !ctxMenu.hasSel, onSelect: () => { setFindSeed(ctxSelTextRef.current); setFindOpen(true); } },
@@ -905,11 +973,13 @@ export function App(): JSX.Element {
               // menu acts on what was captured here, not a later re-read.
               ctxBlockRef.current = (e.target as HTMLElement).closest("[data-line]") as HTMLElement | null;
               const sel = window.getSelection();
-              const text = sel?.toString().trim() ?? "";
-              ctxSelTextRef.current = text;
-              commentRangeRef.current = text && sel && sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null;
-              const block = text && selectionOverlapsComment(commentRangeRef.current, previewRef.current) ? "overlap" : spanCommentBlocker(docRef.current.body, text);
-              setCtxMenu({ x: Math.max(8, Math.min(e.clientX, window.innerWidth - 200)), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 220)), hasSel: text.length > 0, block });
+              const raw = sel?.toString() ?? "";
+              const trimmed = raw.trim();
+              const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+              ctxSelTextRef.current = trimmed; // find/copy/anchor act on the trimmed text
+              commentRangeRef.current = trimmed && range ? range.cloneRange() : null;
+              const block = commentBlockReason(raw, docRef.current.body, range, previewRef.current);
+              setCtxMenu({ x: Math.max(8, Math.min(e.clientX, window.innerWidth - 200)), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 220)), hasSel: trimmed.length > 0, block });
             }}
             onClick={(e) => {
               const target = e.target as HTMLElement;
@@ -1139,7 +1209,7 @@ function TopBar(props: {
   panes: 1 | 2 | 3;
   zoom: number;
   hasSelection: boolean;
-  commentBlock: "overlap" | "not-found" | null;
+  commentBlockTip: string | null; // why Add Comment is disabled (tooltip text), or null if allowed
   onMode: (c: Cadence, a: Acceptance) => void;
   onAutoResolve: (v: boolean) => void;
   onPanes: (p: 1 | 2 | 3) => void;
@@ -1218,12 +1288,10 @@ function TopBar(props: {
         <button
           className="ap-iconbtn"
           onClick={props.onAddComment}
-          disabled={props.locked || (props.hasSelection && props.commentBlock !== null)}
+          disabled={props.locked || (props.hasSelection && props.commentBlockTip !== null)}
           title={
-            props.hasSelection && props.commentBlock
-              ? props.commentBlock === "overlap"
-                ? t("topbar.cantOverlap")
-                : t("msg.cantAnchor")
+            props.hasSelection && props.commentBlockTip
+              ? props.commentBlockTip
               : props.hasSelection
                 ? t("topbar.addCommentTitle")
                 : t("topbar.addDocCommentTitle")

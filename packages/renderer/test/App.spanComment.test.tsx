@@ -68,4 +68,24 @@ describe("span comment creation (regression)", () => {
     // It anchored as a SPAN (the greeting became a comment link), not a doc-level comment.
     await waitFor(() => expect(document.querySelector('[data-cmt]')).toBeTruthy());
   });
+
+  it("⌘/Ctrl+/ opens the composer on a valid selection", async () => {
+    await mountApp();
+    mockSelection("Hello world.");
+    await act(async () => void document.dispatchEvent(new Event("selectionchange")));
+    await act(async () => void fireEvent.keyDown(document, { key: "/", metaKey: true }));
+    expect(await screen.findByPlaceholderText(/Add a comment/i)).toBeTruthy();
+  });
+
+  it("blocks Add Comment on a whitespace-only selection (toolbar + ⌘/Ctrl+/)", async () => {
+    await mountApp();
+    mockSelection("   "); // selected only spaces
+    await act(async () => void document.dispatchEvent(new Event("selectionchange")));
+    const btn = screen.getByRole("button", { name: /add comment/i }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(btn.title.toLowerCase()).toContain("white space");
+    // ⌘/Ctrl+/ doesn't open a composer for whitespace either.
+    await act(async () => void fireEvent.keyDown(document, { key: "/", metaKey: true }));
+    expect(screen.queryByPlaceholderText(/Add a comment/i)).toBeNull();
+  });
 });
