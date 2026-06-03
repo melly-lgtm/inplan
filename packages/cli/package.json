@@ -1,6 +1,6 @@
 {
   "name": "@inplan/cli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "inplan CLI: open / wait / signal orchestration over the document core.",
   "license": "AGPL-3.0-or-later",

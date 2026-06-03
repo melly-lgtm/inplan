@@ -35,7 +35,7 @@ import { evaluateAgentEdit } from "./gate";
 import { docPaths, type DocPaths } from "./paths";
 import { wakePredicate, waitForActions } from "./wait";
 
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 
 function output(obj: unknown): void {
   process.stdout.write(JSON.stringify(obj) + "\n");
