@@ -17,6 +17,7 @@ import {
 import { renderMarkdown } from "./markdown";
 import { isInternalDocLink, resolveDocPath } from "./links";
 import { ComposerPopover } from "./ComposerPopover";
+import { ContextMenu } from "./ContextMenu";
 import { QuestionChips } from "./QuestionChips";
 import { SourceEditor, type SourceEditorHandle } from "./SourceEditor";
 import { StatusBar } from "./StatusBar";
@@ -83,6 +84,8 @@ export function App(): JSX.Element {
   const [showResolvedOrphaned, setShowResolvedOrphaned] = useState(false);
   const [selectionText, setSelectionText] = useState("");
   const [composer, setComposer] = useState<{ target: string | null; pos: { x: number; y: number } } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; hasSel: boolean } | null>(null);
+  const [findSeed, setFindSeed] = useState(""); // pre-fills the find box (e.g. from the preview "Find text" menu item)
   const [focused, setFocused] = useState<string | null>(null);
   const [activePreviewLine, setActivePreviewLine] = useState<number | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
@@ -93,6 +96,8 @@ export function App(): JSX.Element {
   const docRef = useRef(doc);
   docRef.current = doc;
   const previewRef = useRef<HTMLElement>(null);
+  const ctxBlockRef = useRef<HTMLElement | null>(null); // block under the last right-click (for "Select line")
+  const commentRangeRef = useRef<Range | null>(null); // the selection range being commented on (kept highlighted while composing)
   const docPathRef = useRef<string>(""); // current doc's locator path, for resolving relative links
   const railRef = useRef<HTMLElement>(null);
   const editorRef = useRef<SourceEditorHandle>(null);
@@ -431,13 +436,53 @@ export function App(): JSX.Element {
     const sel = window.getSelection();
     const txt = sel?.toString().trim() ?? "";
     if (txt && sel && sel.rangeCount > 0) {
-      const r = sel.getRangeAt(0).getBoundingClientRect();
+      const range = sel.getRangeAt(0);
+      commentRangeRef.current = range.cloneRange(); // keep the span highlighted while composing (item 4)
+      const r = range.getBoundingClientRect();
       setComposer({ target: txt, pos: { x: Math.max(8, Math.min(r.left, window.innerWidth - 360)), y: Math.max(48, Math.min(r.bottom + 6, window.innerHeight - 220)) } });
     } else {
+      commentRangeRef.current = null;
       previewRef.current?.scrollTo({ top: 0 });
       setComposer({ target: null, pos: { x: 24, y: 56 } });
     }
   }, []);
+
+  // Select a DOM node's text contents (used by the preview context menu's
+  // "Select line" / "Select all"). Replaces the current selection.
+  const selectNodeContents = useCallback((node: Node | null) => {
+    if (!node) return;
+    const sel = window.getSelection();
+    if (!sel) return;
+    const r = document.createRange();
+    r.selectNodeContents(node);
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }, []);
+
+  // Keep the commented span visibly highlighted while the composer is open — focusing
+  // the composer textarea collapses the DOM selection, so paint a persistent CSS Custom
+  // Highlight over the captured range instead (item 4). No-op where the API is absent
+  // (happy-dom tests / older engines).
+  useEffect(() => {
+    const cssApi = CSS as unknown as { highlights?: Map<string, unknown> };
+    const HighlightCtor = (window as unknown as { Highlight?: new (...r: Range[]) => unknown }).Highlight;
+    if (!cssApi.highlights || !HighlightCtor) return;
+    cssApi.highlights.delete("ap-comment-target");
+    if (composer && commentRangeRef.current) {
+      try {
+        cssApi.highlights.set("ap-comment-target", new HighlightCtor(commentRangeRef.current) as unknown);
+      } catch {
+        /* range detached (doc changed) — nothing to paint */
+      }
+    }
+    return () => void cssApi.highlights?.delete("ap-comment-target");
+  }, [composer]);
+
+  // Clear the find seed once the bar closes, so a later ⌘/Ctrl+F opens empty (the seed
+  // only pre-fills a fresh open from the preview "Find text" menu item).
+  useEffect(() => {
+    if (!findOpen) setFindSeed("");
+  }, [findOpen]);
 
   // --- cross-pane sync ---
   const syncToLine = useCallback((line: number) => {
@@ -662,6 +707,7 @@ export function App(): JSX.Element {
       {findOpen && (
         <FindReplaceBar
           doc={doc}
+          seed={findSeed}
           onApply={apply}
           onClose={() => setFindOpen(false)}
           onNavigate={navigateMatch}
@@ -776,6 +822,20 @@ export function App(): JSX.Element {
         />
       )}
 
+      {ctxMenu && (
+        <ContextMenu
+          pos={{ x: ctxMenu.x, y: ctxMenu.y }}
+          onClose={() => setCtxMenu(null)}
+          items={[
+            { label: t("topbar.addComment"), disabled: editingLocked, onSelect: openComposer },
+            { label: t("menu.findText"), disabled: !ctxMenu.hasSel, onSelect: () => { setFindSeed(liveSelection()); setFindOpen(true); } },
+            { label: t("menu.copy"), disabled: !ctxMenu.hasSel, onSelect: () => void navigator.clipboard?.writeText?.(liveSelection()) },
+            { label: t("menu.selectLine"), disabled: !ctxBlockRef.current, onSelect: () => selectNodeContents(ctxBlockRef.current) },
+            { label: t("menu.selectAll"), onSelect: () => selectNodeContents(previewRef.current) },
+          ]}
+        />
+      )}
+
       <div className="ap-main" style={{ zoom }}>
         <section className="ap-preview" ref={previewRef}>
           {proposal && reviewOpen ? (
@@ -785,12 +845,10 @@ export function App(): JSX.Element {
             className="ap-rendered"
             dangerouslySetInnerHTML={{ __html: previewHtml }}
             onContextMenu={(e) => {
-              if (editingLocked) return;
-              const sel = liveSelection();
-              if (sel.length) {
-                e.preventDefault();
-                setComposer({ target: sel, pos: { x: Math.max(8, Math.min(e.clientX, window.innerWidth - 360)), y: e.clientY + 6 } });
-              }
+              e.preventDefault();
+              // Capture the block under the cursor for "Select line", then open the menu.
+              ctxBlockRef.current = (e.target as HTMLElement).closest("[data-line]") as HTMLElement | null;
+              setCtxMenu({ x: Math.max(8, Math.min(e.clientX, window.innerWidth - 200)), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 220)), hasSel: liveSelection().length > 0 });
             }}
             onClick={(e) => {
               const target = e.target as HTMLElement;
@@ -1145,19 +1203,21 @@ const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\
 
 function FindReplaceBar({
   doc,
+  seed,
   onApply,
   onClose,
   onNavigate,
   onQuery,
 }: {
   doc: ParsedDocument;
+  seed?: string;
   onApply: (next: ParsedDocument, action?: { type: string; payload?: unknown }) => void;
   onClose: () => void;
   onNavigate: (m: FindMatch) => void;
   onQuery: (opts: { query: string; ci: boolean; inPreview: boolean; inEditor: boolean; inComments: boolean }) => void;
 }): JSX.Element {
   const t = useT();
-  const [find, setFind] = useState("");
+  const [find, setFind] = useState(seed ?? ""); // pre-filled from the preview "Find text" menu item
   const [replace, setReplace] = useState("");
   const [replaceMode, setReplaceMode] = useState(false);
   const [inPreview, setInPreview] = useState(true); // search the rendered preview pane

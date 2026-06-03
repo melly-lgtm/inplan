@@ -224,6 +224,13 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 
 /* find matches highlighted in the preview (CSS Custom Highlight API) */
 ::highlight(ap-find) { background: #f3dba0; color: inherit; }
+/* The span being commented on — kept visible while the composer steals focus (item 4). */
+::highlight(ap-comment-target) { background: #bcd5cc; color: inherit; }
+/* Preview right-click context menu. */
+.ap-ctxmenu { position: fixed; z-index: 40; display: flex; flex-direction: column; min-width: 168px; padding: 4px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
+.ap-ctxmenu-item { font: inherit; text-align: left; background: none; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; color: var(--fg); }
+.ap-ctxmenu-item:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
+.ap-ctxmenu-item:disabled { opacity: 0.4; cursor: default; }
 /* find matches highlighted inside the source editor (Editor find scope) */
 .cm-ap-find { background: #f3dba0; }
 
