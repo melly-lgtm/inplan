@@ -65,7 +65,7 @@ writeFileSync(
       type: "module",
       bin: { inplan: "bin/cli.js" },
       files: ["bin", "app", "skill", "LICENSE"],
-      engines: { node: ">=20" },
+      engines: { node: ">=22" },
       // npm→skill bootstrap: offer the skill to AI agents already on the machine. Guard-
       // railed in `install-skill` (opt-out, idempotent, agent-must-exist) and `|| true` so a
       // global install never fails over it. Skipped under `npm install --ignore-scripts`

@@ -38,14 +38,24 @@ and stay reviewable in Git.
 
 ## Install
 
-> **Requires a recent Node.js (20 or newer).** Published npm packages are on the way;
-> until then, build from source. Once published, agents install the CLI with:
->
-> ```bash
-> inplan --version || npm install -g inplan
-> ```
+**Requires Node.js 22 or newer.** Install the CLI from npm — it bundles the desktop
+editor and the agent skill:
 
-**From source** (TypeScript monorepo, npm workspaces):
+```bash
+npm install -g inplan
+inplan --version
+```
+
+This puts the `inplan` command on your PATH, bundles the **desktop editor** (launched by
+`inplan open`), and installs the **agent skill** into any coding agents it detects
+(Claude Code, Pi, Codex — set `INPLAN_NO_SKILL_INSTALL=1` to skip, or run
+`inplan install-skill` later). A coding agent can self-install the same way:
+
+```bash
+inplan --version || npm install -g inplan
+```
+
+**From source** (TypeScript monorepo, npm workspaces) — for development:
 
 ```bash
 git clone https://github.com/melly-lgtm/inplan.git
@@ -72,12 +82,11 @@ editor, and iterates with you through comments. Under the hood it uses the CLI:
 inplan open  <file>           # open the editor and block until the human acts
 inplan wait  <file>           # wait for the next human action (resume the loop)
 inplan signal <file> --done   # signal the plan looks ready (the human still decides)
-inplan upload <file>          # push the plan to the cloud workspace (hosted edition)
 ```
 
-`inplan open` launches the desktop editor named by the `INPLAN_APP_CMD` environment
-variable (the built `@inplan/app`); without it the CLI runs headless. To run the
-editor on its own during development:
+When installed from npm, `inplan open` launches the **bundled** desktop editor. (From a
+source checkout, set `INPLAN_APP_CMD` to your built `@inplan/app`, or the CLI runs
+headless.) To run the editor on its own during development:
 
 ```bash
 npm run dev -w @inplan/app
