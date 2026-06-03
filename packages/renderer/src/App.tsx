@@ -48,6 +48,15 @@ function anchorLine(body: string, id: string): number | null {
 
 const liveSelection = (): string => window.getSelection()?.toString().trim() ?? "";
 
+/** Restart a one-shot CSS flash animation on `el` (remove → reflow → re-add) so it
+ *  replays even on repeat clicks of the same comment. */
+function flashEl(el: Element | null | undefined, cls: string): void {
+  if (!el) return;
+  el.classList.remove(cls);
+  void (el as HTMLElement).offsetWidth; // force reflow so the animation restarts
+  el.classList.add(cls);
+}
+
 /** Does the selection range intersect an already-rendered comment anchor? Catches
  *  overlaps that the source-text search can't (a selection crossing INTO an anchor
  *  can't be located verbatim, so it'd otherwise read as "not anchorable"). Falls back
@@ -579,17 +588,20 @@ export function App(): JSX.Element {
       setFocused(id);
       const line = anchorLine(docRef.current.body, id);
       if (line != null) editorRef.current?.scrollToLine(line);
-      // Re-center the anchor in the preview only when focus came from another
-      // pane (the rail). If the user clicked the anchor in the preview itself,
-      // don't yank the pane they just clicked.
-      if (!fromPreview) previewRef.current?.querySelector(`[data-cmt="${id}"]`)?.scrollIntoView({ block: "center" });
-      // Reveal the thread in the rail ONLY when focus came from elsewhere (a
-      // preview anchor or a find match). When the user clicked the card in the
-      // rail itself, never scroll the rail — they're already looking at it (a
-      // comment taller than the pane would otherwise jump under their cursor).
-      if (fromRail) return;
       const c = docRef.current.comments.find((x) => x.id === id);
-      const rootId = c?.parentId ?? id;
+      const rootId = c?.parentId ?? id; // the anchor + rail card live on the thread root
+      const isDoc = docRef.current.comments.find((x) => x.id === rootId)?.anchor === "doc";
+      // Re-center the anchor in the preview only when focus came from another pane (the
+      // rail). If the user clicked the anchor in the preview itself, don't yank the pane.
+      if (!fromPreview && !isDoc) previewRef.current?.querySelector(`[data-cmt="${rootId}"]`)?.scrollIntoView({ block: "center" });
+      // Flash the target to draw the eye after the scroll: the anchored span pulses
+      // (darker → normal), or the whole document washes the comment tint for doc-level.
+      if (isDoc) flashEl(previewRef.current?.querySelector(".ap-rendered"), "ap-flash-doc");
+      else flashEl(previewRef.current?.querySelector(`[data-cmt="${rootId}"]`), "ap-flash-anchor");
+      // Reveal the thread in the rail ONLY when focus came from elsewhere (a preview
+      // anchor or a find match). When the user clicked the card in the rail itself, never
+      // scroll the rail — they're already looking at it (a long comment would otherwise jump).
+      if (fromRail) return;
       const card = railRef.current?.querySelector(`[data-cmt-card="${rootId}"]`);
       if (card) {
         const parts = card.querySelectorAll(".ap-comment, .ap-reply");

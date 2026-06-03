@@ -92,6 +92,16 @@ describe("App comment-thread actions (memory-backed)", () => {
     );
   });
 
+  it("flashes the anchored span when its comment is focused (click-to-focus animation)", async () => {
+    await mountApp();
+    const anchor = document.querySelector('[data-cmt="cmt-abc123"]') as HTMLElement;
+    expect(anchor.classList.contains("ap-flash-anchor")).toBe(false);
+    await act(async () => {
+      fireEvent.click(anchor); // clicking the preview anchor focuses its comment
+    });
+    expect(anchor.classList.contains("ap-flash-anchor")).toBe(true);
+  });
+
   it("hides the reveal toggle when nothing is hidden; tailors its tooltip to the counts", async () => {
     await mountApp();
     // Nothing resolved or orphaned yet → no reveal toggle at all.

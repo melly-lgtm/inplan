@@ -16,6 +16,11 @@
   --accent-soft: #e9f0ec;  /* pine tint */
   --danger: #a3331f;
   --amber: #9a5f23;
+  /* Comment highlight + click-flash (override in a theme). The flash animations below
+     fade --anchor-flash → --anchor (anchored) and --doc-flash → transparent (doc-level). */
+  --anchor: #f6eccb;       /* anchored-comment highlight */
+  --anchor-flash: #ecd29a; /* darker yellow shown for ~1s when an anchored comment is clicked */
+  --doc-flash: rgba(246, 236, 203, 0.6); /* full-document wash when a doc-level comment is clicked */
   --shadow-sm: 0 1px 2px rgba(28, 26, 23, 0.05);
   --shadow: 0 1px 2px rgba(28, 26, 23, 0.04), 0 8px 22px -14px rgba(28, 26, 23, 0.30);
   --serif: "Fraunces", Georgia, "Times New Roman", serif;
@@ -121,7 +126,14 @@ body {
 .ap-preview { flex: 1; min-width: 0; overflow: auto; padding: 28px 36px; border-right: 1px solid var(--line); background: var(--bg); }
 .ap-rendered { max-width: 760px; }
 .ap-rendered h1, .ap-rendered h2, .ap-rendered h3 { font-family: var(--serif); font-weight: 500; letter-spacing: -0.01em; line-height: 1.15; }
-.ap-rendered .ap-anchor { background: #f6eccb; border-bottom: 2px solid var(--amber); color: inherit; text-decoration: none; cursor: pointer; border-radius: 2px; }
+.ap-rendered .ap-anchor { background: var(--anchor); border-bottom: 2px solid var(--amber); color: inherit; text-decoration: none; cursor: pointer; border-radius: 2px; }
+/* Click-to-focus flash: anchored comment pulses darker yellow then fades to normal (1s). */
+@keyframes ap-flash-anchor { from { background-color: var(--anchor-flash); } to { background-color: var(--anchor); } }
+.ap-rendered .ap-anchor.ap-flash-anchor { animation: ap-flash-anchor 1s ease-out; }
+/* Doc-level comment click: the whole rendered document washes the comment tint, then fades out (1s). */
+@keyframes ap-flash-doc { from { background-color: var(--doc-flash); } to { background-color: transparent; } }
+.ap-rendered.ap-flash-doc { animation: ap-flash-doc 1s ease-out; }
+@media (prefers-reduced-motion: reduce) { .ap-flash-anchor, .ap-flash-doc { animation: none; } }
 .ap-pane { width: 380px; flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); overflow: hidden; }
 /* draggable vertical splitter between panes */
 .ap-vsplit { flex: 0 0 6px; cursor: col-resize; background: var(--line); }
