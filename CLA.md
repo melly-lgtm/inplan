@@ -62,5 +62,5 @@ will ask You to sign by commenting:
 
 > I have read the CLA Document and I hereby sign the CLA
 
-Entities should contact **licensing@crazyideastudio.com** to arrange an Entity
+Entities should contact **licensing@inplan.ai** to arrange an Entity
 CLA covering their employees.

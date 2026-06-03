@@ -29,7 +29,7 @@ For these cases, **CrazyIdeaStudio, Inc.** offers a separate **commercial
 license** to the same software under negotiated terms, without the AGPL's
 copyleft conditions.
 
-**To obtain a commercial license, contact:** **licensing@crazyideastudio.com**
+**To obtain a commercial license, contact:** **licensing@inplan.ai**
 
 ## 3. How both are possible
 
