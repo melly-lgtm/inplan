@@ -712,6 +712,14 @@ export function App(): JSX.Element {
   const visible = ordered.filter((o) => showResolvedOrphaned || (!o.thread.root.resolved && !o.orphaned));
   const resolvedCount = ordered.filter((o) => o.thread.root.resolved).length;
   const orphanedCount = ordered.filter((o) => o.orphaned).length;
+  // Reveal-toggle tooltip: only name the categories that actually have hidden comments
+  // (the button itself is hidden when both counts are 0 — nothing to reveal).
+  const revealTip =
+    resolvedCount > 0 && orphanedCount > 0
+      ? t("rail.showResolved", { resolved: resolvedCount, orphaned: orphanedCount })
+      : resolvedCount > 0
+        ? t("rail.showResolvedOnly", { resolved: resolvedCount })
+        : t("rail.showOrphanedOnly", { orphaned: orphanedCount });
   // Why the current selection can't be commented on (null = it can, or no selection).
   const selBlocker = useMemo<BlockReason | null>(() => {
     const sel = window.getSelection();
@@ -1041,16 +1049,18 @@ export function App(): JSX.Element {
             {panes === 2 && <PaneTabs tab={rightTab} onTab={setRightTab} />}
             <div className="ap-rail-head">
               <strong>{t("rail.comments")}</strong>
-              <button
-                type="button"
-                className={`ap-iconbtn ap-reveal${showResolvedOrphaned ? " on" : ""}`}
-                aria-pressed={showResolvedOrphaned}
-                title={t("rail.showResolved", { resolved: resolvedCount, orphaned: orphanedCount })}
-                aria-label={t("rail.showResolved", { resolved: resolvedCount, orphaned: orphanedCount })}
-                onClick={() => setShowResolvedOrphaned((v) => !v)}
-              >
-                <IconRevealArchive />
-              </button>
+              {(resolvedCount > 0 || orphanedCount > 0) && (
+                <button
+                  type="button"
+                  className={`ap-iconbtn ap-reveal${showResolvedOrphaned ? " on" : ""}`}
+                  aria-pressed={showResolvedOrphaned}
+                  title={revealTip}
+                  aria-label={revealTip}
+                  onClick={() => setShowResolvedOrphaned((v) => !v)}
+                >
+                  <IconRevealArchive />
+                </button>
+              )}
             </div>
             {visible.map((o, i) => (
               <Fragment key={o.thread.root.id}>

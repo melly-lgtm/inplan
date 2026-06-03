@@ -92,6 +92,19 @@ describe("App comment-thread actions (memory-backed)", () => {
     );
   });
 
+  it("hides the reveal toggle when nothing is hidden; tailors its tooltip to the counts", async () => {
+    await mountApp();
+    // Nothing resolved or orphaned yet → no reveal toggle at all.
+    expect(screen.queryByRole("button", { name: /show resolved|show orphaned/i })).toBeNull();
+    // Resolve the only thread → 1 resolved, 0 orphaned.
+    await act(async () => {
+      fireEvent.click(within(card()).getByRole("button", { name: /resolve thread/i }));
+    });
+    const toggle = await screen.findByRole("button", { name: /show resolved/i });
+    expect(toggle.title).toMatch(/resolved \(1\)/i);
+    expect(toggle.title.toLowerCase()).not.toContain("orphaned"); // only-resolved variant
+  });
+
   it("modify: ⋯ → Modify → edit text → Save updates the comment", async () => {
     await mountApp();
     const scope = within(card());

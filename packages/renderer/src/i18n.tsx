@@ -107,6 +107,8 @@ export const EN: Catalog = {
   // comment rail
   "rail.comments": "Comments",
   "rail.showResolved": "Show resolved ({resolved}) & orphaned ({orphaned}) comments",
+  "rail.showResolvedOnly": "Show resolved ({resolved}) comments",
+  "rail.showOrphanedOnly": "Show orphaned ({orphaned}) comments",
   // preview right-click context menu
   "menu.findText": "Find Text",
   "menu.copy": "Copy",
