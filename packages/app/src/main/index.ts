@@ -12,6 +12,12 @@ import { createI18nController } from "./i18nController";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// Identify as "inplan" instead of the default "Electron" — set before `whenReady` so the
+// macOS app menu (built from app.name) and the About panel read it. (Run via the bundled
+// electron binary, the dock/⌘-Tab name still comes from the binary's bundle until packaged.)
+app.setName("inplan");
+app.setAboutPanelOptions({ applicationName: "inplan" });
+
 // Log main-process errors to stderr instead of Electron's default GUI error dialog.
 process.on("uncaughtException", (err) => {
   process.stderr.write(`[inplan] uncaught exception: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);
