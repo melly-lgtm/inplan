@@ -43,7 +43,9 @@ md.renderer.rules.link_close = (tokens, idx, opts, env, self) => {
 };
 
 // Tag block-level elements with their 0-based source line for cross-pane sync.
-const BLOCK_RULES = ["paragraph_open", "heading_open", "blockquote_open", "bullet_list_open", "ordered_list_open", "list_item_open", "table_open", "hr"];
+// `tr_open` is tagged too so clicking a table cell syncs to the clicked ROW's source
+// line, not the table's first line (the cells themselves carry no line map).
+const BLOCK_RULES = ["paragraph_open", "heading_open", "blockquote_open", "bullet_list_open", "ordered_list_open", "list_item_open", "table_open", "tr_open", "hr"];
 for (const name of BLOCK_RULES) {
   const orig = md.renderer.rules[name];
   md.renderer.rules[name] = (tokens, idx, options, env, self) => {

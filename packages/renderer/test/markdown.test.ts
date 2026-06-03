@@ -15,6 +15,14 @@ describe("renderMarkdown", () => {
     expect(html).toMatch(/<pre data-line="\d+"/);
     expect(html).toContain("const x = 1;");
   });
+
+  it("tags each table ROW with its own data-line (so a cell click syncs to the row)", () => {
+    const html = renderMarkdown("intro\n\n| A | B |\n| - | - |\n| r1a | r1b |\n| r2a | r2b |\n");
+    // one <tr> per header + 2 body rows, each with a distinct data-line
+    const lines = [...html.matchAll(/<tr data-line="(\d+)"/g)].map((m) => Number(m[1]));
+    expect(lines.length).toBe(3);
+    expect(new Set(lines).size).toBe(3); // distinct lines, not all the table's first line
+  });
 });
 
 describe("renderMarkdown comment anchors", () => {

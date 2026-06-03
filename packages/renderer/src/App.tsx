@@ -97,6 +97,7 @@ export function App(): JSX.Element {
   docRef.current = doc;
   const previewRef = useRef<HTMLElement>(null);
   const ctxBlockRef = useRef<HTMLElement | null>(null); // block under the last right-click (for "Select line")
+  const ctxSelTextRef = useRef(""); // selection text captured at right-click (the menu acts on this, not a re-read)
   const commentRangeRef = useRef<Range | null>(null); // the selection range being commented on (kept highlighted while composing)
   const docPathRef = useRef<string>(""); // current doc's locator path, for resolving relative links
   const railRef = useRef<HTMLElement>(null);
@@ -440,6 +441,21 @@ export function App(): JSX.Element {
       commentRangeRef.current = range.cloneRange(); // keep the span highlighted while composing (item 4)
       const r = range.getBoundingClientRect();
       setComposer({ target: txt, pos: { x: Math.max(8, Math.min(r.left, window.innerWidth - 360)), y: Math.max(48, Math.min(r.bottom + 6, window.innerHeight - 220)) } });
+    } else {
+      commentRangeRef.current = null;
+      previewRef.current?.scrollTo({ top: 0 });
+      setComposer({ target: null, pos: { x: 24, y: 56 } });
+    }
+  }, []);
+
+  // Open the composer from the selection captured at right-click time (not a live
+  // re-read) — clicking a menu item can collapse the page selection in some browsers,
+  // so the right-click handler stashes the text + range and we use those here.
+  const openComposerFromCapture = useCallback(() => {
+    const target = ctxSelTextRef.current;
+    if (target && commentRangeRef.current) {
+      const r = commentRangeRef.current.getBoundingClientRect();
+      setComposer({ target, pos: { x: Math.max(8, Math.min(r.left, window.innerWidth - 360)), y: Math.max(48, Math.min(r.bottom + 6, window.innerHeight - 220)) } });
     } else {
       commentRangeRef.current = null;
       previewRef.current?.scrollTo({ top: 0 });
@@ -827,9 +843,9 @@ export function App(): JSX.Element {
           pos={{ x: ctxMenu.x, y: ctxMenu.y }}
           onClose={() => setCtxMenu(null)}
           items={[
-            { label: t("topbar.addComment"), disabled: editingLocked, onSelect: openComposer },
-            { label: t("menu.findText"), disabled: !ctxMenu.hasSel, onSelect: () => { setFindSeed(liveSelection()); setFindOpen(true); } },
-            { label: t("menu.copy"), disabled: !ctxMenu.hasSel, onSelect: () => void navigator.clipboard?.writeText?.(liveSelection()) },
+            { label: t("topbar.addComment"), disabled: editingLocked, onSelect: openComposerFromCapture },
+            { label: t("menu.findText"), disabled: !ctxMenu.hasSel, onSelect: () => { setFindSeed(ctxSelTextRef.current); setFindOpen(true); } },
+            { label: t("menu.copy"), disabled: !ctxMenu.hasSel, onSelect: () => void navigator.clipboard?.writeText?.(ctxSelTextRef.current) },
             { label: t("menu.selectLine"), disabled: !ctxBlockRef.current, onSelect: () => selectNodeContents(ctxBlockRef.current) },
             { label: t("menu.selectAll"), onSelect: () => selectNodeContents(previewRef.current) },
           ]}
@@ -846,9 +862,15 @@ export function App(): JSX.Element {
             dangerouslySetInnerHTML={{ __html: previewHtml }}
             onContextMenu={(e) => {
               e.preventDefault();
-              // Capture the block under the cursor for "Select line", then open the menu.
+              // Capture the selection (text + range) and the block under the cursor NOW —
+              // clicking a menu item can collapse the selection in some browsers, so the
+              // menu acts on what was captured here, not a later re-read.
               ctxBlockRef.current = (e.target as HTMLElement).closest("[data-line]") as HTMLElement | null;
-              setCtxMenu({ x: Math.max(8, Math.min(e.clientX, window.innerWidth - 200)), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 220)), hasSel: liveSelection().length > 0 });
+              const sel = window.getSelection();
+              const text = sel?.toString().trim() ?? "";
+              ctxSelTextRef.current = text;
+              commentRangeRef.current = text && sel && sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null;
+              setCtxMenu({ x: Math.max(8, Math.min(e.clientX, window.innerWidth - 200)), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 220)), hasSel: text.length > 0 });
             }}
             onClick={(e) => {
               const target = e.target as HTMLElement;
