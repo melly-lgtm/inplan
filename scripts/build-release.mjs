@@ -45,6 +45,9 @@ if (!bin.startsWith("#!")) bin = `#!/usr/bin/env node\n${bin}`;
 writeFileSync(`${rel}/bin/cli.js`, bin);
 chmodSync(`${rel}/bin/cli.js`, 0o755);
 cpSync(appOut, `${rel}/app`, { recursive: true });
+// Ship the skill so a global install can offer it to AI agents (npm→skill bootstrap).
+mkdirSync(`${rel}/skill`, { recursive: true });
+cpSync(p("skill/SKILL.md"), `${rel}/skill/SKILL.md`);
 cpSync(p("LICENSE"), `${rel}/LICENSE`);
 
 writeFileSync(
@@ -57,8 +60,13 @@ writeFileSync(
       license: "AGPL-3.0-or-later",
       type: "module",
       bin: { inplan: "bin/cli.js" },
-      files: ["bin", "app", "LICENSE"],
+      files: ["bin", "app", "skill", "LICENSE"],
       engines: { node: ">=20" },
+      // npm→skill bootstrap: offer the skill to AI agents already on the machine. Guard-
+      // railed in `install-skill` (opt-out, idempotent, agent-must-exist) and `|| true` so a
+      // global install never fails over it. Skipped under `npm install --ignore-scripts`
+      // (then `inplan install-skill` is the manual path).
+      scripts: { postinstall: "node bin/cli.js install-skill --quiet || true" },
       dependencies,
     },
     null,

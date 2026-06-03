@@ -3,7 +3,8 @@
 
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -498,6 +499,66 @@ async function doToken(): Promise<void> {
   output(s ? { token: s.session.access_token } : {});
 }
 
+/** The bundled `skill/SKILL.md` shipped in the published package (next to bin/), or null
+ *  when running from source/dev (no sibling skill — auto-install is a published-package
+ *  feature). */
+function bundledSkillPath(): string | null {
+  try {
+    const p = join(dirname(fileURLToPath(import.meta.url)), "..", "skill", "SKILL.md");
+    return existsSync(p) ? p : null;
+  } catch {
+    return null;
+  }
+}
+
+/** AI agents that use the same global skills convention as ours — a `skills/<name>/SKILL.md`
+ *  under a per-user agent dir. `root` is the agent's home (we only install when it exists, so
+ *  we never touch agents you don't have). Project-scoped agents (Cline `.clinerules`, Aider
+ *  `CONVENTIONS.md`, Cursor `.cursor/rules`) read rules from the working repo, not a global
+ *  dir — those are handled per-project, not by this global install. */
+function skillTargets(): { name: string; root: string; target: string }[] {
+  const home = homedir();
+  return [
+    { name: "Claude Code", root: join(home, ".claude"), target: join(home, ".claude", "skills", "inplan", "SKILL.md") },
+    { name: "Pi", root: join(home, ".pi", "agent"), target: join(home, ".pi", "agent", "skills", "inplan", "SKILL.md") },
+    { name: "Codex", root: join(home, ".codex"), target: join(home, ".codex", "skills", "inplan", "SKILL.md") },
+  ];
+}
+
+/**
+ * Install the inplan skill into AI agents already present on this machine (the npm→skill
+ * half of the bidirectional bootstrap; the skill→CLI half lives in SKILL.md's install
+ * note). Guard-railed: opt-out via INPLAN_NO_SKILL_INSTALL, only touches agents that
+ * already exist, never overwrites an existing skill (idempotent), and never throws — so
+ * it's safe to run from `postinstall`. `--quiet` suppresses the JSON summary (postinstall).
+ */
+function doInstallSkill(args: string[]): void {
+  const quiet = hasFlag(args, "quiet");
+  if (process.env.INPLAN_NO_SKILL_INSTALL) {
+    if (!quiet) output({ status: "skipped", reason: "INPLAN_NO_SKILL_INSTALL" });
+    return;
+  }
+  const src = bundledSkillPath();
+  if (!src) {
+    if (!quiet) output({ status: "unavailable" }); // dev/source — nothing bundled to install
+    return;
+  }
+  const installed: string[] = [];
+  for (const a of skillTargets()) {
+    try {
+      if (!existsSync(a.root)) continue; // agent not installed → leave it alone
+      if (existsSync(a.target)) continue; // already present → idempotent, never clobber
+      mkdirSync(dirname(a.target), { recursive: true });
+      copyFileSync(src, a.target);
+      installed.push(a.name);
+      process.stderr.write(`inplan: installed the inplan skill into ${a.name} (${a.target}). Set INPLAN_NO_SKILL_INSTALL=1 to skip.\n`);
+    } catch {
+      /* never fail an install over a skill copy */
+    }
+  }
+  if (!quiet) output({ status: "ok", installed });
+}
+
 /** Forget stored credentials (sign out). */
 function doLogout(): void {
   clearAuth();
@@ -612,6 +673,10 @@ async function main(): Promise<void> {
   }
   if (cmd === "token") {
     await doToken();
+    return;
+  }
+  if (cmd === "install-skill") {
+    doInstallSkill(argv.slice(1));
     return;
   }
   if (cmd === "logout") {
