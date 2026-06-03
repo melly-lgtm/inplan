@@ -38,11 +38,25 @@ describe("findSpanRange — leading-emphasis inclusion (item 7)", () => {
     const r = findSpanRange(body, "words")!;
     expect(body.slice(r.start, r.end)).toBe("words");
   });
+
+  it("does NOT pull in the opening ** when the closing ** is past the selection", () => {
+    // Selecting just the first word of a long bold run: capturing the opening ** would
+    // orphan it ("[**human"). The matching close isn't captured, so leave it out.
+    const body = "**human and more words**";
+    const r = findSpanRange(body, "human")!;
+    expect(body.slice(r.start, r.end)).toBe("human");
+  });
 });
 
 describe("addSpanComment — wraps the emphasis-expanded span", () => {
   it("keeps the bold markers inside the anchor label", () => {
     const res = addSpanComment(doc("**Bold** text"), "Bold", fields)!;
     expect(res.doc.body).toMatch(/^\[\*\*Bold\*\*\]\(#cmt-[0-9a-z]+\) text$/);
+  });
+
+  it("anchors only the word (markers stay outside) when the bold run extends past it", () => {
+    const res = addSpanComment(doc("**human and more**"), "human", fields)!;
+    // **[human](#id) and more** — bold preserved, label clean (no orphaned **).
+    expect(res.doc.body).toMatch(/^\*\*\[human\]\(#cmt-[0-9a-z]+\) and more\*\*$/);
   });
 });

@@ -61,21 +61,27 @@ const normalizeNeedle = (s: string): string => s.replace(/[*_`]/g, "").replace(/
 const EMPH = "*_`";
 
 /**
- * When a span begins right after inline-emphasis markers that OPEN a run, pull
- * them in (and the matching closing run if it abuts the end). The preview shows
- * no markers, so a selection that starts on a bold word maps to source *after*
- * the `**`; without this, anchoring it would orphan the opening `**`. Only treat
- * the leading markers as openers when they start a new inline run (preceded by
- * whitespace or the body start), never when they close the previous word.
+ * When a span begins right after inline-emphasis markers that OPEN a run, pull them
+ * in — but ONLY when the matching closing run is also captured, so the anchored label
+ * stays balanced. The preview shows no markers, so a selection that starts on a bold
+ * word maps to source *after* the `**`. Two balanced cases pull the opener in:
+ *   - the closing run is already inside the selection ("Bold** rest"), or
+ *   - it immediately abuts the end ("Bold" out of "**Bold**") — then pull it in too.
+ * If the bold run continues past the selection (e.g. selecting the first word of a long
+ * bold span), the closing `**` isn't captured, so we leave the opener out rather than
+ * orphan it (which would render as a broken "[**word" link). Only leading markers that
+ * OPEN a run count (preceded by whitespace / body start), never ones closing a word.
  */
 function expandEmphasis(body: string, start: number, end: number): { start: number; end: number } {
   let s = start;
   while (s > 0 && EMPH.includes(body[s - 1]!)) s--;
   const lead = body.slice(s, start);
   const before = s > 0 ? body[s - 1]! : "";
-  if (!lead || !(s === 0 || /\s/.test(before) || "([\"'".includes(before))) return { start, end };
-  const e = body.slice(end, end + lead.length) === lead ? end + lead.length : end;
-  return { start: s, end: e };
+  const opensRun = lead && (s === 0 || /\s/.test(before) || "([\"'".includes(before));
+  if (!opensRun) return { start, end };
+  if (body.slice(start, end).includes(lead)) return { start: s, end }; // closing run already inside
+  if (body.slice(end, end + lead.length) === lead) return { start: s, end: end + lead.length }; // closing run abuts the end
+  return { start, end }; // matching close not captured → don't orphan the opener
 }
 
 /**
