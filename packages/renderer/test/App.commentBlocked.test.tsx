@@ -54,6 +54,22 @@ describe("Add comment disabled on un-anchorable selections", () => {
     expect(btn.title.toLowerCase()).toContain("overlap");
   });
 
+  it("flags OVERLAP (not 'cant anchor') when a real selection crosses an existing anchor", async () => {
+    await mountApp();
+    // Select the whole paragraph, which contains the [Postgres](#cmt-abc123) anchor.
+    const anchor = document.querySelector('[data-cmt="cmt-abc123"]')!;
+    const para = anchor.closest("p") ?? (anchor.parentElement as Element);
+    const range = document.createRange();
+    range.selectNodeContents(para);
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    await act(async () => void document.dispatchEvent(new Event("selectionchange")));
+    const btn = screen.getByRole("button", { name: /add comment/i }) as HTMLButtonElement;
+    await waitFor(() => expect(btn.disabled).toBe(true));
+    expect(btn.title.toLowerCase()).toContain("overlap"); // the overlap message, not cant-anchor
+  });
+
   it("keeps Add Comment enabled for a normal, non-overlapping selection", async () => {
     await mountApp();
     mockSelection("here");

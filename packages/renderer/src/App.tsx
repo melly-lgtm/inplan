@@ -48,6 +48,22 @@ function anchorLine(body: string, id: string): number | null {
 
 const liveSelection = (): string => window.getSelection()?.toString().trim() ?? "";
 
+/** Does the selection range intersect an already-rendered comment anchor? Catches
+ *  overlaps that the source-text search can't (a selection crossing INTO an anchor
+ *  can't be located verbatim, so it'd otherwise read as "not anchorable"). Falls back
+ *  to false where Range.intersectsNode isn't available (then the source-text check runs). */
+function selectionOverlapsComment(range: Range | null | undefined, root: HTMLElement | null): boolean {
+  if (!range || !root || typeof range.intersectsNode !== "function") return false;
+  for (const a of root.querySelectorAll("[data-cmt]")) {
+    try {
+      if (range.intersectsNode(a)) return true;
+    } catch {
+      /* detached node — ignore */
+    }
+  }
+  return false;
+}
+
 interface OrderedThread {
   thread: Thread;
   group: 0 | 1;
@@ -655,7 +671,12 @@ export function App(): JSX.Element {
   const resolvedCount = ordered.filter((o) => o.thread.root.resolved).length;
   const orphanedCount = ordered.filter((o) => o.orphaned).length;
   // Why the current selection can't be commented on (null = it can, or no selection).
-  const selBlocker = useMemo(() => spanCommentBlocker(doc.body, selectionText), [doc.body, selectionText]);
+  const selBlocker = useMemo<"overlap" | "not-found" | null>(() => {
+    if (!selectionText.trim()) return null;
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0 && selectionOverlapsComment(sel.getRangeAt(0), previewRef.current)) return "overlap";
+    return spanCommentBlocker(doc.body, selectionText);
+  }, [doc.body, selectionText]);
 
   const resolvedIds = useMemo(() => new Set(doc.comments.filter((c) => c.resolved).map((c) => c.id)), [doc.comments]);
   const previewHtml = useMemo(
@@ -887,7 +908,8 @@ export function App(): JSX.Element {
               const text = sel?.toString().trim() ?? "";
               ctxSelTextRef.current = text;
               commentRangeRef.current = text && sel && sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null;
-              setCtxMenu({ x: Math.max(8, Math.min(e.clientX, window.innerWidth - 200)), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 220)), hasSel: text.length > 0, block: spanCommentBlocker(docRef.current.body, text) });
+              const block = text && selectionOverlapsComment(commentRangeRef.current, previewRef.current) ? "overlap" : spanCommentBlocker(docRef.current.body, text);
+              setCtxMenu({ x: Math.max(8, Math.min(e.clientX, window.innerWidth - 200)), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 220)), hasSel: text.length > 0, block });
             }}
             onClick={(e) => {
               const target = e.target as HTMLElement;

@@ -67,7 +67,7 @@ export const EN: Catalog = {
   "msg.autosaving": "auto-saving…",
   "msg.autosaved": "autosaved (backup)",
   "msg.turnFinished": "turn finished — waiting for agent",
-  "msg.cantAnchor": "could not anchor the selected text in the source",
+  "msg.cantAnchor": "Comments can't be anchored to this selection",
   // status bar
   "status.ready": "ready",
   "status.thinking": "Agent is thinking",
