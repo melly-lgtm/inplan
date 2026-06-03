@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   type ControlChannel,
   CONTROL_LOG_VERSION,
@@ -32,7 +34,7 @@ import { evaluateAgentEdit } from "./gate";
 import { docPaths, type DocPaths } from "./paths";
 import { wakePredicate, waitForActions } from "./wait";
 
-const VERSION = "0.0.0";
+const VERSION = "0.1.0";
 
 function output(obj: unknown): void {
   process.stdout.write(JSON.stringify(obj) + "\n");
@@ -84,20 +86,39 @@ function announcePresence(docId: string, token: string, model?: string): { destr
   }
 }
 
+/**
+ * Locate the Electron editor bundled alongside this CLI in the published `inplan`
+ * package (layout: `bin/cli.js` + `app/main/index.js`, with `electron` as a dependency).
+ * Returns the electron binary + the app entry, or null when running from source/dev
+ * (no sibling `app/` or electron) — then `INPLAN_APP_CMD` is the only way to launch.
+ */
+function resolveBundledApp(): { electron: string; appMain: string } | null {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const appMain = join(here, "..", "app", "main", "index.js");
+    if (!existsSync(appMain)) return null;
+    const electron = createRequire(import.meta.url)("electron") as unknown;
+    return typeof electron === "string" ? { electron, appMain } : null;
+  } catch {
+    return null;
+  }
+}
+
 function spawnApp(file: string): number | null {
-  const cmd = process.env.INPLAN_APP_CMD;
-  if (!cmd) {
-    process.stderr.write("[inplan] no editor configured (set INPLAN_APP_CMD); running headless\n");
+  // Prefer an explicit override (dev: points at electron-vite); otherwise launch the
+  // app bundled in the published package via its electron dependency.
+  const override = process.env.INPLAN_APP_CMD;
+  const bundled = override ? null : resolveBundledApp();
+  if (!override && !bundled) {
+    process.stderr.write("[inplan] no editor available (set INPLAN_APP_CMD, or install the published `inplan` package); running headless\n");
     return null;
   }
   // Pass our own entry path so the editor can shell back out to the CLI for the
-  // cloud actions (whoami / upload / logout) it surfaces in the profile menu.
-  const child = spawn(cmd, [file], {
-    detached: true,
-    stdio: "ignore",
-    shell: true,
-    env: { ...process.env, INPLAN_CLI: process.argv[1] ?? "" },
-  });
+  // cloud actions (whoami / upload / logout / token) it surfaces in the profile menu.
+  const env = { ...process.env, INPLAN_CLI: process.argv[1] ?? "" };
+  const child = override
+    ? spawn(override, [file], { detached: true, stdio: "ignore", shell: true, env })
+    : spawn(bundled!.electron, [bundled!.appMain, file], { detached: true, stdio: "ignore", env });
   child.unref();
   return child.pid ?? null;
 }

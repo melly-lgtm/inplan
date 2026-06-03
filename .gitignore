@@ -16,3 +16,4 @@ out/
 
 # Local Claude Code config (not part of the product)
 .claude/settings.json
+release/
