@@ -35,7 +35,7 @@ import { evaluateAgentEdit } from "./gate";
 import { docPaths, type DocPaths } from "./paths";
 import { wakePredicate, waitForActions } from "./wait";
 
-const VERSION = "0.1.3";
+const VERSION = "0.1.4";
 
 function output(obj: unknown): void {
   process.stdout.write(JSON.stringify(obj) + "\n");
@@ -88,40 +88,62 @@ function announcePresence(docId: string, token: string, model?: string): { destr
 }
 
 /**
- * Locate the Electron editor bundled alongside this CLI in the published `inplan`
- * package (layout: `bin/cli.js` + `app/main/index.js`, with `electron` as a dependency).
- * Returns the electron binary + the app entry, or null when running from source/dev
- * (no sibling `app/` or electron) — then `INPLAN_APP_CMD` is the only way to launch.
+ * Result of locating the Electron editor bundled alongside this CLI in the published
+ * `inplan` package (layout: `bin/cli.js` + `app/main/index.js`, with `electron` as a
+ * dependency): ready-to-launch, no-bundled-app (source/dev), or app-present-but-no-runtime
+ * (e.g. electron's binary never downloaded). spawnApp turns each into the right action/message.
  */
-function resolveBundledApp(): { electron: string; appMain: string } | null {
+type BundledApp =
+  | { electron: string; appMain: string } // ready to launch
+  | { appMain: null } // no bundled app (running from source/dev)
+  | { appMain: string; error: string }; // app present, but its Electron runtime is unavailable
+
+function resolveBundledApp(): BundledApp {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const appMain = join(here, "..", "app", "main", "index.js");
+  if (!existsSync(appMain)) return { appMain: null }; // source/dev — no sibling app/
   try {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const appMain = join(here, "..", "app", "main", "index.js");
-    if (!existsSync(appMain)) return null;
+    // require("electron") outside Electron returns the path to its binary — but throws
+    // ("Electron failed to install correctly") if the binary never downloaded (a blocked
+    // proxy/AV download is the usual culprit on a fresh global install).
     const electron = createRequire(import.meta.url)("electron") as unknown;
-    return typeof electron === "string" ? { electron, appMain } : null;
-  } catch {
-    return null;
+    if (typeof electron === "string" && electron) return { electron, appMain };
+    return { appMain, error: "the electron dependency did not resolve to a runtime path" };
+  } catch (e) {
+    return { appMain, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
 function spawnApp(file: string): number | null {
-  // Prefer an explicit override (dev: points at electron-vite); otherwise launch the
-  // app bundled in the published package via its electron dependency.
-  const override = process.env.INPLAN_APP_CMD;
-  const bundled = override ? null : resolveBundledApp();
-  if (!override && !bundled) {
-    process.stderr.write("[inplan] no editor available (set INPLAN_APP_CMD, or install the published `inplan` package); running headless\n");
-    return null;
-  }
-  // Pass our own entry path so the editor can shell back out to the CLI for the
-  // cloud actions (whoami / upload / logout / token) it surfaces in the profile menu.
   const env = { ...process.env, INPLAN_CLI: process.argv[1] ?? "" };
-  const child = override
-    ? spawn(override, [file], { detached: true, stdio: "ignore", shell: true, env })
-    : spawn(bundled!.electron, [bundled!.appMain, file], { detached: true, stdio: "ignore", env });
-  child.unref();
-  return child.pid ?? null;
+  // Prefer an explicit override (dev: points at electron-vite or a chosen Electron).
+  const override = process.env.INPLAN_APP_CMD;
+  if (override) {
+    const child = spawn(override, [file], { detached: true, stdio: "ignore", shell: true, env });
+    child.unref();
+    return child.pid ?? null;
+  }
+  // Otherwise launch the editor bundled in the published package via its electron dependency.
+  const bundled = resolveBundledApp();
+  if ("electron" in bundled) {
+    // Pass our own entry path so the editor can shell back to the CLI for the cloud
+    // actions (whoami / upload / logout / token) it surfaces in the profile menu.
+    const child = spawn(bundled.electron, [bundled.appMain, file], { detached: true, stdio: "ignore", env });
+    child.unref();
+    return child.pid ?? null;
+  }
+  // No editor — surface WHY (not just "no editor"), so the failure is actionable.
+  if (bundled.appMain === null) {
+    process.stderr.write("[inplan] no bundled editor (running from source?) — set INPLAN_APP_CMD to your editor; running headless\n");
+  } else {
+    process.stderr.write(
+      `[inplan] the bundled editor's Electron runtime is unavailable: ${bundled.error}\n` +
+        `  → fix it with:  npm rebuild electron --prefix "$(npm root -g)/inplan"  (re-downloads the binary;\n` +
+        `     set ELECTRON_MIRROR if a proxy blocks it), or point INPLAN_APP_CMD at an Electron binary.\n` +
+        `  Running headless for now.\n`,
+    );
+  }
+  return null;
 }
 
 /** Latest cadence from the protocol history (Turn unless a mode_changed says otherwise). */
