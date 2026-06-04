@@ -35,7 +35,7 @@ import { evaluateAgentEdit } from "./gate";
 import { docPaths, type DocPaths } from "./paths";
 import { wakePredicate, waitForActions } from "./wait";
 
-const VERSION = "0.1.4";
+const VERSION = "0.1.5";
 
 function output(obj: unknown): void {
   process.stdout.write(JSON.stringify(obj) + "\n");
@@ -136,10 +136,17 @@ function spawnApp(file: string): number | null {
   if (bundled.appMain === null) {
     process.stderr.write("[inplan] no bundled editor (running from source?) — set INPLAN_APP_CMD to your editor; running headless\n");
   } else {
+    // The literal install dir (not a shell expansion like $(npm root -g), which doesn't
+    // exist on Windows cmd) so the fix command is copy-pasteable on any OS.
+    const root = resolve(dirname(bundled.appMain), "..", "..");
     process.stderr.write(
       `[inplan] the bundled editor's Electron runtime is unavailable: ${bundled.error}\n` +
-        `  → fix it with:  npm rebuild electron --prefix "$(npm root -g)/inplan"  (re-downloads the binary;\n` +
-        `     set ELECTRON_MIRROR if a proxy blocks it), or point INPLAN_APP_CMD at an Electron binary.\n` +
+        `  → re-download the binary:  npm rebuild electron --prefix "${root}"\n` +
+        `     If a proxy/firewall blocks the download, set a mirror first, e.g.\n` +
+        `       ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/   (macOS/Linux)\n` +
+        `       set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/   (Windows cmd)\n` +
+        `     Or point INPLAN_APP_CMD at an Electron that launches the app, e.g.\n` +
+        `       INPLAN_APP_CMD="electron '${bundled.appMain}'"\n` +
         `  Running headless for now.\n`,
     );
   }
