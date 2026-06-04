@@ -18,6 +18,19 @@ Check for the CLI and install it if missing:
 
 (If the unscoped name is unavailable, install `@cis/inplan`.)
 
+**If `open` runs headless** (it prints "the bundled editor's Electron runtime is
+unavailable"): the npm package installed but Electron's **binary** didn't download — a
+proxy/firewall/AV blocked it, or `ignore-scripts` is set. Do **not** `npm install -g
+electron` separately (inplan won't use it). Re-download inplan's own copy, using the path
+the message prints:
+
+    npm rebuild electron --prefix "$(npm root -g)/inplan"               # macOS/Linux
+    npm rebuild electron --prefix "%APPDATA%\npm\node_modules\inplan"   # Windows (cmd)
+
+If the download itself is blocked, set a mirror first (`ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`,
+`set ELECTRON_MIRROR=…` on Windows), then rebuild. The loop still works headless until then,
+but the human can't review in the GUI — surface the fix to them and proceed.
+
 ## File convention
 
 Save plans as `<name>.plan.md`. The editor keeps its sidecars in an
