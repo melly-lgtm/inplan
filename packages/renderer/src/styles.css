@@ -198,6 +198,14 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 .ap-cmenu-pop button { border: 0; background: none; text-align: left; padding: 7px 12px; cursor: pointer; font: inherit; }
 .ap-cmenu-pop button:hover { background: var(--accent-soft); }
 .ap-link { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
+/* Quit-confirmation modal (shared desktop + web). */
+.ap-modal-backdrop { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: rgba(28, 26, 23, 0.28); }
+.ap-modal { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 18px 20px; min-width: 320px; max-width: 440px; }
+.ap-quit-title { font-weight: 600; font-size: 15px; margin-bottom: 12px; }
+.ap-quit-opts { display: flex; flex-direction: column; gap: 9px; margin-bottom: 16px; }
+.ap-quit-opt { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.ap-quit-actions { display: flex; justify-content: flex-end; gap: 10px; align-items: center; }
+.ap-quit-actions button:not(.ap-link) { font: inherit; padding: 6px 16px; border: 1px solid var(--accent); border-radius: 7px; cursor: pointer; }
 .ap-link:hover { text-decoration: underline; text-underline-offset: 2px; }
 .ap-danger { color: var(--danger); }
 

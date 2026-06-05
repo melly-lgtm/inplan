@@ -30,7 +30,7 @@ beforeEach(() => {
   // test starts from the default Turn cadence rather than a prior test's toggle.
   localStorage.clear();
   document.body.innerHTML = '<div id="root"></div>';
-  session = createMemoryApi({ content: DOC });
+  session = createMemoryApi({ content: DOC, backButton: true }); // expose the Back control for the quit-flow test
   (window as unknown as { api: unknown }).api = session.api;
   agent = session.agent;
 });
@@ -84,15 +84,18 @@ describe("App mode toggle + save / finish turn / complete (memory-backed)", () =
     expect(t).not.toContain("turn_ended");
   });
 
-  it("Complete & quit closes the session and logs session_closed", async () => {
+  it("Back → quit dialog → Quit closes the session and logs session_closed", async () => {
     const { App } = await import("../src/App");
     render(<App />);
     await waitFor(() => expect(document.body.textContent).toContain("Hello world."));
 
     expect(session.isClosed()).toBe(false);
-    const complete = screen.getByRole("button", { name: /complete & quit/i });
     await act(async () => {
-      complete.click();
+      screen.getByRole("button", { name: /^back$/i }).click();
+    });
+    const quit = await screen.findByRole("button", { name: /^quit$/i }); // confirmation dialog
+    await act(async () => {
+      quit.click();
     });
 
     await waitFor(() => expect(session.isClosed()).toBe(true));

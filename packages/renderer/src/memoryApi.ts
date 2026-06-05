@@ -36,7 +36,7 @@ export interface MemorySession {
   isClosed(): boolean;
 }
 
-export function createMemoryApi(opts: { content: string; settings?: Settings }): MemorySession {
+export function createMemoryApi(opts: { content: string; settings?: Settings; backButton?: boolean }): MemorySession {
   const store = new MemoryDocumentStore(opts.content);
   const channel = new MemoryControlChannel();
   let settings: Settings = opts.settings ?? { autoResolve: true };
@@ -79,11 +79,16 @@ export function createMemoryApi(opts: { content: string; settings?: Settings }):
       settings = s;
       await channel.append({ actor: "user", type: LogEventType.SettingsChanged, payload: s });
     },
-    async complete(content: string): Promise<void> {
-      await store.saveDoc(content);
-      await store.setCanonical(content);
-      await channel.append({ actor: "user", type: LogEventType.SessionClosed, payload: { reason: "completed" } });
-      closed = true;
+    exit: {
+      showBackButton: opts.backButton ?? false, // opt-in (web-like): expose the in-editor Back control
+      quit(content: string, opts: { save: boolean; notifyComplete: boolean }): void {
+        if (opts.save) {
+          void store.saveDoc(content);
+          void store.setCanonical(content);
+        }
+        void channel.append({ actor: "user", type: LogEventType.SessionClosed, payload: { reason: opts.notifyComplete ? "completed" : "window_closed" } });
+        closed = true;
+      },
     },
     onExternalChange: (cb) => void external.push(cb),
     onProposal: (cb) => void proposal.push(cb),

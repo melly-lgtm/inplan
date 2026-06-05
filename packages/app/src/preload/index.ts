@@ -88,7 +88,13 @@ const api: Api = {
   setMode: (cadence: Cadence, acceptance: Acceptance) => ipcRenderer.invoke("doc:set-mode", cadence, acceptance),
   getSettings: () => ipcRenderer.invoke("settings:get"),
   setSettings: (settings: Settings) => ipcRenderer.invoke("settings:set", settings),
-  complete: (content: string) => ipcRenderer.invoke("doc:complete", content),
+  exit: {
+    showBackButton: false, // desktop quits via the OS window controls, not an in-editor Back button
+    onRequest: (cb: () => void) => {
+      ipcRenderer.on("app:confirm-quit", () => cb());
+    },
+    quit: (content: string, opts: { save: boolean; notifyComplete: boolean }) => void ipcRenderer.invoke("app:quit", content, opts),
+  },
   onExternalChange: (cb: (payload: DocPayload) => void) => {
     ipcRenderer.on("doc:external-change", (_e, payload: DocPayload) => cb(payload));
   },

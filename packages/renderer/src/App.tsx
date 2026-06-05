@@ -25,7 +25,8 @@ import { SourceEditor, type SourceEditorHandle } from "./SourceEditor";
 import { StatusBar } from "./StatusBar";
 import { ProfileMenu } from "./ProfileMenu";
 import { AgentIndicator } from "./AgentIndicator";
-import { IconBack, IconForward, IconSettings, IconZoomOut, IconZoomIn, IconFind, IconComment, IconSave, IconFinishTurn, IconComplete, IconRevealArchive } from "./Icons";
+import { IconBack, IconForward, IconSettings, IconZoomOut, IconZoomIn, IconFind, IconComment, IconSave, IconFinishTurn, IconRevealArchive } from "./Icons";
+import { QuitDialog } from "./QuitDialog";
 import { useT } from "./i18n";
 import { applySegments, isChange, lineSegments, wordDiff, type DiffSegment, type WordPart } from "./textdiff";
 
@@ -476,9 +477,14 @@ export function App(): JSX.Element {
     setStatus(t("msg.turnFinished"));
   }, []);
 
-  const complete = useCallback(() => {
-    void window.api.complete(serialize(docRef.current));
+  const [quitOpen, setQuitOpen] = useState(false);
+  // Confirmed quit: the host saves (if asked), signals the agent (if asked), then leaves.
+  const confirmQuit = useCallback((opts: { save: boolean; notifyComplete: boolean }) => {
+    window.api.exit?.quit(serialize(docRef.current), opts);
+    setQuitOpen(false);
   }, []);
+  // Desktop intercepts the OS window-close and asks us to show the quit dialog.
+  useEffect(() => window.api.exit?.onRequest?.(() => setQuitOpen(true)), []);
 
   // --- comment actions ---
   const addComment = useCallback(
@@ -832,7 +838,7 @@ export function App(): JSX.Element {
         dirty={dirty}
         onSave={saveNow}
         onFinishTurn={finishTurn}
-        onComplete={complete}
+        onBack={window.api.exit?.showBackButton ? () => setQuitOpen(true) : undefined}
         locked={editingLocked}
         nav={
           typeof window.api.navigate === "function"
@@ -854,7 +860,7 @@ export function App(): JSX.Element {
 
       {agentDone && (
         <div className="ap-banner">
-          {t("banner.agentReady")} <button onClick={complete}>{t("topbar.completeQuit")}</button>
+          {t("banner.agentReady")}{" "}
           <button className="ap-link" onClick={() => setAgentDone(false)}>
             {t("banner.dismiss")}
           </button>
@@ -956,6 +962,15 @@ export function App(): JSX.Element {
             setComposer(null);
           }}
           onClose={() => setComposer(null)}
+        />
+      )}
+
+      {quitOpen && (
+        <QuitDialog
+          fileName={docPathRef.current ? docPathRef.current.split(/[\\/]/).pop() || null : null}
+          dirty={dirty}
+          onQuit={confirmQuit}
+          onCancel={() => setQuitOpen(false)}
         />
       )}
 
@@ -1243,7 +1258,7 @@ function TopBar(props: {
   dirty: boolean;
   onSave: () => void;
   onFinishTurn: () => void;
-  onComplete: () => void;
+  onBack?: () => void; // web: return to the plan list (desktop quits via the OS window close)
   locked: boolean;
   nav?: { canBack: boolean; canForward: boolean; onBack: () => void; onForward: () => void };
 }): JSX.Element {
@@ -1257,6 +1272,12 @@ function TopBar(props: {
   const noAgentTitle = noAgent ? t("topbar.noAgent") : undefined;
   return (
     <header className="ap-topbar">
+      {props.onBack && (
+        <button className="ap-iconbtn ap-iconbtn--primary" onClick={props.onBack} title={t("topbar.back")} aria-label={t("topbar.back")}>
+          <IconBack />
+          {t("topbar.back")}
+        </button>
+      )}
       {props.nav && (
         <div className="ap-seg" role="group" aria-label="navigation">
           <button title={t("topbar.back")} aria-label={t("topbar.back")} disabled={!props.nav.canBack} onClick={props.nav.onBack}>
@@ -1342,10 +1363,6 @@ function TopBar(props: {
           </button>
         )}
       </div>
-      <button className="ap-iconbtn ap-iconbtn--primary" onClick={props.onComplete} title={t("topbar.completeQuit")} aria-label={t("topbar.completeQuit")}>
-        <IconComplete />
-        <span>{t("topbar.complete")}</span>
-      </button>
       {profile?.presenceAware && (
         <AgentIndicator
           location={profile.agentLocation}

@@ -119,6 +119,22 @@ export interface I18nController {
 }
 
 /** The API exposed to the renderer via the preload contextBridge (`window.api`). */
+/**
+ * How the host handles leaving a document. The shared quit-confirmation dialog (in the
+ * renderer) calls `quit()` once the user confirms; the host does the save/notify/leave.
+ */
+export interface ExitController {
+  /** Show an in-editor "Back" button (web → returns to the plan list). Desktop sets false:
+   *  the OS window-close is the exit (it calls `onRequest` to surface the same dialog). */
+  showBackButton: boolean;
+  /** Subscribe to a host-initiated quit attempt (desktop window-close intercept) so the
+   *  renderer can show the confirmation dialog. Absent on web (the Back button drives it). */
+  onRequest?(cb: () => void): void;
+  /** Confirmed quit: optionally save the latest content, optionally signal the agent the
+   *  plan is ready, then leave (desktop: close the window; web: return to the plan list). */
+  quit(content: string, opts: { save: boolean; notifyComplete: boolean }): void;
+}
+
 export interface Api {
   /** Load the document this window was opened with. */
   load(): Promise<DocPayload>;
@@ -134,8 +150,8 @@ export interface Api {
   getSettings(): Promise<Settings>;
   /** Persist global user settings and log the change to this doc's control log. */
   setSettings(settings: Settings): Promise<void>;
-  /** Write canonical, log session_closed, and quit. */
-  complete(content: string): Promise<void>;
+  /** Leaving the document: the host shows/handles the quit-confirmation flow. */
+  exit?: ExitController;
   /** The agent rewrote the document on disk. */
   onExternalChange(cb: (payload: DocPayload) => void): void;
   /** The agent signalled it thinks the plan is ready. */

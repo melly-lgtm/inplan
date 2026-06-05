@@ -41,6 +41,9 @@ function resolveTargetFile(): string | null {
 let session: Session | null = null;
 let win: BrowserWindow | null = null;
 let stopWatching: (() => void) | null = null;
+/** Set once the user (or an internal close path) has confirmed the quit, so the
+ *  close-intercept lets the window go instead of re-prompting the quit dialog. */
+let quitConfirmed = false;
 /** Back/forward navigation history of opened doc paths (in-window link following). */
 const navHistory: string[] = [];
 let navIdx = -1;
@@ -176,8 +179,7 @@ async function collaborateOnCloud(): Promise<void> {
   const url = out.locator ? `${CLOUD_BASE}/docs/${out.locator.org}/${out.locator.repo}/${out.locator.path}` : `${CLOUD_BASE}/?doc=${out.cloudDocId}`;
   await shell.openExternal(url);
   // The doc now lives in the cloud; close this window (the running wait reconnects there).
-  session.logClose("window_closed");
-  app.quit();
+  quitNow("window_closed");
 }
 
 /** On launch, ask the CLI whether a newer npm version is published; if so, tell
@@ -245,6 +247,14 @@ function navigateTo(file: string): boolean {
   return true;
 }
 
+/** Record the close reason once and exit, bypassing the confirm-quit dialog.
+ *  Used by the confirmed quit (app:quit) and internal close paths (cloud handoff). */
+function quitNow(reason: "completed" | "window_closed"): void {
+  session?.logClose(reason);
+  quitConfirmed = true;
+  app.quit();
+}
+
 /** The inplan mark (same as inplan.ai), for the window + dock icon. */
 const appIcon = nativeImage.createFromDataURL(APP_ICON_DATA_URL);
 
@@ -289,28 +299,13 @@ function createWindow(): void {
 
   stopWatching = watchSession();
 
-  // Prompt to Save / Don't Save / Cancel when closing with unsaved edits.
-  let forceClose = false;
+  // Closing the window (red X / Cmd+W) asks the renderer to raise the shared
+  // quit dialog — Save? + Tell the agent the plan is ready? — rather than quitting
+  // outright. The renderer answers via the app:quit IPC (which sets quitConfirmed).
   win.on("close", (e) => {
-    if (forceClose || !session?.hasUnsaved) return;
+    if (quitConfirmed) return;
     e.preventDefault();
-    const choice = dialog.showMessageBoxSync(win!, {
-      type: "question",
-      buttons: ["Save", "Don't Save", "Cancel"],
-      defaultId: 0,
-      cancelId: 2,
-      message: "Save changes before closing?",
-      detail: "Your edits this turn aren't saved to the plan yet.",
-    });
-    if (choice === 2) return; // Cancel — keep the window open
-    if (choice === 0) {
-      session.complete(session.pending);
-      session.logClose("completed");
-    } else {
-      session.logClose("window_closed");
-    }
-    forceClose = true;
-    win!.close();
+    win!.webContents.send("app:confirm-quit");
   });
 
   win.on("closed", () => {
@@ -340,7 +335,10 @@ function registerIpc(): void {
   ipcMain.handle("settings:set", (_e, settings: Settings) => {
     session?.setSettings(settings);
   });
-  ipcMain.handle("window:close", () => win?.close());
+  ipcMain.handle("window:close", () => {
+    quitConfirmed = true; // explicit reload/restart close — skip the confirm dialog
+    win?.close();
+  });
   ipcMain.handle("proposal:get", () => session?.pendingProposal() ?? null);
   ipcMain.handle("proposal:clear", () => {
     session?.clearProposal();
@@ -369,10 +367,11 @@ function registerIpc(): void {
       sendNavState();
     }
   });
-  ipcMain.handle("doc:complete", (_e, content: string) => {
-    session?.complete(content);
-    session?.logClose("completed");
-    app.quit();
+  // The renderer's quit dialog resolved: optionally save the latest body, record
+  // whether to notify the agent the plan is ready ("completed") or just close, then exit.
+  ipcMain.handle("app:quit", (_e, content: string, opts: { save: boolean; notifyComplete: boolean }) => {
+    if (opts.save) session?.complete(content); // write file + canonical
+    quitNow(opts.notifyComplete ? "completed" : "window_closed");
   });
 
   // Self-update over npm: run the global install; the renderer then offers a restart.
@@ -431,10 +430,17 @@ void app.whenReady().then(() => {
   });
 });
 
-// Any quit path (window close, Cmd+Q) records a reason — unless Complete & quit
-// already logged "completed". A crash logs nothing, so the agent's wait reports it.
-app.on("before-quit", () => {
-  session?.logClose("window_closed");
+// Cmd+Q (or any app.quit before a window-close was confirmed) routes through the
+// same quit dialog: defer the quit and ask the renderer. Once confirmed — or if
+// there's no window to ask — record the reason and let the quit proceed. logClose
+// is idempotent, so an already-recorded "completed"/"window_closed" wins.
+app.on("before-quit", (e) => {
+  if (quitConfirmed || !win) {
+    session?.logClose("window_closed"); // safety net for un-dialogged quits (a crash logs nothing)
+    return;
+  }
+  e.preventDefault();
+  win.webContents.send("app:confirm-quit");
 });
 
 app.on("window-all-closed", () => {

@@ -57,10 +57,20 @@ describe("createMemoryApi", () => {
     expect(hit).toEqual({ done: true, active: true, reload: true });
   });
 
-  it("complete() writes canonical, logs session_closed, and marks the session closed", async () => {
+  it("exit.quit saves (when asked), logs session_closed, and marks the session closed", async () => {
     const session = createMemoryApi({ content: "x" });
-    await session.api.complete("final");
+    session.api.exit!.quit("final", { save: true, notifyComplete: true });
+    await Promise.resolve(); // let the fire-and-forget store/log writes settle
     expect(session.isClosed()).toBe(true);
-    expect((await session.agent.log()).some((e) => e.type === LogEventType.SessionClosed)).toBe(true);
+    const closed = (await session.agent.log()).find((e) => e.type === LogEventType.SessionClosed);
+    expect((closed?.payload as { reason?: string } | undefined)?.reason).toBe("completed");
+  });
+
+  it("exit.quit with notifyComplete=false logs window_closed instead", async () => {
+    const session = createMemoryApi({ content: "x" });
+    session.api.exit!.quit("x", { save: false, notifyComplete: false });
+    await Promise.resolve();
+    const closed = (await session.agent.log()).find((e) => e.type === LogEventType.SessionClosed);
+    expect((closed?.payload as { reason?: string } | undefined)?.reason).toBe("window_closed");
   });
 });
