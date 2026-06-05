@@ -1883,8 +1883,47 @@ function ThreadCard(props: {
   const renderComment = (c: Comment, isReply: boolean): JSX.Element => (
     <div className={isReply ? "ap-reply" : "ap-comment"} key={c.id}>
       <div className="ap-meta">
-        {isReply ? "↳ " : ""}
-        {c.author} · {c.date.slice(0, 16).replace("T", " ")}
+        <span className="ap-meta-who">
+          {isReply ? "↳ " : ""}
+          {c.author} · {c.date.slice(0, 16).replace("T", " ")}
+        </span>
+        {/* ⋯ menu sits on the meta line so it lines up with the timestamp. */}
+        {!disabled && editingId !== c.id && (
+          <span className="ap-cmenu">
+            <button
+              className="ap-cmenu-btn"
+              title={t("thread.more")}
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpenId((id) => (id === c.id ? null : c.id));
+              }}
+            >
+              ⋯
+            </button>
+            {menuOpenId === c.id && (
+              <div className="ap-cmenu-pop" onClick={(e) => e.stopPropagation()}>
+                <button
+                  onClick={() => {
+                    setEditingId(c.id);
+                    setEditText(c.text);
+                    setMenuOpenId(null);
+                  }}
+                >
+                  {t("thread.modify")}
+                </button>
+                <button
+                  className="ap-danger"
+                  onClick={() => {
+                    props.onDelete(c.id);
+                    setMenuOpenId(null);
+                  }}
+                >
+                  {t("thread.delete")}
+                </button>
+              </div>
+            )}
+          </span>
+        )}
       </div>
       {c.selected && c.selected.length > 0 && <div className="ap-selected">▶ {c.selected.join(", ")}</div>}
       {editingId === c.id ? (
@@ -1917,42 +1956,6 @@ function ThreadCard(props: {
         </div>
       ) : (
         c.text && <div className="ap-text">{c.text}</div>
-      )}
-      {!disabled && editingId !== c.id && (
-        <div className="ap-cmenu">
-          <button
-            className="ap-cmenu-btn"
-            title={t("thread.more")}
-            onClick={(e) => {
-              e.stopPropagation();
-              setMenuOpenId((id) => (id === c.id ? null : c.id));
-            }}
-          >
-            ⋯
-          </button>
-          {menuOpenId === c.id && (
-            <div className="ap-cmenu-pop" onClick={(e) => e.stopPropagation()}>
-              <button
-                onClick={() => {
-                  setEditingId(c.id);
-                  setEditText(c.text);
-                  setMenuOpenId(null);
-                }}
-              >
-                {t("thread.modify")}
-              </button>
-              <button
-                className="ap-danger"
-                onClick={() => {
-                  props.onDelete(c.id);
-                  setMenuOpenId(null);
-                }}
-              >
-                {t("thread.delete")}
-              </button>
-            </div>
-          )}
-        </div>
       )}
     </div>
   );
