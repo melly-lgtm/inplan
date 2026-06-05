@@ -862,8 +862,13 @@ export function App(props: EditorProps = {}): JSX.Element {
   const showComments = panes === 3 || (panes === 2 && rightTab === "comments");
 
   // Prev/Next-thread navigation in the comments rail head: step focus through the
-  // visible threads in order, disabling at the first/last.
-  const focusedIdx = visible.findIndex((o) => o.thread.root.id === focused);
+  // visible threads in order, disabling at the first/last. `focused` may hold a reply
+  // id (e.g. a find-in-comments match), so resolve it to its thread root before matching.
+  const focusedRootId = (() => {
+    const c = doc.comments.find((x) => x.id === focused);
+    return c?.parentId ?? focused;
+  })();
+  const focusedIdx = visible.findIndex((o) => o.thread.root.id === focusedRootId);
   const gotoThread = (dir: -1 | 1) => {
     if (visible.length === 0) return;
     const ni = (focusedIdx < 0 ? (dir === 1 ? -1 : visible.length) : focusedIdx) + dir;
