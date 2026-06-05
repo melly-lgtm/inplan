@@ -270,6 +270,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         setReviewOpen(false);
         setAgentThinking(false);
         setAgentDone(false);
+        setAgentMessages([]); // notes belong to the doc we just left — don't carry them over
         setStatus(`opened ${path.split("/").pop() ?? path}`);
         void hostApi().getProposal().then((parked) => parked != null && showProposal(parked));
       }),

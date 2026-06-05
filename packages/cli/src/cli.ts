@@ -418,6 +418,20 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     return;
   }
 
+  // Relay a human-facing note to the cloud editor's status bar (informational; not a
+  // wake signal). Mirrors the local `message` path so a cloud-promoted doc doesn't fall
+  // through to waitCycle and block.
+  if (cmd === "message") {
+    const text = (rest[1] ?? "").trim();
+    if (!text) {
+      process.stderr.write('inplan message: usage: inplan message <file> "your message"\n');
+      process.exit(1);
+    }
+    await backend.channel.append({ actor: "agent", type: LogEventType.AgentMessage, payload: { text } });
+    output({ status: "messaged" });
+    return;
+  }
+
   // Save-locally handoff (only when following a promoted local file): download the
   // live body to its original path, flip the status back to local, reopen the local
   // editor, and report — the inverse of "Collaborate on Cloud".
@@ -671,7 +685,9 @@ function routeFor(file: string, cmd: string, args: string[]): Route {
   const status = readStatus(p.statusPath);
   if (status.location !== "cloud" || !status.cloudDocId) return { kind: "local" };
   const docId = status.cloudDocId;
-  if (cmd === "signal" || !existsSync(file)) return { kind: "cloud", docId };
+  // `signal` and `message` are lightweight agent→editor events with nothing to compare,
+  // so they skip the reconcile gate (like a missing file) and go straight to the cloud backend.
+  if (cmd === "signal" || cmd === "message" || !existsSync(file)) return { kind: "cloud", docId };
 
   const local = readFileSync(file, "utf8");
   const diverged = status.lastSyncedHash !== undefined && hashBody(local) !== status.lastSyncedHash;
