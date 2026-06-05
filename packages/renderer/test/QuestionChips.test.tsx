@@ -55,4 +55,30 @@ describe("QuestionChips (FR4 choice answering)", () => {
     rerender(<QuestionChips question={single} disabled={true} onAnswer={() => {}} />);
     expect((screen.getByRole("radio", { name: /Postgres/ }) as HTMLInputElement).disabled).toBe(true);
   });
+
+  describe("answered (settled) state", () => {
+    it("keeps the chosen chip checked, hides the picker, and folds the unchosen options", () => {
+      render(<QuestionChips question={single} disabled={false} answered={["SQLite"]} onAnswer={() => {}} />);
+      // Settled: no Answer (submit) button, the choice stays checked and read-only.
+      expect(screen.queryByRole("button", { name: /^answer$/i })).toBeNull();
+      const sqlite = screen.getByRole("radio", { name: /SQLite/ }) as HTMLInputElement;
+      expect(sqlite.checked).toBe(true);
+      expect(sqlite.disabled).toBe(true);
+      // The unchosen option is folded away until expanded.
+      expect(screen.queryByRole("radio", { name: /Postgres/ })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: /show 1 more/i }));
+      expect(screen.getByRole("radio", { name: /Postgres/ })).toBeTruthy();
+    });
+
+    it("'Change answer' reopens the picker pre-filled, and re-answers", () => {
+      const onAnswer = vi.fn();
+      render(<QuestionChips question={single} disabled={false} answered={["SQLite"]} onAnswer={onAnswer} />);
+      fireEvent.click(screen.getByRole("button", { name: /change answer/i }));
+      // Picker is back, pre-filled with the prior choice.
+      expect((screen.getByRole("radio", { name: /SQLite/ }) as HTMLInputElement).checked).toBe(true);
+      fireEvent.click(screen.getByRole("radio", { name: /Postgres/ }));
+      fireEvent.click(answerBtn());
+      expect(onAnswer).toHaveBeenCalledWith(["Postgres"], "");
+    });
+  });
 });

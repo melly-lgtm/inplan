@@ -231,6 +231,11 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 .ap-chip { border: 1px solid var(--line-strong); border-radius: 7px; padding: 5px 9px; cursor: pointer; background: var(--bg); }
 .ap-chip:hover { border-color: var(--faint); }
 .ap-chip.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+/* Settled (answered) chips are a read-only result, not an active picker. */
+.ap-chip-static { cursor: default; }
+.ap-chip-static:hover { border-color: var(--line-strong); }
+.ap-chip-static.on:hover { border-color: var(--accent); }
+.ap-chip-toggle, .ap-chip-change { align-self: flex-start; font-size: 12px; padding: 2px 0; }
 
 /* pane-selector icons (vertically-long rectangles) */
 .ap-pane-ic { display: inline-flex; gap: 2px; vertical-align: middle; }

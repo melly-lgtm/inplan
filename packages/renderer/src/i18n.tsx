@@ -82,6 +82,9 @@ export const EN: Catalog = {
   // choice-answer chips
   "question.other": "Other…",
   "question.answer": "Answer",
+  "question.change": "Change answer",
+  "question.showMore": "Show {n} more",
+  "question.showLess": "Show less",
   // transient status messages
   "msg.proposedReview": "agent proposed changes — review below",
   "msg.agentUpdated": "agent updated the document",

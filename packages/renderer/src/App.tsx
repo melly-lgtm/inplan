@@ -1810,6 +1810,15 @@ function ThreadCard(props: {
   const isDoc = root.anchor === "doc";
   // Doc comments carry no anchor, so skip the anchor/quote line entirely.
   const quote = isDoc ? null : orphaned ? t("thread.orphaned") : (anchoredText(body, root.id) ?? t("thread.anchorMissing"));
+  // The persisted answer (latest reply carrying a selection) — keeps the choice chips
+  // checked across reloads instead of resetting the picker to empty.
+  const answeredSelection = useMemo<string[] | null>(() => {
+    for (let i = thread.replies.length - 1; i >= 0; i--) {
+      const sel = thread.replies[i]!.selected;
+      if (sel !== undefined) return sel;
+    }
+    return null;
+  }, [thread.replies]);
   const [replyText, setReplyText] = useState("");
   const [replying, setReplying] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1910,7 +1919,7 @@ function ThreadCard(props: {
     >
       {quote && <div className="ap-thread-quote">{quote}</div>}
       {renderComment(root, false)}
-      {root.question && <QuestionChips question={root.question} disabled={disabled} onAnswer={props.onAnswer} />}
+      {root.question && <QuestionChips question={root.question} disabled={disabled} answered={answeredSelection} onAnswer={props.onAnswer} />}
       {thread.replies.map((r) => renderComment(r, true))}
 
       {/* Resolve is per thread; Reply opens a box with explicit Comment / Cancel. */}
