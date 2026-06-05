@@ -156,6 +156,18 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
 
    Then wait again. Stop only on `status: closed`.
 
+## Keeping the human informed
+
+The human can't see your terminal. To tell them what you're doing — a short note
+they read in the editor's status bar (click it for the full history) — relay a
+message. Use it for human-facing context, not your reasoning:
+
+    inplan message <name>.plan.md "Reworked the datastore section based on your Redis pick."
+
+Good moments: just before you `wait` (summarize the turn you took), or when you
+start a long step. Keep each message to a sentence or two. It's informational
+only — it never ends the loop or hands over the turn.
+
 ## Authorship
 
 Never add AI attribution to the document, commit messages, code, or anything

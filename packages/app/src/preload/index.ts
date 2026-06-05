@@ -117,6 +117,9 @@ const api: Api = {
     ipcRenderer.on("agent:reload", h);
     return () => ipcRenderer.removeListener("agent:reload", h);
   },
+  onAgentMessage: (cb: (msg: { text: string; ts: string }) => void) => {
+    ipcRenderer.on("agent:message", (_e, msg: { text: string; ts: string }) => cb(msg));
+  },
   closeWindow: () => ipcRenderer.invoke("window:close"),
   getProposal: () => ipcRenderer.invoke("proposal:get"),
   clearProposal: () => ipcRenderer.invoke("proposal:clear"),

@@ -739,9 +739,10 @@ async function main(): Promise<void> {
       .filter(Boolean),
   );
 
-  if (!cmd || !["open", "wait", "signal", "status", "promote", "demote", "upload"].includes(cmd)) {
+  if (!cmd || !["open", "wait", "signal", "message", "status", "promote", "demote", "upload"].includes(cmd)) {
     process.stderr.write(
       "usage: inplan <open|wait|signal> <file|--remote DOC_ID> [--model NAME] [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n" +
+        '       inplan message <file> "your message"   (relay a note to the editor status bar)\n' +
         "       inplan status  <file>\n" +
         "       inplan upload  <file> [--org <slug>] [--repo <name>] [--path <p>]   (Collaborate on Cloud)\n" +
         "       inplan promote <file> --cloud-doc <docId> [--locator org/repo/path]\n" +
@@ -819,6 +820,22 @@ async function main(): Promise<void> {
       await channel.append({ actor: "agent", type: LogEventType.ReloadSuggested });
     }
     output({ status: "signaled" });
+    return;
+  }
+
+  // Relay a human-facing note to the editor's status bar (informational; not a wake
+  // signal). Usage: `inplan message <file> "text"`.
+  if (cmd === "message") {
+    const text = (argv[2] ?? "").trim();
+    if (!text) {
+      process.stderr.write('inplan message: usage: inplan message <file> "your message"\n');
+      process.exit(1);
+    }
+    const p = docPaths(file);
+    mkdirSync(p.controlDir, { recursive: true });
+    const channel = new FsControlChannel(p);
+    await channel.append({ actor: "agent", type: LogEventType.AgentMessage, payload: { text } });
+    output({ status: "messaged" });
     return;
   }
 

@@ -147,6 +147,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [status, setStatus] = useState("");
   const [agentThinking, setAgentThinking] = useState(false);
   const [agentDone, setAgentDone] = useState(false);
+  const [agentMessages, setAgentMessages] = useState<{ text: string; ts: string }[]>([]);
   const [navState, setNavState] = useState<{ canBack: boolean; canForward: boolean }>({ canBack: false, canForward: false });
   const [reloadReady, setReloadReady] = useState(false); // agent signalled a new build is ready to load
   const [reloadIn, setReloadIn] = useState<number | null>(null); // seconds until auto-close (null = not counting)
@@ -254,6 +255,9 @@ export function App(props: EditorProps = {}): JSX.Element {
         setAgentThinking(false);
         setStatus(t("msg.agentTook"));
       }),
+      // Human-facing notes the agent relays (via `inplan message`) — kept as a session
+      // history, surfaced (latest first) in the status bar's click-to-open popup.
+      hostApi().onAgentMessage?.((msg) => setAgentMessages((prev) => [...prev, msg])),
       // Desktop only: the window followed a link to another doc — reset to it (a fresh
       // load), clearing any in-flight proposal/turn state, then re-show a parked proposal.
       hostApi().onNavigated?.(({ content, path }) => {
@@ -1221,6 +1225,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         status={status}
         dirty={dirty}
         agentThinking={agentThinking}
+        messages={agentMessages}
         canTakeBack={editingLocked}
         onTakeBack={takeBackControl}
       />

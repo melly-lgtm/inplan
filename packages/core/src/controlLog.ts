@@ -35,6 +35,9 @@ export const LogEventType = {
   SettingsChanged: "settings_changed",
   AgentDoneSuggested: "agent_done_suggested",
   ReloadSuggested: "reload_suggested",
+  /** A human-facing note the agent relayed to the editor (payload `{ text }`),
+   *  surfaced in the status bar. Informational only — not a wake signal. */
+  AgentMessage: "agent_message",
   /** Cloud→local handoff: a human on the web asked the attached local agent to
    *  bring the doc back to disk (the inverse of "Collaborate on Cloud"). */
   SaveLocallyRequested: "save_locally_requested",

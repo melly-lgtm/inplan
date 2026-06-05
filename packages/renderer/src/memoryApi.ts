@@ -25,6 +25,8 @@ export interface MemoryAgent {
   suggestDone(): void;
   /** The agent has a new build and asks for a reload. */
   suggestReload(): void;
+  /** The agent relayed a human-facing note (fires onAgentMessage). */
+  message(text: string): void;
   /** The full control log so far (for assertions). */
   log(): Promise<LogEntry[]>;
 }
@@ -47,6 +49,7 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
   const done: Array<() => void> = [];
   const active: Array<() => void> = [];
   const reload: Array<() => void> = [];
+  const messages: Array<(m: { text: string; ts: string }) => void> = [];
   // Register a callback and return a disposer that removes it (no listener buildup on remount).
   const subscribe = <T>(arr: T[], cb: T): (() => void) => {
     arr.push(cb);
@@ -103,6 +106,7 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
     onAgentDone: (cb) => subscribe(done, cb),
     onAgentActive: (cb) => subscribe(active, cb),
     onReload: (cb) => subscribe(reload, cb),
+    onAgentMessage: (cb) => subscribe(messages, cb),
     async closeWindow(): Promise<void> {
       closed = true;
     },
@@ -140,6 +144,11 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
     suggestReload() {
       void channel.append({ actor: "agent", type: LogEventType.ReloadSuggested });
       for (const cb of reload) cb();
+    },
+    message(text: string) {
+      const ts = new Date().toISOString();
+      void channel.append({ actor: "agent", type: LogEventType.AgentMessage, payload: { text } });
+      for (const cb of messages) cb({ text, ts });
     },
     async log(): Promise<LogEntry[]> {
       return (await channel.readSince(0)).entries;

@@ -176,6 +176,13 @@ export class Session {
     if (!entries.length) return;
     if (entries.some((e) => e.type === LogEventType.AgentDoneSuggested)) handlers.onAgentDone();
     if (entries.some((e) => e.type === LogEventType.ReloadSuggested)) handlers.onReload();
+    // Human-facing notes the agent relayed (one IPC per message, in order).
+    for (const e of entries) {
+      if (e.type === LogEventType.AgentMessage) {
+        const text = (e.payload as { text?: string } | undefined)?.text;
+        if (text) handlers.onAgentMessage(text, e.ts);
+      }
+    }
     if (entries.some((e) => e.type === LogEventType.AgentRevisionProposed)) {
       const proposed = this.pendingProposal();
       if (proposed != null) handlers.onProposal(proposed);
@@ -203,4 +210,5 @@ export interface WatchHandlers {
   onAgentActive: () => void;
   onProposal: (content: string) => void;
   onReload: () => void;
+  onAgentMessage: (text: string, ts: string) => void;
 }

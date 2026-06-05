@@ -107,6 +107,7 @@ export const EN: Catalog = {
   "status.takeBack": "not responding? take back control",
   "status.takeBackTitle": "The agent hasn't handed control back. Reclaim the turn and keep editing.",
   "status.mode": "mode",
+  "status.agentMessages": "Agent messages",
   "status.unsaved": "unsaved",
   // composer popover
   "composer.on": "on “{target}”",

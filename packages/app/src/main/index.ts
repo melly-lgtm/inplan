@@ -213,6 +213,7 @@ function watchSession(): (() => void) | null {
     onAgentActive: () => win?.webContents.send("agent:active"),
     onProposal: (content) => win?.webContents.send("doc:proposal", { content }),
     onReload: () => win?.webContents.send("agent:reload"),
+    onAgentMessage: (text, ts) => win?.webContents.send("agent:message", { text, ts }),
   });
 }
 

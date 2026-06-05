@@ -16,7 +16,7 @@ import { Session } from "../src/main/session";
 let dir: string;
 let session: Session;
 function handlers() {
-  return { onExternalChange: vi.fn(), onAgentDone: vi.fn(), onAgentActive: vi.fn(), onProposal: vi.fn(), onReload: vi.fn() };
+  return { onExternalChange: vi.fn(), onAgentDone: vi.fn(), onAgentActive: vi.fn(), onProposal: vi.fn(), onReload: vi.fn(), onAgentMessage: vi.fn() };
 }
 let seq = 0;
 const entry = (actor: "user" | "agent", type: string, payload?: unknown): LogEntry => ({ seq: ++seq, ts: "2026-06-01T00:00:00Z", actor, type, ...(payload !== undefined ? { payload } : {}) });
@@ -41,6 +41,16 @@ describe("Session.dispatchLog", () => {
     expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n");
     expect(h.onAgentActive).toHaveBeenCalled();
     expect(h.onProposal).not.toHaveBeenCalled();
+  });
+
+  it("relays each agent message (text + ts) to onAgentMessage, in order", () => {
+    const h = handlers();
+    session.dispatchLog(
+      [entry("agent", LogEventType.AgentMessage, { text: "first" }), entry("agent", LogEventType.AgentMessage, { text: "second" })],
+      h,
+    );
+    expect(h.onAgentMessage).toHaveBeenNthCalledWith(1, "first", "2026-06-01T00:00:00Z");
+    expect(h.onAgentMessage).toHaveBeenNthCalledWith(2, "second", "2026-06-01T00:00:00Z");
   });
 
   it("a parked Review proposal loads proposed.md and is NOT adopted as an external change", () => {

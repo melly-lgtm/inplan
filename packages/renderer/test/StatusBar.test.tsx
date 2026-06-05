@@ -7,7 +7,7 @@ import { StatusBar } from "../src/StatusBar";
 
 afterEach(cleanup);
 
-const base = { cadence: "turn" as const, status: "", dirty: false, agentThinking: false, canTakeBack: false, onTakeBack: () => {} };
+const base = { cadence: "turn" as const, status: "", dirty: false, agentThinking: false, messages: [], canTakeBack: false, onTakeBack: () => {} };
 
 describe("StatusBar", () => {
   it("shows the status text and no take-back button when the agent isn't thinking", () => {
@@ -35,5 +35,25 @@ describe("StatusBar", () => {
     render(<StatusBar {...base} cadence="instant" dirty />);
     expect(document.body.textContent).toContain("instant mode");
     expect(document.body.textContent).toContain("unsaved");
+  });
+
+  it("surfaces the latest agent message and opens a history popup on click", () => {
+    const messages = [
+      { text: "first note", ts: "2026-01-01T08:00:00Z" },
+      { text: "latest note", ts: "2026-01-01T09:30:00Z" },
+    ];
+    render(<StatusBar {...base} messages={messages} />);
+    // The latest message shows as a clickable chip.
+    const chip = screen.getByRole("button", { name: /latest note/i });
+    expect(document.body.textContent).not.toContain("first note"); // history hidden until opened
+    fireEvent.click(chip);
+    // Popup lists the full history (newest-first), including the earlier note.
+    expect(document.body.textContent).toContain("first note");
+    expect(document.body.textContent).toContain("2026-01-01 09:30");
+  });
+
+  it("shows no message chip when there are no agent messages", () => {
+    render(<StatusBar {...base} status="ready" />);
+    expect(screen.queryByRole("button")).toBeNull();
   });
 });
