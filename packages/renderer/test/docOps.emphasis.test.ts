@@ -40,6 +40,14 @@ describe("comment link keeps inline markup balanced", () => {
   it("nested bold+italic — bold wraps the link, italic stays in the label", () => {
     expect(wrap("**a *b* c**", "b")).toMatch(/^\*\*a \[\*b\*\]\(#cmt-[0-9a-z]+\) c\*\*$/);
   });
+  it("a fully-contained code span keeps its backticks inside the label", () => {
+    // `inplan` commented on "inplan" → [`inplan`](#id), not `[inplan](#id)` (which renders literally)
+    expect(wrap("`inplan`", "inplan")).toMatch(/^\[`inplan`\]\(#cmt-[0-9a-z]+\)$/);
+  });
+  it("crossing into a code span closes the backticks at the label and reopens after", () => {
+    // "The `.md` file", comment "he .m" → T[he `.m`](#id)`d` file (backticks stay balanced)
+    expect(wrap("The `.md` file", "he .m")).toMatch(/^T\[he `\.m`\]\(#cmt-[0-9a-z]+\)`d` file$/);
+  });
 });
 
 describe("deleting a comment merges the split run back (round-trip)", () => {
@@ -52,6 +60,8 @@ describe("deleting a comment merges the split run back (round-trip)", () => {
     ["a ~~b~~ c", "b"],
     ["a ~~b c~~ d", "a b"],
     ["**a *b* c**", "b"],
+    ["`inplan`", "inplan"],
+    ["The `.md` file", "he .m"],
   ])("%s / select %s round-trips", (body, sel) => {
     expect(roundtrip(body, sel)).toBe(body);
   });

@@ -85,7 +85,8 @@ export function findSpanRange(body: string, selected: string): { start: number; 
 // label, then for any run that still crosses a boundary, close it before the link and
 // reopen it after. deleteComment reverses this by merging the split runs back.
 
-/** Paired inline-emphasis markers we balance (code spans handled separately). */
+/** Paired inline-emphasis markers we balance. Code-span backticks are balanced too,
+ *  but as variable-length runs (handled directly in scanOpenMarkers / mergeSeam). */
 const PAIRED = ["~~", "**", "__", "*", "_"] as const;
 
 /** The stack of inline-emphasis markers open at `pos`, respecting escapes + code spans.
@@ -102,7 +103,14 @@ export function scanOpenMarkers(body: string, pos: number): string[] {
       const close = body.indexOf("`".repeat(n), i + n);
       if (close !== -1) {
         const codeEnd = close + n;
-        if (pos <= codeEnd) return stack; // pos is inside the code span — emphasis unchanged
+        if (pos <= codeEnd) {
+          // pos is within this code span: emphasis inside is literal (unchanged), but if
+          // pos sits in the code *content* (past the opening ticks, at/before the closing
+          // ticks) the backtick run is itself an open marker — so a comment boundary there
+          // gets balanced like emphasis (close the ticks at the label, reopen after).
+          if (pos >= i + n && pos <= close) stack.push("`".repeat(n));
+          return stack;
+        }
         i = codeEnd;
         continue;
       }
@@ -170,6 +178,13 @@ function mergeSeam(s: string, at: number): string {
     if (s.slice(at - m.length, at) === m && s.slice(at, at + m.length) === m) {
       return s.slice(0, at - m.length) + s.slice(at + m.length);
     }
+  }
+  // A code-span split leaves "`…`" + "`…`" (an n-backtick close immediately followed by
+  // the same reopen). Collapse the matching backtick runs back into one span.
+  let n = 0;
+  while (s[at - 1 - n] === "`") n++;
+  if (n > 0 && s.slice(at - n, at) === "`".repeat(n) && s.slice(at, at + n) === "`".repeat(n)) {
+    return s.slice(0, at - n) + s.slice(at + n);
   }
   return s;
 }
