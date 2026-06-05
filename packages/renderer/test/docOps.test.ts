@@ -1,8 +1,39 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, it } from "vitest";
-import { addSpanComment, findSpanRange } from "../src/docOps";
+import { addSpanComment, deleteComment, findSpanRange } from "../src/docOps";
 import type { ParsedDocument } from "@inplan/core";
+
+describe("findSpanRange — source-span scoping (preview block disambiguation)", () => {
+  // "an ma" renders identically inside source `inplan` makes AND inside "human marks".
+  const body = "Use `inplan` makes sense.\n\nThe human marks it later.\n";
+
+  it("without a span hint, verbatim wrongly matches the later plain occurrence", () => {
+    const r = findSpanRange(body, "an ma")!;
+    expect(body.slice(r.start, r.end)).toBe("an ma"); // verbatim — inside "human marks"
+    expect(r.start).toBeGreaterThan(body.indexOf("human")); // the wrong, later spot
+  });
+
+  it("with the clicked line's span, it anchors at the markup'd occurrence (crossing the code boundary)", () => {
+    const r = findSpanRange(body, "an ma", { startLine: 0, endLine: 0 })!;
+    expect(body.slice(r.start, r.end)).toBe("an` ma"); // source range spans the closing backtick
+    expect(r.start).toBeLessThan(body.indexOf("human")); // earlier than the decoy
+  });
+});
+
+describe("addSpanComment across formatting boundaries round-trips (balanced)", () => {
+  const fields = { text: "c", author: "me" };
+  it.each([
+    ["code span", "Use `inplan` makes sense.\n", "an ma"],
+    ["bold", "say **hi there** ok\n", "hi there ok"],
+    ["italic→plain", "a *b c* d\n", "b c d"],
+  ])("%s: insert then delete restores the exact source", (_label, body, sel) => {
+    const r = addSpanComment({ body, comments: [] }, sel, fields, { startLine: 0, endLine: 0 })!;
+    expect(r).not.toBeNull();
+    expect(r.doc.body).toContain("](#cmt-"); // a link was anchored
+    expect(deleteComment(r.doc, r.id).body).toBe(body); // balanced ⇒ exact round-trip
+  });
+});
 
 describe("findSpanRange", () => {
   it("matches a verbatim selection", () => {

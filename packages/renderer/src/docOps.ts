@@ -58,23 +58,48 @@ function buildNormalized(source: string): { text: string; map: number[] } {
 
 const normalizeNeedle = (s: string): string => s.replace(/[*_`~]/g, "").replace(/\s+/g, " ").trim();
 
-/**
- * Locate the source range to anchor for `selected` (the user's preview selection).
- * Tries a verbatim match first; falls back to a markup- and whitespace-insensitive
- * match so a selection like "showing resolved and orphaned" still maps to source
- * "showing resolved *and* orphaned". Returns null if not found. (Inline-markup balancing
- * around the inserted link is handled separately by wrapSpanWithComment.)
- */
-export function findSpanRange(body: string, selected: string): { start: number; end: number } | null {
-  const direct = findPlainOccurrence(body, selected);
-  if (direct >= 0) return { start: direct, end: direct + selected.length };
+/** A 0-based, inclusive source line range — the preview block(s) a selection sits in. */
+export interface SourceSpan {
+  startLine: number;
+  endLine: number;
+}
 
+/** Find `selected` in `text`: verbatim first, then a markup-/whitespace-insensitive match
+ *  (so "showing resolved and orphaned" maps to source "showing resolved *and* orphaned"). */
+function searchInText(text: string, selected: string): { start: number; end: number } | null {
+  const direct = findPlainOccurrence(text, selected);
+  if (direct >= 0) return { start: direct, end: direct + selected.length };
   const needle = normalizeNeedle(selected);
   if (!needle) return null;
-  const { text, map } = buildNormalized(body);
-  const idx = text.indexOf(needle);
+  const { text: norm, map } = buildNormalized(text);
+  const idx = norm.indexOf(needle);
   if (idx < 0) return null;
   return { start: map[idx]!, end: map[idx + needle.length - 1]! + 1 };
+}
+
+/**
+ * Locate the source range to anchor for `selected` (the user's preview selection).
+ *
+ * The selection text alone is ambiguous: the same rendered text can appear in several
+ * places, and a verbatim search skips a markup'd occurrence (e.g. "an ma" inside source
+ * `` `inplan` makes ``) and wrongly matches a later plain one ("hum**an ma**rks"). When the
+ * caller passes the selection's source line span (from the preview block's `data-line`), we
+ * search ONLY within those lines and align there — disambiguating to the clicked spot. We
+ * fall back to a whole-document search if the span is absent or yields nothing.
+ */
+export function findSpanRange(body: string, selected: string, span?: SourceSpan): { start: number; end: number } | null {
+  if (span) {
+    const lines = body.split("\n");
+    let start = 0;
+    for (let i = 0; i < span.startLine && i < lines.length; i++) start += lines[i]!.length + 1;
+    let end = start;
+    for (let i = span.startLine; i <= span.endLine && i < lines.length; i++) end += lines[i]!.length + 1;
+    end = Math.min(end, body.length);
+    const within = searchInText(body.slice(start, end), selected);
+    if (within) return { start: start + within.start, end: start + within.end };
+    // not in the hinted lines (stale span / odd selection) → fall through to a global search
+  }
+  return searchInText(body, selected);
 }
 
 // --- inline-markup balancing around an inserted comment link ------------------
@@ -204,9 +229,9 @@ const ANCHOR_RE = /\[[^\]]*\]\(#cmt-[0-9a-z]+\)/gi;
  *    (spans block boundaries / table cells / rendered-only text like decoded entities).
  * An empty selection is anchorable=null here (callers treat it as a doc-level comment).
  */
-export function spanCommentBlocker(body: string, selected: string): "overlap" | "not-found" | null {
+export function spanCommentBlocker(body: string, selected: string, span?: SourceSpan): "overlap" | "not-found" | null {
   if (!selected.trim()) return null;
-  const range = findSpanRange(body, selected);
+  const range = findSpanRange(body, selected, span);
   if (!range) return "not-found";
   for (const m of body.matchAll(ANCHOR_RE)) {
     const aStart = m.index;
@@ -221,9 +246,11 @@ export interface NewCommentFields {
   question?: Question;
 }
 
-/** Wrap the selected body span in an anchor link and add a span comment. Null if the span isn't found. */
-export function addSpanComment(doc: ParsedDocument, selectedText: string, fields: NewCommentFields): { doc: ParsedDocument; id: string } | null {
-  const range = findSpanRange(doc.body, selectedText);
+/** Wrap the selected body span in an anchor link and add a span comment. `span` is the
+ *  selection's source line range (from the preview block's data-line) — it disambiguates
+ *  the anchor location. Null if the span isn't found. */
+export function addSpanComment(doc: ParsedDocument, selectedText: string, fields: NewCommentFields, span?: SourceSpan): { doc: ParsedDocument; id: string } | null {
+  const range = findSpanRange(doc.body, selectedText, span);
   if (!range) return null;
   const id = genId(takenIds(doc));
   const body = wrapSpanWithComment(doc.body, range.start, range.end, id); // balances crossed inline markup

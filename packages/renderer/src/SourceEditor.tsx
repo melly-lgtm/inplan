@@ -15,23 +15,9 @@ export interface SourceEditorHandle {
   selectRange(from: number, to: number): void;
 }
 
-const setActiveLine = StateEffect.define<number | null>();
-
-// Highlights the active (clicked / synced) line with the comment light-blue.
-const activeLineField = StateField.define<DecorationSet>({
-  create: () => Decoration.none,
-  update(deco, tr) {
-    for (const e of tr.effects) {
-      if (e.is(setActiveLine)) {
-        if (e.value == null) return Decoration.none;
-        const n = Math.min(Math.max(1, e.value + 1), tr.state.doc.lines);
-        return Decoration.set([Decoration.line({ class: "ap-active-line" }).range(tr.state.doc.line(n).from)]);
-      }
-    }
-    return deco.map(tr.changes);
-  },
-  provide: (f) => EditorView.decorations.from(f),
-});
+// The current line is shown by CodeMirror's own active-line highlight (basicSetup), which
+// follows the cursor. scrollToLine moves the cursor, so clicking a line in EITHER pane lands
+// that single highlight on the synced line — no separate "synced-line" decoration.
 
 // Find highlighting inside the source pane (the "Editor" find scope). The field
 // holds the query and re-derives match decorations on query change or doc edit.
@@ -83,7 +69,10 @@ export const SourceEditor = forwardRef<
       if (!v) return;
       const n = Math.min(Math.max(1, line + 1), v.state.doc.lines);
       const pos = v.state.doc.line(n).from;
-      v.dispatch({ effects: [setActiveLine.of(line), EditorView.scrollIntoView(pos, { y: "center" })] });
+      // Move the cursor to the line so CodeMirror's native active-line highlight follows
+      // (the single blue line), then scroll it into view. Don't focus — clicking the preview
+      // must not steal focus (and find navigation keeps focus on the find bar).
+      v.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: "center" }) });
     },
     selectRange(from: number, to: number) {
       const v = view.current;
@@ -119,7 +108,6 @@ export const SourceEditor = forwardRef<
           ),
           basicSetup,
           markdown(),
-          activeLineField,
           findField,
           editableComp.current.of(EditorView.editable.of(editable)),
           EditorView.lineWrapping,

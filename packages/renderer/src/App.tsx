@@ -13,6 +13,7 @@ import {
   editCommentText,
   setResolved,
   spanCommentBlocker,
+  type SourceSpan,
   type Thread,
 } from "./docOps";
 import { renderMarkdown } from "./markdown";
@@ -155,7 +156,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [updating, setUpdating] = useState<"idle" | "running" | "done" | "failed">("idle");
   const [showResolvedOrphaned, setShowResolvedOrphaned] = useState(false);
   const [selectionText, setSelectionText] = useState("");
-  const [composer, setComposer] = useState<{ target: string | null; pos: { x: number; y: number } } | null>(null);
+  const [composer, setComposer] = useState<{ target: string | null; pos: { x: number; y: number }; span?: SourceSpan | null } | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; hasSel: boolean; hasRawSel: boolean; block: BlockReason | null } | null>(null);
   const [findSeed, setFindSeed] = useState(""); // pre-fills the find box (e.g. from the preview "Find text" menu item)
   const [focused, setFocused] = useState<string | null>(null);
@@ -524,16 +525,17 @@ export function App(props: EditorProps = {}): JSX.Element {
 
   // --- comment actions ---
   const addComment = useCallback(
-    (text: string, target: string | null, question?: Question) => {
+    (text: string, target: string | null, span?: SourceSpan | null, question?: Question) => {
       if (target) {
         // Guard against an un-anchorable or OVERLAPPING span (nested links would
-        // corrupt the doc) even if the UI's disabled state was bypassed.
-        const blocker = spanCommentBlocker(docRef.current.body, target);
+        // corrupt the doc) even if the UI's disabled state was bypassed. `span` (the
+        // selection's source line range) pins the anchor to the clicked spot.
+        const blocker = spanCommentBlocker(docRef.current.body, target, span ?? undefined);
         if (blocker) {
           setStatus(blocker === "overlap" ? t("topbar.cantOverlap") : t("msg.cantAnchor"));
           return;
         }
-        const res = addSpanComment(docRef.current, target, { text, author: USER_AUTHOR, question });
+        const res = addSpanComment(docRef.current, target, { text, author: USER_AUTHOR, question }, span ?? undefined);
         if (!res) {
           setStatus(t("msg.cantAnchor"));
           return;
@@ -551,6 +553,29 @@ export function App(props: EditorProps = {}): JSX.Element {
 
   const reportFind = useCallback((o: { query: string; ci: boolean; inPreview: boolean; inEditor: boolean; inComments: boolean }) => setFindOpts(o), []);
 
+  // The source line range (0-based, inclusive) the preview selection sits in, read from the
+  // enclosing blocks' `data-line` attributes. Passed to addSpanComment so the anchor maps to
+  // the clicked spot — not a same-looking phrase elsewhere in the doc (markup-aware, scoped).
+  const selectionSourceSpan = useCallback((range: Range | null): SourceSpan | null => {
+    if (!range) return null;
+    const blockOf = (n: Node | null): HTMLElement | null => {
+      const el = n && n.nodeType === Node.TEXT_NODE ? n.parentElement : (n as Element | null);
+      return (el?.closest?.("[data-line]") as HTMLElement | null) ?? null;
+    };
+    const startBlock = blockOf(range.startContainer);
+    if (!startBlock) return null;
+    const startLine = Number(startBlock.getAttribute("data-line"));
+    if (!Number.isFinite(startLine)) return null;
+    const endBlock = blockOf(range.endContainer) ?? startBlock;
+    // The selection's block(s) can span several source lines (a multi-line paragraph), so
+    // extend to just before the NEXT preview block (or the document's end).
+    const blocks = Array.from(previewRef.current?.querySelectorAll("[data-line]") ?? []);
+    const endIdx = blocks.indexOf(endBlock);
+    const nextLine = endIdx >= 0 && endIdx + 1 < blocks.length ? Number(blocks[endIdx + 1]!.getAttribute("data-line")) : NaN;
+    const endLine = Number.isFinite(nextLine) ? Math.max(startLine, nextLine - 1) : docRef.current.body.split("\n").length - 1;
+    return { startLine, endLine };
+  }, []);
+
   const openComposer = useCallback(() => {
     const sel = window.getSelection();
     const txt = sel?.toString().trim() ?? "";
@@ -558,13 +583,13 @@ export function App(props: EditorProps = {}): JSX.Element {
       const range = sel.getRangeAt(0);
       commentRangeRef.current = range.cloneRange(); // keep the span highlighted while composing (item 4)
       const r = range.getBoundingClientRect();
-      setComposer({ target: txt, pos: { x: Math.max(8, Math.min(r.left, window.innerWidth - 360)), y: Math.max(48, Math.min(r.bottom + 6, window.innerHeight - 220)) } });
+      setComposer({ target: txt, span: selectionSourceSpan(range), pos: { x: Math.max(8, Math.min(r.left, window.innerWidth - 360)), y: Math.max(48, Math.min(r.bottom + 6, window.innerHeight - 220)) } });
     } else {
       commentRangeRef.current = null;
       previewRef.current?.scrollTo({ top: 0 });
       setComposer({ target: null, pos: { x: 24, y: 56 } });
     }
-  }, []);
+  }, [selectionSourceSpan]);
 
   // Open the composer from the selection captured at right-click time (not a live
   // re-read) — clicking a menu item can collapse the page selection in some browsers,
@@ -573,13 +598,13 @@ export function App(props: EditorProps = {}): JSX.Element {
     const target = ctxSelTextRef.current;
     if (target && commentRangeRef.current) {
       const r = commentRangeRef.current.getBoundingClientRect();
-      setComposer({ target, pos: { x: Math.max(8, Math.min(r.left, window.innerWidth - 360)), y: Math.max(48, Math.min(r.bottom + 6, window.innerHeight - 220)) } });
+      setComposer({ target, span: selectionSourceSpan(commentRangeRef.current), pos: { x: Math.max(8, Math.min(r.left, window.innerWidth - 360)), y: Math.max(48, Math.min(r.bottom + 6, window.innerHeight - 220)) } });
     } else {
       commentRangeRef.current = null;
       previewRef.current?.scrollTo({ top: 0 });
       setComposer({ target: null, pos: { x: 24, y: 56 } });
     }
-  }, []);
+  }, [selectionSourceSpan]);
 
   // Select a DOM node's text contents (used by the preview context menu's
   // "Select line" / "Select all"). Replaces the current selection.
@@ -1042,7 +1067,7 @@ export function App(props: EditorProps = {}): JSX.Element {
           pos={composer.pos}
           disabled={editingLocked}
           onSubmit={(text) => {
-            addComment(text, composer.target);
+            addComment(text, composer.target, composer.span);
             setComposer(null);
           }}
           onClose={() => setComposer(null)}
