@@ -22,6 +22,12 @@ export const IconBack = (): JSX.Element => (
 export const IconForward = (): JSX.Element => (
   <Glyph><polyline points="9 18 15 12 9 6" /></Glyph>
 );
+export const IconUp = (): JSX.Element => (
+  <Glyph><polyline points="18 15 12 9 6 15" /></Glyph>
+);
+export const IconDown = (): JSX.Element => (
+  <Glyph><polyline points="6 9 12 15 18 9" /></Glyph>
+);
 export const IconSettings = (): JSX.Element => (
   <Glyph>
     <circle cx="12" cy="12" r="3" />

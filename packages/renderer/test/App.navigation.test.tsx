@@ -40,19 +40,20 @@ function mountWithNav(content: string) {
 }
 
 describe("editor navigation (desktop)", () => {
-  it("shows back/forward, reflects nav state, and routes a click", async () => {
+  it("shows back/forward only once link history exists, reflects nav state, and routes a click", async () => {
     const { api, fireNavState } = mountWithNav("# A\n\nDoc A.\n\n<!--inplan v1\n[]\n-->\n");
     const { App } = await import("../src/App");
     render(<App />);
     await waitFor(() => expect(document.body.textContent).toContain("Doc A."));
 
-    const back = screen.getByRole("button", { name: "Back" }) as HTMLButtonElement;
-    const fwd = screen.getByRole("button", { name: "Forward" }) as HTMLButtonElement;
-    expect(back.disabled).toBe(true); // no history yet
-    expect(fwd.disabled).toBe(true);
+    // No history yet → the cross-doc nav arrows are hidden (not just disabled).
+    expect(screen.queryByRole("button", { name: /previous document/i })).toBeNull();
 
     fireNavState({ canBack: true, canForward: false });
-    await waitFor(() => expect(back.disabled).toBe(false));
+    const back = (await screen.findByRole("button", { name: /previous document/i })) as HTMLButtonElement;
+    const fwd = screen.getByRole("button", { name: /next document/i }) as HTMLButtonElement;
+    expect(back.disabled).toBe(false);
+    expect(fwd.disabled).toBe(true); // at the end of the forward history
     fireEvent.click(back);
     expect(api.navigate).toHaveBeenCalledWith("back");
   });
@@ -74,6 +75,6 @@ describe("editor navigation (desktop)", () => {
     const { App } = await import("../src/App");
     render(<App />);
     await waitFor(() => expect(document.body.textContent).toContain("body"));
-    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /previous document/i })).toBeNull();
   });
 });

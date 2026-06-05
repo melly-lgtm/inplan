@@ -25,7 +25,7 @@ import { SourceEditor, type SourceEditorHandle } from "./SourceEditor";
 import { StatusBar } from "./StatusBar";
 import { ProfileMenu } from "./ProfileMenu";
 import { AgentIndicator } from "./AgentIndicator";
-import { IconBack, IconForward, IconSettings, IconZoomOut, IconZoomIn, IconFind, IconComment, IconSave, IconFinishTurn, IconRevealArchive } from "./Icons";
+import { IconBack, IconForward, IconUp, IconDown, IconSettings, IconZoomOut, IconZoomIn, IconFind, IconComment, IconSave, IconFinishTurn, IconRevealArchive } from "./Icons";
 import { QuitDialog } from "./QuitDialog";
 import { Onboarding, type OnboardingSignals } from "./Onboarding";
 import { ONBOARDING_SAMPLE } from "./onboardingSample";
@@ -861,6 +861,15 @@ export function App(props: EditorProps = {}): JSX.Element {
   const showSource = panes === 3 || (panes === 2 && rightTab === "source");
   const showComments = panes === 3 || (panes === 2 && rightTab === "comments");
 
+  // Prev/Next-thread navigation in the comments rail head: step focus through the
+  // visible threads in order, disabling at the first/last.
+  const focusedIdx = visible.findIndex((o) => o.thread.root.id === focused);
+  const gotoThread = (dir: -1 | 1) => {
+    if (visible.length === 0) return;
+    const ni = (focusedIdx < 0 ? (dir === 1 ? -1 : visible.length) : focusedIdx) + dir;
+    if (ni >= 0 && ni < visible.length) focusComment(visible[ni]!.thread.root.id);
+  };
+
   return (
     <div className="ap-app">
       <TopBar
@@ -1138,18 +1147,30 @@ export function App(props: EditorProps = {}): JSX.Element {
             <div className="ap-rail-scroll">
             <div className="ap-rail-head">
               <strong>{t("rail.comments")}</strong>
-              {(resolvedCount > 0 || orphanedCount > 0) && (
-                <button
-                  type="button"
-                  className={`ap-iconbtn ap-reveal${showResolvedOrphaned ? " on" : ""}`}
-                  aria-pressed={showResolvedOrphaned}
-                  title={revealTip}
-                  aria-label={revealTip}
-                  onClick={() => setShowResolvedOrphaned((v) => !v)}
-                >
-                  <IconRevealArchive />
-                </button>
-              )}
+              <div className="ap-rail-tools">
+                {visible.length > 0 && (
+                  <div className="ap-seg" role="group" aria-label="comment threads">
+                    <button type="button" title={t("rail.prevThread")} aria-label={t("rail.prevThread")} disabled={focusedIdx === 0} onClick={() => gotoThread(-1)}>
+                      <IconUp />
+                    </button>
+                    <button type="button" title={t("rail.nextThread")} aria-label={t("rail.nextThread")} disabled={focusedIdx === visible.length - 1} onClick={() => gotoThread(1)}>
+                      <IconDown />
+                    </button>
+                  </div>
+                )}
+                {(resolvedCount > 0 || orphanedCount > 0) && (
+                  <button
+                    type="button"
+                    className={`ap-iconbtn ap-reveal${showResolvedOrphaned ? " on" : ""}`}
+                    aria-pressed={showResolvedOrphaned}
+                    title={revealTip}
+                    aria-label={revealTip}
+                    onClick={() => setShowResolvedOrphaned((v) => !v)}
+                  >
+                    <IconRevealArchive />
+                  </button>
+                )}
+              </div>
             </div>
             {visible.map((o, i) => (
               <Fragment key={o.thread.root.id}>
@@ -1410,16 +1431,6 @@ function TopBar(props: {
           {t("topbar.back")}
         </button>
       )}
-      {props.nav && (
-        <div className="ap-seg" role="group" aria-label="navigation">
-          <button title={t("topbar.back")} aria-label={t("topbar.back")} disabled={!props.nav.canBack} onClick={props.nav.onBack}>
-            <IconBack />
-          </button>
-          <button title={t("topbar.forward")} aria-label={t("topbar.forward")} disabled={!props.nav.canForward} onClick={props.nav.onForward}>
-            <IconForward />
-          </button>
-        </div>
-      )}
       <div className="ap-seg" role="group" aria-label="cadence">
         <button className={cadence === "turn" ? "active" : ""} onClick={() => onMode("turn", acceptance)}>
           {t("topbar.turn")}
@@ -1457,6 +1468,19 @@ function TopBar(props: {
           <IconZoomIn />
         </button>
       </div>
+      <div className="ap-spacer" />
+      {/* Cross-document back/forward (following in-doc links). Rarely used, so it only
+          appears once a link history exists, sits centered, and disables at the ends. */}
+      {props.nav && (props.nav.canBack || props.nav.canForward) && (
+        <div className="ap-seg ap-nav-seg" role="group" aria-label="navigation">
+          <button title={t("topbar.prevDoc")} aria-label={t("topbar.prevDoc")} disabled={!props.nav.canBack} onClick={props.nav.onBack}>
+            <IconBack />
+          </button>
+          <button title={t("topbar.nextDoc")} aria-label={t("topbar.nextDoc")} disabled={!props.nav.canForward} onClick={props.nav.onForward}>
+            <IconForward />
+          </button>
+        </div>
+      )}
       <div className="ap-spacer" />
       <div className="ap-iconrow" role="group" aria-label="document tools">
         <button className="ap-iconbtn" onClick={props.onToggleFind} title={`${t("topbar.find")}  (${MOD_KEY}+F)`} aria-label={t("topbar.find")}>

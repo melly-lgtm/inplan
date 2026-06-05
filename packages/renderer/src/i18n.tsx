@@ -17,6 +17,8 @@ export const EN: Catalog = {
   "topbar.instant": "Instant",
   "topbar.back": "Back",
   "topbar.forward": "Forward",
+  "topbar.prevDoc": "Back to previous document",
+  "topbar.nextDoc": "Forward to next document",
   "topbar.settings": "Settings",
   "topbar.zoomOut": "Zoom out",
   "topbar.zoomIn": "Zoom in",
@@ -132,6 +134,8 @@ export const EN: Catalog = {
   "agent.connection": "Agent connection",
   // comment rail
   "rail.comments": "Comments",
+  "rail.prevThread": "Previous Thread",
+  "rail.nextThread": "Next Thread",
   "rail.showResolved": "Show resolved ({resolved}) & orphaned ({orphaned}) comments",
   "rail.showResolvedOnly": "Show resolved ({resolved}) comments",
   "rail.showOrphanedOnly": "Show orphaned ({orphaned}) comments",

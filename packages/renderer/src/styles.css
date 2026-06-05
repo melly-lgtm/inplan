@@ -151,6 +151,11 @@ body {
 .ap-rail { background: var(--paper); } /* flex column (from .ap-pane); the inner scroller below scrolls, so PaneTabs stays pinned */
 .ap-rail-scroll { flex: 1; min-height: 0; overflow: auto; }
 .ap-rail-head { display: flex; justify-content: space-between; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--line); background: var(--bg); position: sticky; top: 0; z-index: 1; font-size: 12px; }
+.ap-rail-tools { display: flex; align-items: center; gap: 6px; }
+.ap-rail-tools .ap-seg button { display: inline-flex; align-items: center; justify-content: center; padding: 4px 8px; }
+.ap-rail-tools .ap-seg button:disabled { opacity: 0.4; cursor: default; }
+.ap-rail-tools svg { width: 16px; height: 16px; display: block; }
+.ap-nav-seg { opacity: 0.9; } /* cross-doc nav is intentionally low-key */
 .ap-composer { padding: 12px; border-bottom: 1px solid var(--line); background: var(--bg); }
 .ap-composer textarea { width: 100%; min-height: 48px; resize: vertical; }
 .ap-quote { font-size: 12px; color: var(--accent); margin-bottom: 4px; }
