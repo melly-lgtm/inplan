@@ -2,7 +2,7 @@
 
 import { isDocComment, isSpanComment, LogEventType, parse, serialize, type Comment, type ParsedDocument, type Question } from "@inplan/core";
 import { Fragment, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Acceptance, Api, Cadence, ProfileState } from "./api";
+import { hostApi, setApiOverride, type Acceptance, type Api, type Cadence, type ProfileState } from "./api";
 import {
   addAnswer,
   addDocComment,
@@ -203,7 +203,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   // autoResolve is a global, cross-session user setting (affects agent behavior),
   // loaded from ~/.inplan/settings.json on launch — not localStorage.
   useEffect(() => {
-    void window.api.getSettings().then((s) => setAutoResolve(s.autoResolve));
+    void hostApi().getSettings().then((s) => setAutoResolve(s.autoResolve));
   }, []);
 
   // --- load + agent signals ---
@@ -217,7 +217,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       setStatus(t("msg.proposedReview"));
     };
 
-    window.api
+    hostApi()
       .load()
       .then(({ content, path }) => {
         docPathRef.current = path;
@@ -227,12 +227,12 @@ export function App(props: EditorProps = {}): JSX.Element {
         setLoaded(true);
         // Durable re-show: if a proposal was parked (e.g. the app was closed
         // mid-review), surface it again rather than silently accepting it.
-        void window.api.getProposal().then((parked) => parked != null && showProposal(parked));
+        void hostApi().getProposal().then((parked) => parked != null && showProposal(parked));
       })
       .catch(() => setLoaded(true));
 
     // Auto-accept (and review-mode comment-only changes) arrive as a file rewrite.
-    window.api.onExternalChange(({ content }) => {
+    hostApi().onExternalChange(({ content }) => {
       const next = parse(content);
       setAgentThinking(false);
       setDoc(next);
@@ -241,19 +241,19 @@ export function App(props: EditorProps = {}): JSX.Element {
       setStatus(t("msg.agentUpdated"));
     });
     // Review-mode body changes arrive parked, as a proposal to accept/reject.
-    window.api.onProposal(({ content }) => showProposal(content));
-    window.api.onAgentDone(() => setAgentDone(true));
-    window.api.onReload(() => {
+    hostApi().onProposal(({ content }) => showProposal(content));
+    hostApi().onAgentDone(() => setAgentDone(true));
+    hostApi().onReload(() => {
       setReloadReady(true);
       setReloadIn(30); // start the auto-close countdown
     });
-    window.api.onAgentActive(() => {
+    hostApi().onAgentActive(() => {
       setAgentThinking(false);
       setStatus(t("msg.agentTook"));
     });
     // Desktop only: the window followed a link to another doc — reset to it (a fresh
     // load), clearing any in-flight proposal/turn state, then re-show a parked proposal.
-    window.api.onNavigated?.(({ content, path }) => {
+    hostApi().onNavigated?.(({ content, path }) => {
       docPathRef.current = path;
       const d = parse(content);
       setDoc(d);
@@ -264,11 +264,11 @@ export function App(props: EditorProps = {}): JSX.Element {
       setAgentThinking(false);
       setAgentDone(false);
       setStatus(`opened ${path.split("/").pop() ?? path}`);
-      void window.api.getProposal().then((parked) => parked != null && showProposal(parked));
+      void hostApi().getProposal().then((parked) => parked != null && showProposal(parked));
     });
-    window.api.onNavState?.((s) => setNavState(s));
+    hostApi().onNavState?.((s) => setNavState(s));
     // Desktop only: a newer npm version is available.
-    window.api.onUpdateAvailable?.((info) => setUpdate(info));
+    hostApi().onUpdateAvailable?.((info) => setUpdate(info));
 
     // Store the RAW selection (untrimmed) so a whitespace-only selection is distinguishable
     // from no selection at all (the former blocks commenting; the latter → doc-level).
@@ -282,7 +282,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   useEffect(() => {
     if (reloadIn === null) return;
     if (reloadIn <= 0) {
-      void window.api.closeWindow();
+      void hostApi().closeWindow();
       return;
     }
     const timer = setTimeout(() => setReloadIn((s) => (s === null ? null : s - 1)), 1000);
@@ -357,7 +357,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const takeBackControl = useCallback(() => {
     setAgentThinking(false);
     setStatus(t("msg.tookBack"));
-    void window.api.logAction(LogEventType.HumanReclaimed);
+    void hostApi().logAction(LogEventType.HumanReclaimed);
   }, []);
 
   // --- autosave ---
@@ -368,12 +368,12 @@ export function App(props: EditorProps = {}): JSX.Element {
     autosaveTimer.current = setTimeout(() => {
       const content = serialize(docRef.current);
       if (cadence === "instant") {
-        void window.api.save(content, { kind: "canonical", cadence });
+        void hostApi().save(content, { kind: "canonical", cadence });
         savedRef.current = content;
         setDirty(false);
         setStatus(t("msg.autosaving"));
       } else {
-        void window.api.save(content, { kind: "backup", cadence });
+        void hostApi().save(content, { kind: "backup", cadence });
         setStatus(t("msg.autosaved"));
       }
     }, delay);
@@ -384,7 +384,7 @@ export function App(props: EditorProps = {}): JSX.Element {
 
   // Keep main informed of unsaved state so window-close can prompt Save/Don't Save.
   useEffect(() => {
-    if (loaded) void window.api.reportState(dirty, serialize(docRef.current));
+    if (loaded) void hostApi().reportState(dirty, serialize(docRef.current));
   }, [dirty, doc, loaded]);
 
   // --- preview current-line highlight + scroll ---
@@ -436,7 +436,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       future.current = [];
       const commentOnly = next.body === docRef.current.body; // body unchanged ⇒ a comment-thread change
       setDoc(next);
-      if (action) void window.api.logAction(action.type, action.payload);
+      if (action) void hostApi().logAction(action.type, action.payload);
       // Comment-thread changes are "always applied" — persist them immediately so
       // they survive reloads and proposals (incl. during review). In Instant mode
       // that's a canonical save (the agent reacts live); in Turn/Review it's a
@@ -446,7 +446,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         const s = serialize(next);
         savedRef.current = s;
         setDirty(false);
-        void window.api.save(s, { kind: cadence === "instant" ? "canonical" : "apply", cadence });
+        void hostApi().save(s, { kind: cadence === "instant" ? "canonical" : "apply", cadence });
       } else {
         setDirty(serialize(next) !== savedRef.current);
       }
@@ -457,14 +457,14 @@ export function App(props: EditorProps = {}): JSX.Element {
   const onModeChange = useCallback((c: Cadence, a: Acceptance) => {
     setCadence(c);
     setAcceptance(a);
-    void window.api.setMode(c, a);
+    void hostApi().setMode(c, a);
   }, []);
 
   // Auto-resolve is a global directive to the agent: persist it to the settings
   // file and log the change (main does both) so the agent wakes and can honor it.
   const onAutoResolve = useCallback((v: boolean) => {
     setAutoResolve(v);
-    void window.api.setSettings({ autoResolve: v });
+    void hostApi().setSettings({ autoResolve: v });
   }, []);
 
   const onZoom = useCallback((dir: -1 | 0 | 1) => {
@@ -474,7 +474,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const saveNow = useCallback(() => {
     const content = serialize(docRef.current);
     const kind = cadence === "instant" ? "canonical" : "backup";
-    void window.api.save(content, { kind, cadence });
+    void hostApi().save(content, { kind, cadence });
     if (kind === "canonical") {
       savedRef.current = content;
       setDirty(false);
@@ -484,7 +484,7 @@ export function App(props: EditorProps = {}): JSX.Element {
 
   const finishTurn = useCallback(() => {
     const content = serialize(docRef.current);
-    void window.api.save(content, { kind: "canonical", cadence: "turn" });
+    void hostApi().save(content, { kind: "canonical", cadence: "turn" });
     savedRef.current = content;
     setDirty(false);
     setAgentThinking(true);
@@ -494,11 +494,11 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [quitOpen, setQuitOpen] = useState(false);
   // Confirmed quit: the host saves (if asked), signals the agent (if asked), then leaves.
   const confirmQuit = useCallback((opts: { save: boolean; notifyComplete: boolean }) => {
-    window.api.exit?.quit(serialize(docRef.current), opts);
+    hostApi().exit?.quit(serialize(docRef.current), opts);
     setQuitOpen(false);
   }, []);
   // Desktop intercepts the OS window-close and asks us to show the quit dialog.
-  useEffect(() => window.api.exit?.onRequest?.(() => setQuitOpen(true)), []);
+  useEffect(() => hostApi().exit?.onRequest?.(() => setQuitOpen(true)), []);
 
   // --- comment actions ---
   const addComment = useCallback(
@@ -693,9 +693,9 @@ export function App(props: EditorProps = {}): JSX.Element {
       const acceptedCount = accepted.filter(Boolean).length;
       // Decision made → persist canonical *silently* (accepting a proposal must
       // not end your turn) and discard the parked proposal.
-      void window.api.save(serialized, { kind: "apply", cadence });
-      void window.api.clearProposal();
-      void window.api.logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", { accepted: acceptedCount, total: accepted.length });
+      void hostApi().save(serialized, { kind: "apply", cadence });
+      void hostApi().clearProposal();
+      void hostApi().logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", { accepted: acceptedCount, total: accepted.length });
       setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`);
     },
     [proposal, cadence, editingLocked],
@@ -863,22 +863,22 @@ export function App(props: EditorProps = {}): JSX.Element {
         dirty={dirty}
         onSave={saveNow}
         onFinishTurn={finishTurn}
-        onBack={window.api.exit?.showBackButton ? () => setQuitOpen(true) : undefined}
+        onBack={hostApi().exit?.showBackButton ? () => setQuitOpen(true) : undefined}
         onReplayTutorial={
           props.onReplayOnboarding
             ? () => {
                 // Replaying remounts the editor (discarding in-memory state); persist any
                 // unsaved edits first — a silent canonical write (no agent wake) so the
                 // post-tour reload restores them.
-                if (dirty) void window.api.save(serialize(docRef.current), { kind: "apply", cadence });
+                if (dirty) void hostApi().save(serialize(docRef.current), { kind: "apply", cadence });
                 props.onReplayOnboarding!();
               }
             : undefined
         }
         locked={editingLocked}
         nav={
-          typeof window.api.navigate === "function"
-            ? { canBack: navState.canBack, canForward: navState.canForward, onBack: () => void window.api.navigate?.("back"), onForward: () => void window.api.navigate?.("forward") }
+          typeof hostApi().navigate === "function"
+            ? { canBack: navState.canBack, canForward: navState.canForward, onBack: () => void hostApi().navigate?.("back"), onForward: () => void hostApi().navigate?.("forward") }
             : undefined
         }
       />
@@ -907,7 +907,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         <div className="ap-banner ap-banner-reload">
           {t("banner.newBuild")} <strong>{t("banner.reloadingIn", { n: reloadIn ?? 0 })}</strong>{" "}
           <span className="ap-spacer" />
-          <button className="ap-primary" onClick={() => void window.api.closeWindow()}>
+          <button className="ap-primary" onClick={() => void hostApi().closeWindow()}>
             {t("banner.reloadNow")}
           </button>
           <button
@@ -928,7 +928,7 @@ export function App(props: EditorProps = {}): JSX.Element {
             <>
               {t("banner.updated")} <strong>v{update.latest}</strong> {t("banner.restartToApply")}
               <span className="ap-spacer" />
-              <button className="ap-primary" onClick={() => void window.api.closeWindow()}>
+              <button className="ap-primary" onClick={() => void hostApi().closeWindow()}>
                 {t("banner.restart")}
               </button>
             </>
@@ -942,7 +942,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                 disabled={updating === "running"}
                 onClick={async () => {
                   setUpdating("running");
-                  const r = await window.api.applyUpdate?.();
+                  const r = await hostApi().applyUpdate?.();
                   setUpdating(r?.ok ? "done" : "failed");
                 }}
               >
@@ -1066,7 +1066,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                 }
                 const href = a.getAttribute("href") ?? "";
                 if (isInternalDocLink(href)) {
-                  void window.api.openDoc(resolveDocPath(docPathRef.current, href));
+                  void hostApi().openDoc(resolveDocPath(docPathRef.current, href));
                   return;
                 }
                 if (/^https?:/.test(href)) window.open(href, "_blank");
@@ -1089,7 +1089,7 @@ export function App(props: EditorProps = {}): JSX.Element {
             ) : (
               <SourceEditor
                 ref={editorRef}
-                collab={window.api.collab ?? null}
+                collab={hostApi().collab ?? null}
                 value={doc.body}
                 editable={!editingLocked}
                 onChange={(body) => {
@@ -1170,13 +1170,12 @@ export function App(props: EditorProps = {}): JSX.Element {
 
 const ONBOARDED_KEY = "ap-onboarded";
 
-/** Host entry point. On first run it swaps `window.api` for a throwaway in-memory
+/** Host entry point. On first run it swaps `hostApi()` for a throwaway in-memory
  *  sample and runs the guided tour, so practice edits never touch the real document;
  *  on finish it restores the host api and remounts the editor on the real file. Both
  *  the desktop and web hosts mount THIS (not the bare editor). */
 export function AppRoot(): JSX.Element {
-  const realApiRef = useRef<Api | null>(null);
-  const swappedRef = useRef(false); // guards the api swap against StrictMode's double-invoke
+  const installedRef = useRef(false); // guards the override install against StrictMode's double-invoke
   const [phase, setPhase] = useState<"onboarding" | "real">(() => {
     try {
       return localStorage.getItem(ONBOARDED_KEY) ? "real" : "onboarding";
@@ -1187,17 +1186,15 @@ export function AppRoot(): JSX.Element {
   const [apiReady, setApiReady] = useState(phase === "real");
 
   const installSample = useCallback(() => {
-    const real = window.api;
-    realApiRef.current = real;
     const sample = createMemoryApi({ content: ONBOARDING_SAMPLE, settings: { autoResolve: false } }).api;
-    sample.i18n = real?.i18n; // keep the user's locale during the tour
-    (window as unknown as { api: Api }).api = sample;
+    sample.i18n = (window as unknown as { api?: Api }).api?.i18n; // keep the user's locale during the tour
+    setApiOverride(sample);
   }, []);
 
-  // First-run: install the sample api before the editor mounts (so its load reads the sample).
+  // First-run: install the sample override before the editor mounts (so its load reads the sample).
   useEffect(() => {
-    if (phase !== "onboarding" || swappedRef.current) return;
-    swappedRef.current = true;
+    if (phase !== "onboarding" || installedRef.current) return;
+    installedRef.current = true;
     installSample();
     setApiReady(true);
   }, [phase, installSample]);
@@ -1208,18 +1205,18 @@ export function AppRoot(): JSX.Element {
     } catch {
       /* private mode — the tour will show again next launch, which is acceptable */
     }
-    if (realApiRef.current) (window as unknown as { api: Api }).api = realApiRef.current;
+    setApiOverride(null); // back to the real host
     setPhase("real");
     setApiReady(true);
   }, []);
 
   const replay = useCallback(() => {
-    installSample(); // swap synchronously — this is a user action, not a double-invoked effect
+    installSample(); // install synchronously — this is a user action, not a double-invoked effect
     setPhase("onboarding");
     setApiReady(true);
   }, [installSample]);
 
-  if (!apiReady) return <div className="ap-app" />; // one tick while the sample api is installed
+  if (!apiReady) return <div className="ap-app" />; // one tick while the sample override is installed
 
   return phase === "onboarding" ? <App key="onboarding" onboarding onFinishOnboarding={finish} /> : <App key="real" onReplayOnboarding={replay} />;
 }
@@ -1338,7 +1335,7 @@ function PaneTabs({ tab, onTab }: { tab: "comments" | "source"; onTab: (t: "comm
  *  controller across a contextBridge (Electron), where `get()` need not return a
  *  referentially stable snapshot. */
 function useProfile(): ProfileState | null {
-  const controller = window.api.profile;
+  const controller = hostApi().profile;
   const [state, setState] = useState<ProfileState | null>(() => controller?.get() ?? null);
   useEffect(() => {
     if (!controller) return;

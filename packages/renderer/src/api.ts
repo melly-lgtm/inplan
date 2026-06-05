@@ -204,3 +204,19 @@ declare global {
     api: Api;
   }
 }
+
+// The host's `window.api` is exposed via Electron's contextBridge, which makes it a
+// read-only property — it can't be reassigned. The onboarding sandbox therefore can't
+// swap `window.api`; instead all renderer code reads the api through `hostApi()`, and
+// AppRoot installs/clears a temporary override for the duration of the tour.
+let _apiOverride: Api | null = null;
+
+/** Route renderer api access through an optional override (the onboarding sample). */
+export function setApiOverride(api: Api | null): void {
+  _apiOverride = api;
+}
+
+/** The api the renderer should use right now: the onboarding override if set, else the host. */
+export function hostApi(): Api {
+  return _apiOverride ?? (window as unknown as { api: Api }).api;
+}
