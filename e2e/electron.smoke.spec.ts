@@ -16,16 +16,25 @@ test.beforeAll(async () => {
   const doc = join(dir, "design.plan.md");
   writeFileSync(doc, "# E2E Plan\n\nalpha beta alpha gamma alpha\n\nSecond paragraph here.\n\n<!--inplan v1\n[]\n-->\n");
   app = await electron.launch({
-    args: [join(REPO, "packages/app"), doc],
+    // Fresh user-data-dir so localStorage is empty → the first-run onboarding deterministically shows.
+    args: [`--user-data-dir=${join(dir, "userdata")}`, join(REPO, "packages/app"), doc],
     executablePath: join(REPO, "node_modules/.bin/electron"),
     env: { ...process.env, INPLAN_SIDECAR_DIR: join(dir, "sidecars") },
   });
   win = await app.firstWindow();
+  // First launch shows the onboarding tour over a throwaway sample; skip it to reach the
+  // agent's real document (also exercises the tour → real-file handoff).
+  await expect(win.locator("body")).toContainText("Welcome to inplan", { timeout: 15_000 });
+  const skip = win.getByRole("button", { name: /skip tutorial/i });
+  if (await skip.isVisible().catch(() => false)) await skip.click();
   await expect(win.locator("body")).toContainText("alpha beta alpha", { timeout: 15_000 });
 });
 
 test.afterAll(async () => {
-  await app?.close();
+  // The window-close is intercepted by the quit-confirmation flow, so a graceful
+  // app.close() would hang waiting for the dialog. Force-exit the main process instead.
+  await app?.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {});
+  await app?.close().catch(() => {});
 });
 
 test("renders the loaded plan in the preview", async () => {
