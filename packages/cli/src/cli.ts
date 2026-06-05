@@ -577,6 +577,52 @@ function skillTargets(): { name: string; root: string; target: string }[] {
   ];
 }
 
+/** Scoped auto-approval rules merged into Claude Code's user settings: the inplan CLI,
+ *  editing plan files, and the ~/.inplan sidecars (control log / canonical / proposed /
+ *  backups / status). The human reviews every change in the inplan app, so these never
+ *  need a per-edit prompt. Deliberately narrow — NOT a global permission bypass. */
+const SKILL_ALLOW = ["Bash(inplan *)", "Edit(**/*.plan.md)", "Write(**/*.plan.md)", "Read(~/.inplan/**)", "Edit(~/.inplan/**)", "Write(~/.inplan/**)"];
+const SKILL_DIRS = ["~/.inplan/"]; // sidecars live outside the project cwd; grant file access there
+
+/** Merge {@link SKILL_ALLOW} / {@link SKILL_DIRS} into `~/.claude/settings.json`, preserving
+ *  everything else and de-duplicating. Returns whether it changed anything. Never throws and
+ *  never clobbers an unparseable / non-object settings file. */
+function grantClaudePermissions(claudeRoot: string): boolean {
+  const settingsPath = join(claudeRoot, "settings.json");
+  let settings: Record<string, unknown> = {};
+  try {
+    if (existsSync(settingsPath)) {
+      const parsed = JSON.parse(readFileSync(settingsPath, "utf8")) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false; // don't clobber
+      settings = parsed as Record<string, unknown>;
+    }
+  } catch {
+    return false; // unparseable — leave the user's settings untouched
+  }
+  const perms = (settings.permissions && typeof settings.permissions === "object" ? settings.permissions : {}) as Record<string, unknown>;
+  const allow = Array.isArray(perms.allow) ? (perms.allow as string[]) : [];
+  const dirs = Array.isArray(perms.additionalDirectories) ? (perms.additionalDirectories as string[]) : [];
+  let changed = false;
+  for (const r of SKILL_ALLOW) {
+    if (!allow.includes(r)) {
+      allow.push(r);
+      changed = true;
+    }
+  }
+  for (const d of SKILL_DIRS) {
+    if (!dirs.includes(d)) {
+      dirs.push(d);
+      changed = true;
+    }
+  }
+  if (!changed) return false;
+  perms.allow = allow;
+  perms.additionalDirectories = dirs;
+  settings.permissions = perms;
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+  return true;
+}
+
 /**
  * Install the inplan skill into AI agents already present on this machine (the npm→skill
  * half of the bidirectional bootstrap; the skill→CLI half lives in SKILL.md's install
@@ -599,13 +645,20 @@ function doInstallSkill(args: string[]): void {
   for (const a of skillTargets()) {
     try {
       if (!existsSync(a.root)) continue; // agent not installed → leave it alone
-      if (existsSync(a.target)) continue; // already present → idempotent, never clobber
-      mkdirSync(dirname(a.target), { recursive: true });
-      copyFileSync(src, a.target);
-      installed.push(a.name);
-      process.stderr.write(`inplan: installed the inplan skill into ${a.name} (${a.target}). Set INPLAN_NO_SKILL_INSTALL=1 to skip.\n`);
+      if (!existsSync(a.target)) {
+        mkdirSync(dirname(a.target), { recursive: true });
+        copyFileSync(src, a.target);
+        installed.push(a.name);
+        process.stderr.write(`inplan: installed the inplan skill into ${a.name} (${a.target}). Set INPLAN_NO_SKILL_INSTALL=1 to skip.\n`);
+      }
+      // Claude Code: also grant scoped auto-approval so the agent doesn't prompt on plan-file
+      // / sidecar edits + the inplan CLI (the human reviews every change in the app). Runs even
+      // when the skill was already present, so existing installs pick up the grant.
+      if (a.name === "Claude Code" && grantClaudePermissions(a.root)) {
+        process.stderr.write(`inplan: granted scoped auto-approval (plan files + ~/.inplan + inplan CLI) in ${join(a.root, "settings.json")}.\n`);
+      }
     } catch {
-      /* never fail an install over a skill copy */
+      /* never fail an install over a skill copy / settings merge */
     }
   }
   if (!quiet) output({ status: "ok", installed });

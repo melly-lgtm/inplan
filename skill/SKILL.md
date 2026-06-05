@@ -1,6 +1,16 @@
 ---
 name: inplan
 description: Use when drafting a planning, PRD, or design document that a human should review interactively. Saves the plan as *.plan.md and opens it in the inplan editor for inline-comment collaboration — the agent drafts and poses questions as comments, the human comments/answers, the agent revises — looping until the human completes the session.
+# The human reviews every change in the inplan editor, so the agent's edits to the plan
+# file + sidecars and the inplan CLI are auto-approved while this skill is active (no
+# per-edit prompts). Scoped to plan files, the ~/.inplan sidecars, and the inplan CLI only.
+allowed-tools:
+  - Bash(inplan *)
+  - Edit(**/*.plan.md)
+  - Write(**/*.plan.md)
+  - Read(~/.inplan/**)
+  - Edit(~/.inplan/**)
+  - Write(~/.inplan/**)
 ---
 
 # inplan
@@ -33,9 +43,22 @@ but the human can't review in the GUI — surface the fix to them and proceed.
 
 ## File convention
 
-Save plans as `<name>.plan.md`. The editor keeps its sidecars in an
-`.inplan/` directory next to the file (control log, canonical base,
-backups) — never edit those by hand.
+Save plans as `<name>.plan.md`. The editor keeps its sidecars under
+`~/.inplan/sidecars/<key>/` (the control log `log.jsonl`, the canonical base
+`canonical.md`, any parked proposal `proposed.md`, backups, and `status.json`) —
+the `inplan` CLI owns these; never edit them by hand.
+
+## Auto-approval (review happens in the app)
+
+The human reviews every change you make inside the inplan editor, so you don't need
+the coding agent's per-edit confirmation for this workflow. This skill's `allowed-tools`
+auto-approve — **while the skill is active** — exactly: the `inplan` CLI, editing/writing
+`*.plan.md`, and reading/writing the `~/.inplan/` sidecars. Nothing else is granted, and
+your other tools still prompt as usual.
+
+For persistent auto-approval across sessions, run `inplan install-skill` — it merges the
+same scoped rules into `~/.claude/settings.json` (`permissions.allow` +
+`additionalDirectories: ["~/.inplan/"]`). Set `INPLAN_NO_SKILL_INSTALL=1` to skip.
 
 ## Document format
 
