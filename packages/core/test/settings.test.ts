@@ -34,7 +34,7 @@ afterEach(() => {
 describe("global settings", () => {
   it("returns defaults when no file exists", () => {
     expect(readGlobalSettings()).toEqual(DEFAULT_SETTINGS);
-    expect(DEFAULT_SETTINGS.autoResolve).toBe(true);
+    expect(DEFAULT_SETTINGS.autoResolve).toBe(false);
   });
 
   it("round-trips through the global file under INPLAN_HOME", () => {

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { LogEventType, parse, serialize, type Comment, type ParsedDocument, type Question } from "@inplan/core";
+import { isDocComment, isSpanComment, LogEventType, parse, serialize, type Comment, type ParsedDocument, type Question } from "@inplan/core";
 import { Fragment, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Acceptance, Cadence, ProfileState } from "./api";
+import type { Acceptance, Api, Cadence, ProfileState } from "./api";
 import {
   addAnswer,
   addDocComment,
@@ -27,6 +27,9 @@ import { ProfileMenu } from "./ProfileMenu";
 import { AgentIndicator } from "./AgentIndicator";
 import { IconBack, IconForward, IconSettings, IconZoomOut, IconZoomIn, IconFind, IconComment, IconSave, IconFinishTurn, IconRevealArchive } from "./Icons";
 import { QuitDialog } from "./QuitDialog";
+import { Onboarding, type OnboardingSignals } from "./Onboarding";
+import { ONBOARDING_SAMPLE } from "./onboardingSample";
+import { createMemoryApi } from "./memoryApi";
 import { useT } from "./i18n";
 import { applySegments, isChange, lineSegments, wordDiff, type DiffSegment, type WordPart } from "./textdiff";
 
@@ -117,13 +120,24 @@ interface Proposal {
 
 type FindMatch = { scope: "body"; from: number; to: number } | { scope: "comment"; id: string; from: number; to: number };
 
-export function App(): JSX.Element {
+/** Props the onboarding wrapper (AppRoot) threads into the editor. All optional —
+ *  the editor renders normally (and existing tests mount it bare) when they're absent. */
+export interface EditorProps {
+  /** First-run tour active: render the coach overlay + gate its comment steps. */
+  onboarding?: boolean;
+  /** The tour finished/skipped — AppRoot restores the real api and opens the real file. */
+  onFinishOnboarding?: () => void;
+  /** Wire a "Replay tutorial" item into the settings menu (real-doc phase only). */
+  onReplayOnboarding?: () => void;
+}
+
+export function App(props: EditorProps = {}): JSX.Element {
   const t = useT();
   const [loaded, setLoaded] = useState(false);
   const [doc, setDoc] = useState<ParsedDocument>(EMPTY);
   const [cadence, setCadence] = useState<Cadence>("turn");
-  const [acceptance, setAcceptance] = useState<Acceptance>("auto");
-  const [autoResolve, setAutoResolve] = useState(true); // agent auto-resolves threads after incorporating
+  const [acceptance, setAcceptance] = useState<Acceptance>("review"); // first-run default: agent parks edits for review
+  const [autoResolve, setAutoResolve] = useState(false); // first-run default: leave threads for the human to resolve
   const [panes, setPanes] = useState<1 | 2 | 3>(2);
   const [rightTab, setRightTab] = useState<"comments" | "source">("comments");
   const [srcW, setSrcW] = useState(380); // source pane width (px) — drag-resizable
@@ -812,6 +826,17 @@ export function App(): JSX.Element {
     if (ranges.length) cssApi.highlights.set("ap-find", new HighlightCtor(...ranges));
   }, [findOpts, findOpen, previewHtml, doc.comments]);
 
+  // Counts the first-run tour watches to know when a step's action has been done.
+  // (Declared before the early return below so the hook order stays stable.)
+  const onboardingSignals = useMemo<OnboardingSignals>(
+    () => ({
+      inline: doc.comments.filter(isSpanComment).length,
+      doc: doc.comments.filter(isDocComment).length,
+      answered: doc.comments.filter((c) => c.selected !== undefined).length,
+    }),
+    [doc.comments],
+  );
+
   if (!loaded) return <div className="ap-loading">{t("app.loading")}</div>;
 
   // 1 pane = preview only; 2 panes = preview + one of {source, comments} (tabbed);
@@ -839,6 +864,7 @@ export function App(): JSX.Element {
         onSave={saveNow}
         onFinishTurn={finishTurn}
         onBack={window.api.exit?.showBackButton ? () => setQuitOpen(true) : undefined}
+        onReplayTutorial={props.onReplayOnboarding}
         locked={editingLocked}
         nav={
           typeof window.api.navigate === "function"
@@ -974,6 +1000,8 @@ export function App(): JSX.Element {
         />
       )}
 
+      {props.onboarding && props.onFinishOnboarding && <Onboarding signals={onboardingSignals} onFinish={props.onFinishOnboarding} />}
+
       {ctxMenu && (
         <ContextMenu
           pos={{ x: ctxMenu.x, y: ctxMenu.y }}
@@ -994,7 +1022,7 @@ export function App(): JSX.Element {
       )}
 
       <div className="ap-main" style={{ zoom }}>
-        <section className="ap-preview" ref={previewRef}>
+        <section className="ap-preview" ref={previewRef} data-onboard="preview">
           {proposal && reviewOpen ? (
             <DiffPreview segs={reviewSegs} accepted={accepted} focused={reviewCursor} onToggle={toggleHunk} />
           ) : (
@@ -1072,7 +1100,7 @@ export function App(): JSX.Element {
         {showComments && (
           <>
             <VSplitter width={cmtW} setWidth={setCmtW} />
-          <section className="ap-pane ap-rail" ref={railRef} style={{ width: cmtW }}>
+          <section className="ap-pane ap-rail" ref={railRef} style={{ width: cmtW }} data-onboard="comments">
             {panes === 2 && <PaneTabs tab={rightTab} onTab={setRightTab} />}
             <div className="ap-rail-scroll">
             <div className="ap-rail-head">
@@ -1130,6 +1158,62 @@ export function App(): JSX.Element {
   );
 }
 
+const ONBOARDED_KEY = "ap-onboarded";
+
+/** Host entry point. On first run it swaps `window.api` for a throwaway in-memory
+ *  sample and runs the guided tour, so practice edits never touch the real document;
+ *  on finish it restores the host api and remounts the editor on the real file. Both
+ *  the desktop and web hosts mount THIS (not the bare editor). */
+export function AppRoot(): JSX.Element {
+  const realApiRef = useRef<Api | null>(null);
+  const swappedRef = useRef(false); // guards the api swap against StrictMode's double-invoke
+  const [phase, setPhase] = useState<"onboarding" | "real">(() => {
+    try {
+      return localStorage.getItem(ONBOARDED_KEY) ? "real" : "onboarding";
+    } catch {
+      return "real"; // storage blocked (private mode) → skip the tour rather than loop it
+    }
+  });
+  const [apiReady, setApiReady] = useState(phase === "real");
+
+  const installSample = useCallback(() => {
+    const real = window.api;
+    realApiRef.current = real;
+    const sample = createMemoryApi({ content: ONBOARDING_SAMPLE, settings: { autoResolve: false } }).api;
+    sample.i18n = real?.i18n; // keep the user's locale during the tour
+    (window as unknown as { api: Api }).api = sample;
+  }, []);
+
+  // First-run: install the sample api before the editor mounts (so its load reads the sample).
+  useEffect(() => {
+    if (phase !== "onboarding" || swappedRef.current) return;
+    swappedRef.current = true;
+    installSample();
+    setApiReady(true);
+  }, [phase, installSample]);
+
+  const finish = useCallback(() => {
+    try {
+      localStorage.setItem(ONBOARDED_KEY, "1");
+    } catch {
+      /* private mode — the tour will show again next launch, which is acceptable */
+    }
+    if (realApiRef.current) (window as unknown as { api: Api }).api = realApiRef.current;
+    setPhase("real");
+    setApiReady(true);
+  }, []);
+
+  const replay = useCallback(() => {
+    installSample(); // swap synchronously — this is a user action, not a double-invoked effect
+    setPhase("onboarding");
+    setApiReady(true);
+  }, [installSample]);
+
+  if (!apiReady) return <div className="ap-app" />; // one tick while the sample api is installed
+
+  return phase === "onboarding" ? <App key="onboarding" onboarding onFinishOnboarding={finish} /> : <App key="real" onReplayOnboarding={replay} />;
+}
+
 function PaneIcon({ n }: { n: 1 | 2 | 3 }): JSX.Element {
   return (
     <span className="ap-pane-ic" aria-hidden="true">
@@ -1145,11 +1229,13 @@ function SettingsMenu({
   autoResolve,
   onAcceptance,
   onAutoResolve,
+  onReplayTutorial,
 }: {
   acceptance: Acceptance;
   autoResolve: boolean;
   onAcceptance: (a: Acceptance) => void;
   onAutoResolve: (v: boolean) => void;
+  onReplayTutorial?: () => void;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -1163,7 +1249,7 @@ function SettingsMenu({
   }, []);
   return (
     <div className="ap-settings" ref={ref}>
-      <button title={t("settings.title")} aria-label={t("settings.title")} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+      <button data-onboard="settings" title={t("settings.title")} aria-label={t("settings.title")} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         <IconSettings />
       </button>
       {open && (
@@ -1184,6 +1270,17 @@ function SettingsMenu({
             <input type="checkbox" checked={autoResolve} onChange={(e) => onAutoResolve(e.target.checked)} />
           </label>
           <div className="ap-settings-hint">{t("settings.autoResolveHint")}</div>
+          {onReplayTutorial && (
+            <button
+              className="ap-settings-replay"
+              onClick={() => {
+                setOpen(false);
+                onReplayTutorial();
+              }}
+            >
+              {t("settings.replayTutorial")}
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -1259,6 +1356,7 @@ function TopBar(props: {
   onSave: () => void;
   onFinishTurn: () => void;
   onBack?: () => void; // web: return to the plan list (desktop quits via the OS window close)
+  onReplayTutorial?: () => void; // settings menu: re-run the first-run tour
   locked: boolean;
   nav?: { canBack: boolean; canForward: boolean; onBack: () => void; onForward: () => void };
 }): JSX.Element {
@@ -1301,7 +1399,7 @@ function TopBar(props: {
           {t("topbar.instant")}
         </button>
       </div>
-      <SettingsMenu acceptance={acceptance} autoResolve={props.autoResolve} onAcceptance={(a) => onMode(cadence, a)} onAutoResolve={props.onAutoResolve} />
+      <SettingsMenu acceptance={acceptance} autoResolve={props.autoResolve} onAcceptance={(a) => onMode(cadence, a)} onAutoResolve={props.onAutoResolve} onReplayTutorial={props.onReplayTutorial} />
       <div className="ap-seg" role="group" aria-label="panes">
         {([1, 2, 3] as const).map((n) => (
           <button

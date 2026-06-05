@@ -21,7 +21,10 @@ export interface Settings {
   autoResolve: boolean;
 }
 
-export const DEFAULT_SETTINGS: Settings = { autoResolve: true };
+// Both agent-behavior defaults start OFF for first-time users: the agent parks
+// edits for review (acceptance default lives in the renderer) and leaves threads
+// for the human to resolve. The first-run onboarding explains how to turn these on.
+export const DEFAULT_SETTINGS: Settings = { autoResolve: false };
 
 /** `~/.inplan/settings.json` — the global, cross-session source of truth.
  *  `INPLAN_HOME` overrides the base dir (used by tests; avoids touching $HOME). */
