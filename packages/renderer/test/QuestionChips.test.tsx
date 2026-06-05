@@ -70,6 +70,23 @@ describe("QuestionChips (FR4 choice answering)", () => {
       expect(screen.getByRole("radio", { name: /Postgres/ })).toBeTruthy();
     });
 
+    it("settles an Other-only answer (empty selection) so it can't be re-submitted", () => {
+      render(<QuestionChips question={single} disabled={false} answered={[]} onAnswer={() => {}} />);
+      expect(screen.queryByRole("button", { name: /^answer$/i })).toBeNull(); // no open picker
+      expect(screen.getByRole("button", { name: /change answer/i })).toBeTruthy();
+    });
+
+    it("disables Answer immediately after submit (no double-post before the parent settles)", () => {
+      const onAnswer = vi.fn();
+      // Render as still-unanswered so the picker is live; submit, then it should disable.
+      render(<QuestionChips question={single} disabled={false} onAnswer={onAnswer} />);
+      fireEvent.click(screen.getByRole("radio", { name: /Postgres/ }));
+      const btn = answerBtn();
+      fireEvent.click(btn);
+      expect(onAnswer).toHaveBeenCalledTimes(1);
+      expect(btn.disabled).toBe(true); // selected cleared → can't fire a second answer
+    });
+
     it("'Change answer' reopens the picker pre-filled, and re-answers", () => {
       const onAnswer = vi.fn();
       render(<QuestionChips question={single} disabled={false} answered={["SQLite"]} onAnswer={onAnswer} />);

@@ -26,7 +26,9 @@ export function QuestionChips({
   onAnswer: (selected: string[], text: string) => void;
 }): JSX.Element {
   const t = useT();
-  const isAnswered = answered != null && answered.length > 0;
+  // An answer exists once `answered` is non-null — including an Other-only answer
+  // (selected: []), which must still settle so it can't be re-submitted.
+  const isAnswered = answered != null;
   const [editing, setEditing] = useState(false);
   const [selected, setSelected] = useState<string[]>(answered ?? []);
   const [other, setOther] = useState("");
@@ -79,6 +81,9 @@ export function QuestionChips({
               disabled={disabled || (selected.length === 0 && !other.trim())}
               onClick={() => {
                 onAnswer(selected, other.trim());
+                // Clear local state immediately so the Answer button disables before the
+                // parent re-renders with `answered` — a second/double click can't double-post.
+                setSelected([]);
                 setOther("");
                 setEditing(false);
                 setExpanded(false);
