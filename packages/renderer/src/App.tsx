@@ -864,7 +864,17 @@ export function App(props: EditorProps = {}): JSX.Element {
         onSave={saveNow}
         onFinishTurn={finishTurn}
         onBack={window.api.exit?.showBackButton ? () => setQuitOpen(true) : undefined}
-        onReplayTutorial={props.onReplayOnboarding}
+        onReplayTutorial={
+          props.onReplayOnboarding
+            ? () => {
+                // Replaying remounts the editor (discarding in-memory state); persist any
+                // unsaved edits first — a silent canonical write (no agent wake) so the
+                // post-tour reload restores them.
+                if (dirty) void window.api.save(serialize(docRef.current), { kind: "apply", cadence });
+                props.onReplayOnboarding!();
+              }
+            : undefined
+        }
         locked={editingLocked}
         nav={
           typeof window.api.navigate === "function"

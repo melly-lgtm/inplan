@@ -7,6 +7,7 @@
 // does the thing (counts come in via `signals`); a Skip link always escapes.
 
 import { useEffect, useRef, useState } from "react";
+import { MOD_KEY } from "./platform";
 import { useT } from "./i18n";
 
 /** Live counts the tour watches to know when a step's action has been performed. */
@@ -61,7 +62,7 @@ export function Onboarding({ signals, onFinish }: { signals: OnboardingSignals; 
     return () => el?.classList.remove(SPOTLIGHT);
   }, [step.target]);
 
-  const shortcut = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform) ? "⌘/" : "Ctrl+/";
+  const shortcut = `${MOD_KEY}+/`; // shared modifier (⌘ on macOS, Ctrl elsewhere)
   const body = t(`onboarding.${step.id}.body`, step.id === "inline" ? { shortcut } : undefined);
 
   return (
