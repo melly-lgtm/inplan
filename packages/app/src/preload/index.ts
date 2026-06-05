@@ -93,7 +93,7 @@ const api: Api = {
     onRequest: (cb: () => void) => {
       const handler = (): void => cb();
       ipcRenderer.on("app:confirm-quit", handler);
-      return () => ipcRenderer.removeListener("app:confirm-quit", handler); // disposer (no leak on re-subscribe/unmount)
+      return () => ipcRenderer.removeListener("app:confirm-quit", handler);
     },
     quit: (content: string, opts: { save: boolean; notifyComplete: boolean }) => void ipcRenderer.invoke("app:quit", content, opts),
   },

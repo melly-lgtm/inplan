@@ -129,7 +129,7 @@ export interface ExitController {
   showBackButton: boolean;
   /** Subscribe to a host-initiated quit attempt (desktop window-close intercept) so the
    *  renderer can show the confirmation dialog. Absent on web (the Back button drives it).
-   *  Returns a disposer to unsubscribe (so re-subscribes/unmounts don't leak listeners). */
+   *  Returns a disposer to remove the listener (so it doesn't stack across remounts). */
   onRequest?(cb: () => void): (() => void) | void;
   /** Confirmed quit: optionally save the latest content, optionally signal the agent the
    *  plan is ready, then leave (desktop: close the window; web: return to the plan list). */
@@ -219,4 +219,10 @@ export function setApiOverride(api: Api | null): void {
 /** The api the renderer should use right now: the onboarding override if set, else the host. */
 export function hostApi(): Api {
   return _apiOverride ?? (window as unknown as { api: Api }).api;
+}
+
+/** The real host api, ignoring any onboarding override — for host-level concerns like the
+ *  desktop window-close intercept (the throwaway sample doesn't implement those). */
+export function realHostApi(): Api {
+  return (window as unknown as { api: Api }).api;
 }

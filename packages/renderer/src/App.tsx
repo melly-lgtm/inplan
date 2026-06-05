@@ -2,7 +2,7 @@
 
 import { isDocComment, isSpanComment, LogEventType, parse, serialize, type Comment, type ParsedDocument, type Question } from "@inplan/core";
 import { Fragment, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { hostApi, setApiOverride, type Acceptance, type Api, type Cadence, type ProfileState } from "./api";
+import { hostApi, realHostApi, setApiOverride, type Acceptance, type Api, type Cadence, type ProfileState } from "./api";
 import {
   addAnswer,
   addDocComment,
@@ -492,13 +492,23 @@ export function App(props: EditorProps = {}): JSX.Element {
   }, []);
 
   const [quitOpen, setQuitOpen] = useState(false);
+  const [forceSettingsOpen, setForceSettingsOpen] = useState(false); // onboarding opens the ⚙ menu on its settings step
   // Confirmed quit: the host saves (if asked), signals the agent (if asked), then leaves.
   const confirmQuit = useCallback((opts: { save: boolean; notifyComplete: boolean }) => {
-    hostApi().exit?.quit(serialize(docRef.current), opts);
+    realHostApi().exit?.quit(serialize(docRef.current), opts);
     setQuitOpen(false);
   }, []);
-  // Desktop intercepts the OS window-close and asks us to show the quit dialog.
-  useEffect(() => hostApi().exit?.onRequest?.(() => setQuitOpen(true)), []);
+  // The desktop window-close intercept is a HOST concern, so subscribe on the REAL host
+  // (the onboarding sample has no onRequest). During the tour, closing just quits the
+  // throwaway sample; otherwise it raises the quit-confirmation dialog. The returned
+  // disposer prevents the listener from stacking across the onboarding → real remount.
+  useEffect(() => {
+    const real = realHostApi();
+    return real?.exit?.onRequest?.(() => {
+      if (props.onboarding) real.exit?.quit("", { save: false, notifyComplete: false });
+      else setQuitOpen(true);
+    });
+  }, [props.onboarding]);
 
   // --- comment actions ---
   const addComment = useCallback(
@@ -875,6 +885,7 @@ export function App(props: EditorProps = {}): JSX.Element {
               }
             : undefined
         }
+        forceSettingsOpen={forceSettingsOpen}
         locked={editingLocked}
         nav={
           typeof hostApi().navigate === "function"
@@ -1010,7 +1021,9 @@ export function App(props: EditorProps = {}): JSX.Element {
         />
       )}
 
-      {props.onboarding && props.onFinishOnboarding && <Onboarding signals={onboardingSignals} onFinish={props.onFinishOnboarding} />}
+      {props.onboarding && props.onFinishOnboarding && (
+        <Onboarding signals={onboardingSignals} onFinish={props.onFinishOnboarding} onActiveStep={(id) => setForceSettingsOpen(id === "settings")} />
+      )}
 
       {ctxMenu && (
         <ContextMenu
@@ -1237,29 +1250,32 @@ function SettingsMenu({
   onAcceptance,
   onAutoResolve,
   onReplayTutorial,
+  forceOpen,
 }: {
   acceptance: Acceptance;
   autoResolve: boolean;
   onAcceptance: (a: Acceptance) => void;
   onAutoResolve: (v: boolean) => void;
   onReplayTutorial?: () => void;
+  forceOpen?: boolean; // onboarding holds the menu open on the settings step
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const t = useT();
+  const isOpen = forceOpen || open; // forceOpen (onboarding) overrides the outside-click close
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (!forceOpen && ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
-  }, []);
+  }, [forceOpen]);
   return (
     <div className="ap-settings" ref={ref}>
-      <button data-onboard="settings" title={t("settings.title")} aria-label={t("settings.title")} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+      <button data-onboard="settings" title={t("settings.title")} aria-label={t("settings.title")} aria-expanded={isOpen} onClick={() => setOpen((v) => !v)}>
         <IconSettings />
       </button>
-      {open && (
+      {isOpen && (
         <div className="ap-settings-menu">
           <div className="ap-settings-row">
             <span>{t("settings.agentChanges")}</span>
@@ -1364,6 +1380,7 @@ function TopBar(props: {
   onFinishTurn: () => void;
   onBack?: () => void; // web: return to the plan list (desktop quits via the OS window close)
   onReplayTutorial?: () => void; // settings menu: re-run the first-run tour
+  forceSettingsOpen?: boolean; // onboarding: hold the ⚙ menu open on the settings step
   locked: boolean;
   nav?: { canBack: boolean; canForward: boolean; onBack: () => void; onForward: () => void };
 }): JSX.Element {
@@ -1406,7 +1423,7 @@ function TopBar(props: {
           {t("topbar.instant")}
         </button>
       </div>
-      <SettingsMenu acceptance={acceptance} autoResolve={props.autoResolve} onAcceptance={(a) => onMode(cadence, a)} onAutoResolve={props.onAutoResolve} onReplayTutorial={props.onReplayTutorial} />
+      <SettingsMenu acceptance={acceptance} autoResolve={props.autoResolve} onAcceptance={(a) => onMode(cadence, a)} onAutoResolve={props.onAutoResolve} onReplayTutorial={props.onReplayTutorial} forceOpen={props.forceSettingsOpen} />
       <div className="ap-seg" role="group" aria-label="panes">
         {([1, 2, 3] as const).map((n) => (
           <button

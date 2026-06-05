@@ -61,7 +61,7 @@ export const EN: Catalog = {
   "onboarding.welcome.title": "Welcome to inplan 👋",
   "onboarding.welcome.body": "A quick tour on a sample plan — nothing here is saved. You and your coding agent plan together by leaving comments on the document.",
   "onboarding.settings.title": "Choose how the agent applies edits",
-  "onboarding.settings.body": "Open Settings (⚙). In Review the agent parks its edits for you to approve; in Auto-accept they apply live. You can change this anytime.",
+  "onboarding.settings.body": "This is the Settings menu. “Agent changes” chooses Review — the agent parks its edits for you to approve (the default) — or Auto-accept, which applies them live. Below it, choose whether the agent auto-resolves a comment thread after addressing it. Change these anytime.",
   "onboarding.inline.title": "Comment on a line",
   "onboarding.inline.body": "Select some text in the plan, then press {shortcut} or right-click → Add Comment. Try it now.",
   "onboarding.doc.title": "Comment on the whole document",

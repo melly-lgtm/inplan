@@ -38,7 +38,16 @@ const STEPS: Step[] = [
 
 const SPOTLIGHT = "ap-coach-target";
 
-export function Onboarding({ signals, onFinish }: { signals: OnboardingSignals; onFinish: () => void }): JSX.Element {
+export function Onboarding({
+  signals,
+  onFinish,
+  onActiveStep,
+}: {
+  signals: OnboardingSignals;
+  onFinish: () => void;
+  /** Notifies the editor which step is active (so it can reveal step-specific UI). */
+  onActiveStep?: (stepId: string) => void;
+}): JSX.Element {
   const t = useT();
   const [idx, setIdx] = useState(0);
   // Snapshot of the counts when the current step opened — the gate compares against it
@@ -56,11 +65,16 @@ export function Onboarding({ signals, onFinish }: { signals: OnboardingSignals; 
 
   // Spotlight the current step's target control with a pulsing outline.
   useEffect(() => {
-    const sel = step.target;
-    const el = sel ? document.querySelector(sel) : null;
+    const el = step.target ? document.querySelector(step.target) : null;
     el?.classList.add(SPOTLIGHT);
     return () => el?.classList.remove(SPOTLIGHT);
   }, [step.target]);
+
+  // Tell the editor which step is active, so it can reveal step-specific UI (e.g. open the
+  // settings menu on the "settings" step so its controls are visible while we explain them).
+  useEffect(() => {
+    onActiveStep?.(step.id);
+  }, [step.id, onActiveStep]);
 
   const shortcut = `${MOD_KEY}+/`; // shared modifier (⌘ on macOS, Ctrl elsewhere)
   const body = t(`onboarding.${step.id}.body`, step.id === "inline" ? { shortcut } : undefined);
