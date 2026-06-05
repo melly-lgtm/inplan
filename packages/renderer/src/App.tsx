@@ -1038,7 +1038,9 @@ export function App(props: EditorProps = {}): JSX.Element {
           onClose={() => setCtxMenu(null)}
           items={[
             {
-              label: t("topbar.addComment"),
+              // No selection ⇒ this posts a document-level comment, so name it as such
+              // (it's a common surprise that a "selected" blue line still comments the whole doc).
+              label: ctxMenu.hasSel ? t("topbar.addComment") : t("topbar.addDocComment"),
               disabled: editingLocked || ctxMenu.block !== null,
               ...(ctxMenu.block ? { title: blockerTip(ctxMenu.block) ?? "" } : {}),
               onSelect: openComposerFromCapture,
