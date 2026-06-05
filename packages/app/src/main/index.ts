@@ -336,7 +336,11 @@ function registerIpc(): void {
     session?.setSettings(settings);
   });
   ipcMain.handle("window:close", () => {
-    quitConfirmed = true; // explicit reload/restart close — skip the confirm dialog
+    // Reload / restart / update-restart close without the quit dialog — but preserve any
+    // unsaved edits to disk first (the relaunched editor reloads them), so a build reload
+    // never silently drops the human's in-progress turn.
+    if (session?.hasUnsaved) session.complete(session.pending);
+    quitConfirmed = true;
     win?.close();
   });
   ipcMain.handle("proposal:get", () => session?.pendingProposal() ?? null);
