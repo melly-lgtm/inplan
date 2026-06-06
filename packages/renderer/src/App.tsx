@@ -865,8 +865,19 @@ export function App(props: EditorProps = {}): JSX.Element {
   // visible threads in order, disabling at the first/last. `focused` may hold a reply
   // id (e.g. a find-in-comments match), so resolve it to its thread root before matching.
   const focusedRootId = (() => {
-    const c = doc.comments.find((x) => x.id === focused);
-    return c?.parentId ?? focused;
+    // Walk the whole parentId chain to the top-level root — a reply-to-reply must
+    // still resolve to its thread root (a single hop would land on an intermediate
+    // reply that never matches o.thread.root.id). Guard against cyclic parentIds.
+    const byId = new Map(doc.comments.map((x) => [x.id, x]));
+    let id = focused;
+    const seen = new Set<string>();
+    let c = id ? byId.get(id) : undefined;
+    while (c?.parentId && !seen.has(c.parentId)) {
+      seen.add(c.parentId);
+      id = c.parentId;
+      c = byId.get(id);
+    }
+    return id;
   })();
   const focusedIdx = visible.findIndex((o) => o.thread.root.id === focusedRootId);
   const gotoThread = (dir: -1 | 1) => {
