@@ -38,6 +38,8 @@ export interface Settings {
   /** "planning" (draft/refine the doc) or "implementation" (build it). Optional for
    *  back-compat; defaults to "planning". */
   agentMode?: AgentMode;
+  /** Opt-in anonymous usage analytics (off/absent = nothing sent). */
+  telemetry?: boolean;
 }
 
 /** Where an agent is attached right now — derived from live presence by the host

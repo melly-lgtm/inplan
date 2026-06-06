@@ -38,9 +38,11 @@ export function ProfileMenu({
   acceptance,
   autoResolve,
   agentMode,
+  telemetry,
   onAcceptance,
   onAutoResolve,
   onAgentMode,
+  onTelemetry,
   onReplayTutorial,
   forceOpen,
 }: {
@@ -51,9 +53,11 @@ export function ProfileMenu({
   acceptance?: Acceptance;
   autoResolve?: boolean;
   agentMode?: AgentMode;
+  telemetry?: boolean;
   onAcceptance?: (a: Acceptance) => void;
   onAutoResolve?: (v: boolean) => void;
   onAgentMode?: (m: AgentMode) => void;
+  onTelemetry?: (v: boolean) => void;
   onReplayTutorial?: () => void;
   forceOpen?: boolean; // onboarding holds the menu open on the settings step
 }): JSX.Element | null {
@@ -195,6 +199,15 @@ export function ProfileMenu({
                 <input type="checkbox" checked={!!autoResolve} onChange={(e) => onAutoResolve!(e.target.checked)} />
               </label>
               <div className="ap-settings-hint">{t("settings.autoResolveHint")}</div>
+              {onTelemetry && (
+                <>
+                  <label className="ap-settings-row">
+                    <span>{t("settings.telemetry")}</span>
+                    <input type="checkbox" checked={!!telemetry} onChange={(e) => onTelemetry(e.target.checked)} />
+                  </label>
+                  <div className="ap-settings-hint">{t("settings.telemetryHint")}</div>
+                </>
+              )}
               {onReplayTutorial && (
                 <button
                   className="ap-settings-replay"

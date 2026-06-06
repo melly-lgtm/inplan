@@ -142,6 +142,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [acceptance, setAcceptance] = useState<Acceptance>("review"); // first-run default: agent parks edits for review
   const [autoResolve, setAutoResolve] = useState(false); // first-run default: leave threads for the human to resolve
   const [agentMode, setAgentMode] = useState<"planning" | "implementation">("planning"); // default: planning loop
+  const [telemetry, setTelemetry] = useState(false); // opt-in anonymous usage analytics — default OFF
   const [panes, setPanes] = useState<1 | 2 | 3>(2);
   const [rightTab, setRightTab] = useState<"comments" | "source">("comments");
   const [srcW, setSrcW] = useState(380); // source pane width (px) — drag-resizable
@@ -218,6 +219,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     void hostApi().getSettings().then((s) => {
       setAutoResolve(s.autoResolve);
       setAgentMode(s.agentMode ?? "planning");
+      setTelemetry(s.telemetry === true);
     });
   }, []);
 
@@ -490,8 +492,8 @@ export function App(props: EditorProps = {}): JSX.Element {
 
   // Global agent-behavior settings: persist the whole object (the host overwrites the
   // file), so always send both fields — refs keep the callbacks fresh without re-creating.
-  const settingsRef = useRef({ autoResolve, agentMode });
-  settingsRef.current = { autoResolve, agentMode };
+  const settingsRef = useRef({ autoResolve, agentMode, telemetry });
+  settingsRef.current = { autoResolve, agentMode, telemetry };
   const onAutoResolve = useCallback((v: boolean) => {
     setAutoResolve(v);
     void hostApi().setSettings({ ...settingsRef.current, autoResolve: v });
@@ -499,6 +501,10 @@ export function App(props: EditorProps = {}): JSX.Element {
   const onAgentMode = useCallback((m: "planning" | "implementation") => {
     setAgentMode(m);
     void hostApi().setSettings({ ...settingsRef.current, agentMode: m });
+  }, []);
+  const onTelemetry = useCallback((v: boolean) => {
+    setTelemetry(v);
+    void hostApi().setSettings({ ...settingsRef.current, telemetry: v });
   }, []);
 
   const onZoom = useCallback((dir: -1 | 0 | 1) => {
@@ -947,6 +953,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         acceptance={acceptance}
         autoResolve={autoResolve}
         agentMode={agentMode}
+        telemetry={telemetry}
         panes={panes}
         zoom={zoom}
         hasSelection={selectionText.length > 0}
@@ -954,6 +961,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         onMode={onModeChange}
         onAutoResolve={onAutoResolve}
         onAgentMode={onAgentMode}
+        onTelemetry={onTelemetry}
         onPanes={setPanes}
         onZoom={onZoom}
         onAddComment={openComposer}
@@ -1425,6 +1433,7 @@ function TopBar(props: {
   acceptance: Acceptance;
   autoResolve: boolean;
   agentMode: "planning" | "implementation";
+  telemetry: boolean;
   panes: 1 | 2 | 3;
   zoom: number;
   hasSelection: boolean;
@@ -1432,6 +1441,7 @@ function TopBar(props: {
   onMode: (c: Cadence, a: Acceptance) => void;
   onAutoResolve: (v: boolean) => void;
   onAgentMode: (m: "planning" | "implementation") => void;
+  onTelemetry: (v: boolean) => void;
   onPanes: (p: 1 | 2 | 3) => void;
   onZoom: (dir: -1 | 0 | 1) => void;
   onAddComment: () => void;
@@ -1566,9 +1576,11 @@ function TopBar(props: {
         acceptance={acceptance}
         autoResolve={props.autoResolve}
         agentMode={props.agentMode}
+        telemetry={props.telemetry}
         onAcceptance={(a) => onMode(cadence, a)}
         onAutoResolve={props.onAutoResolve}
         onAgentMode={props.onAgentMode}
+        onTelemetry={props.onTelemetry}
         onReplayTutorial={props.onReplayTutorial}
         forceOpen={props.forceSettingsOpen}
       />

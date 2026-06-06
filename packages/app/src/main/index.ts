@@ -10,6 +10,7 @@ import type { Acceptance, Cadence, SaveOptions, Settings } from "@inplan/rendere
 import { isOnboarded, markOnboarded } from "@inplan/core/node";
 import { Session } from "./session";
 import { createI18nController } from "./i18nController";
+import { track } from "./telemetry";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -506,6 +507,7 @@ void app.whenReady().then(() => {
     session.logEditorPid(process.pid);
     navHistory.push(target);
     navIdx = 0;
+    track("app_opened", session.getSettings().telemetry === true); // opt-in only
   }
   registerIpc();
   createWindow();
