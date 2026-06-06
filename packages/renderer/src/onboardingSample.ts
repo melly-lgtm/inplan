@@ -24,7 +24,7 @@ Select any line above, then press the comment shortcut to leave a note on it.
 [
   {
     "id": "cmt-onb001",
-    "author": "Agent <agent@inplan>",
+    "author": "Opus 4.8 <claude@inplan.ai>",
     "date": "2026-01-01T00:00:00Z",
     "resolved": false,
     "text": "Which datastore should we use for the cache?",

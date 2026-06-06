@@ -33,7 +33,7 @@ describe("StatusBar", () => {
 
   it("shows the cadence and an unsaved marker", () => {
     render(<StatusBar {...base} cadence="instant" dirty />);
-    expect(document.body.textContent).toContain("instant mode");
+    expect(document.body.textContent).toContain("Instant mode");
     expect(document.body.textContent).toContain("unsaved");
   });
 

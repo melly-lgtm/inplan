@@ -75,7 +75,7 @@ describe("App doc-comment ordering + auto-resolve setting (memory-backed)", () =
     await waitFor(() => expect(document.body.textContent).toContain("body text"));
 
     // Open the Settings (gear) menu.
-    fireEvent.click(screen.getByTitle("Settings"));
+    fireEvent.click(document.querySelector('[data-onboard="settings"]') as HTMLElement); // settings live in the avatar menu now
     await waitFor(() => expect(screen.getByText(/Agent auto-resolves a thread/i)).toBeTruthy());
 
     // The auto-resolve checkbox is the one inside the auto-resolve row.
@@ -90,7 +90,7 @@ describe("App doc-comment ordering + auto-resolve setting (memory-backed)", () =
     render(<App />);
     await waitFor(() => expect(document.body.textContent).toContain("body text"));
 
-    fireEvent.click(screen.getByTitle("Settings"));
+    fireEvent.click(document.querySelector('[data-onboard="settings"]') as HTMLElement); // settings live in the avatar menu now
     const row = screen.getByText(/Agent auto-resolves a thread/i).closest("label")!;
     const checkbox = row.querySelector('input[type="checkbox"]') as HTMLInputElement;
     expect(checkbox.checked).toBe(true);

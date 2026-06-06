@@ -83,6 +83,9 @@ export interface ProfileState {
   agentQuota?: { usedPct: number; overage: boolean };
   /** True when the cloud agent runs on the org's own (BYO) key — indicator goes dark blue. */
   agentByoKey?: boolean;
+  /** Where the human identity was resolved from (cloud/git/manual); null when unset
+   *  (the menu then prompts the human to set up their profile). */
+  identitySource?: "cloud" | "git" | "manual" | null;
 }
 
 /** A reactive source of {@link ProfileState}. `get()` must return a referentially
@@ -90,6 +93,9 @@ export interface ProfileState {
 export interface ProfileController {
   get(): ProfileState;
   subscribe(cb: (s: ProfileState) => void): () => void;
+  /** Persist the human's local identity (the Edit-profile form). Optional: hosts that
+   *  don't support a manual identity simply omit it. */
+  setIdentity?(name: string, email?: string): Promise<void>;
 }
 
 /** A flat catalog of UI strings for one locale: key → translated text. Values may
@@ -199,6 +205,13 @@ export interface Api {
   onUpdateAvailable?(cb: (info: { current: string; latest: string }) => void): (() => void) | void;
   /** Desktop only: run the npm self-update; resolves `ok` on success (then restart). */
   applyUpdate?(): Promise<{ ok: boolean }>;
+  /** Desktop only: relaunch into the freshly-installed version (same doc). */
+  restartApp?(): Promise<void>;
+  /** First-run tour already shown? Host-provided durable flag (desktop: ~/.inplan).
+   *  Undefined when the host doesn't manage it (web falls back to localStorage). */
+  onboarded?: boolean;
+  /** Persist that the tour has been shown (completed or skipped). */
+  setOnboarded?(): Promise<void> | void;
 }
 
 declare global {

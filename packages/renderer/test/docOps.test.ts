@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, it } from "vitest";
-import { addSpanComment, deleteComment, findSpanRange } from "../src/docOps";
+import { addSpanComment, deleteComment, findSpanRange, setAnswer } from "../src/docOps";
 import type { ParsedDocument } from "@inplan/core";
 
 describe("findSpanRange — source-span scoping (preview block disambiguation)", () => {
@@ -78,5 +78,18 @@ describe("addSpanComment", () => {
     expect(res).not.toBeNull();
     expect(res!.doc.body).toContain("[showing resolved *and* orphaned](#" + res!.id + ")");
     expect(res!.doc.comments).toHaveLength(1);
+  });
+});
+
+describe("setAnswer — no duplicate on re-answer", () => {
+  it("updates the existing answer instead of adding a second one", () => {
+    const doc = { body: "Pick [one](#cmt-q1).", comments: [{ id: "cmt-q1", author: "Agent", date: "2026-01-01T00:00:00Z", resolved: false, text: "Which?", question: { multiSelect: false, choices: [{ label: "A" }, { label: "B" }] } }] };
+    const first = setAnswer(doc, "cmt-q1", ["A"], "", "You");
+    expect(first.doc.comments.filter((c) => Array.isArray(c.selected))).toHaveLength(1);
+    const second = setAnswer(first.doc, "cmt-q1", ["B"], "", "You");
+    const answers = second.doc.comments.filter((c) => Array.isArray(c.selected));
+    expect(answers).toHaveLength(1); // still ONE answer, not two
+    expect(answers[0]!.selected).toEqual(["B"]); // updated to the new choice
+    expect(second.id).toBe(first.id); // same comment id reused
   });
 });

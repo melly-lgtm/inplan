@@ -33,9 +33,10 @@ function mount(content: string) {
 afterEach(cleanup);
 
 async function openMenu() {
-  const gear = screen.getByTitle("Settings");
+  // Settings now live in the avatar menu (tagged data-onboard="settings").
+  const avatar = document.querySelector('[data-onboard="settings"]') as HTMLElement;
   await act(async () => {
-    gear.click();
+    avatar.click();
   });
   await waitFor(() => expect(document.body.textContent).toContain("Agent changes"));
 }

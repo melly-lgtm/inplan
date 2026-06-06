@@ -55,6 +55,11 @@ export function StatusBar({
 
   return (
     <footer className="ap-statusbar">
+      {/* LEFT: current mode, then the status message (or "Agent is thinking…"). */}
+      <span className="ap-status-mode">
+        {t(cadence === "instant" ? "topbar.instant" : "topbar.turn")} {t("status.mode")}
+      </span>
+      <span className="ap-status-sep" aria-hidden="true">|</span>
       {agentThinking ? (
         <span className="ap-thinking" title={t("status.thinkingTitle")}>
           {t("status.thinking")} <span className="ap-dots">{dots}</span>
@@ -65,16 +70,20 @@ export function StatusBar({
           )}
         </span>
       ) : (
-        <span>{status || t("status.ready")}</span>
+        <span className="ap-status-msg">{status || t("status.ready")}</span>
       )}
+      {dirty && <span className="ap-status-dirty"> · {t("status.unsaved")}</span>}
 
+      <span className="ap-spacer" />
+
+      {/* RIGHT: the agent's relayed-message history. */}
       {latest && (
         <div className="ap-agentmsg" ref={msgRef}>
           <button className="ap-agentmsg-latest" onClick={() => setOpen((v) => !v)} title={t("status.agentMessages")} aria-expanded={open}>
             <span aria-hidden="true">💬</span> {latest.text}
           </button>
           {open && (
-            <div className="ap-agentmsg-pop" role="dialog" aria-label={t("status.agentMessages")}>
+            <div className="ap-agentmsg-pop ap-agentmsg-pop--right" role="dialog" aria-label={t("status.agentMessages")}>
               <div className="ap-agentmsg-head">{t("status.agentMessages")}</div>
               <div className="ap-agentmsg-list">
                 {messages
@@ -91,12 +100,6 @@ export function StatusBar({
           )}
         </div>
       )}
-
-      <span className="ap-spacer" />
-      <span>
-        {cadence} {t("status.mode")}
-      </span>
-      {dirty && <span> · {t("status.unsaved")}</span>}
     </footer>
   );
 }

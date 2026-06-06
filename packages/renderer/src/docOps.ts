@@ -282,6 +282,18 @@ export function addAnswer(doc: ParsedDocument, parentId: string, selected: strin
   return { doc: { ...doc, comments: [...doc.comments, comment] }, id };
 }
 
+/**
+ * Set the human's answer to a question: if an answer already exists in the thread
+ * (a child with a `selected` array), update it in place; otherwise add a new one.
+ * Prevents a duplicate answer comment when the user changes their selection.
+ */
+export function setAnswer(doc: ParsedDocument, parentId: string, selected: string[], text: string, author: string): { doc: ParsedDocument; id: string } {
+  const existing = doc.comments.find((c) => c.parentId === parentId && Array.isArray(c.selected));
+  if (!existing) return addAnswer(doc, parentId, selected, text, author);
+  const comments = doc.comments.map((c) => (c.id === existing.id ? { ...c, selected, text, author, date: nowIso() } : c));
+  return { doc: { ...doc, comments }, id: existing.id };
+}
+
 export function setResolved(doc: ParsedDocument, id: string, resolved: boolean): ParsedDocument {
   return { ...doc, comments: doc.comments.map((c) => (c.id === id ? { ...c, resolved } : c)) };
 }

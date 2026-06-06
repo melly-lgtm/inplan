@@ -65,6 +65,10 @@ export const IconFinishTurn = (): JSX.Element => (
 export const IconComplete = (): JSX.Element => (
   <Glyph><polyline points="20 6 9 17 4 12" /></Glyph>
 );
+/** Counter-clockwise arrow — reopen a resolved thread. */
+export const IconReopen = (): JSX.Element => (
+  <Glyph><polyline points="3 3 3 9 9 9" /><path d="M3.5 13a8 8 0 1 0 2.2-7.4L3 9" /></Glyph>
+);
 /** An eye resting on a closed box — "peek into" the hidden (resolved + orphaned) comments. */
 export const IconRevealArchive = (): JSX.Element => (
   <Glyph>

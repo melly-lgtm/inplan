@@ -4,7 +4,7 @@ import { isDocComment, isSpanComment, LogEventType, parse, serialize, type Comme
 import { Fragment, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hostApi, realHostApi, setApiOverride, type Acceptance, type Api, type Cadence, type ProfileState } from "./api";
 import {
-  addAnswer,
+  setAnswer,
   addDocComment,
   addReply,
   addSpanComment,
@@ -26,7 +26,9 @@ import { SourceEditor, type SourceEditorHandle } from "./SourceEditor";
 import { StatusBar } from "./StatusBar";
 import { ProfileMenu } from "./ProfileMenu";
 import { AgentIndicator } from "./AgentIndicator";
-import { IconBack, IconForward, IconUp, IconDown, IconSettings, IconZoomOut, IconZoomIn, IconFind, IconComment, IconSave, IconFinishTurn, IconRevealArchive } from "./Icons";
+import { IconBack, IconForward, IconUp, IconDown, IconZoomOut, IconZoomIn, IconFind, IconComment, IconSave, IconFinishTurn, IconRevealArchive, IconComplete, IconReopen } from "./Icons";
+import { RelativeTime } from "./RelativeTime";
+import { AuthorChip } from "./Avatar";
 import { QuitDialog } from "./QuitDialog";
 import { Onboarding, type OnboardingSignals } from "./Onboarding";
 import { ONBOARDING_SAMPLE } from "./onboardingSample";
@@ -153,6 +155,12 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [reloadReady, setReloadReady] = useState(false); // agent signalled a new build is ready to load
   const [reloadIn, setReloadIn] = useState<number | null>(null); // seconds until auto-close (null = not counting)
   const [update, setUpdate] = useState<{ current: string; latest: string } | null>(null); // newer npm version
+  // The human's resolved identity authors their comments ("Name <email>"); falls back
+  // to "You" until a profile resolves (cloud/git/manual). A ref keeps callbacks fresh.
+  const profile = useProfile();
+  const userAuthor = profile?.user ? (profile.user.email ? `${profile.user.name} <${profile.user.email}>` : profile.user.name) : USER_AUTHOR;
+  const userAuthorRef = useRef(userAuthor);
+  userAuthorRef.current = userAuthor;
   const [updating, setUpdating] = useState<"idle" | "running" | "done" | "failed">("idle");
   const [showResolvedOrphaned, setShowResolvedOrphaned] = useState(false);
   const [selectionText, setSelectionText] = useState("");
@@ -535,7 +543,7 @@ export function App(props: EditorProps = {}): JSX.Element {
           setStatus(blocker === "overlap" ? t("topbar.cantOverlap") : t("msg.cantAnchor"));
           return;
         }
-        const res = addSpanComment(docRef.current, target, { text, author: USER_AUTHOR, question }, span ?? undefined);
+        const res = addSpanComment(docRef.current, target, { text, author: userAuthorRef.current, question }, span ?? undefined);
         if (!res) {
           setStatus(t("msg.cantAnchor"));
           return;
@@ -543,7 +551,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         apply(res.doc, { type: "comment_created", payload: { id: res.id } });
         setFocused(res.id);
       } else {
-        const res = addDocComment(docRef.current, { text, author: USER_AUTHOR, question });
+        const res = addDocComment(docRef.current, { text, author: userAuthorRef.current, question });
         apply(res.doc, { type: "comment_created", payload: { id: res.id, anchor: "doc" } });
         setFocused(res.id);
       }
@@ -1003,7 +1011,16 @@ export function App(props: EditorProps = {}): JSX.Element {
             <>
               {t("banner.updated")} <strong>v{update.latest}</strong> {t("banner.restartToApply")}
               <span className="ap-spacer" />
-              <button className="ap-primary" onClick={() => void hostApi().closeWindow()}>
+              <button
+                className="ap-primary"
+                onClick={() => {
+                  // Persist unsaved edits, then relaunch into the new version (falling
+                  // back to a plain close if the host can't relaunch).
+                  if (dirty) void hostApi().save(serialize(docRef.current), { kind: "apply", cadence });
+                  if (hostApi().restartApp) void hostApi().restartApp!();
+                  else void hostApi().closeWindow();
+                }}
+              >
                 {t("banner.restart")}
               </button>
             </>
@@ -1233,8 +1250,8 @@ export function App(props: EditorProps = {}): JSX.Element {
                   synced={syncedCommentId === o.thread.root.id}
                   disabled={editingLocked}
                   onFocus={() => focusComment(o.thread.root.id, false, true)}
-                  onReply={(text) => apply(addReply(docRef.current, o.thread.root.id, text, USER_AUTHOR).doc, { type: "comment_created", payload: { parentId: o.thread.root.id } })}
-                  onAnswer={(selected, text) => apply(addAnswer(docRef.current, o.thread.root.id, selected, text, USER_AUTHOR).doc, { type: "comment_answered", payload: { parentId: o.thread.root.id, selected } })}
+                  onReply={(text) => apply(addReply(docRef.current, o.thread.root.id, text, userAuthorRef.current).doc, { type: "comment_created", payload: { parentId: o.thread.root.id } })}
+                  onAnswer={(selected, text) => apply(setAnswer(docRef.current, o.thread.root.id, selected, text, userAuthorRef.current).doc, { type: "comment_answered", payload: { parentId: o.thread.root.id, selected } })}
                   onResolve={(r) => apply(setResolved(docRef.current, o.thread.root.id, r), { type: "comment_resolved", payload: { id: o.thread.root.id, resolved: r } })}
                   onEdit={(id, text) => apply(editCommentText(docRef.current, id, text), { type: "comment_modified", payload: { id } })}
                   onDelete={(id) => apply(deleteComment(docRef.current, id), { type: "comment_deleted", payload: { id } })}
@@ -1270,6 +1287,10 @@ const ONBOARDED_KEY = "ap-onboarded";
 export function AppRoot(): JSX.Element {
   const installedRef = useRef(false); // guards the override install against StrictMode's double-invoke
   const [phase, setPhase] = useState<"onboarding" | "real">(() => {
+    // Prefer the host's durable flag (desktop: ~/.inplan, survives across launches);
+    // fall back to localStorage on hosts that don't manage it (web).
+    const ra = realHostApi();
+    if (typeof ra.onboarded === "boolean") return ra.onboarded ? "real" : "onboarding";
     try {
       return localStorage.getItem(ONBOARDED_KEY) ? "real" : "onboarding";
     } catch {
@@ -1293,10 +1314,16 @@ export function AppRoot(): JSX.Element {
   }, [phase, installSample]);
 
   const finish = useCallback(() => {
-    try {
-      localStorage.setItem(ONBOARDED_KEY, "1");
-    } catch {
-      /* private mode — the tour will show again next launch, which is acceptable */
+    // Persist "tour shown" durably via the host (desktop: ~/.inplan); localStorage on web.
+    const ra = realHostApi();
+    if (ra.setOnboarded) {
+      void ra.setOnboarded();
+    } else {
+      try {
+        localStorage.setItem(ONBOARDED_KEY, "1");
+      } catch {
+        /* private mode — the tour will show again next launch, which is acceptable */
+      }
     }
     setApiOverride(null); // back to the real host
     setPhase("real");
@@ -1321,72 +1348,6 @@ function PaneIcon({ n }: { n: 1 | 2 | 3 }): JSX.Element {
         <i key={i} />
       ))}
     </span>
-  );
-}
-
-function SettingsMenu({
-  acceptance,
-  autoResolve,
-  onAcceptance,
-  onAutoResolve,
-  onReplayTutorial,
-  forceOpen,
-}: {
-  acceptance: Acceptance;
-  autoResolve: boolean;
-  onAcceptance: (a: Acceptance) => void;
-  onAutoResolve: (v: boolean) => void;
-  onReplayTutorial?: () => void;
-  forceOpen?: boolean; // onboarding holds the menu open on the settings step
-}): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const t = useT();
-  const isOpen = forceOpen || open; // forceOpen (onboarding) overrides the outside-click close
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      if (!forceOpen && ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [forceOpen]);
-  return (
-    <div className="ap-settings" ref={ref}>
-      <button data-onboard="settings" title={t("settings.title")} aria-label={t("settings.title")} aria-expanded={isOpen} onClick={() => setOpen((v) => !v)}>
-        <IconSettings />
-      </button>
-      {isOpen && (
-        <div className="ap-settings-menu">
-          <div className="ap-settings-row">
-            <span>{t("settings.agentChanges")}</span>
-            <div className="ap-seg">
-              <button className={acceptance === "auto" ? "active" : ""} onClick={() => onAcceptance("auto")}>
-                {t("settings.autoAccept")}
-              </button>
-              <button className={acceptance === "review" ? "active" : ""} onClick={() => onAcceptance("review")}>
-                {t("settings.review")}
-              </button>
-            </div>
-          </div>
-          <label className="ap-settings-row">
-            <span>{t("settings.autoResolve")}</span>
-            <input type="checkbox" checked={autoResolve} onChange={(e) => onAutoResolve(e.target.checked)} />
-          </label>
-          <div className="ap-settings-hint">{t("settings.autoResolveHint")}</div>
-          {onReplayTutorial && (
-            <button
-              className="ap-settings-replay"
-              onClick={() => {
-                setOpen(false);
-                onReplayTutorial();
-              }}
-            >
-              {t("settings.replayTutorial")}
-            </button>
-          )}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -1493,7 +1454,6 @@ function TopBar(props: {
           {t("topbar.instant")}
         </button>
       </div>
-      <SettingsMenu acceptance={acceptance} autoResolve={props.autoResolve} onAcceptance={(a) => onMode(cadence, a)} onAutoResolve={props.onAutoResolve} onReplayTutorial={props.onReplayTutorial} forceOpen={props.forceSettingsOpen} />
       <div className="ap-seg" role="group" aria-label="panes">
         {([1, 2, 3] as const).map((n) => (
           <button
@@ -1578,7 +1538,18 @@ function TopBar(props: {
           onSetPolicy={profile.onSetAgentPolicy}
         />
       )}
-      {profile && <ProfileMenu user={profile.user} actions={profile.actions} />}
+      <ProfileMenu
+        user={profile?.user ?? null}
+        actions={profile?.actions ?? []}
+        identitySource={profile?.identitySource ?? null}
+        onEditProfile={hostApi().profile?.setIdentity ? (name, email) => hostApi().profile!.setIdentity!(name, email) : undefined}
+        acceptance={acceptance}
+        autoResolve={props.autoResolve}
+        onAcceptance={(a) => onMode(cadence, a)}
+        onAutoResolve={props.onAutoResolve}
+        onReplayTutorial={props.onReplayTutorial}
+        forceOpen={props.forceSettingsOpen}
+      />
     </header>
   );
 }
@@ -1912,45 +1883,63 @@ function ThreadCard(props: {
       <div className="ap-meta">
         <span className="ap-meta-who">
           {isReply ? "↳ " : ""}
-          {c.author} · {c.date.slice(0, 16).replace("T", " ")}
+          <AuthorChip author={c.author} />
+          <span className="ap-meta-time"> · <RelativeTime iso={c.date} /></span>
         </span>
-        {/* ⋯ menu sits on the meta line so it lines up with the timestamp. */}
-        {!disabled && editingId !== c.id && (
-          <div className="ap-cmenu">
+        {/* Thread-level Resolve (icon) + the per-comment ⋯ menu, top-right on the meta line.
+            Both wrappers are divs (not spans) so the block-level ⋯ popover nests validly. */}
+        <div className="ap-meta-actions">
+          {!isReply && (
             <button
-              className="ap-cmenu-btn"
-              title={t("thread.more")}
+              className="ap-resolve-btn"
+              disabled={disabled}
+              title={c.resolved ? t("rail.reopenThread") : t("rail.resolveThread")}
+              aria-label={c.resolved ? t("rail.reopenThread") : t("rail.resolveThread")}
               onClick={(e) => {
                 e.stopPropagation();
-                setMenuOpenId((id) => (id === c.id ? null : c.id));
+                props.onResolve(!c.resolved);
               }}
             >
-              ⋯
+              {c.resolved ? <IconReopen /> : <IconComplete />}
             </button>
-            {menuOpenId === c.id && (
-              <div className="ap-cmenu-pop" onClick={(e) => e.stopPropagation()}>
-                <button
-                  onClick={() => {
-                    setEditingId(c.id);
-                    setEditText(c.text);
-                    setMenuOpenId(null);
-                  }}
-                >
-                  {t("thread.modify")}
-                </button>
-                <button
-                  className="ap-danger"
-                  onClick={() => {
-                    props.onDelete(c.id);
-                    setMenuOpenId(null);
-                  }}
-                >
-                  {t("thread.delete")}
-                </button>
-              </div>
-            )}
-          </div>
-        )}
+          )}
+          {!disabled && editingId !== c.id && (
+            <div className="ap-cmenu">
+              <button
+                className="ap-cmenu-btn"
+                title={t("thread.more")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpenId((id) => (id === c.id ? null : c.id));
+                }}
+              >
+                ⋯
+              </button>
+              {menuOpenId === c.id && (
+                <div className="ap-cmenu-pop" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    onClick={() => {
+                      setEditingId(c.id);
+                      setEditText(c.text);
+                      setMenuOpenId(null);
+                    }}
+                  >
+                    {t("thread.modify")}
+                  </button>
+                  <button
+                    className="ap-danger"
+                    onClick={() => {
+                      props.onDelete(c.id);
+                      setMenuOpenId(null);
+                    }}
+                  >
+                    {t("thread.delete")}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
       {c.selected && c.selected.length > 0 && <div className="ap-selected">▶ {c.selected.join(", ")}</div>}
       {editingId === c.id ? (
@@ -1998,17 +1987,14 @@ function ThreadCard(props: {
       {root.question && <QuestionChips question={root.question} disabled={disabled} answered={answeredSelection} onAnswer={props.onAnswer} />}
       {thread.replies.map((r) => renderComment(r, true))}
 
-      {/* Resolve is per thread; Reply opens a box with explicit Comment / Cancel. */}
-      <div className="ap-row ap-thread-actions">
-        <button className="ap-link" disabled={disabled} onClick={() => props.onResolve(!root.resolved)}>
-          {root.resolved ? t("rail.reopenThread") : t("rail.resolveThread")}
-        </button>
-        {!replying && (
+      {/* Resolve moved to the meta line (icon, top-right). Reply opens a box with Comment / Cancel. */}
+      {!replying && (
+        <div className="ap-row ap-thread-actions">
           <button className="ap-link" disabled={disabled} onClick={() => setReplying(true)}>
             {t("rail.reply")}
           </button>
-        )}
-      </div>
+        </div>
+      )}
       {replying && (
         <div className="ap-reply-box">
           <textarea
