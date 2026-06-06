@@ -14,7 +14,10 @@
     },
     "./styles.css": "./src/styles.css"
   },
-  "files": ["dist", "src/styles.css"],
+  "files": [
+    "dist",
+    "src/styles.css"
+  ],
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --clean",
     "typecheck": "tsc --noEmit"
@@ -25,6 +28,7 @@
     "@codemirror/view": "^6.34.1",
     "@inplan/core": "0.0.0",
     "codemirror": "^6.0.1",
+    "dayjs": "^1.11.21",
     "markdown-it": "^14.1.0",
     "y-codemirror.next": "^0.3.5",
     "***REMOVED***": "^1.0.6",
