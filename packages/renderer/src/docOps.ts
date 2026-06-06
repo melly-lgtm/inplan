@@ -88,7 +88,10 @@ function searchInText(text: string, selected: string): { start: number; end: num
  * fall back to a whole-document search if the span is absent or yields nothing.
  */
 export function findSpanRange(body: string, selected: string, span?: SourceSpan): { start: number; end: number } | null {
-  if (span) {
+  // Only honor a sane span: non-negative integer bounds with start <= end. A bogus span
+  // (negative or fractional data-line, inverted range) must never index lines[-1] and crash
+  // — we ignore it and fall through to the whole-document search below.
+  if (span && Number.isInteger(span.startLine) && Number.isInteger(span.endLine) && span.startLine >= 0 && span.endLine >= span.startLine) {
     const lines = body.split("\n");
     let start = 0;
     for (let i = 0; i < span.startLine && i < lines.length; i++) start += lines[i]!.length + 1;

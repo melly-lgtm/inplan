@@ -565,7 +565,9 @@ export function App(props: EditorProps = {}): JSX.Element {
     const startBlock = blockOf(range.startContainer);
     if (!startBlock) return null;
     const startLine = Number(startBlock.getAttribute("data-line"));
-    if (!Number.isFinite(startLine)) return null;
+    // A source line must be a non-negative integer; anything else (negative, fractional,
+    // NaN) is a bogus attribute we won't anchor to.
+    if (!Number.isInteger(startLine) || startLine < 0) return null;
     const endBlock = blockOf(range.endContainer) ?? startBlock;
     // The selection's block(s) can span several source lines (a multi-line paragraph), so
     // extend to just before the NEXT preview block (or the document's end).

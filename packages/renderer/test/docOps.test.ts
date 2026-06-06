@@ -19,6 +19,14 @@ describe("findSpanRange — source-span scoping (preview block disambiguation)",
     expect(body.slice(r.start, r.end)).toBe("an` ma"); // source range spans the closing backtick
     expect(r.start).toBeLessThan(body.indexOf("human")); // earlier than the decoy
   });
+
+  it("a bogus (negative / fractional) span never crashes — it falls back to a global search", () => {
+    expect(() => findSpanRange(body, "an ma", { startLine: -1, endLine: -5 })).not.toThrow();
+    // negative bounds clamp out of the way; the global fallback still finds the text
+    const r = findSpanRange(body, "an ma", { startLine: -1, endLine: -5 })!;
+    expect(body.slice(r.start, r.end)).toBe("an ma");
+    expect(findSpanRange(body, "an ma", { startLine: 1.5, endLine: 9.9 })).not.toBeNull();
+  });
 });
 
 describe("addSpanComment across formatting boundaries round-trips (balanced)", () => {
