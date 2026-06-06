@@ -38,7 +38,10 @@ afterEach(() => {
 });
 
 function install() {
-  return spawnSync(process.execPath, [CLI, "install-skill", "--quiet"], { env: { ...process.env, HOME: home }, encoding: "utf8" });
+  const r = spawnSync(process.execPath, [CLI, "install-skill", "--quiet"], { env: { ...process.env, HOME: home }, encoding: "utf8" });
+  // Surface the installer's own error rather than a downstream file-not-found assertion.
+  if (r.status !== 0) throw new Error(`install-skill exited ${r.status}\nstderr: ${r.stderr}\nstdout: ${r.stdout}`);
+  return r;
 }
 const claudeSettings = () => JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8"));
 const codexHooks = () => JSON.parse(readFileSync(join(home, ".codex", "hooks.json"), "utf8"));
@@ -72,11 +75,16 @@ describe("inplan install-skill — agent-console relay hooks", () => {
     expect(ext).toContain('pi.on("tool_execution_start"');
   });
 
-  it("is idempotent — running twice doesn't duplicate hooks", () => {
+  it("is idempotent — running twice doesn't duplicate any hook", () => {
     install();
     install();
-    expect(commandsFor(claudeSettings().hooks, "Stop").filter((c) => c === "inplan relay --hook claude-stop")).toHaveLength(1);
-    expect(commandsFor(codexHooks().hooks, "PostToolUse").filter((c) => c === "inplan relay --hook codex-tool")).toHaveLength(1);
+    const c = claudeSettings().hooks;
+    const x = codexHooks().hooks;
+    const once = (cmds: string[], cmd: string) => expect(cmds.filter((v) => v === cmd)).toHaveLength(1);
+    once(commandsFor(c, "Stop"), "inplan relay --hook claude-stop");
+    once(commandsFor(c, "PostToolUse"), "inplan relay --hook claude-tool");
+    once(commandsFor(x, "Stop"), "inplan relay --hook codex-stop");
+    once(commandsFor(x, "PostToolUse"), "inplan relay --hook codex-tool");
   });
 
   it("preserves existing Claude settings + hooks (merge, not clobber)", () => {
@@ -98,5 +106,17 @@ describe("inplan install-skill — agent-console relay hooks", () => {
     writeFileSync(path, "// my own extension\nexport default () => {};\n");
     install();
     expect(readFileSync(path, "utf8")).toBe("// my own extension\nexport default () => {};\n");
+  });
+
+  it("upgrades a stale managed Pi extension (marker present, content old)", () => {
+    const path = join(home, ".pi", "agent", "extensions", "inplan-relay.ts");
+    mkdirSync(dirname(path), { recursive: true });
+    // Same managed marker the installer writes, but stale body → it should be rewritten.
+    writeFileSync(path, "// inplan-relay (managed by `inplan install-skill`)\n// old version — should be replaced\n");
+    install();
+    const ext = piExtension();
+    expect(ext).not.toContain("old version");
+    expect(ext).toContain('pi.on("message_end"');
+    expect(ext).toContain('pi.on("tool_execution_start"');
   });
 });

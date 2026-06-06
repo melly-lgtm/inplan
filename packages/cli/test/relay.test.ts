@@ -53,9 +53,9 @@ function relay(args: string[], opts: { stdin?: string; cwd?: string } = {}) {
   });
 }
 
-const messages = () => {
+const messages = (): { type: string; payload?: { text?: string } }[] => {
   const log = docPaths(doc).logPath;
-  if (!existsSync(log)) return [] as { type: string; payload?: { text?: string } }[];
+  if (!existsSync(log)) return [];
   return readFileSync(log, "utf8")
     .trim()
     .split("\n")
