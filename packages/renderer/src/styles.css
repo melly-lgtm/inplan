@@ -292,6 +292,13 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
   25%, 75% { box-shadow: 0 0 0 3px var(--accent), var(--shadow); transform: translateX(-50%) scale(1.015); }
   50% { box-shadow: var(--shadow); transform: translateX(-50%) scale(1); }
 }
+/* Honor reduced-motion: drop the coach's decorative animations. The blink still
+   conveys "wrong spot" via the accent ring (a non-animated box-shadow), and the
+   spotlight keeps its static outline. */
+@media (prefers-reduced-motion: reduce) {
+  .ap-coach-blink { animation: none; box-shadow: 0 0 0 3px var(--accent), var(--shadow); }
+  .ap-coach-target { animation: none; }
+}
 /* A clickable menu item (not a button): full-width row, separator above, hover highlight. */
 .ap-settings-replay { display: block; width: calc(100% + 24px); margin: 8px -12px -12px; padding: 9px 12px; font: inherit; font-size: 13px; text-align: left; background: transparent; border: 0; border-top: 1px solid var(--line); border-radius: 0 0 10px 10px; cursor: pointer; color: var(--fg); }
 .ap-settings-replay:hover { background: var(--accent-soft); color: var(--accent); }
