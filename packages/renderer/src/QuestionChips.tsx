@@ -67,7 +67,7 @@ export function QuestionChips({
         );
       })}
 
-      {!picking && hiddenCount > 0 && (
+      {!picking && !disabled && hiddenCount > 0 && (
         <button type="button" className="ap-link ap-chip-toggle" onClick={() => setExpanded((v) => !v)}>
           {expanded ? t("question.showLess") : t("question.showMore", { n: hiddenCount })}
         </button>
@@ -98,6 +98,7 @@ export function QuestionChips({
                   setEditing(false);
                   setSelected(answered ?? []);
                   setOther("");
+                  setExpanded(false); // return to the folded settled view, matching submit
                 }}
               >
                 {t("thread.cancel")}
