@@ -81,12 +81,12 @@ describe("App review diff controls (memory-backed)", () => {
   it("a per-hunk reject toggle then Apply keeps only the accepted hunks", async () => {
     await renderAndPropose();
 
-    // Per-hunk toggles live in the preview diff: an "accept"/"reject" button pair
-    // per change. Default is all-accepted; reject the first change.
-    const rejectButtons = screen.getAllByRole("button", { name: /^reject$/ });
-    expect(rejectButtons.length).toBe(2);
+    // Per-hunk toggles are on/off switches (one per change), default on (accepted).
+    // Turn the first change's switch off to reject it (both panes share the state).
+    const change1 = screen.getAllByRole("switch", { name: /accept change 1/ });
+    expect(change1.length).toBeGreaterThanOrEqual(1);
     await act(async () => {
-      fireEvent.click(rejectButtons[0]);
+      fireEvent.click(change1[0]!);
     });
 
     const apply = screen.getByRole("button", { name: /^Apply$/ });

@@ -74,14 +74,13 @@ describe("App doc-comment ordering + auto-resolve setting (memory-backed)", () =
     render(<App />);
     await waitFor(() => expect(document.body.textContent).toContain("body text"));
 
-    // Open the Settings (gear) menu.
+    // Open the Settings (avatar) menu.
     fireEvent.click(document.querySelector('[data-onboard="settings"]') as HTMLElement); // settings live in the avatar menu now
-    await waitFor(() => expect(screen.getByText(/Agent auto-resolves a thread/i)).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("switch", { name: /auto-resolve comments/i })).toBeTruthy());
 
-    // The auto-resolve checkbox is the one inside the auto-resolve row.
-    const row = screen.getByText(/Agent auto-resolves a thread/i).closest("label")!;
-    const checkbox = row.querySelector('input[type="checkbox"]') as HTMLInputElement;
-    expect(checkbox.checked).toBe(false);
+    // The auto-resolve toggle (a switch) reflects the loaded setting.
+    const sw = screen.getByRole("switch", { name: /auto-resolve comments/i }) as HTMLInputElement;
+    expect(sw.checked).toBe(false);
   });
 
   it("toggling auto-resolve persists via setSettings and logs settings_changed", async () => {
@@ -91,15 +90,14 @@ describe("App doc-comment ordering + auto-resolve setting (memory-backed)", () =
     await waitFor(() => expect(document.body.textContent).toContain("body text"));
 
     fireEvent.click(document.querySelector('[data-onboard="settings"]') as HTMLElement); // settings live in the avatar menu now
-    const row = screen.getByText(/Agent auto-resolves a thread/i).closest("label")!;
-    const checkbox = row.querySelector('input[type="checkbox"]') as HTMLInputElement;
-    expect(checkbox.checked).toBe(true);
+    const sw = () => screen.getByRole("switch", { name: /auto-resolve comments/i }) as HTMLInputElement;
+    expect(sw().checked).toBe(true);
 
     // Turn auto-resolve OFF.
     await act(async () => {
-      fireEvent.click(checkbox);
+      fireEvent.click(sw());
     });
-    await waitFor(() => expect((row.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(false));
+    await waitFor(() => expect(sw().checked).toBe(false));
 
     // Persisted to the settings store.
     expect((await getSettings()).autoResolve).toBe(false);
@@ -112,7 +110,7 @@ describe("App doc-comment ordering + auto-resolve setting (memory-backed)", () =
 
     // Turn it back ON — a second event is logged with autoResolve=true.
     await act(async () => {
-      fireEvent.click(row.querySelector('input[type="checkbox"]') as HTMLInputElement);
+      fireEvent.click(sw());
     });
     await waitFor(async () => expect((await getSettings()).autoResolve).toBe(true));
     const after = (await agent.log()).filter((e) => e.type === "settings_changed");

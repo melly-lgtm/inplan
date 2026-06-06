@@ -79,11 +79,27 @@ body {
 }
 .ap-profile-action:hover:not(:disabled), .ap-profile-section .ap-settings-replay:hover { background: var(--accent-soft); color: var(--accent); }
 .ap-profile-action:disabled { opacity: 0.5; cursor: default; }
-.ap-profile-action.ap-primary { color: var(--accent); font-weight: 600; }
+/* The global `.ap-primary` (below) forces an accent fill via !important, so a primary
+   profile action (Edit Profile → Save, Collaborate on Cloud) needs cream text to stay
+   legible — accent-on-accent rendered the label invisible. */
+.ap-profile-action.ap-primary { color: #fbfaf6; font-weight: 600; }
 .ap-profile-action.ap-danger { color: var(--danger); }
 /* Setting rows (segmented control / checkbox) read as labelled menu rows. */
 .ap-profile-section .ap-settings-row { padding: 6px 10px; }
 .ap-profile-section .ap-settings-hint { padding: 0 10px 2px; }
+/* Toggle switch (shared: profile settings + review-diff hunks). */
+.ap-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.ap-switch.disabled { opacity: 0.5; cursor: default; }
+.ap-switch-row { display: flex; justify-content: space-between; width: 100%; }
+.ap-profile-section .ap-switch-row { padding: 6px 10px; font-size: 13px; }
+.ap-switch-label { color: var(--fg); }
+.ap-switch-input { position: absolute; width: 1px; height: 1px; opacity: 0; margin: 0; pointer-events: none; }
+.ap-switch-track { position: relative; flex: 0 0 auto; width: 34px; height: 20px; border-radius: 999px; background: var(--line-strong); transition: background 0.15s ease; }
+.ap-switch-thumb { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); transition: transform 0.15s ease; }
+.ap-switch-input:checked ~ .ap-switch-track { background: var(--accent); }
+.ap-switch-input:checked ~ .ap-switch-track .ap-switch-thumb { transform: translateX(14px); }
+.ap-switch-input:focus-visible ~ .ap-switch-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ap-switch.disabled .ap-switch-track { cursor: default; }
 .ap-profile-edit { gap: 6px; padding: 8px 10px 4px; }
 .ap-profile-input { font: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--bg); color: var(--fg); }
 .ap-profile-input:focus { outline: none; border-color: var(--accent); }
@@ -268,6 +284,14 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 .ap-coach-actions .ap-primary:disabled { opacity: 0.5; cursor: default; }
 .ap-coach-target { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; animation: ap-coach-pulse 1.4s ease-in-out infinite; }
 @keyframes ap-coach-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(31, 92, 77, 0.35); } 50% { box-shadow: 0 0 0 6px rgba(31, 92, 77, 0); } }
+/* Blink the coach card when a click lands somewhere the current step doesn't allow,
+   redirecting attention back to the message (keeps translateX(-50%) so it stays centered). */
+.ap-coach-blink { animation: ap-coach-blink 0.45s ease; }
+@keyframes ap-coach-blink {
+  0%, 100% { box-shadow: var(--shadow); transform: translateX(-50%) scale(1); }
+  25%, 75% { box-shadow: 0 0 0 3px var(--accent), var(--shadow); transform: translateX(-50%) scale(1.015); }
+  50% { box-shadow: var(--shadow); transform: translateX(-50%) scale(1); }
+}
 /* A clickable menu item (not a button): full-width row, separator above, hover highlight. */
 .ap-settings-replay { display: block; width: calc(100% + 24px); margin: 8px -12px -12px; padding: 9px 12px; font: inherit; font-size: 13px; text-align: left; background: transparent; border: 0; border-top: 1px solid var(--line); border-radius: 0 0 10px 10px; cursor: pointer; color: var(--fg); }
 .ap-settings-replay:hover { background: var(--accent-soft); color: var(--accent); }
@@ -358,7 +382,8 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 .ap-hunk { border-left: 3px solid var(--line); margin: 8px 0; padding-left: 8px; }
 .ap-hunk.accepted { border-left-color: #2e9e5b; }
 .ap-hunk.rejected { border-left-color: var(--danger); opacity: 0.7; }
-.ap-hunk-toggle { display: block; font-family: var(--sans); font-size: 12px; margin-bottom: 4px; }
+.ap-hunk-toggle { display: flex; align-items: center; font-family: var(--sans); font-size: 12px; margin-bottom: 4px; }
+.ap-hunk-toggle .ap-switch { gap: 8px; }
 .ap-diff-same { color: var(--muted); margin: 0; white-space: pre-wrap; }
 .ap-diff-del { background: #fbeae6; color: #8a1c10; margin: 0; white-space: pre-wrap; }
 .ap-diff-add { background: #e9f3ec; color: #18643a; margin: 0; white-space: pre-wrap; }

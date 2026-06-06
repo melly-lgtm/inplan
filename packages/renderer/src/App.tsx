@@ -19,6 +19,7 @@ import {
 import { renderMarkdown } from "./markdown";
 import { isInternalDocLink, resolveDocPath } from "./links";
 import { ComposerPopover } from "./ComposerPopover";
+import { Switch } from "./Switch";
 import { ContextMenu } from "./ContextMenu";
 import { MOD_KEY } from "./platform";
 import { QuestionChips } from "./QuestionChips";
@@ -1779,12 +1780,7 @@ function DiffPreview({ segs, accepted, focused, onToggle }: { segs: DiffSegment[
             <div className="ap-ihunk-bar">
               <span>change {idx + 1}</span>
               <span className="ap-spacer" />
-              <button className={on ? "on" : ""} onClick={() => onToggle(idx, true)}>
-                accept
-              </button>
-              <button className={!on ? "on" : ""} onClick={() => onToggle(idx, false)}>
-                reject
-              </button>
+              <Switch checked={on} onChange={(v) => onToggle(idx, v)} ariaLabel={`accept change ${idx + 1}`} />
             </div>
             {s.removed && s.removed.length > 0 && (
               <div className="ap-ihunk-del" dangerouslySetInnerHTML={{ __html: renderMarkdown(s.removed.join("\n"), () => false) }} />
@@ -1818,9 +1814,9 @@ function DiffSource({ segs, accepted, focused, onToggle }: { segs: DiffSegment[]
         const on = accepted[idx] ?? true;
         return (
           <div key={i} data-hunk={idx} className={`ap-hunk${on ? " accepted" : " rejected"}${focused === idx ? " focused" : ""}`}>
-            <label className="ap-hunk-toggle">
-              <input type="checkbox" checked={on} onChange={(e) => onToggle(idx, e.target.checked)} /> accept change {idx + 1}
-            </label>
+            <div className="ap-hunk-toggle">
+              <Switch label={`change ${idx + 1}`} checked={on} onChange={(v) => onToggle(idx, v)} ariaLabel={`accept change ${idx + 1}`} />
+            </div>
             <HunkLines removed={s.removed ?? []} added={s.added ?? []} />
           </div>
         );

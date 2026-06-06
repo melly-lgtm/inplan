@@ -59,9 +59,37 @@ export function Onboarding({
   const step = STEPS[idx]!;
   const isLast = idx === STEPS.length - 1;
   const done = step.gate ? step.gate(signals, base) : true;
+  const cardRef = useRef<HTMLDivElement>(null);
 
   // Re-baseline the counts whenever the step changes (capture the latest, not stale).
   useEffect(() => setBase(signalsRef.current), [idx]);
+
+  // Keep the user on the current step. The coach card is non-blocking, so a first-run
+  // user can wander off and click unrelated controls; intercept any click that isn't on
+  // the step's spotlighted control (or a surface that legitimately follows from it — the
+  // context menu, the composer, the profile menu) and the coach card itself: swallow it
+  // and blink the card to redirect attention here.
+  useEffect(() => {
+    const ALLOW = ".ap-coach-card, .ap-ctxmenu, .ap-composer, .ap-profile";
+    const guard = (e: MouseEvent) => {
+      const node = e.target as Element | null;
+      if (!node || typeof node.closest !== "function") return;
+      if (node.closest(ALLOW)) return; // the card + transient interaction surfaces
+      const target = step.target ? document.querySelector(step.target) : null;
+      if (target && target.contains(node)) return; // this step's own control
+      // A distraction: ignore the click and pulse the coach card.
+      e.preventDefault();
+      e.stopPropagation();
+      const card = cardRef.current;
+      if (card) {
+        card.classList.remove("ap-coach-blink");
+        void card.offsetWidth; // reflow so the animation restarts on rapid repeats
+        card.classList.add("ap-coach-blink");
+      }
+    };
+    document.addEventListener("click", guard, true); // capture: run before React's handlers
+    return () => document.removeEventListener("click", guard, true);
+  }, [step.target]);
 
   // Spotlight the current step's target control with a pulsing outline.
   useEffect(() => {
@@ -81,7 +109,7 @@ export function Onboarding({
 
   return (
     <div className="ap-coach" role="region" aria-label={t("onboarding.welcome.title")}>
-      <div className="ap-coach-card">
+      <div className="ap-coach-card" ref={cardRef}>
         <div className="ap-coach-progress">{t("onboarding.progress", { n: String(idx + 1), total: String(STEPS.length) })}</div>
         <div className="ap-coach-title">{t(`onboarding.${step.id}.title`)}</div>
         <div className="ap-coach-body">{body}</div>

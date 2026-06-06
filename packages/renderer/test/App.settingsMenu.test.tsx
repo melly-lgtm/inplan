@@ -30,7 +30,10 @@ function mount(content: string) {
   (window as unknown as { api: unknown }).api = session.api;
   agent = session.agent;
 }
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  localStorage.clear(); // acceptance/layout is seeded from ap-layout; don't leak across tests
+});
 
 async function openMenu() {
   // Settings now live in the avatar menu (tagged data-onboard="settings").
@@ -38,35 +41,37 @@ async function openMenu() {
   await act(async () => {
     avatar.click();
   });
-  await waitFor(() => expect(document.body.textContent).toContain("Agent changes"));
+  await waitFor(() => expect(document.body.textContent).toContain("Auto-resolve comments"));
 }
 
 describe("App settings menu (memory-backed)", () => {
-  it("opens the ⚙ menu and reveals the acceptance + auto-resolve controls", async () => {
+  it("opens the menu and reveals the acceptance + auto-resolve toggles", async () => {
     mount(DOC);
     const { App } = await import("../src/App");
     render(<App />);
     await waitFor(() => expect(document.body.textContent).toContain("Hello world."));
 
     // Menu is closed initially.
-    expect(document.body.textContent).not.toContain("Agent changes");
+    expect(document.body.textContent).not.toContain("Auto-resolve comments");
 
     await openMenu();
-    expect(screen.getByRole("button", { name: /auto-accept/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /^review$/i })).toBeTruthy();
-    expect(document.body.textContent).toContain("Agent auto-resolves a thread after incorporating it");
+    // Both settings are now on/off switches.
+    expect(screen.getByRole("switch", { name: /auto-accept agent's changes/i })).toBeTruthy();
+    expect(screen.getByRole("switch", { name: /auto-resolve comments/i })).toBeTruthy();
   });
 
-  it("switching acceptance to Review logs a mode_changed control event", async () => {
+  it("turning the Auto-accept switch on logs a mode_changed event with acceptance=auto", async () => {
     mount(DOC);
     const { App } = await import("../src/App");
     render(<App />);
     await waitFor(() => expect(document.body.textContent).toContain("Hello world."));
 
     await openMenu();
-    const review = screen.getByRole("button", { name: /^review$/i });
+    // Default acceptance is Review → the Auto-accept switch starts off.
+    const sw = screen.getByRole("switch", { name: /auto-accept agent's changes/i }) as HTMLInputElement;
+    expect(sw.checked).toBe(false);
     await act(async () => {
-      review.click();
+      fireEvent.click(sw); // → auto
     });
 
     await waitFor(async () => {
@@ -74,29 +79,31 @@ describe("App settings menu (memory-backed)", () => {
       const mode = log.filter((e) => e.type === "mode_changed");
       expect(mode.length).toBeGreaterThan(0);
       const last = mode[mode.length - 1];
-      expect((last.payload as { acceptance: string }).acceptance).toBe("review");
+      expect((last.payload as { acceptance: string }).acceptance).toBe("auto");
     });
   });
 
-  it("switching back to Auto-accept logs a mode_changed event with acceptance=auto", async () => {
+  it("turning the Auto-accept switch off logs acceptance=review", async () => {
+    // Seed acceptance=auto via the persisted layout so the switch starts on — one
+    // click off → review (avoids relying on a controlled-checkbox double toggle).
+    localStorage.setItem("ap-layout", JSON.stringify({ acceptance: "auto" }));
     mount(DOC);
     const { App } = await import("../src/App");
     render(<App />);
     await waitFor(() => expect(document.body.textContent).toContain("Hello world."));
 
     await openMenu();
+    const sw = screen.getByRole("switch", { name: /auto-accept agent's changes/i }) as HTMLInputElement;
+    await waitFor(() => expect(sw.checked).toBe(true));
     await act(async () => {
-      screen.getByRole("button", { name: /^review$/i }).click();
-    });
-    await act(async () => {
-      screen.getByRole("button", { name: /auto-accept/i }).click();
+      fireEvent.click(sw); // → review
     });
 
     await waitFor(async () => {
       const log = await agent.log();
       const mode = log.filter((e) => e.type === "mode_changed");
       const last = mode[mode.length - 1];
-      expect((last.payload as { acceptance: string }).acceptance).toBe("auto");
+      expect((last.payload as { acceptance: string }).acceptance).toBe("review");
     });
   });
 
@@ -107,15 +114,12 @@ describe("App settings menu (memory-backed)", () => {
     await waitFor(() => expect(document.body.textContent).toContain("Hello world."));
 
     await openMenu();
-    // The auto-resolve checkbox lives inside the settings row labelled
-    // "Agent auto-resolves…"; scope to that row so we don't grab the
-    // unrelated "resolved & orphaned" / find-bar checkboxes.
-    const row = screen.getByText("Agent auto-resolves a thread after incorporating it").closest("label");
-    const checkbox = row!.querySelector('input[type="checkbox"]') as HTMLInputElement;
-    expect(checkbox.checked).toBe(true);
+    // The auto-resolve toggle (a switch). Memory backend defaults autoResolve=true.
+    const sw = screen.getByRole("switch", { name: /auto-resolve comments/i }) as HTMLInputElement;
+    expect(sw.checked).toBe(true);
 
     await act(async () => {
-      fireEvent.click(checkbox);
+      fireEvent.click(sw);
     });
 
     await waitFor(async () => {
@@ -126,6 +130,6 @@ describe("App settings menu (memory-backed)", () => {
       expect((last.payload as { autoResolve: boolean }).autoResolve).toBe(false);
     });
     // UI reflects the new state.
-    expect(checkbox.checked).toBe(false);
+    expect(sw.checked).toBe(false);
   });
 });

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Acceptance, AgentMode, ProfileMenuItem } from "./api";
 import { useI18n, translate } from "./i18n";
+import { Switch } from "./Switch";
 
 /** Up to two initials from a display name, for the avatar. */
 function initialsOf(name: string): string {
@@ -167,44 +168,38 @@ export function ProfileMenu({
             </div>
           )}
 
-          {/* Editor settings (folded in from the old ⚙ menu). */}
+          {/* Editor settings (folded in from the old ⚙ menu) — all on/off toggles. */}
           {hasSettings && (
             <div className="ap-profile-section">
               {onAgentMode && (
-                <div className="ap-settings-row">
-                  <span>{t("settings.agentMode")}</span>
-                  <div className="ap-seg">
-                    <button className={agentMode !== "implementation" ? "active" : ""} onClick={() => onAgentMode("planning")}>
-                      {t("settings.modePlanning")}
-                    </button>
-                    <button className={agentMode === "implementation" ? "active" : ""} onClick={() => onAgentMode("implementation")}>
-                      {t("settings.modeBuild")}
-                    </button>
-                  </div>
-                </div>
+                <Switch
+                  className="ap-switch-row"
+                  label={t("settings.keepPlanning")}
+                  checked={agentMode !== "implementation"}
+                  onChange={(v) => onAgentMode(v ? "planning" : "implementation")}
+                />
               )}
-              <div className="ap-settings-row">
-                <span>{t("settings.agentChanges")}</span>
-                <div className="ap-seg">
-                  <button className={acceptance === "auto" ? "active" : ""} onClick={() => onAcceptance!("auto")}>
-                    {t("settings.autoAccept")}
-                  </button>
-                  <button className={acceptance === "review" ? "active" : ""} onClick={() => onAcceptance!("review")}>
-                    {t("settings.review")}
-                  </button>
-                </div>
-              </div>
-              <label className="ap-settings-row">
-                <span>{t("settings.autoResolve")}</span>
-                <input type="checkbox" checked={!!autoResolve} onChange={(e) => onAutoResolve!(e.target.checked)} />
-              </label>
+              <Switch
+                className="ap-switch-row"
+                label={t("settings.autoAcceptChanges")}
+                checked={acceptance === "auto"}
+                onChange={(v) => onAcceptance!(v ? "auto" : "review")}
+              />
+              <Switch
+                className="ap-switch-row"
+                label={t("settings.autoResolve")}
+                checked={!!autoResolve}
+                onChange={(v) => onAutoResolve!(v)}
+              />
               <div className="ap-settings-hint">{t("settings.autoResolveHint")}</div>
               {onTelemetry && (
                 <>
-                  <label className="ap-settings-row">
-                    <span>{t("settings.telemetry")}</span>
-                    <input type="checkbox" checked={!!telemetry} onChange={(e) => onTelemetry(e.target.checked)} />
-                  </label>
+                  <Switch
+                    className="ap-switch-row"
+                    label={t("settings.telemetry")}
+                    checked={!!telemetry}
+                    onChange={(v) => onTelemetry(v)}
+                  />
                   <div className="ap-settings-hint">{t("settings.telemetryHint")}</div>
                 </>
               )}
