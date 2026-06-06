@@ -20,10 +20,13 @@ export interface ParsedAuthor {
 /** Split "Name <email>" into its parts, tolerating a bare name with no address. */
 export function parseAuthor(author: string): ParsedAuthor {
   const m = author.match(/^(.*?)\s*<([^>]+)>\s*$/);
-  const name = (m ? m[1].trim() : author.trim()) || (m ? m[2].trim() : author.trim());
-  const email = m ? m[2].trim() : "";
-  const vend = email.toLowerCase().match(/^([^@]+)@inplan\.ai$/);
-  return { name, email, vendor: vend ? vend[1] : null };
+  const email = m ? m[2]!.trim() : "";
+  const name = (m ? m[1]!.trim() : author.trim()) || email || author.trim();
+  // Agents are addressed at @inplan.ai (vendor = local-part). Also accept the legacy
+  // bare @inplan domain (e.g. "Agent <agent@inplan>") so docs created before this change
+  // still classify as agents rather than rendering with a human avatar/role.
+  const vend = email.toLowerCase().match(/^([^@]+)@inplan(?:\.ai)?$/);
+  return { name, email, vendor: vend ? vend[1]! : null };
 }
 
 // Vendor (the @inplan.ai local-part) → display label for the hover card. Every agent

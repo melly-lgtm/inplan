@@ -393,14 +393,15 @@ export function App(props: EditorProps = {}): JSX.Element {
     const delay = cadence === "instant" ? 5000 : 1500;
     autosaveTimer.current = setTimeout(() => {
       const content = serialize(docRef.current);
-      checkpointRef.current = content; // the current content is now safely persisted
+      // Mark the content checkpointed only AFTER the save resolves — if it fails (disk /
+      // IPC error) the status bar must keep showing the work as unsaved, not safe.
       if (cadence === "instant") {
-        void hostApi().save(content, { kind: "canonical", cadence });
+        void hostApi().save(content, { kind: "canonical", cadence }).then(() => { checkpointRef.current = content; });
         savedRef.current = content;
         setDirty(false);
         setStatus(t("msg.autosaving"));
       } else {
-        void hostApi().save(content, { kind: "backup", cadence });
+        void hostApi().save(content, { kind: "backup", cadence }).then(() => { checkpointRef.current = content; });
         setStatus(t("msg.autosaved"));
       }
     }, delay);
@@ -507,8 +508,8 @@ export function App(props: EditorProps = {}): JSX.Element {
   const saveNow = useCallback(() => {
     const content = serialize(docRef.current);
     const kind = cadence === "instant" ? "canonical" : "backup";
-    void hostApi().save(content, { kind, cadence });
-    checkpointRef.current = content; // safely persisted (canonical or backup)
+    // Checkpoint only once the save resolves, so a failed write can't be reported as saved.
+    void hostApi().save(content, { kind, cadence }).then(() => { checkpointRef.current = content; });
     if (kind === "canonical") {
       savedRef.current = content;
       setDirty(false);
@@ -1028,12 +1029,14 @@ export function App(props: EditorProps = {}): JSX.Element {
               <span className="ap-spacer" />
               <button
                 className="ap-primary"
-                onClick={() => {
+                onClick={async () => {
                   // Persist unsaved edits, then relaunch into the new version (falling
-                  // back to a plain close if the host can't relaunch).
-                  if (dirty) void hostApi().save(serialize(docRef.current), { kind: "apply", cadence });
-                  if (hostApi().restartApp) void hostApi().restartApp!();
-                  else void hostApi().closeWindow();
+                  // back to a plain close if the host can't relaunch). Await the save
+                  // first: the main-process restart calls app.exit(0) immediately, so an
+                  // un-awaited save could be cut off before the write lands.
+                  if (dirty) await hostApi().save(serialize(docRef.current), { kind: "apply", cadence });
+                  if (hostApi().restartApp) await hostApi().restartApp!();
+                  else await hostApi().closeWindow();
                 }}
               >
                 {t("banner.restart")}
