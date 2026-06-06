@@ -154,13 +154,13 @@ export interface Api {
   /** Leaving the document: the host shows/handles the quit-confirmation flow. */
   exit?: ExitController;
   /** The agent rewrote the document on disk. */
-  onExternalChange(cb: (payload: DocPayload) => void): void;
+  onExternalChange(cb: (payload: DocPayload) => void): () => void;
   /** The agent signalled it thinks the plan is ready. */
-  onAgentDone(cb: () => void): void;
+  onAgentDone(cb: () => void): () => void;
   /** The agent re-engaged this round (revised the doc or re-attached) — clear "thinking". */
-  onAgentActive(cb: () => void): void;
+  onAgentActive(cb: () => void): () => void;
   /** The agent has a new build ready and asks the human to close the window to reload. */
-  onReload(cb: () => void): void;
+  onReload(cb: () => void): () => void;
   /** Close the editor window (used by the reload countdown's auto-close). */
   closeWindow(): Promise<void>;
   /** Read the parked Review-mode proposal pending decision (null if none) — for durable re-show on launch. */
@@ -168,7 +168,7 @@ export interface Api {
   /** Discard the parked proposal after the human accepts/rejects it. */
   clearProposal(): Promise<void>;
   /** A Review-mode proposal was parked by the agent this session — surface it for review. */
-  onProposal(cb: (payload: { content: string }) => void): void;
+  onProposal(cb: (payload: { content: string }) => void): () => void;
   /**
    * Open another document by its resolved path (a relative Markdown link, joined
    * against this doc's path). Local: the sibling file; web: /docs/<org>/<repo>/<path>.
@@ -179,10 +179,10 @@ export interface Api {
   navigate?(dir: "back" | "forward"): Promise<void>;
   /** Desktop only: whether back/forward navigation is currently possible (drives
    *  the nav buttons' enabled state). */
-  onNavState?(cb: (s: { canBack: boolean; canForward: boolean }) => void): void;
+  onNavState?(cb: (s: { canBack: boolean; canForward: boolean }) => void): (() => void) | void;
   /** Desktop only: the window swapped to another doc (in-window link follow); the
    *  renderer resets to this payload like a fresh load. */
-  onNavigated?(cb: (payload: DocPayload) => void): void;
+  onNavigated?(cb: (payload: DocPayload) => void): (() => void) | void;
   /** Live-collaboration binding for the source editor, if the host provides one
    *  (web/cloud). Absent/null on desktop + tests (single-writer). */
   collab?: CollabBinding | null;
@@ -194,7 +194,7 @@ export interface Api {
   i18n?: I18nController | null;
   /** Desktop only: a newer published npm version exists (checked on launch).
    *  Web auto-updates via reload; tests omit this. */
-  onUpdateAvailable?(cb: (info: { current: string; latest: string }) => void): void;
+  onUpdateAvailable?(cb: (info: { current: string; latest: string }) => void): (() => void) | void;
   /** Desktop only: run the npm self-update; resolves `ok` on success (then restart). */
   applyUpdate?(): Promise<{ ok: boolean }>;
 }

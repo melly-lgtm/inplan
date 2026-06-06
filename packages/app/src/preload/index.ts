@@ -98,35 +98,51 @@ const api: Api = {
     quit: (content: string, opts: { save: boolean; notifyComplete: boolean }) => void ipcRenderer.invoke("app:quit", content, opts),
   },
   onExternalChange: (cb: (payload: DocPayload) => void) => {
-    ipcRenderer.on("doc:external-change", (_e, payload: DocPayload) => cb(payload));
+    const h = (_e: unknown, payload: DocPayload): void => cb(payload);
+    ipcRenderer.on("doc:external-change", h);
+    return () => ipcRenderer.removeListener("doc:external-change", h);
   },
   onAgentDone: (cb: () => void) => {
-    ipcRenderer.on("agent:done", () => cb());
+    const h = (): void => cb();
+    ipcRenderer.on("agent:done", h);
+    return () => ipcRenderer.removeListener("agent:done", h);
   },
   onAgentActive: (cb: () => void) => {
-    ipcRenderer.on("agent:active", () => cb());
+    const h = (): void => cb();
+    ipcRenderer.on("agent:active", h);
+    return () => ipcRenderer.removeListener("agent:active", h);
   },
   onReload: (cb: () => void) => {
-    ipcRenderer.on("agent:reload", () => cb());
+    const h = (): void => cb();
+    ipcRenderer.on("agent:reload", h);
+    return () => ipcRenderer.removeListener("agent:reload", h);
   },
   closeWindow: () => ipcRenderer.invoke("window:close"),
   getProposal: () => ipcRenderer.invoke("proposal:get"),
   clearProposal: () => ipcRenderer.invoke("proposal:clear"),
   onProposal: (cb: (payload: { content: string }) => void) => {
-    ipcRenderer.on("doc:proposal", (_e, payload: { content: string }) => cb(payload));
+    const h = (_e: unknown, payload: { content: string }): void => cb(payload);
+    ipcRenderer.on("doc:proposal", h);
+    return () => ipcRenderer.removeListener("doc:proposal", h);
   },
   openDoc: (target: string) => ipcRenderer.invoke("doc:open", target),
   navigate: (dir: "back" | "forward") => ipcRenderer.invoke("nav:go", dir),
   onNavState: (cb: (s: { canBack: boolean; canForward: boolean }) => void) => {
-    ipcRenderer.on("nav:state", (_e, s: { canBack: boolean; canForward: boolean }) => cb(s));
+    const h = (_e: unknown, s: { canBack: boolean; canForward: boolean }): void => cb(s);
+    ipcRenderer.on("nav:state", h);
+    return () => ipcRenderer.removeListener("nav:state", h);
   },
   onNavigated: (cb: (payload: DocPayload) => void) => {
-    ipcRenderer.on("doc:navigated", (_e, payload: DocPayload) => cb(payload));
+    const h = (_e: unknown, payload: DocPayload): void => cb(payload);
+    ipcRenderer.on("doc:navigated", h);
+    return () => ipcRenderer.removeListener("doc:navigated", h);
   },
   profile: createProfileController(),
   i18n: createI18nController(),
   onUpdateAvailable: (cb: (info: { current: string; latest: string }) => void) => {
-    ipcRenderer.on("app:update-available", (_e, info: { current: string; latest: string }) => cb(info));
+    const h = (_e: unknown, info: { current: string; latest: string }): void => cb(info);
+    ipcRenderer.on("app:update-available", h);
+    return () => ipcRenderer.removeListener("app:update-available", h);
   },
   applyUpdate: () => ipcRenderer.invoke("app:apply-update"),
 };

@@ -232,49 +232,56 @@ export function App(props: EditorProps = {}): JSX.Element {
       .catch(() => setLoaded(true));
 
     // Auto-accept (and review-mode comment-only changes) arrive as a file rewrite.
-    hostApi().onExternalChange(({ content }) => {
-      const next = parse(content);
-      setAgentThinking(false);
-      setDoc(next);
-      savedRef.current = serialize(next);
-      setDirty(false);
-      setStatus(t("msg.agentUpdated"));
-    });
-    // Review-mode body changes arrive parked, as a proposal to accept/reject.
-    hostApi().onProposal(({ content }) => showProposal(content));
-    hostApi().onAgentDone(() => setAgentDone(true));
-    hostApi().onReload(() => {
-      setReloadReady(true);
-      setReloadIn(30); // start the auto-close countdown
-    });
-    hostApi().onAgentActive(() => {
-      setAgentThinking(false);
-      setStatus(t("msg.agentTook"));
-    });
-    // Desktop only: the window followed a link to another doc — reset to it (a fresh
-    // load), clearing any in-flight proposal/turn state, then re-show a parked proposal.
-    hostApi().onNavigated?.(({ content, path }) => {
-      docPathRef.current = path;
-      const d = parse(content);
-      setDoc(d);
-      savedRef.current = serialize(d);
-      setDirty(false);
-      setProposal(null);
-      setReviewOpen(false);
-      setAgentThinking(false);
-      setAgentDone(false);
-      setStatus(`opened ${path.split("/").pop() ?? path}`);
-      void hostApi().getProposal().then((parked) => parked != null && showProposal(parked));
-    });
-    hostApi().onNavState?.((s) => setNavState(s));
-    // Desktop only: a newer npm version is available.
-    hostApi().onUpdateAvailable?.((info) => setUpdate(info));
+    // Collect every host subscription's disposer so a remount (e.g. Replay tutorial)
+    // can't stack ipcRenderer listeners and double-handle events.
+    const subs: Array<(() => void) | void> = [
+      hostApi().onExternalChange(({ content }) => {
+        const next = parse(content);
+        setAgentThinking(false);
+        setDoc(next);
+        savedRef.current = serialize(next);
+        setDirty(false);
+        setStatus(t("msg.agentUpdated"));
+      }),
+      // Review-mode body changes arrive parked, as a proposal to accept/reject.
+      hostApi().onProposal(({ content }) => showProposal(content)),
+      hostApi().onAgentDone(() => setAgentDone(true)),
+      hostApi().onReload(() => {
+        setReloadReady(true);
+        setReloadIn(30); // start the auto-close countdown
+      }),
+      hostApi().onAgentActive(() => {
+        setAgentThinking(false);
+        setStatus(t("msg.agentTook"));
+      }),
+      // Desktop only: the window followed a link to another doc — reset to it (a fresh
+      // load), clearing any in-flight proposal/turn state, then re-show a parked proposal.
+      hostApi().onNavigated?.(({ content, path }) => {
+        docPathRef.current = path;
+        const d = parse(content);
+        setDoc(d);
+        savedRef.current = serialize(d);
+        setDirty(false);
+        setProposal(null);
+        setReviewOpen(false);
+        setAgentThinking(false);
+        setAgentDone(false);
+        setStatus(`opened ${path.split("/").pop() ?? path}`);
+        void hostApi().getProposal().then((parked) => parked != null && showProposal(parked));
+      }),
+      hostApi().onNavState?.((s) => setNavState(s)),
+      // Desktop only: a newer npm version is available.
+      hostApi().onUpdateAvailable?.((info) => setUpdate(info)),
+    ];
 
     // Store the RAW selection (untrimmed) so a whitespace-only selection is distinguishable
     // from no selection at all (the former blocks commenting; the latter → doc-level).
     const onSel = () => setSelectionText(window.getSelection()?.toString() ?? "");
     document.addEventListener("selectionchange", onSel);
-    return () => document.removeEventListener("selectionchange", onSel);
+    return () => {
+      document.removeEventListener("selectionchange", onSel);
+      for (const dispose of subs) dispose?.();
+    };
   }, []);
 
   // Reload countdown: once a new build is signalled, tick down and auto-close the

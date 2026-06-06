@@ -47,6 +47,14 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
   const done: Array<() => void> = [];
   const active: Array<() => void> = [];
   const reload: Array<() => void> = [];
+  // Register a callback and return a disposer that removes it (no listener buildup on remount).
+  const subscribe = <T>(arr: T[], cb: T): (() => void) => {
+    arr.push(cb);
+    return () => {
+      const i = arr.indexOf(cb);
+      if (i >= 0) arr.splice(i, 1);
+    };
+  };
 
   const api: Api = {
     async load(): Promise<DocPayload> {
@@ -90,11 +98,11 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
         closed = true;
       },
     },
-    onExternalChange: (cb) => void external.push(cb),
-    onProposal: (cb) => void proposal.push(cb),
-    onAgentDone: (cb) => void done.push(cb),
-    onAgentActive: (cb) => void active.push(cb),
-    onReload: (cb) => void reload.push(cb),
+    onExternalChange: (cb) => subscribe(external, cb),
+    onProposal: (cb) => subscribe(proposal, cb),
+    onAgentDone: (cb) => subscribe(done, cb),
+    onAgentActive: (cb) => subscribe(active, cb),
+    onReload: (cb) => subscribe(reload, cb),
     async closeWindow(): Promise<void> {
       closed = true;
     },
