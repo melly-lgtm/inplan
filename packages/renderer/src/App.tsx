@@ -1815,7 +1815,7 @@ function DiffSource({ segs, accepted, focused, onToggle }: { segs: DiffSegment[]
         return (
           <div key={i} data-hunk={idx} className={`ap-hunk${on ? " accepted" : " rejected"}${focused === idx ? " focused" : ""}`}>
             <div className="ap-hunk-toggle">
-              <Switch label={`change ${idx + 1}`} checked={on} onChange={(v) => onToggle(idx, v)} ariaLabel={`accept change ${idx + 1}`} />
+              <Switch label={`change ${idx + 1}`} checked={on} onChange={(v) => onToggle(idx, v)} />
             </div>
             <HunkLines removed={s.removed ?? []} added={s.added ?? []} />
           </div>

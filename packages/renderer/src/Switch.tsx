@@ -35,7 +35,6 @@ export function Switch({
         checked={checked}
         disabled={disabled}
         aria-label={ariaLabel ?? (typeof label === "string" ? label : undefined)}
-        aria-checked={checked}
         onChange={(e) => onChange(e.target.checked)}
       />
       <span className="ap-switch-track" aria-hidden="true">
