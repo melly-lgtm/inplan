@@ -1889,7 +1889,7 @@ function ThreadCard(props: {
         </span>
         {/* ⋯ menu sits on the meta line so it lines up with the timestamp. */}
         {!disabled && editingId !== c.id && (
-          <span className="ap-cmenu">
+          <div className="ap-cmenu">
             <button
               className="ap-cmenu-btn"
               title={t("thread.more")}
@@ -1922,7 +1922,7 @@ function ThreadCard(props: {
                 </button>
               </div>
             )}
-          </span>
+          </div>
         )}
       </div>
       {c.selected && c.selected.length > 0 && <div className="ap-selected">▶ {c.selected.join(", ")}</div>}
