@@ -3,9 +3,9 @@
 
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type ControlChannel,
@@ -33,7 +33,7 @@ import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfi
 import { checkForUpdate, selfUpdate, UPDATE_PKG } from "./update";
 import { runningEditorPid } from "./editorProcess";
 import { evaluateAgentEdit } from "./gate";
-import { docPaths, type DocPaths } from "./paths";
+import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { wakePredicate, waitForActions } from "./wait";
 
 const VERSION = "0.1.6";
@@ -599,6 +599,130 @@ function bundledSkillPath(): string | null {
  *  we never touch agents you don't have). Project-scoped agents (Cline `.clinerules`, Aider
  *  `CONVENTIONS.md`, Cursor `.cursor/rules`) read rules from the working repo, not a global
  *  dir — those are handled per-project, not by this global install. */
+// --- Agent console relay (launch-independent hook target) ---------------------
+//
+// `install-skill` configures each present agent (Claude Code / Codex / Pi) to fire a
+// hook on its own turn/tool events; the hook invokes `inplan relay`, which resolves the
+// plan doc the agent is working on (the most-recently-active sidecar under the agent's
+// CWD) and relays the note onto the SAME ControlChannel the agent already uses — so it
+// surfaces in the editor's agent-message history whether the doc is local
+// (FsControlChannel) or cloud-promoted (Supabase). Best-effort: it never errors the
+// agent's turn (no active doc / not logged in / unparseable payload → silent no-op),
+// and it rides the existing message channel — no new transport, no local socket.
+
+/** The plan doc the agent is working on in `cwd`: the most-recently-active sidecar whose
+ *  document path is at or under `cwd`. Null when none — so relay no-ops on ordinary,
+ *  non-inplan turns. Works for local and cloud docs alike (both keep a sidecar with an
+ *  `originalPath` + control log). */
+export function activeDocForCwd(cwd: string): string | null {
+  const root = sidecarRoot();
+  if (!existsSync(root)) return null;
+  // Compare *realpaths* so the under-CWD test survives symlinks (macOS /var → /private/var),
+  // but return the doc's STORED path so docPaths() keys the same sidecar the editor uses.
+  const real = (p: string): string => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return resolve(p);
+    }
+  };
+  const base = real(cwd);
+  let best: { file: string; mtime: number } | null = null;
+  for (const entry of readdirSync(root)) {
+    try {
+      const dir = join(root, entry);
+      const orig = readStatus(join(dir, "status.json")).originalPath;
+      if (!orig) continue;
+      const rel = relative(base, real(orig));
+      if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) continue; // not strictly under cwd
+      const logPath = join(dir, "log.jsonl");
+      const mtime = existsSync(logPath) ? statSync(logPath).mtimeMs : 0;
+      if (!best || mtime > best.mtime) best = { file: resolve(orig), mtime };
+    } catch {
+      /* skip an unreadable sidecar */
+    }
+  }
+  return best?.file ?? null;
+}
+
+/** Extract the note text from an agent hook payload, or null to no-op. Claude Code and
+ *  Codex hooks both deliver one JSON object on stdin; Codex `notify` passes JSON as the
+ *  last CLI argument. Tool events become a terse "▸ name" activity line. */
+export function relayTextFromHook(kind: string, stdin: string, argv: string[]): string | null {
+  const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+  const parse = (s: string): Record<string, unknown> => {
+    try {
+      return s.trim() ? (JSON.parse(s.trim()) as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  };
+  switch (kind) {
+    case "claude-stop":
+    case "codex-stop":
+      return str(parse(stdin).last_assistant_message) || null;
+    case "claude-tool":
+    case "codex-tool": {
+      const name = str(parse(stdin).tool_name);
+      return name ? `▸ ${name}` : null;
+    }
+    case "codex-notify":
+      return str(parse(argv[argv.length - 1] ?? "")["last-assistant-message"]) || null;
+    default:
+      return null;
+  }
+}
+
+/** Append a human-facing agent note onto the doc's control channel, routed to wherever the
+ *  doc lives (local fs or cloud). Best-effort; swallows all errors. */
+async function relayText(file: string, text: string): Promise<void> {
+  try {
+    const route = routeFor(file, "message", []);
+    if (route.kind === "cloud") {
+      const backend = await remoteBackend(route.docId, "cli-agent");
+      if (!backend) return; // not logged in → skip silently
+      await backend.channel.append({ actor: "agent", type: LogEventType.AgentMessage, payload: { text } });
+    } else if (route.kind === "local") {
+      const p = docPaths(file);
+      mkdirSync(p.controlDir, { recursive: true });
+      await new FsControlChannel(p).append({ actor: "agent", type: LogEventType.AgentMessage, payload: { text } });
+    }
+    // reconcile → skip: a relay must never force a sync decision.
+  } catch {
+    /* relay is best-effort; never break the agent's turn */
+  }
+}
+
+/** `inplan relay` — invoked by an agent hook (see install-skill). Resolves the active plan
+ *  doc for the CWD and relays a note to its editor. Always exits 0 (best-effort). */
+async function doRelay(args: string[]): Promise<void> {
+  const hook = getFlag(args, "hook");
+  let text: string | null;
+  if (hook) {
+    let stdin = "";
+    try {
+      stdin = readFileSync(0, "utf8");
+    } catch {
+      /* no stdin (e.g. codex-notify uses argv) */
+    }
+    text = relayTextFromHook(hook, stdin, process.argv);
+  } else {
+    const t = getFlag(args, "text");
+    text = t === undefined ? null : hasFlag(args, "activity") ? `▸ ${t}` : t;
+  }
+  if (!text || !text.trim()) {
+    output({ status: "relay_skipped", reason: "no_text" });
+    return;
+  }
+  const file = activeDocForCwd(process.cwd());
+  if (!file) {
+    output({ status: "relay_skipped", reason: "no_active_doc" });
+    return;
+  }
+  await relayText(file, text.trim().slice(0, 2000)); // cap a runaway message
+  output({ status: "relayed" });
+}
+
 function skillTargets(): { name: string; root: string; target: string }[] {
   const home = homedir();
   return [
@@ -665,6 +789,139 @@ function grantClaudePermissions(claudeRoot: string): boolean {
   return true;
 }
 
+// Agent-console relay hooks per agent: event → the `inplan relay --hook` command the
+// agent runtime fires. Claude Code + Codex share the Claude-style hooks schema
+// (`<settings>.hooks.<Event>`). Installed by `install-skill` (extends the #49 scoped grant).
+const CLAUDE_RELAY_HOOKS = [
+  { event: "Stop", command: "inplan relay --hook claude-stop" },
+  { event: "PostToolUse", command: "inplan relay --hook claude-tool" },
+];
+const CODEX_RELAY_HOOKS = [
+  { event: "Stop", command: "inplan relay --hook codex-stop" },
+  { event: "PostToolUse", command: "inplan relay --hook codex-tool" },
+];
+
+/** Merge command-hooks into a Claude/Codex-style hooks object (`obj.hooks.<Event>` = array
+ *  of groups, each `{ hooks: [{ type:"command", command }] }`). Idempotent — skips a command
+ *  already present under its event. Returns whether it changed anything. */
+function mergeRelayHooks(settings: Record<string, unknown>, entries: { event: string; command: string }[]): boolean {
+  const raw = settings.hooks;
+  const hooks = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
+  let changed = false;
+  for (const { event, command } of entries) {
+    const existing = hooks[event];
+    const arr = (Array.isArray(existing) ? existing : []) as Array<Record<string, unknown>>;
+    const present = arr.some((g) => {
+      const hs = (g as { hooks?: unknown }).hooks;
+      return Array.isArray(hs) && hs.some((h) => (h as { command?: unknown })?.command === command);
+    });
+    if (!present) {
+      arr.push({ hooks: [{ type: "command", command }] });
+      changed = true;
+    }
+    hooks[event] = arr;
+  }
+  if (changed) settings.hooks = hooks;
+  return changed;
+}
+
+/** Read a JSON config file into a plain object; `null` if it exists but isn't a JSON object
+ *  (so we never clobber a file we don't understand). A missing file reads as `{}`. */
+function readJsonObject(path: string): Record<string, unknown> | null {
+  try {
+    if (!existsSync(path)) return {};
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/** Atomic JSON write (sibling temp + rename). Returns false on any IO error. */
+function writeJsonAtomic(path: string, value: unknown): boolean {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const tmp = path + ".tmp";
+    writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n");
+    renameSync(tmp, path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Install the agent-console relay hooks into Claude Code's settings.json (alongside the
+ *  scoped permissions already written there). Idempotent, atomic, never clobbers. */
+function installClaudeHooks(claudeRoot: string): boolean {
+  const path = join(claudeRoot, "settings.json");
+  const settings = readJsonObject(path);
+  if (!settings || !mergeRelayHooks(settings, CLAUDE_RELAY_HOOKS)) return false;
+  return writeJsonAtomic(path, settings);
+}
+
+/** Install the relay hooks into Codex's hooks.json (same schema, JSON form — avoids TOML).
+ *  Idempotent, atomic, never clobbers. */
+function installCodexHooks(codexRoot: string): boolean {
+  const path = join(codexRoot, "hooks.json");
+  const cfg = readJsonObject(path);
+  if (!cfg || !mergeRelayHooks(cfg, CODEX_RELAY_HOOKS)) return false;
+  return writeJsonAtomic(path, cfg);
+}
+
+// The Pi auto-loaded extension that relays turn messages + tool activity to `inplan relay`.
+// The marker lets the installer re-write it on upgrade without clobbering a user's own file.
+const PI_RELAY_MARKER = "// inplan-relay (managed by `inplan install-skill`)";
+const PI_RELAY_EXTENSION = `${PI_RELAY_MARKER}
+// Auto-loaded on every \`pi\` run from ~/.pi/agent/extensions/. Forwards the agent's per-turn
+// message + per-tool activity to the inplan editor via \`inplan relay\` (which routes to the
+// local or cloud doc). Fire-and-forget so it never stalls the agent.
+import { spawn } from "node:child_process";
+
+function relay(args) {
+  try {
+    const child = spawn("inplan", ["relay", ...args], { stdio: "ignore", detached: true });
+    child.unref();
+  } catch {
+    /* best-effort */
+  }
+}
+
+export default function (pi) {
+  pi.on("agent_end", (event) => {
+    const messages = (event && event.messages) || [];
+    const last = [...messages].reverse().find((m) => m && m.role === "assistant");
+    const text = last && Array.isArray(last.content)
+      ? last.content.filter((c) => c && c.type === "text").map((c) => c.text).join(" ").trim()
+      : "";
+    if (text) relay(["--text", text]);
+  });
+  pi.on("tool_execution_start", (event) => {
+    if (event && event.toolName) relay(["--activity", "--text", String(event.toolName)]);
+  });
+}
+`;
+
+/** Drop the Pi relay extension into ~/.pi/agent/extensions/. Writes only when absent or when
+ *  our own marker is present but stale (idempotent upgrades) — never clobbers a user file. */
+function installPiRelayExtension(piAgentRoot: string): boolean {
+  const path = join(piAgentRoot, "extensions", "inplan-relay.ts");
+  try {
+    if (existsSync(path)) {
+      const cur = readFileSync(path, "utf8");
+      if (cur === PI_RELAY_EXTENSION) return false; // already current
+      if (!cur.startsWith(PI_RELAY_MARKER)) return false; // a user's own file — leave it
+    }
+    mkdirSync(dirname(path), { recursive: true });
+    const tmp = path + ".tmp";
+    writeFileSync(tmp, PI_RELAY_EXTENSION);
+    renameSync(tmp, path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Install the inplan skill into AI agents already present on this machine (the npm→skill
  * half of the bidirectional bootstrap; the skill→CLI half lives in SKILL.md's install
@@ -698,6 +955,18 @@ function doInstallSkill(args: string[]): void {
       // when the skill was already present, so existing installs pick up the grant.
       if (a.name === "Claude Code" && grantClaudePermissions(a.root)) {
         process.stderr.write(`inplan: granted scoped auto-approval (plan files + ~/.inplan + inplan CLI) in ${join(a.root, "settings.json")}.\n`);
+      }
+      // Agent-console relay: configure each agent's own hooks (launch-independent) to relay
+      // the agent's turn message + tool activity to the editor. Runs even when the skill was
+      // already present, so existing installs pick up the relay.
+      if (a.name === "Claude Code" && installClaudeHooks(a.root)) {
+        process.stderr.write(`inplan: configured the agent-console relay hooks in ${join(a.root, "settings.json")}.\n`);
+      }
+      if (a.name === "Codex" && installCodexHooks(a.root)) {
+        process.stderr.write(`inplan: configured the agent-console relay hooks in ${join(a.root, "hooks.json")}.\n`);
+      }
+      if (a.name === "Pi" && installPiRelayExtension(a.root)) {
+        process.stderr.write(`inplan: installed the agent-console relay extension in ${join(a.root, "extensions", "inplan-relay.ts")}.\n`);
       }
     } catch {
       /* never fail an install over a skill copy / settings merge */
@@ -863,10 +1132,11 @@ async function main(): Promise<void> {
       .filter(Boolean),
   );
 
-  if (!cmd || !["open", "wait", "signal", "message", "status", "promote", "demote", "upload"].includes(cmd)) {
+  if (!cmd || !["open", "wait", "signal", "message", "relay", "status", "promote", "demote", "upload"].includes(cmd)) {
     process.stderr.write(
       "usage: inplan <open|wait|signal> <file|--remote DOC_ID> [--model NAME] [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n" +
         '       inplan message <file> "your message"   (relay a note to the editor status bar)\n' +
+        "       inplan relay [--hook <kind> | --text <s> [--activity]]   (agent-hook → editor; resolves the active doc)\n" +
         "       inplan status  <file>\n" +
         "       inplan upload  <file> [--org <slug>] [--repo <name>] [--path <p>]   (Collaborate on Cloud)\n" +
         "       inplan promote <file> --cloud-doc <docId> [--locator org/repo/path]\n" +
@@ -875,6 +1145,13 @@ async function main(): Promise<void> {
         "       inplan whoami | logout\n",
     );
     process.exit(64);
+  }
+
+  // `relay` takes no <file> — it resolves the active doc from the CWD itself (it's an
+  // agent-hook target, fired wherever the agent runs).
+  if (cmd === "relay") {
+    await doRelay(args);
+    return;
   }
 
   // Cloud target: `--remote DOC_ID` routes to the Supabase backend instead of
@@ -971,6 +1248,10 @@ async function main(): Promise<void> {
   if (cmd === "open") {
     const p = docPaths(file);
     mkdirSync(p.controlDir, { recursive: true });
+    // Record this local doc's path in its status so the agent-console relay can resolve
+    // "the doc being worked on in this CWD" later (doesn't disturb a cloud-promoted status).
+    const st = readStatus(p.statusPath);
+    if (st.location !== "cloud") writeStatus(p.statusPath, { ...st, location: "local", originalPath: file });
     const existing = runningEditorPid(p.logPath);
     if (existing !== null) {
       process.stderr.write(`[inplan] an editor is already open for this document (pid ${existing}); attaching without launching another window\n`);
