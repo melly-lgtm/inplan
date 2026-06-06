@@ -27,8 +27,8 @@ jobs:
     # or the OIDC token's environment claim won't match and npm rejects it (→ ENEEDAUTH).
     environment: release
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           # NOTE: intentionally NO `registry-url` — it makes setup-node write an empty
