@@ -16,6 +16,7 @@ interface ProfileSnapshot {
   user: { name: string; email?: string } | null;
   agentLocation: "local" | "cloud" | null;
   actions: ActionDescriptor[];
+  identitySource?: "cloud" | "git" | "manual" | null;
 }
 
 /** Cloud profile controller: caches main's snapshot, rebuilds action closures
@@ -26,6 +27,7 @@ function createProfileController(): ProfileController {
   const toState = (snap: ProfileSnapshot): ProfileState => ({
     user: snap.user,
     agentLocation: snap.agentLocation,
+    ...(snap.identitySource !== undefined ? { identitySource: snap.identitySource } : {}),
     actions: snap.actions.map((d) => ({
       label: d.label,
       ...(d.primary ? { primary: true } : {}),
@@ -47,6 +49,7 @@ function createProfileController(): ProfileController {
       subs.add(cb);
       return () => void subs.delete(cb);
     },
+    setIdentity: (name: string, email?: string) => ipcRenderer.invoke("profile:set", { name, ...(email ? { email } : {}) }) as Promise<void>,
   };
 }
 
@@ -148,6 +151,11 @@ const api: Api = {
     return () => ipcRenderer.removeListener("app:update-available", h);
   },
   applyUpdate: () => ipcRenderer.invoke("app:apply-update"),
+  restartApp: () => ipcRenderer.invoke("app:restart"),
+  // First-run tour: durable flag from ~/.inplan (read synchronously so the very first
+  // render decides without a flash); `setOnboarded` persists it on finish/skip.
+  onboarded: ipcRenderer.sendSync("onboarding:get") as boolean,
+  setOnboarded: () => ipcRenderer.invoke("onboarding:set") as Promise<void>,
 };
 
 contextBridge.exposeInMainWorld("api", api);

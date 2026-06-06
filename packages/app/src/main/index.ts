@@ -5,8 +5,9 @@ import { APP_ICON_DATA_URL } from "./appIcon";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { Acceptance, Cadence, SaveOptions, Settings } from "@inplan/renderer";
+import { isOnboarded, markOnboarded } from "@inplan/core/node";
 import { Session } from "./session";
 import { createI18nController } from "./i18nController";
 
@@ -70,6 +71,8 @@ interface ProfileSnapshot {
   user: { name: string; email?: string } | null;
   agentLocation: "local" | "cloud" | null;
   actions: ActionDescriptor[];
+  /** Where the human identity came from (cloud/git/manual), or null when unset. */
+  identitySource?: "cloud" | "git" | "manual" | null;
 }
 
 /** Run an `inplan` subcommand under Electron's bundled Node, returning stdout JSON. */
@@ -139,32 +142,42 @@ function ensureCloudProbe(): void {
   if (Date.now() - lastCloudProbe > CLOUD_PROBE_TTL_MS) void probeCloud();
 }
 
-/** The current cloud profile: who is signed in + the actions to offer. */
+/** The profile: the resolved human identity (works offline) + the actions to offer. */
 async function readProfile(): Promise<ProfileSnapshot> {
   ensureCloudProbe();
-  // Cloud kill switch: while the link isn't enabled (server flag off, or unreachable),
-  // show no cloud chrome at all — regardless of any existing CLI session — so nothing
-  // funnels the user toward the cloud.
-  if (!cloudLinkEnabled) return { user: null, agentLocation: null, actions: [] };
-  const r = await runCli(["whoami"]);
-  let who: { signedIn?: boolean; email?: string } = {};
+
+  // 1) Resolve the human identity (stored → cloud → git of the doc dir). This works
+  //    offline and is what authors comments, independent of the cloud link.
+  const idArgs = ["profile", ...(session ? [session.paths.file] : [])];
+  let id: { name?: string; email?: string; source?: "cloud" | "git" | "manual" } = {};
   try {
-    who = JSON.parse(r.stdout.trim() || "{}");
+    id = JSON.parse((await runCli(idArgs)).stdout.trim() || "{}");
   } catch {
-    /* treat unparseable as signed out */
+    /* unset / unparseable → no identity yet (the menu prompts to set one) */
   }
-  if (who.signedIn) {
-    return {
-      user: { name: who.email ?? "Signed in", ...(who.email ? { email: who.email } : {}) },
-      agentLocation: null, // desktop has no live presence room; the web derives it from awareness
-      actions: [
-        { id: "collaborate", label: "Collaborate on Cloud", primary: true },
-        { id: "signout", label: "Sign out", danger: true },
-      ],
-    };
+  const user = id.name ? { name: id.name, ...(id.email ? { email: id.email } : {}) } : null;
+
+  // Editing the local identity is rendered by the menu itself (host-agnostic), so it
+  // isn't a host action. Cloud chrome below is gated by the kill switch.
+  const actions: ActionDescriptor[] = [];
+
+  // 2) Cloud chrome, gated by the kill switch: add sign-in/out + collaborate only
+  //    when the link is enabled (reachable AND turned on).
+  if (cloudLinkEnabled) {
+    let who: { signedIn?: boolean } = {};
+    try {
+      who = JSON.parse((await runCli(["whoami"])).stdout.trim() || "{}");
+    } catch {
+      /* treat unparseable as signed out */
+    }
+    if (who.signedIn) {
+      actions.push({ id: "collaborate", label: "Collaborate on Cloud", primary: true }, { id: "signout", label: "Sign out", danger: true });
+    } else {
+      actions.push({ id: "signin", label: "Sign in…" });
+    }
   }
-  // Signed out but link enabled: offer cloud sign-in.
-  return { user: null, agentLocation: null, actions: [{ id: "signin", label: "Sign in…" }] };
+
+  return { user, agentLocation: null, actions, identitySource: id.source ?? null };
 }
 
 /** Collaborate on Cloud: persist the latest body, upload+promote via the CLI,
@@ -251,6 +264,7 @@ function navigateTo(file: string): boolean {
   session = new Session(file);
   session.logEditorPid(process.pid);
   stopWatching = watchSession();
+  setDocTitle(file);
   win.webContents.send("doc:navigated", session.load());
   return true;
 }
@@ -285,6 +299,11 @@ function armQuitFallback(): void {
 /** The inplan mark (same as inplan.ai), for the window + dock icon. */
 const appIcon = nativeImage.createFromDataURL(APP_ICON_DATA_URL);
 
+/** Window title: `inplan - <filename>` for the open doc (just `inplan` with none). */
+function setDocTitle(file: string | null): void {
+  win?.setTitle(file ? `inplan - ${basename(file)}` : "inplan");
+}
+
 function createWindow(): void {
   rendererReady = false; // becomes true on did-finish-load (below)
   win = new BrowserWindow({
@@ -297,6 +316,9 @@ function createWindow(): void {
       sandbox: false,
     },
   });
+  // The renderer's <title> would otherwise overwrite our window title — keep ours.
+  win.on("page-title-updated", (e) => e.preventDefault());
+  setDocTitle(session?.paths.file ?? null);
 
   // Links must never navigate the editor window. Route external links to the
   // system browser; block any in-window navigation away from the app.
@@ -423,9 +445,29 @@ function registerIpc(): void {
       return { ok: false };
     }
   });
+  // Relaunch into the freshly-installed version (same doc/argv), bypassing the
+  // quit dialog — the renderer persists any unsaved edits before calling this.
+  ipcMain.handle("app:restart", () => {
+    app.relaunch();
+    app.exit(0);
+  });
+
+  // First-run onboarding flag, persisted at the user level (~/.inplan/state.json) so the
+  // tour shows once per machine, not once per Electron-userData. `get` is synchronous so
+  // the renderer can decide the very first render without a flash of the tour.
+  ipcMain.on("onboarding:get", (e) => {
+    e.returnValue = isOnboarded();
+  });
+  ipcMain.handle("onboarding:set", () => markOnboarded());
 
   // Cloud profile menu: identity + host-injected actions for the shared <ProfileMenu>.
   ipcMain.handle("profile:get", () => readProfile());
+  ipcMain.handle("profile:set", async (_e, identity: { name: string; email?: string }) => {
+    const name = (identity?.name ?? "").trim();
+    if (!name) return;
+    await runCli(["profile", "set", "--name", name, ...(identity.email && identity.email.trim() ? ["--email", identity.email.trim()] : [])]);
+    win?.webContents.send("profile:changed");
+  });
   ipcMain.handle("profile:action", async (_e, id: string) => {
     if (id === "collaborate") {
       await collaborateOnCloud();
