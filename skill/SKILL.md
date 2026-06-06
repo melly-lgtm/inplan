@@ -1,6 +1,6 @@
 ---
 name: inplan
-description: Use when drafting a planning, PRD, or design document that a human should review interactively. Saves the plan as *.plan.md and opens it in the inplan editor for inline-comment collaboration — the agent drafts and poses questions as comments, the human comments/answers, the agent revises — looping until the human completes the session.
+description: Use when the user wants to create or refine a planning, PRD, or design document collaboratively, with interactive human review. Trigger on requests like "plan X", "let's plan …", "create a plan for …", "design Y together", or "draft a PRD/design doc" — in general, any request pairing the verb "plan" with a topic (e.g. "plan a tic-tac-toe game"). Saves the document as *.plan.md and opens it in the inplan editor for inline-comment collaboration — the agent drafts and poses questions as comments, the human comments/answers, the agent revises — looping until the human ends the session. Do not confuse with writing-plans, which breaks an already-agreed spec into implementation tasks; inplan is for co-developing the spec/design itself.
 # The human reviews every change in the inplan editor, so the agent's edits to the plan
 # file + sidecars and the inplan CLI are auto-approved while this skill is active (no
 # per-edit prompts). Scoped to plan files, the ~/.inplan sidecars, and the inplan CLI only.
@@ -69,7 +69,7 @@ anchored comment is an inline Markdown link whose href is the comment id:
 
     <!--inplan
     [
-      { "id": "cmt-abfdb1", "author": "Agent <agent@inplan>",
+      { "id": "cmt-abfdb1", "author": "Opus 4.8 <claude@inplan.ai>",
         "date": "2026-05-29T00:00:00Z", "resolved": false,
         "text": "Confirm the datastore?",
         "question": { "multiSelect": false, "choices": [
@@ -84,6 +84,12 @@ anchored comment is an inline Markdown link whose href is the comment id:
 - **Question**: `question.multiSelect` false = pick one (radio), true = pick many
   (checkbox); the human may also answer with free text.
 - Generate ids as `cmt-` + 6 base36 characters.
+- **`author`**: sign **every** comment you write with **your own model identity**, so
+  the human sees which model is talking. Always pass `--model "<your model>"` (e.g.
+  `--model "Opus 4.8"`) on `open`/`wait`; the wait result echoes the exact string to
+  use back as **`agentAuthor`** (e.g. `"Opus 4.8 <claude@inplan.ai>"`). Copy that
+  value verbatim into the `author` field — never hardcode the generic
+  `"Agent <agent@inplan>"`.
 
 ## Turn-taking & control — read this first
 
@@ -164,10 +170,12 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
    present — the current value, no log-scanning needed): if it's `false`, do
    **not** auto-resolve — instead reply that the thread can be resolved and leave
    it `resolved: false` for the human to resolve.
-5. **Hand control back: call `wait` again** (no `--cursor` — it self-manages),
-   then loop to step 3. This unlocks the human's editor and blocks until their
-   next turn. Do this after *every* turn, even an empty one:
+5. **Relay a one-line summary, then hand control back by calling `wait` again**
+   (no `--cursor` — it self-manages), then loop to step 3. The `message` keeps the
+   human's status-bar history populated; the `wait` unlocks their editor and blocks
+   until their next turn. Do both after *every* turn, even an empty one:
 
+       inplan message <name>.plan.md "Summarized what you did this turn."
        inplan wait <name>.plan.md
 
    `your_turn` and `activity` are **not** stop conditions — you always loop back
@@ -181,15 +189,18 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
 
 ## Keeping the human informed
 
-The human can't see your terminal. To tell them what you're doing — a short note
-they read in the editor's status bar (click it for the full history) — relay a
-message. Use it for human-facing context, not your reasoning:
+The human can't see your terminal — anything you'd "say" about your work is
+invisible to them unless you relay it. Mirror it into the editor with `inplan
+message`; it appears as a note in the status bar (the human clicks it for the
+full session history). Use it for human-facing context, not your raw reasoning:
 
     inplan message <name>.plan.md "Reworked the datastore section based on your Redis pick."
 
-Good moments: just before you `wait` (summarize the turn you took), or when you
-start a long step. Keep each message to a sentence or two. It's informational
-only — it never ends the loop or hands over the turn.
+**Relay a one-line summary on every turn**, right before you `wait` — what you
+changed and why, or that you only replied. This is what populates the status-bar
+history, so the human can always see how you responded to each of their actions.
+Also relay when you start a long step. Keep each to a sentence or two. It's
+informational only — it never ends the loop or hands over the turn.
 
 ## Authorship
 
