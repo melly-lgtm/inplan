@@ -139,7 +139,7 @@ export interface ExitController {
   onRequest?(cb: () => void): (() => void) | void;
   /** Confirmed quit: optionally save the latest content, optionally signal the agent the
    *  plan is ready, then leave (desktop: close the window; web: return to the plan list). */
-  quit(content: string, opts: { save: boolean; notifyComplete: boolean }): void;
+  quit(content: string, opts: { save: boolean; startBuild: boolean }): void;
 }
 
 export interface Api {

@@ -92,12 +92,12 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
     },
     exit: {
       showBackButton: opts.backButton ?? false, // opt-in (web-like): expose the in-editor Back control
-      quit(content: string, opts: { save: boolean; notifyComplete: boolean }): void {
+      quit(content: string, opts: { save: boolean; startBuild: boolean }): void {
         if (opts.save) {
           void store.saveDoc(content);
           void store.setCanonical(content);
         }
-        void channel.append({ actor: "user", type: LogEventType.SessionClosed, payload: { reason: opts.notifyComplete ? "completed" : "window_closed" } });
+        void channel.append({ actor: "user", type: LogEventType.SessionClosed, payload: { reason: opts.startBuild ? "completed" : "window_closed" } });
         closed = true;
       },
     },

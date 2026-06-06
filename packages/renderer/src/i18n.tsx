@@ -41,7 +41,7 @@ export const EN: Catalog = {
   "topbar.finishTurnTitle": "Finish turn — hand off to the agent",
   "quit.title": "Do you want to quit?",
   "quit.save": "Save {file}",
-  "quit.notify": "Tell the agent the plan is ready",
+  "quit.startBuild": "Switch agent to build mode",
   "quit.thisDoc": "this document",
   "quit.quit": "Quit",
   "quit.cancel": "Cancel",

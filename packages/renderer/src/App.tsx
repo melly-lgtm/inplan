@@ -515,7 +515,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [quitOpen, setQuitOpen] = useState(false);
   const [forceSettingsOpen, setForceSettingsOpen] = useState(false); // onboarding opens the ⚙ menu on its settings step
   // Confirmed quit: the host saves (if asked), signals the agent (if asked), then leaves.
-  const confirmQuit = useCallback((opts: { save: boolean; notifyComplete: boolean }) => {
+  const confirmQuit = useCallback((opts: { save: boolean; startBuild: boolean }) => {
     realHostApi().exit?.quit(serialize(docRef.current), opts);
     setQuitOpen(false);
   }, []);
@@ -526,7 +526,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   useEffect(() => {
     const real = realHostApi();
     return real?.exit?.onRequest?.(() => {
-      if (props.onboarding) real.exit?.quit("", { save: false, notifyComplete: false });
+      if (props.onboarding) real.exit?.quit("", { save: false, startBuild: false });
       else setQuitOpen(true);
     });
   }, [props.onboarding]);

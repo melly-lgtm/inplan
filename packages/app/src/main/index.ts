@@ -431,9 +431,11 @@ function registerIpc(): void {
   });
   // The renderer's quit dialog resolved: optionally save the latest body, record
   // whether to notify the agent the plan is ready ("completed") or just close, then exit.
-  ipcMain.handle("app:quit", (_e, content: string, opts: { save: boolean; notifyComplete: boolean }) => {
+  ipcMain.handle("app:quit", (_e, content: string, opts: { save: boolean; startBuild: boolean }) => {
     if (opts.save) session?.complete(content); // write file + canonical
-    quitNow(opts.notifyComplete ? "completed" : "window_closed");
+    // "Switch agent to build mode" → close as "completed" so the agent's wait sees the
+    // hand-off and the skill switches from planning to implementation; otherwise just close.
+    quitNow(opts.startBuild ? "completed" : "window_closed");
   });
 
   // Self-update over npm: run the global install; the renderer then offers a restart.

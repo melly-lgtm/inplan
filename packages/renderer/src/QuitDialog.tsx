@@ -5,8 +5,9 @@ import { useT } from "./i18n";
 
 /**
  * "Do you want to quit?" — shown on desktop window-close and on web "Back". Offers an
- * optional Save (only when there are unsaved changes) and a notify-the-agent toggle, both
- * default-checked. Confirming calls back with the chosen flags; the host does the work.
+ * optional Save (only when there are unsaved changes, default-checked) and an opt-in
+ * "switch agent to build mode" toggle (default off). Confirming calls back with the
+ * chosen flags; the host does the work.
  */
 export function QuitDialog({
   fileName,
@@ -16,12 +17,12 @@ export function QuitDialog({
 }: {
   fileName: string | null;
   dirty: boolean;
-  onQuit: (opts: { save: boolean; notifyComplete: boolean }) => void;
+  onQuit: (opts: { save: boolean; startBuild: boolean }) => void;
   onCancel: () => void;
 }): JSX.Element {
   const t = useT();
   const [save, setSave] = useState(true); // default checked (only rendered when dirty)
-  const [notify, setNotify] = useState(true); // default checked
+  const [build, setBuild] = useState(false); // default off — explicit hand-off to implementation
   const ref = useRef<HTMLDivElement>(null);
 
   // Focus the primary action so Enter confirms the quit (and Space toggles a focused box).
@@ -46,15 +47,15 @@ export function QuitDialog({
             </label>
           )}
           <label className="ap-quit-opt">
-            <input type="checkbox" checked={notify} onChange={(e) => setNotify(e.target.checked)} />
-            {t("quit.notify")}
+            <input type="checkbox" checked={build} onChange={(e) => setBuild(e.target.checked)} />
+            {t("quit.startBuild")}
           </label>
         </div>
         <div className="ap-quit-actions">
           <button className="ap-link" onClick={onCancel}>
             {t("quit.cancel")}
           </button>
-          <button className="ap-primary" onClick={() => onQuit({ save: dirty && save, notifyComplete: notify })}>
+          <button className="ap-primary" onClick={() => onQuit({ save: dirty && save, startBuild: build })}>
             {t("quit.quit")}
           </button>
         </div>

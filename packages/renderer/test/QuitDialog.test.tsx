@@ -8,10 +8,10 @@ import { QuitDialog } from "../src/QuitDialog";
 afterEach(cleanup);
 
 describe("QuitDialog", () => {
-  it("shows Save (with the filename) only when dirty; notify always", () => {
+  it("shows Save (with the filename) only when dirty; the build toggle always", () => {
     const { rerender } = render(<QuitDialog fileName="plan.plan.md" dirty onQuit={() => {}} onCancel={() => {}} />);
     expect(screen.getByText(/Save plan\.plan\.md/)).toBeTruthy();
-    expect(screen.getByText(/Tell the agent the plan is ready/)).toBeTruthy();
+    expect(screen.getByText(/Switch agent to build mode/)).toBeTruthy();
     rerender(<QuitDialog fileName="plan.plan.md" dirty={false} onQuit={() => {}} onCancel={() => {}} />);
     expect(screen.queryByText(/Save plan\.plan\.md/)).toBeNull();
   });
@@ -21,28 +21,28 @@ describe("QuitDialog", () => {
     expect(screen.getByText(/Save this document/)).toBeTruthy();
   });
 
-  it("Quit reports both flags (default checked when dirty)", () => {
+  it("Quit defaults: Save checked when dirty, build mode off", () => {
     const onQuit = vi.fn();
     render(<QuitDialog fileName="p.md" dirty onQuit={onQuit} onCancel={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /^quit$/i }));
-    expect(onQuit).toHaveBeenCalledWith({ save: true, notifyComplete: true });
+    expect(onQuit).toHaveBeenCalledWith({ save: true, startBuild: false });
   });
 
-  it("respects unchecking Save and notify", () => {
+  it("respects unchecking Save and opting into build mode", () => {
     const onQuit = vi.fn();
     render(<QuitDialog fileName="p.md" dirty onQuit={onQuit} onCancel={() => {}} />);
-    const [save, notify] = screen.getAllByRole("checkbox");
-    fireEvent.click(save!);
-    fireEvent.click(notify!);
+    const [save, build] = screen.getAllByRole("checkbox");
+    fireEvent.click(save!); // → false
+    fireEvent.click(build!); // → true
     fireEvent.click(screen.getByRole("button", { name: /^quit$/i }));
-    expect(onQuit).toHaveBeenCalledWith({ save: false, notifyComplete: false });
+    expect(onQuit).toHaveBeenCalledWith({ save: false, startBuild: true });
   });
 
   it("never reports save=true when not dirty (no Save box)", () => {
     const onQuit = vi.fn();
     render(<QuitDialog fileName="p.md" dirty={false} onQuit={onQuit} onCancel={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /^quit$/i }));
-    expect(onQuit).toHaveBeenCalledWith({ save: false, notifyComplete: true });
+    expect(onQuit).toHaveBeenCalledWith({ save: false, startBuild: false });
   });
 
   it("Cancel calls onCancel", () => {

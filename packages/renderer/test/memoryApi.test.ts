@@ -59,16 +59,16 @@ describe("createMemoryApi", () => {
 
   it("exit.quit saves (when asked), logs session_closed, and marks the session closed", async () => {
     const session = createMemoryApi({ content: "x" });
-    session.api.exit!.quit("final", { save: true, notifyComplete: true });
+    session.api.exit!.quit("final", { save: true, startBuild: true });
     await Promise.resolve(); // let the fire-and-forget store/log writes settle
     expect(session.isClosed()).toBe(true);
     const closed = (await session.agent.log()).find((e) => e.type === LogEventType.SessionClosed);
     expect((closed?.payload as { reason?: string } | undefined)?.reason).toBe("completed");
   });
 
-  it("exit.quit with notifyComplete=false logs window_closed instead", async () => {
+  it("exit.quit with startBuild=false logs window_closed instead", async () => {
     const session = createMemoryApi({ content: "x" });
-    session.api.exit!.quit("x", { save: false, notifyComplete: false });
+    session.api.exit!.quit("x", { save: false, startBuild: false });
     await Promise.resolve();
     const closed = (await session.agent.log()).find((e) => e.type === LogEventType.SessionClosed);
     expect((closed?.payload as { reason?: string } | undefined)?.reason).toBe("window_closed");

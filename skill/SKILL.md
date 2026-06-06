@@ -141,9 +141,12 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
      restore the anchor link and try again.
    - `integrity_error` — the document violates the comment grammar (`errors`).
      Fix it and wait again.
-   - `closed` — the session is over; **stop**. `reason` tells you how it ended:
-     `completed` (Complete & quit), `window_closed` (window closed), or
-     `crashed_or_killed` (editor vanished with no close log — surface this to the human).
+   - `closed` — the planning session is over; stop the loop. `reason` says what to do next:
+     - `completed` — the human chose **"Switch agent to build mode"** on quit: planning
+       is done and they want you to **implement the plan**. Stop the wait loop and start
+       building what the document specifies (it's no longer a planning doc — act on it).
+     - `window_closed` — they just closed the editor; **stop** and take no further action.
+     - `crashed_or_killed` — the editor vanished with no close log; surface this to the human.
    - `superseded` — a newer `wait` took over this document (only one waiter runs at
      a time). This one stepped down; **do nothing** — the live waiter is in charge.
    - `navigated` — the human followed an in-window link to a **different document**;
