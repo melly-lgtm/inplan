@@ -180,10 +180,15 @@ function mergeSeam(s: string, at: number): string {
     }
   }
   // A code-span split leaves "`…`" + "`…`" (an n-backtick close immediately followed by
-  // the same reopen). Collapse the matching backtick runs back into one span.
-  let n = 0;
-  while (s[at - 1 - n] === "`") n++;
-  if (n > 0 && s.slice(at - n, at) === "`".repeat(n) && s.slice(at, at + n) === "`".repeat(n)) {
+  // the same-length reopen). Collapse the close+reopen straddling the seam — using the
+  // SHORTER of the two adjacent backtick runs, so content backticks next to the delimiter
+  // don't inflate the count past the actual close/reopen length (which would defeat the merge).
+  let leftN = 0;
+  while (s[at - 1 - leftN] === "`") leftN++;
+  let rightN = 0;
+  while (s[at + rightN] === "`") rightN++;
+  const n = Math.min(leftN, rightN);
+  if (n > 0) {
     return s.slice(0, at - n) + s.slice(at + n);
   }
   return s;
