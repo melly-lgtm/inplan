@@ -100,6 +100,17 @@ describe("inplan relay — agent-console hook target", () => {
     expect(texts.filter((t) => t === "Looking at the datastore options.")).toHaveLength(1); // not re-sent (cursor)
   });
 
+  it("falls back to last_assistant_message when the transcript has no recognizable prose", () => {
+    seedDoc();
+    const transcript = join(repo, "empty.jsonl");
+    writeFileSync(transcript, JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: "hi" }] } }) + "\n");
+    const r = relay(["--hook", "claude-stop"], {
+      stdin: JSON.stringify({ session_id: "s2", transcript_path: transcript, last_assistant_message: "Final summary." }),
+    });
+    expect(r.status).toBe(0);
+    expect(messages().map((m) => m.payload?.text)).toContain("Final summary."); // prose not dropped on an unrecognized transcript
+  });
+
   it("codex-notify reads the payload from argv (not stdin)", () => {
     seedDoc();
     const payload = JSON.stringify({ type: "agent-turn-complete", "last-assistant-message": "Renamed and verified." });

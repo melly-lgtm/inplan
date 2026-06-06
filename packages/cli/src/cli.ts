@@ -733,13 +733,14 @@ export function notesFromHook(kind: string, stdin: string, argv: string[]): stri
   const p = parse(stdin);
   const transcript = str(p.transcript_path);
   const sessionKey = str(p.session_id) || transcript;
-  if (transcript && existsSync(transcript) && sessionKey) {
-    const blocks = transcriptTextBlocks(transcript);
+  const blocks = transcript && existsSync(transcript) && sessionKey ? transcriptTextBlocks(transcript) : [];
+  if (blocks.length > 0) {
     const sent = readRelayCursor(sessionKey);
     for (let i = Math.max(0, sent); i < blocks.length; i++) notes.push(blocks[i]!);
-    if (blocks.length !== sent) writeRelayCursor(sessionKey, blocks.length);
+    if (blocks.length !== sent) writeRelayCursor(sessionKey, blocks.length); // advance only on a non-empty transcript
   } else {
-    // No transcript → per-turn fallback: the payload's final assistant message.
+    // No transcript, or a transcript whose shape we don't recognize (e.g. Codex) → don't drop
+    // the prose: fall back to the payload's final assistant message. Cursor is left untouched.
     const last = str(p.last_assistant_message);
     if (last) notes.push(last);
   }
@@ -783,10 +784,14 @@ async function doRelay(args: string[]): Promise<void> {
   let notes: string[];
   if (hook) {
     let stdin = "";
-    try {
-      stdin = readFileSync(0, "utf8");
-    } catch {
-      /* no stdin (e.g. codex-notify uses argv) */
+    // codex-notify carries its payload in argv, not stdin — skip the fd0 read (which could
+    // block on a TTY with no piped input). All other hooks deliver JSON on stdin.
+    if (hook !== "codex-notify") {
+      try {
+        stdin = readFileSync(0, "utf8");
+      } catch {
+        /* no stdin available */
+      }
     }
     notes = notesFromHook(hook, stdin, process.argv);
   } else {
@@ -889,7 +894,19 @@ function mergeRelayHooks(settings: Record<string, unknown>, entries: { event: st
   let changed = false;
   for (const { event, command } of entries) {
     const existing = hooks[event];
-    const arr = (Array.isArray(existing) ? existing : []) as Array<Record<string, unknown>>;
+    // Coerce to the array shape WITHOUT clobbering a user's config: an array is used as-is;
+    // a single hook-group object is wrapped; any other non-array (string / unknown shape) is
+    // left untouched and skipped (we'd rather not install our hook than overwrite it).
+    let arr: Array<Record<string, unknown>>;
+    if (Array.isArray(existing)) {
+      arr = existing as Array<Record<string, unknown>>;
+    } else if (existing === undefined) {
+      arr = [];
+    } else if (existing && typeof existing === "object" && Array.isArray((existing as { hooks?: unknown }).hooks)) {
+      arr = [existing as Record<string, unknown>]; // a lone group object → wrap into an array
+    } else {
+      continue; // unknown non-array shape → don't touch it
+    }
     const present = arr.some((g) => {
       const hs = (g as { hooks?: unknown }).hooks;
       return Array.isArray(hs) && hs.some((h) => (h as { command?: unknown })?.command === command);

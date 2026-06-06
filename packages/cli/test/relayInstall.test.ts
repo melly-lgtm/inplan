@@ -108,6 +108,14 @@ describe("inplan install-skill — agent-console relay hooks", () => {
     expect(readFileSync(path, "utf8")).toBe("// my own extension\nexport default () => {};\n");
   });
 
+  it("does not clobber a non-array hooks entry (unknown shape)", () => {
+    writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ hooks: { Stop: "weird-custom-value" } }) + "\n");
+    install();
+    const h = claudeSettings().hooks;
+    expect(h.Stop).toBe("weird-custom-value"); // left untouched, not overwritten with an array
+    expect(commandsFor(h, "PostToolUse")).toContain("inplan relay --hook claude-tool"); // absent event still gets ours
+  });
+
   it("upgrades a stale managed Pi extension (marker present, content old)", () => {
     const path = join(home, ".pi", "agent", "extensions", "inplan-relay.ts");
     mkdirSync(dirname(path), { recursive: true });
