@@ -146,8 +146,10 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
       for (const cb of reload) cb();
     },
     message(text: string) {
+      // One timestamp for both the log entry and the callback, so they never drift
+      // (mirrors the real host, where the callback gets the appended entry's ts).
       const ts = new Date().toISOString();
-      void channel.append({ actor: "agent", type: LogEventType.AgentMessage, payload: { text } });
+      void channel.append({ actor: "agent", type: LogEventType.AgentMessage, payload: { text }, ts });
       for (const cb of messages) cb({ text, ts });
     },
     async log(): Promise<LogEntry[]> {

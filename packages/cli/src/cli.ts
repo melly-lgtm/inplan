@@ -422,9 +422,18 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
   // wake signal). Mirrors the local `message` path so a cloud-promoted doc doesn't fall
   // through to waitCycle and block.
   if (cmd === "message") {
-    const text = (rest[1] ?? "").trim();
+    // The text is the last positional arg — correct for both the promoted-local form
+    // (`message <file> "text"`) and the remote form (`message --remote <id> "text"`),
+    // where `rest` still carries `--remote` + the doc id. Strip flags and their values.
+    const VALUE_FLAGS = new Set(["remote", "model", "cursor"]);
+    const positional = rest.filter((a, i) => {
+      if (a.startsWith("--")) return false; // the flag token itself
+      const prev = rest[i - 1];
+      return !(prev?.startsWith("--") && VALUE_FLAGS.has(prev.slice(2))); // a value-flag's value
+    });
+    const text = (positional[positional.length - 1] ?? "").trim();
     if (!text) {
-      process.stderr.write('inplan message: usage: inplan message <file> "your message"\n');
+      process.stderr.write('inplan message: usage: inplan message <file|--remote DOC_ID> "your message"\n');
       process.exit(1);
     }
     await backend.channel.append({ actor: "agent", type: LogEventType.AgentMessage, payload: { text } });
