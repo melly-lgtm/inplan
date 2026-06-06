@@ -41,8 +41,11 @@ export function wakePredicate(cadence: "turn" | "instant"): (e: LogEntry) => boo
   // Save-locally and navigate-to are control directives (the human is moving the
   // doc back to disk, or following a link to a sibling doc), so they wake the agent
   // in either cadence — not just instant.
+  // A settings toggle (auto-resolve, agent mode, telemetry, …) is logged as a user
+  // entry but isn't a doc/turn action — the agent reads settings when it next acts, so
+  // a change must never wake a wait (otherwise toggling telemetry would end the turn).
   return cadence === "instant"
-    ? (e) => e.actor === "user"
+    ? (e) => e.actor === "user" && e.type !== LogEventType.SettingsChanged
     : (e) => e.type === LogEventType.TurnEnded || e.type === LogEventType.SessionClosed || e.type === LogEventType.SaveLocallyRequested || e.type === LogEventType.NavigatedTo;
 }
 

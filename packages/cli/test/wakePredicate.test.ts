@@ -29,4 +29,11 @@ describe("wakePredicate", () => {
     expect(instant(entry({ actor: "user", type: LogEventType.CommentCreated }))).toBe(true);
     expect(instant(entry({ actor: "agent", type: LogEventType.DocumentEdited }))).toBe(false);
   });
+
+  it("Instant mode does not wake on a settings change (not a doc/turn action)", () => {
+    const instant = wakePredicate("instant");
+    // Toggling telemetry / auto-resolve / agent-mode logs a user SettingsChanged entry,
+    // but it must not return the agent from a wait.
+    expect(instant(entry({ actor: "user", type: LogEventType.SettingsChanged }))).toBe(false);
+  });
 });
