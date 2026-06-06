@@ -141,6 +141,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [cadence, setCadence] = useState<Cadence>("turn");
   const [acceptance, setAcceptance] = useState<Acceptance>("review"); // first-run default: agent parks edits for review
   const [autoResolve, setAutoResolve] = useState(false); // first-run default: leave threads for the human to resolve
+  const [agentMode, setAgentMode] = useState<"planning" | "implementation">("planning"); // default: planning loop
   const [panes, setPanes] = useState<1 | 2 | 3>(2);
   const [rightTab, setRightTab] = useState<"comments" | "source">("comments");
   const [srcW, setSrcW] = useState(380); // source pane width (px) — drag-resizable
@@ -188,6 +189,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const history = useRef<ParsedDocument[]>([]); // undo stack of doc snapshots
   const future = useRef<ParsedDocument[]>([]); // redo stack
   const savedRef = useRef<string>(""); // last canonical-saved serialized content (for the dirty dot)
+  const checkpointRef = useRef<string>(""); // last content written to ANY store (canonical or backup) — drives the status-bar "unsaved"
   const skipPreviewScroll = useRef(false); // set when the active line came from a click in the preview itself
 
   // --- persisted layout ---
@@ -213,7 +215,10 @@ export function App(props: EditorProps = {}): JSX.Element {
   // autoResolve is a global, cross-session user setting (affects agent behavior),
   // loaded from ~/.inplan/settings.json on launch — not localStorage.
   useEffect(() => {
-    void hostApi().getSettings().then((s) => setAutoResolve(s.autoResolve));
+    void hostApi().getSettings().then((s) => {
+      setAutoResolve(s.autoResolve);
+      setAgentMode(s.agentMode ?? "planning");
+    });
   }, []);
 
   // --- load + agent signals ---
@@ -388,6 +393,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     const delay = cadence === "instant" ? 5000 : 1500;
     autosaveTimer.current = setTimeout(() => {
       const content = serialize(docRef.current);
+      checkpointRef.current = content; // the current content is now safely persisted
       if (cadence === "instant") {
         void hostApi().save(content, { kind: "canonical", cadence });
         savedRef.current = content;
@@ -481,11 +487,17 @@ export function App(props: EditorProps = {}): JSX.Element {
     void hostApi().setMode(c, a);
   }, []);
 
-  // Auto-resolve is a global directive to the agent: persist it to the settings
-  // file and log the change (main does both) so the agent wakes and can honor it.
+  // Global agent-behavior settings: persist the whole object (the host overwrites the
+  // file), so always send both fields — refs keep the callbacks fresh without re-creating.
+  const settingsRef = useRef({ autoResolve, agentMode });
+  settingsRef.current = { autoResolve, agentMode };
   const onAutoResolve = useCallback((v: boolean) => {
     setAutoResolve(v);
-    void hostApi().setSettings({ autoResolve: v });
+    void hostApi().setSettings({ ...settingsRef.current, autoResolve: v });
+  }, []);
+  const onAgentMode = useCallback((m: "planning" | "implementation") => {
+    setAgentMode(m);
+    void hostApi().setSettings({ ...settingsRef.current, agentMode: m });
   }, []);
 
   const onZoom = useCallback((dir: -1 | 0 | 1) => {
@@ -496,6 +508,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     const content = serialize(docRef.current);
     const kind = cadence === "instant" ? "canonical" : "backup";
     void hostApi().save(content, { kind, cadence });
+    checkpointRef.current = content; // safely persisted (canonical or backup)
     if (kind === "canonical") {
       savedRef.current = content;
       setDirty(false);
@@ -932,12 +945,14 @@ export function App(props: EditorProps = {}): JSX.Element {
         cadence={cadence}
         acceptance={acceptance}
         autoResolve={autoResolve}
+        agentMode={agentMode}
         panes={panes}
         zoom={zoom}
         hasSelection={selectionText.length > 0}
         commentBlockTip={blockerTip(selBlocker)}
         onMode={onModeChange}
         onAutoResolve={onAutoResolve}
+        onAgentMode={onAgentMode}
         onPanes={setPanes}
         onZoom={onZoom}
         onAddComment={openComposer}
@@ -1268,7 +1283,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       <StatusBar
         cadence={cadence}
         status={status}
-        dirty={dirty}
+        dirty={dirty && serialize(doc) !== checkpointRef.current}
         agentThinking={agentThinking}
         messages={agentMessages}
         canTakeBack={editingLocked}
@@ -1406,12 +1421,14 @@ function TopBar(props: {
   cadence: Cadence;
   acceptance: Acceptance;
   autoResolve: boolean;
+  agentMode: "planning" | "implementation";
   panes: 1 | 2 | 3;
   zoom: number;
   hasSelection: boolean;
   commentBlockTip: string | null; // why Add Comment is disabled (tooltip text), or null if allowed
   onMode: (c: Cadence, a: Acceptance) => void;
   onAutoResolve: (v: boolean) => void;
+  onAgentMode: (m: "planning" | "implementation") => void;
   onPanes: (p: 1 | 2 | 3) => void;
   onZoom: (dir: -1 | 0 | 1) => void;
   onAddComment: () => void;
@@ -1545,8 +1562,10 @@ function TopBar(props: {
         onEditProfile={hostApi().profile?.setIdentity ? (name, email) => hostApi().profile!.setIdentity!(name, email) : undefined}
         acceptance={acceptance}
         autoResolve={props.autoResolve}
+        agentMode={props.agentMode}
         onAcceptance={(a) => onMode(cadence, a)}
         onAutoResolve={props.onAutoResolve}
+        onAgentMode={props.onAgentMode}
         onReplayTutorial={props.onReplayTutorial}
         forceOpen={props.forceSettingsOpen}
       />

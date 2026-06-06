@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useEffect, useRef, useState } from "react";
-import type { Acceptance, ProfileMenuItem } from "./api";
+import type { Acceptance, AgentMode, ProfileMenuItem } from "./api";
 import { useI18n, translate } from "./i18n";
 
 /** Up to two initials from a display name, for the avatar. */
@@ -37,8 +37,10 @@ export function ProfileMenu({
   onEditProfile,
   acceptance,
   autoResolve,
+  agentMode,
   onAcceptance,
   onAutoResolve,
+  onAgentMode,
   onReplayTutorial,
   forceOpen,
 }: {
@@ -48,8 +50,10 @@ export function ProfileMenu({
   onEditProfile?: (name: string, email?: string) => Promise<void> | void;
   acceptance?: Acceptance;
   autoResolve?: boolean;
+  agentMode?: AgentMode;
   onAcceptance?: (a: Acceptance) => void;
   onAutoResolve?: (v: boolean) => void;
+  onAgentMode?: (m: AgentMode) => void;
   onReplayTutorial?: () => void;
   forceOpen?: boolean; // onboarding holds the menu open on the settings step
 }): JSX.Element | null {
@@ -162,6 +166,19 @@ export function ProfileMenu({
           {/* Editor settings (folded in from the old ⚙ menu). */}
           {hasSettings && (
             <div className="ap-profile-section">
+              {onAgentMode && (
+                <div className="ap-settings-row">
+                  <span>{t("settings.agentMode")}</span>
+                  <div className="ap-seg">
+                    <button className={agentMode !== "implementation" ? "active" : ""} onClick={() => onAgentMode("planning")}>
+                      {t("settings.modePlanning")}
+                    </button>
+                    <button className={agentMode === "implementation" ? "active" : ""} onClick={() => onAgentMode("implementation")}>
+                      {t("settings.modeBuild")}
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="ap-settings-row">
                 <span>{t("settings.agentChanges")}</span>
                 <div className="ap-seg">

@@ -28,10 +28,16 @@ export interface SaveOptions {
   cadence: Cadence;
 }
 
+/** Which mode the agent operates in: drafting/refining the plan, or building it. */
+export type AgentMode = "planning" | "implementation";
+
 /** Global user settings that affect agent behavior (persisted in ~/.inplan/settings.json). */
 export interface Settings {
   /** Agent resolves a thread after incorporating it (true), or leaves it for the human (false). */
   autoResolve: boolean;
+  /** "planning" (draft/refine the doc) or "implementation" (build it). Optional for
+   *  back-compat; defaults to "planning". */
+  agentMode?: AgentMode;
 }
 
 /** Where an agent is attached right now — derived from live presence by the host

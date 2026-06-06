@@ -433,8 +433,9 @@ function registerIpc(): void {
   // whether to notify the agent the plan is ready ("completed") or just close, then exit.
   ipcMain.handle("app:quit", (_e, content: string, opts: { save: boolean; startBuild: boolean }) => {
     if (opts.save) session?.complete(content); // write file + canonical
-    // "Switch agent to build mode" → close as "completed" so the agent's wait sees the
-    // hand-off and the skill switches from planning to implementation; otherwise just close.
+    // "Switch agent to build mode" → persist agentMode so the agent's next read sees it,
+    // and close as "completed" so the wait surfaces the hand-off; otherwise just close.
+    if (opts.startBuild && session) session.setSettings({ ...session.getSettings(), agentMode: "implementation" });
     quitNow(opts.startBuild ? "completed" : "window_closed");
   });
 

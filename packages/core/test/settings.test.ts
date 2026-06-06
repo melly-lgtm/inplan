@@ -40,7 +40,7 @@ describe("global settings", () => {
   it("round-trips through the global file under INPLAN_HOME", () => {
     writeGlobalSettings({ autoResolve: false });
     expect(globalSettingsPath()).toBe(join(home, "settings.json"));
-    expect(readGlobalSettings()).toEqual({ autoResolve: false });
+    expect(readGlobalSettings()).toEqual({ autoResolve: false, agentMode: "planning" });
     // human-readable on disk
     expect(readFileSync(globalSettingsPath(), "utf8")).toContain('"autoResolve": false');
   });
@@ -66,6 +66,6 @@ describe("global settings", () => {
 
   it("currentSettings uses the global value when the session log has no changes", () => {
     writeGlobalSettings({ autoResolve: false });
-    expect(currentSettings(logPath)).toEqual({ autoResolve: false });
+    expect(currentSettings(logPath)).toEqual({ autoResolve: false, agentMode: "planning" });
   });
 });

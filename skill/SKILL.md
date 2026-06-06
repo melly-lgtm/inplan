@@ -128,7 +128,11 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
    so the editor shows which model is attached and stamps your comments with a
    model-qualified author. Use the same value every turn.
 3. Read the printed JSON `status` (it also carries `mode`, `humanLocked`, and
-   `settings` — the current materialized user settings, e.g. `autoResolve`):
+   `settings` — the current materialized user settings, e.g. `autoResolve` and
+   `agentMode`). **`settings.agentMode`** is your operating mode: `planning` (the
+   default — draft and refine the document, the normal loop below) or `implementation`
+   (the human switched you to build mode — stop refining the plan and **build what the
+   document specifies**). It can change mid-session; re-check it each turn.
    - `your_turn` — **Turn mode**: the human finished their turn and their editor
      is **locked**; the turn is yours. Re-read the `.md`, act, then **call `wait`
      to hand control back** (this unlocks them). `humanLocked: true`.

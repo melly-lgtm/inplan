@@ -14,17 +14,25 @@ import { dirname, join } from "node:path";
 import { type LogEntry, LogEventType } from "./controlLog";
 import { readLog } from "./controlLogFs";
 
+/** Which mode the agent operates in: drafting/refining the plan, or building it. */
+export type AgentMode = "planning" | "implementation";
+
 /** Settings that influence how the agent acts (kept minimal and additive). */
 export interface Settings {
   /** When true, the agent resolves a thread after incorporating it; when false,
    *  it replies that the thread can be resolved and leaves it for the human. */
   autoResolve: boolean;
+  /** "planning" (draft/refine the doc — the normal loop) or "implementation" (the
+   *  human switched the agent to build mode; it implements what the doc specifies).
+   *  Optional for back-compat; reads default to "planning" via DEFAULT_SETTINGS. */
+  agentMode?: AgentMode;
 }
 
 // Both agent-behavior defaults start OFF for first-time users: the agent parks
 // edits for review (acceptance default lives in the renderer) and leaves threads
-// for the human to resolve. The first-run onboarding explains how to turn these on.
-export const DEFAULT_SETTINGS: Settings = { autoResolve: false };
+// for the human to resolve. The agent starts in planning mode. The first-run
+// onboarding explains how to turn these on.
+export const DEFAULT_SETTINGS: Settings = { autoResolve: false, agentMode: "planning" };
 
 /** `~/.inplan/settings.json` — the global, cross-session source of truth.
  *  `INPLAN_HOME` overrides the base dir (used by tests; avoids touching $HOME). */

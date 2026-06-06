@@ -48,6 +48,9 @@ export const EN: Catalog = {
   "topbar.noAgent": "Connect an agent (open this doc with a local or cloud agent) to use this",
   // settings menu
   "settings.title": "Settings",
+  "settings.agentMode": "Agent mode",
+  "settings.modePlanning": "Planning",
+  "settings.modeBuild": "Build",
   "settings.agentChanges": "Agent changes",
   "settings.autoAccept": "Auto-accept",
   "settings.review": "Review",
