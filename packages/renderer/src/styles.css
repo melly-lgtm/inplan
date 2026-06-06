@@ -63,24 +63,31 @@ body {
 .ap-profile { position: relative; margin-left: 4px; }
 .ap-avatar { position: relative; width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line-strong); background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
 .ap-avatar-initials { line-height: 1; }
-.ap-profile-menu { position: absolute; top: 38px; right: 0; z-index: 40; width: 280px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 8px; }
-/* Editor settings, folded into the avatar menu (divider above). */
-.ap-profile-section { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
-.ap-profile-section .ap-settings-replay { width: 100%; margin: 6px 0 0; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 7px; }
-.ap-profile-section .ap-settings-replay:hover { background: var(--accent-soft); color: var(--accent); }
-.ap-profile-id { padding: 4px 6px 6px; }
+/* A traditional dropdown menu: flat full-width items (no per-item borders), grouped
+   by hairline dividers. Padding is 0 so items + dividers run edge-to-edge. */
+.ap-profile-menu { position: absolute; top: 38px; right: 0; z-index: 40; width: 284px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 4px; }
+.ap-profile-section .ap-seg button { white-space: nowrap; padding: 4px 9px; }
+.ap-profile-id { padding: 8px 10px; }
 .ap-profile-name { font-size: 13px; font-weight: 600; }
 .ap-profile-email { font-size: 11px; color: var(--muted); font-family: var(--mono); }
-.ap-profile-actions { display: flex; flex-direction: column; gap: 4px; }
-.ap-profile-action { text-align: left; border: 1px solid var(--line-strong); background: var(--bg); border-radius: 7px; padding: 6px 8px; font: inherit; font-size: 13px; cursor: pointer; }
-.ap-profile-action:hover:not(:disabled) { background: var(--accent-soft); }
-.ap-profile-action:disabled { opacity: 0.5; cursor: default; }
-.ap-profile-action.ap-danger { color: var(--danger); }
 .ap-profile-source { font-size: 11px; color: var(--muted); margin-top: 2px; }
-.ap-profile-edit { display: flex; flex-direction: column; gap: 6px; }
+/* Each actionable row is a flat menu item; groups are separated by a top divider. */
+.ap-profile-actions, .ap-profile-section, .ap-profile-edit { display: flex; flex-direction: column; gap: 1px; margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); }
+.ap-profile-action, .ap-profile-section .ap-settings-replay {
+  display: block; width: 100%; text-align: left; border: 0; background: none; border-radius: 6px;
+  margin: 0; padding: 7px 10px; font: inherit; font-size: 13px; color: var(--fg); cursor: pointer;
+}
+.ap-profile-action:hover:not(:disabled), .ap-profile-section .ap-settings-replay:hover { background: var(--accent-soft); color: var(--accent); }
+.ap-profile-action:disabled { opacity: 0.5; cursor: default; }
+.ap-profile-action.ap-primary { color: var(--accent); font-weight: 600; }
+.ap-profile-action.ap-danger { color: var(--danger); }
+/* Setting rows (segmented control / checkbox) read as labelled menu rows. */
+.ap-profile-section .ap-settings-row { padding: 6px 10px; }
+.ap-profile-section .ap-settings-hint { padding: 0 10px 2px; }
+.ap-profile-edit { gap: 6px; padding: 8px 10px 4px; }
 .ap-profile-input { font: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--bg); color: var(--fg); }
 .ap-profile-input:focus { outline: none; border-color: var(--accent); }
-.ap-profile-lang { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 6px 2px; margin-top: 6px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.ap-profile-lang { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px 4px; margin-top: 4px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
 .ap-profile-lang-select { font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); color: var(--fg); cursor: pointer; }
 
 /* menu-bar agent connection indicator */
