@@ -155,7 +155,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [showResolvedOrphaned, setShowResolvedOrphaned] = useState(false);
   const [selectionText, setSelectionText] = useState("");
   const [composer, setComposer] = useState<{ target: string | null; pos: { x: number; y: number } } | null>(null);
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; hasSel: boolean; block: BlockReason | null } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; hasSel: boolean; hasRawSel: boolean; block: BlockReason | null } | null>(null);
   const [findSeed, setFindSeed] = useState(""); // pre-fills the find box (e.g. from the preview "Find text" menu item)
   const [focused, setFocused] = useState<string | null>(null);
   const [activePreviewLine, setActivePreviewLine] = useState<number | null>(null);
@@ -1038,9 +1038,10 @@ export function App(props: EditorProps = {}): JSX.Element {
           onClose={() => setCtxMenu(null)}
           items={[
             {
-              // No selection ⇒ this posts a document-level comment, so name it as such
-              // (it's a common surprise that a "selected" blue line still comments the whole doc).
-              label: ctxMenu.hasSel ? t("topbar.addComment") : t("topbar.addDocComment"),
+              // A (raw) selection ⇒ "Add Comment" (matching the top bar — a whitespace-only
+              // selection is a blocked *selection*, shown disabled with its reason, not doc-level).
+              // No selection at all ⇒ this posts a document-level comment, so name it as such.
+              label: ctxMenu.hasRawSel ? t("topbar.addComment") : t("topbar.addDocComment"),
               disabled: editingLocked || ctxMenu.block !== null,
               ...(ctxMenu.block ? { title: blockerTip(ctxMenu.block) ?? "" } : {}),
               onSelect: openComposerFromCapture,
@@ -1074,7 +1075,7 @@ export function App(props: EditorProps = {}): JSX.Element {
               ctxSelTextRef.current = trimmed; // find/copy/anchor act on the trimmed text
               commentRangeRef.current = trimmed && range ? range.cloneRange() : null;
               const block = commentBlockReason(raw, docRef.current.body, range, previewRef.current);
-              setCtxMenu({ x: Math.max(8, Math.min(e.clientX, window.innerWidth - 200)), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 220)), hasSel: trimmed.length > 0, block });
+              setCtxMenu({ x: Math.max(8, Math.min(e.clientX, window.innerWidth - 200)), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 220)), hasSel: trimmed.length > 0, hasRawSel: raw.length > 0, block });
             }}
             onClick={(e) => {
               const target = e.target as HTMLElement;
