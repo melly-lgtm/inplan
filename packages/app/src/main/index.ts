@@ -44,6 +44,13 @@ let stopWatching: (() => void) | null = null;
 /** Set once the user (or an internal close path) has confirmed the quit, so the
  *  close-intercept lets the window go instead of re-prompting the quit dialog. */
 let quitConfirmed = false;
+/** True once the renderer has finished loading and can receive the quit-confirm IPC.
+ *  Until then — or if it crashes — close/quit must NOT block waiting for a dialog that
+ *  can never appear, or the window would be impossible to close (force-kill only). */
+let rendererReady = false;
+/** One-shot fallback: if the renderer never answers `app:confirm-quit`, close anyway. */
+let quitFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+const QUIT_CONFIRM_TIMEOUT_MS = 8000;
 /** Back/forward navigation history of opened doc paths (in-window link following). */
 const navHistory: string[] = [];
 let navIdx = -1;
@@ -250,15 +257,35 @@ function navigateTo(file: string): boolean {
 /** Record the close reason once and exit, bypassing the confirm-quit dialog.
  *  Used by the confirmed quit (app:quit) and internal close paths (cloud handoff). */
 function quitNow(reason: "completed" | "window_closed"): void {
+  if (quitFallbackTimer) {
+    clearTimeout(quitFallbackTimer);
+    quitFallbackTimer = null;
+  }
   session?.logClose(reason);
   quitConfirmed = true;
   app.quit();
+}
+
+/** The renderer is present and able to display the quit-confirm dialog. */
+function rendererCanConfirm(): boolean {
+  return !!win && !win.isDestroyed() && !win.webContents.isDestroyed() && !win.webContents.isCrashed() && rendererReady;
+}
+
+/** Arm a one-shot fallback so a hung/unresponsive renderer can never trap the user
+ *  in an uncloseable window: if no `app:quit` arrives in time, close with a safe default. */
+function armQuitFallback(): void {
+  if (quitFallbackTimer) return;
+  quitFallbackTimer = setTimeout(() => {
+    quitFallbackTimer = null;
+    if (!quitConfirmed) quitNow("window_closed");
+  }, QUIT_CONFIRM_TIMEOUT_MS);
 }
 
 /** The inplan mark (same as inplan.ai), for the window + dock icon. */
 const appIcon = nativeImage.createFromDataURL(APP_ICON_DATA_URL);
 
 function createWindow(): void {
+  rendererReady = false; // becomes true on did-finish-load (below)
   win = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -292,6 +319,7 @@ function createWindow(): void {
   // Once the renderer is up (and listening), check npm for a newer version and probe
   // cloud reachability (which gates the cloud login affordance).
   win.webContents.once("did-finish-load", () => {
+    rendererReady = true; // the renderer can now receive + answer app:confirm-quit
     void checkForUpdate();
     void probeCloud();
     void i18n.bootstrap(); // load cached locale + refresh catalogs from the cloud (paid perk)
@@ -304,8 +332,15 @@ function createWindow(): void {
   // outright. The renderer answers via the app:quit IPC (which sets quitConfirmed).
   win.on("close", (e) => {
     if (quitConfirmed) return;
+    // If the renderer can't show the dialog (still loading, crashed, or destroyed),
+    // don't trap the user behind a confirm that can never appear — close safely.
+    if (!rendererCanConfirm()) {
+      quitNow("window_closed");
+      return;
+    }
     e.preventDefault();
     win!.webContents.send("app:confirm-quit");
+    armQuitFallback(); // …and if the renderer never answers, close anyway after a timeout
   });
 
   win.on("closed", () => {
@@ -443,8 +478,15 @@ app.on("before-quit", (e) => {
     session?.logClose("window_closed"); // safety net for un-dialogged quits (a crash logs nothing)
     return;
   }
+  // Renderer can't answer (loading/crashed/destroyed) → let the quit proceed, don't deadlock.
+  if (!rendererCanConfirm()) {
+    session?.logClose("window_closed");
+    quitConfirmed = true;
+    return;
+  }
   e.preventDefault();
   win.webContents.send("app:confirm-quit");
+  armQuitFallback();
 });
 
 app.on("window-all-closed", () => {

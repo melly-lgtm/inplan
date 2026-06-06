@@ -91,7 +91,9 @@ const api: Api = {
   exit: {
     showBackButton: false, // desktop quits via the OS window controls, not an in-editor Back button
     onRequest: (cb: () => void) => {
-      ipcRenderer.on("app:confirm-quit", () => cb());
+      const handler = (): void => cb();
+      ipcRenderer.on("app:confirm-quit", handler);
+      return () => ipcRenderer.removeListener("app:confirm-quit", handler); // disposer (no leak on re-subscribe/unmount)
     },
     quit: (content: string, opts: { save: boolean; notifyComplete: boolean }) => void ipcRenderer.invoke("app:quit", content, opts),
   },
