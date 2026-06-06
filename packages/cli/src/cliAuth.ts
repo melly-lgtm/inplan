@@ -105,11 +105,17 @@ export async function authedSession(): Promise<AuthedSession | null> {
   return { db, session: data.session };
 }
 
-/** The signed-in user (email + id), or null when not logged in / session invalid. */
-export async function currentUser(): Promise<{ email?: string; id: string } | null> {
+/** The signed-in user (id + email + display name), or null when not logged in / session invalid. */
+export async function currentUser(): Promise<{ email?: string; id: string; name?: string } | null> {
   const s = await authedSession();
   if (!s) return null;
-  return { id: s.session.user.id, ...(s.session.user.email ? { email: s.session.user.email } : {}) };
+  const meta = (s.session.user.user_metadata ?? {}) as Record<string, unknown>;
+  const name = [meta.full_name, meta.name, meta.user_name].find((v): v is string => typeof v === "string" && v.trim() !== "");
+  return {
+    id: s.session.user.id,
+    ...(s.session.user.email ? { email: s.session.user.email } : {}),
+    ...(name ? { name } : {}),
+  };
 }
 
 /** A control channel + document store bound to one cloud document, authenticated

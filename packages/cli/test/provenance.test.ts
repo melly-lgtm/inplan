@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, it } from "vitest";
-import { gitProvenance, repoNameFromRemote, type GitRunner } from "../src/provenance";
+import { gitIdentity, gitProvenance, repoNameFromRemote, type GitRunner } from "../src/provenance";
 
 describe("repoNameFromRemote", () => {
   it("extracts the short-name from SSH, HTTPS, and trailing-slash URLs", () => {
@@ -44,5 +44,33 @@ describe("gitProvenance", () => {
   it("handles a file at the repo root", () => {
     const run = fakeGit("/r/proj", "https://github.com/o/proj.git");
     expect(gitProvenance("/r/proj/PLAN.md", run)).toEqual({ repo: "proj", path: "PLAN.md" });
+  });
+});
+
+/** A GitRunner stubbed for `is-inside-work-tree` + `config user.{name,email}`. */
+function fakeIdentity(inside: boolean, name: string | null, email: string | null): GitRunner {
+  return (args) => {
+    if (args[0] === "rev-parse" && args[1] === "--is-inside-work-tree") return inside ? "true" : null;
+    if (args[0] === "config" && args[1] === "user.name") return name;
+    if (args[0] === "config" && args[1] === "user.email") return email;
+    return null;
+  };
+}
+
+describe("gitIdentity", () => {
+  it("returns name + email when inside a work tree", () => {
+    expect(gitIdentity("/r/proj", fakeIdentity(true, "Diane Jung", "diane@example.com"))).toEqual({ name: "Diane Jung", email: "diane@example.com" });
+  });
+
+  it("returns only what is configured (email missing)", () => {
+    expect(gitIdentity("/r/proj", fakeIdentity(true, "Diane Jung", null))).toEqual({ name: "Diane Jung" });
+  });
+
+  it("returns null outside a work tree (never leaks the global identity)", () => {
+    expect(gitIdentity("/tmp/scratch", fakeIdentity(false, "Diane Jung", "diane@example.com"))).toBeNull();
+  });
+
+  it("returns null when nothing is configured", () => {
+    expect(gitIdentity("/r/proj", fakeIdentity(true, null, null))).toBeNull();
   });
 });

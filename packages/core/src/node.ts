@@ -9,4 +9,5 @@ export * from "./controlLogFs";
 export * from "./fsBackend";
 export * from "./paths";
 export * from "./settings";
+export * from "./onboarding";
 export * from "./status";

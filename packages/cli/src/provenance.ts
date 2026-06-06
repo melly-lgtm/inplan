@@ -54,3 +54,18 @@ export function gitProvenance(file: string, run: GitRunner = defaultRun): Proven
   const rel = relative(root, file).split(sep).join("/");
   return { repo, path: rel || basename(file) };
 }
+
+/**
+ * The git author identity configured for `dir` (`git config user.name` / `user.email`).
+ * Returns whatever is set (either field may be absent); `null` when `dir` isn't in a
+ * git work tree or git is unavailable — so callers can fall through to the next source.
+ */
+export function gitIdentity(dir: string, run: GitRunner = defaultRun): { name?: string; email?: string } | null {
+  // Confirm we're actually inside a work tree first — `git config` would otherwise
+  // happily return the user's *global* identity from anywhere on disk.
+  if (run(["rev-parse", "--is-inside-work-tree"], dir) !== "true") return null;
+  const name = run(["config", "user.name"], dir) || undefined;
+  const email = run(["config", "user.email"], dir) || undefined;
+  if (!name && !email) return null;
+  return { ...(name ? { name } : {}), ...(email ? { email } : {}) };
+}

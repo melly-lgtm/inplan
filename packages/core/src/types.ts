@@ -26,7 +26,7 @@ export interface Comment {
   anchor?: "doc";
   /** Comment body / free-text / "Other" note. */
   text: string;
-  /** "Name <email>"; the agent uses "Agent <agent@inplan>". */
+  /** "Name <email>"; the agent uses a model-qualified author, e.g. "Opus 4.8 <claude@inplan.ai>". */
   author: string;
   /** ISO-8601 timestamp. */
   date: string;

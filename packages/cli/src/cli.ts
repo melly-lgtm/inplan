@@ -29,6 +29,7 @@ import WebSocket from "ws";
 import { agentAuthorFor } from "./agentAuthor";
 import { gitProvenance } from "./provenance";
 import { authedSession, clearAuth, currentUser, remoteBackend, saveAuth } from "./cliAuth";
+import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
 import { checkForUpdate, selfUpdate, UPDATE_PKG } from "./update";
 import { runningEditorPid } from "./editorProcess";
 import { evaluateAgentEdit } from "./gate";
@@ -378,7 +379,7 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
  * per-user `--refresh` token need be passed. (The browser handoff — `inplan login`
  * opens `/cli-auth` and receives the token — is a later slice; this is the seam.)
  */
-function doLogin(args: string[]): void {
+async function doLogin(args: string[]): Promise<void> {
   const url = getFlag(args, "url") ?? process.env.INPLAN_SUPABASE_URL;
   const anonKey = getFlag(args, "anon") ?? process.env.INPLAN_SUPABASE_ANON_KEY;
   const refreshToken = getFlag(args, "refresh");
@@ -388,7 +389,21 @@ function doLogin(args: string[]): void {
   }
   const email = getFlag(args, "email");
   saveAuth({ url, anonKey, refreshToken, ...(email ? { email } : {}) });
+  // Capture the cloud account's identity locally so comments are authored as the
+  // signed-in user (overrides any earlier git/manual profile on explicit login).
+  await persistCloudIdentity();
   output({ status: "logged_in", url, ...(email ? { email } : {}) });
+}
+
+/** Best-effort: write the signed-in cloud account's name/email to the local profile. */
+async function persistCloudIdentity(): Promise<void> {
+  try {
+    const user = await currentUser();
+    const name = (user?.name && user.name.trim()) || (user?.email && user.email.trim());
+    if (name) writeLocalProfile({ name, ...(user?.email ? { email: user.email } : {}), source: "cloud" });
+  } catch {
+    /* offline / session not yet usable — resolveIdentity will fill it in later */
+  }
 }
 
 /**
@@ -539,7 +554,23 @@ async function doWhoami(): Promise<void> {
     output({ signedIn: false });
     return;
   }
-  output({ signedIn: true, id: user.id, ...(user.email ? { email: user.email } : {}) });
+  output({ signedIn: true, id: user.id, ...(user.email ? { email: user.email } : {}), ...(user.name ? { name: user.name } : {}) });
+}
+
+/** `inplan profile <file>` (resolve) | `inplan profile set --name N [--email E]`. */
+async function doProfile(args: string[]): Promise<void> {
+  if (args[0] === "set") {
+    const name = getFlag(args, "name");
+    if (!name || !name.trim()) {
+      process.stderr.write('inplan profile set: usage: inplan profile set --name "Your Name" [--email you@example.com]\n');
+      process.exit(64);
+    }
+    output(setManualProfile(name, getFlag(args, "email")));
+    return;
+  }
+  // Otherwise resolve (and persist) the effective identity for the given doc.
+  const file = args[0] && !args[0].startsWith("-") ? args[0] : undefined;
+  output((await resolveIdentity(file)) ?? {});
 }
 
 /** Print a fresh access token for the signed-in session, for callers that talk to the
@@ -782,11 +813,15 @@ async function main(): Promise<void> {
   }
 
   if (cmd === "login") {
-    doLogin(argv.slice(1));
+    await doLogin(argv.slice(1));
     return;
   }
   if (cmd === "whoami") {
     await doWhoami();
+    return;
+  }
+  if (cmd === "profile") {
+    await doProfile(argv.slice(1));
     return;
   }
   if (cmd === "token") {
