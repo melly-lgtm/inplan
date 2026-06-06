@@ -3,7 +3,7 @@
 
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -599,7 +599,10 @@ function grantClaudePermissions(claudeRoot: string): boolean {
   } catch {
     return false; // unparseable — leave the user's settings untouched
   }
-  const perms = (settings.permissions && typeof settings.permissions === "object" ? settings.permissions : {}) as Record<string, unknown>;
+  // A plain object only — an array (or null) for `permissions` would silently drop our
+  // allow/additionalDirectories keys on JSON.stringify (and falsely report a grant).
+  const rawPerms = settings.permissions;
+  const perms = (rawPerms && typeof rawPerms === "object" && !Array.isArray(rawPerms) ? rawPerms : {}) as Record<string, unknown>;
   const allow = Array.isArray(perms.allow) ? (perms.allow as string[]) : [];
   const dirs = Array.isArray(perms.additionalDirectories) ? (perms.additionalDirectories as string[]) : [];
   let changed = false;
@@ -619,7 +622,15 @@ function grantClaudePermissions(claudeRoot: string): boolean {
   perms.allow = allow;
   perms.additionalDirectories = dirs;
   settings.permissions = perms;
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+  // Atomic: write a sibling temp file then rename over the target, so a crash mid-write
+  // can never leave a truncated/corrupt settings.json. Honors the "never throws" contract.
+  try {
+    const tmp = settingsPath + ".tmp";
+    writeFileSync(tmp, JSON.stringify(settings, null, 2) + "\n");
+    renameSync(tmp, settingsPath);
+  } catch {
+    return false;
+  }
   return true;
 }
 
