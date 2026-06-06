@@ -7,7 +7,7 @@
 
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -74,21 +74,46 @@ describe("inplan relay — agent-console hook target", () => {
 
   it("claude-tool relays a terse activity line", () => {
     seedDoc();
-    relay(["--hook", "claude-tool"], { stdin: JSON.stringify({ tool_name: "Bash" }) });
+    const r = relay(["--hook", "claude-tool"], { stdin: JSON.stringify({ tool_name: "Bash" }) });
+    expect(r.status).toBe(0);
     expect(messages().map((m) => m.payload?.text)).toContain("▸ Bash");
+  });
+
+  it("tails the transcript and flushes only NEW prose across firings (intra-turn streaming)", () => {
+    seedDoc();
+    const transcript = join(repo, "session.jsonl");
+    const sid = "sess-abc";
+    const asst = (t: string) => JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: t }] } }) + "\n";
+    // First tool-hook mid-turn: the agent has written one paragraph, then called a tool.
+    writeFileSync(transcript, asst("Looking at the datastore options."));
+    let r = relay(["--hook", "claude-tool"], { stdin: JSON.stringify({ session_id: sid, transcript_path: transcript, tool_name: "Bash" }) });
+    expect(r.status).toBe(0);
+    let texts = messages().map((m) => m.payload?.text);
+    expect(texts).toContain("Looking at the datastore options."); // prose arrived during the turn
+    expect(texts).toContain("▸ Bash");
+    // Next firing (turn end): one more assistant message — only the NEW block is flushed.
+    appendFileSync(transcript, asst("Adopting Postgres."));
+    r = relay(["--hook", "claude-stop"], { stdin: JSON.stringify({ session_id: sid, transcript_path: transcript }) });
+    expect(r.status).toBe(0);
+    texts = messages().map((m) => m.payload?.text);
+    expect(texts).toContain("Adopting Postgres.");
+    expect(texts.filter((t) => t === "Looking at the datastore options.")).toHaveLength(1); // not re-sent (cursor)
   });
 
   it("codex-notify reads the payload from argv (not stdin)", () => {
     seedDoc();
     const payload = JSON.stringify({ type: "agent-turn-complete", "last-assistant-message": "Renamed and verified." });
-    relay(["--hook", "codex-notify", payload]);
+    const r = relay(["--hook", "codex-notify", payload]);
+    expect(r.status).toBe(0);
     expect(messages().map((m) => m.payload?.text)).toContain("Renamed and verified.");
   });
 
   it("--text relays a direct message; --activity prefixes it", () => {
     seedDoc();
-    relay(["--text", "hello"]);
-    relay(["--activity", "--text", "grep"]);
+    const r1 = relay(["--text", "hello"]);
+    expect(r1.status).toBe(0);
+    const r2 = relay(["--activity", "--text", "grep"]);
+    expect(r2.status).toBe(0);
     const texts = messages().map((m) => m.payload?.text);
     expect(texts).toContain("hello");
     expect(texts).toContain("▸ grep");

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -648,7 +649,72 @@ export function activeDocForCwd(cwd: string): string | null {
 /** Extract the note text from an agent hook payload, or null to no-op. Claude Code and
  *  Codex hooks both deliver one JSON object on stdin; Codex `notify` passes JSON as the
  *  last CLI argument. Tool events become a terse "▸ name" activity line. */
-export function relayTextFromHook(kind: string, stdin: string, argv: string[]): string | null {
+// Intra-turn flushing: a per-session cursor tracks how many assistant text blocks we've
+// already relayed from the agent's transcript, so each tool-hook (which fires repeatedly
+// DURING a turn) can flush the new prose the agent has written so far — sentences arrive as
+// the agent works, not in one dump at turn end. Keyed by the agent's session id (or its
+// transcript path), stored outside the per-doc sidecars.
+function relayCursorPath(sessionKey: string): string {
+  const id = createHash("sha1").update(sessionKey).digest("hex").slice(0, 16);
+  return join(sidecarRoot(), ".relay-cursors", `${id}.json`);
+}
+function readRelayCursor(sessionKey: string): number {
+  try {
+    const v = JSON.parse(readFileSync(relayCursorPath(sessionKey), "utf8")) as { sent?: unknown };
+    return typeof v.sent === "number" && v.sent >= 0 ? v.sent : 0;
+  } catch {
+    return 0;
+  }
+}
+function writeRelayCursor(sessionKey: string, sent: number): void {
+  try {
+    const p = relayCursorPath(sessionKey);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, JSON.stringify({ sent }) + "\n");
+  } catch {
+    /* cursor is an optimization; losing it only risks a re-send */
+  }
+}
+
+/** Assistant text blocks (in order) from a Claude/Codex-style JSONL transcript — one per
+ *  completed assistant text message. Defensive about shape; [] if unreadable/unknown. */
+export function transcriptTextBlocks(path: string): string[] {
+  const out: string[] = [];
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return out;
+  }
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let e: Record<string, unknown>;
+    try {
+      e = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const msg = (e.message ?? e) as Record<string, unknown>;
+    const role = e.type ?? (msg as { role?: unknown }).role;
+    if (role !== "assistant") continue;
+    const content = (msg as { content?: unknown }).content;
+    if (Array.isArray(content)) {
+      for (const c of content) {
+        const cc = c as { type?: unknown; text?: unknown };
+        if (cc.type === "text" && typeof cc.text === "string" && cc.text.trim()) out.push(cc.text.trim());
+      }
+    } else if (typeof content === "string" && content.trim()) {
+      out.push(content.trim());
+    }
+  }
+  return out;
+}
+
+/** The notes to relay for one agent-hook firing: any NEW assistant prose since the session
+ *  cursor (so it streams intra-turn at tool boundaries), then a "▸ tool" activity line for a
+ *  tool event. Falls back to the payload's final message when no transcript is available
+ *  (e.g. Codex `notify`). Advances the cursor as a side effect. */
+export function notesFromHook(kind: string, stdin: string, argv: string[]): string[] {
   const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
   const parse = (s: string): Record<string, unknown> => {
     try {
@@ -657,20 +723,31 @@ export function relayTextFromHook(kind: string, stdin: string, argv: string[]): 
       return {};
     }
   };
-  switch (kind) {
-    case "claude-stop":
-    case "codex-stop":
-      return str(parse(stdin).last_assistant_message) || null;
-    case "claude-tool":
-    case "codex-tool": {
-      const name = str(parse(stdin).tool_name);
-      return name ? `▸ ${name}` : null;
-    }
-    case "codex-notify":
-      return str(parse(argv[argv.length - 1] ?? "")["last-assistant-message"]) || null;
-    default:
-      return null;
+  const notes: string[] = [];
+  if (kind === "codex-notify") {
+    // `notify` is per-turn (no transcript): just the final message.
+    const last = str(parse(argv[argv.length - 1] ?? "")["last-assistant-message"]);
+    if (last) notes.push(last);
+    return notes;
   }
+  const p = parse(stdin);
+  const transcript = str(p.transcript_path);
+  const sessionKey = str(p.session_id) || transcript;
+  if (transcript && existsSync(transcript) && sessionKey) {
+    const blocks = transcriptTextBlocks(transcript);
+    const sent = readRelayCursor(sessionKey);
+    for (let i = Math.max(0, sent); i < blocks.length; i++) notes.push(blocks[i]!);
+    if (blocks.length !== sent) writeRelayCursor(sessionKey, blocks.length);
+  } else {
+    // No transcript → per-turn fallback: the payload's final assistant message.
+    const last = str(p.last_assistant_message);
+    if (last) notes.push(last);
+  }
+  if (kind === "claude-tool" || kind === "codex-tool") {
+    const tool = str(p.tool_name);
+    if (tool) notes.push(`▸ ${tool}`); // activity line, after any prose the agent wrote first
+  }
+  return notes;
 }
 
 /** Append a human-facing agent note onto the doc's control channel, routed to wherever the
@@ -693,11 +770,17 @@ async function relayText(file: string, text: string): Promise<void> {
   }
 }
 
-/** `inplan relay` — invoked by an agent hook (see install-skill). Resolves the active plan
- *  doc for the CWD and relays a note to its editor. Always exits 0 (best-effort). */
+/** `inplan relay` — invoked by an agent hook (see install-skill). Resolves the active plan doc
+ *  for the CWD and relays the agent's new prose + tool activity to its editor. Always exits 0
+ *  (best-effort). Resolves the doc FIRST so a no-op never advances the transcript cursor. */
 async function doRelay(args: string[]): Promise<void> {
+  const file = activeDocForCwd(process.cwd());
+  if (!file) {
+    output({ status: "relay_skipped", reason: "no_active_doc" });
+    return;
+  }
   const hook = getFlag(args, "hook");
-  let text: string | null;
+  let notes: string[];
   if (hook) {
     let stdin = "";
     try {
@@ -705,22 +788,18 @@ async function doRelay(args: string[]): Promise<void> {
     } catch {
       /* no stdin (e.g. codex-notify uses argv) */
     }
-    text = relayTextFromHook(hook, stdin, process.argv);
+    notes = notesFromHook(hook, stdin, process.argv);
   } else {
     const t = getFlag(args, "text");
-    text = t === undefined ? null : hasFlag(args, "activity") ? `▸ ${t}` : t;
+    notes = t === undefined ? [] : [hasFlag(args, "activity") ? `▸ ${t}` : t];
   }
-  if (!text || !text.trim()) {
+  const clean = notes.map((n) => n.trim().slice(0, 2000)).filter(Boolean); // cap each note
+  if (clean.length === 0) {
     output({ status: "relay_skipped", reason: "no_text" });
     return;
   }
-  const file = activeDocForCwd(process.cwd());
-  if (!file) {
-    output({ status: "relay_skipped", reason: "no_active_doc" });
-    return;
-  }
-  await relayText(file, text.trim().slice(0, 2000)); // cap a runaway message
-  output({ status: "relayed" });
+  for (const n of clean) await relayText(file, n);
+  output({ status: "relayed", count: clean.length });
 }
 
 function skillTargets(): { name: string; root: string; target: string }[] {
@@ -887,13 +966,19 @@ function relay(args) {
   }
 }
 
+function assistantText(message) {
+  if (!message || message.role !== "assistant") return "";
+  if (Array.isArray(message.content)) {
+    return message.content.filter((c) => c && c.type === "text").map((c) => c.text).join(" ").trim();
+  }
+  return typeof message.content === "string" ? message.content.trim() : "";
+}
+
 export default function (pi) {
-  pi.on("agent_end", (event) => {
-    const messages = (event && event.messages) || [];
-    const last = [...messages].reverse().find((m) => m && m.role === "assistant");
-    const text = last && Array.isArray(last.content)
-      ? last.content.filter((c) => c && c.type === "text").map((c) => c.text).join(" ").trim()
-      : "";
+  // message_end fires per COMPLETED assistant message — so prose streams during the turn,
+  // not in one dump at agent_end.
+  pi.on("message_end", (event) => {
+    const text = assistantText(event && event.message);
     if (text) relay(["--text", text]);
   });
   pi.on("tool_execution_start", (event) => {

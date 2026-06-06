@@ -68,7 +68,7 @@ describe("inplan install-skill — agent-console relay hooks", () => {
     install();
     const ext = piExtension();
     expect(ext).toContain("inplan-relay (managed by");
-    expect(ext).toContain('pi.on("agent_end"');
+    expect(ext).toContain('pi.on("message_end"'); // per completed message → intra-turn
     expect(ext).toContain('pi.on("tool_execution_start"');
   });
 
