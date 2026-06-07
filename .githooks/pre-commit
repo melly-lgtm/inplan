@@ -1,0 +1,13 @@
+#!/bin/sh
+# Pre-commit gate: the test suite must pass AND coverage must stay ≥95% (lines/statements).
+# `vitest run --coverage` exits non-zero when below the thresholds in vitest.config.ts.
+# Bypass for an emergency commit with:  git commit --no-verify
+#
+# Enabled via core.hooksPath (set by the root `prepare` script on `npm install`).
+
+echo "[pre-commit] running tests + coverage gate (≥95%)…"
+npm run test:coverage --silent || {
+  echo "[pre-commit] ✗ tests failed or coverage dropped below 95% — commit blocked (use --no-verify to override)."
+  exit 1
+}
+echo "[pre-commit] ✓ tests pass, coverage ≥95%."

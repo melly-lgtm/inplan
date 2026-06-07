@@ -38,6 +38,13 @@ export default defineConfig({
         "packages/cli/src/cli.ts",
       ],
       reporter: ["text-summary", "text"],
+      // Gate the suite on coverage: `vitest run --coverage` (the pre-commit hook + `test:coverage`)
+      // exits non-zero if global lines/statements drop below 95%. Branches/functions aren't gated
+      // yet — they're dominated by the large App.tsx and sit lower; raise them before thresholding.
+      thresholds: {
+        statements: 95,
+        lines: 95,
+      },
     },
   },
 });

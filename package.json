@@ -10,7 +10,9 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
