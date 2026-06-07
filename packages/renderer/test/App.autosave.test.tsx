@@ -73,7 +73,7 @@ async function editBody(body: string) {
 }
 
 describe("App autosave / dirty / Save (memory-backed)", () => {
-  it("Turn mode: a dirty edit autosaves a BACKUP after ~1500ms; the status 'unsaved' clears but the Save dot stays", async () => {
+  it("Turn mode: a dirty edit autosaves a BACKUP after ~1500ms; the status 'unsaved' and the Save dot both clear", async () => {
     await mountApp(DOC);
     vi.useFakeTimers();
 
@@ -97,12 +97,11 @@ describe("App autosave / dirty / Save (memory-backed)", () => {
     expect(saveSpy.mock.calls[0][1]).toEqual({ kind: "backup", cadence: "turn" });
     expect(document.body.textContent).toContain("autosaved (backup)");
 
-    // The checkpoint makes the current content safe → the status-bar "unsaved" clears
-    // (no more "autosaved (backup) · unsaved" contradiction). The doc is still behind
-    // the canonical file though, so the Save-icon dirty dot persists and the agent log
-    // got no turn-ending event.
+    // The checkpoint makes the current content safe → the status-bar "unsaved" clears AND the
+    // Save-icon dirty dot clears (the work is written to a backup). The doc is still behind the
+    // canonical file — that's what the quit/close prompt checks — so no turn-ending event landed.
     expect(document.body.textContent).not.toContain("unsaved");
-    expect(screen.getByRole("button", { name: /^Save/ }).querySelector(".ap-dirty")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Save/ }).querySelector(".ap-dirty")).toBeNull();
     const log = await agent.log();
     expect(log.some((e) => e.type === LogEventType.TurnEnded || e.type === LogEventType.DocumentEdited)).toBe(false);
   });
@@ -165,7 +164,7 @@ describe("App autosave / dirty / Save (memory-backed)", () => {
     expect(log.some((e) => e.actor === "user" && e.type === LogEventType.DocumentEdited)).toBe(true);
   });
 
-  it("manual Save: Turn writes a backup checkpoint (status clears, Save dot stays); Instant writes canonical (dot clears)", async () => {
+  it("manual Save: Turn writes a backup checkpoint (status + Save dot clear); Instant writes canonical (dot clears)", async () => {
     await mountApp(DOC);
     vi.useFakeTimers();
 
@@ -177,16 +176,16 @@ describe("App autosave / dirty / Save (memory-backed)", () => {
 
     const saveSpy = vi.spyOn(window.api, "save");
 
-    // Turn mode manual Save → backup checkpoint: the status-bar "unsaved" clears
-    // (content is checkpointed), but the canonical file is still behind so the Save
-    // dirty dot persists.
+    // Turn mode manual Save → backup checkpoint: the status-bar "unsaved" clears and the Save
+    // dirty dot clears (content is checkpointed). The canonical file is still behind, but that's
+    // surfaced on quit (the close prompt), not on the Save button.
     await act(async () => {
       saveBtn().click();
     });
     expect(saveSpy).toHaveBeenLastCalledWith(expect.any(String), { kind: "backup", cadence: "turn" });
     expect(document.body.textContent).toContain("checkpoint saved");
     expect(document.body.textContent).not.toContain("unsaved");
-    expect(saveBtn().querySelector(".ap-dirty")).toBeTruthy(); // still dirty vs canonical after a backup
+    expect(saveBtn().querySelector(".ap-dirty")).toBeNull(); // a checkpoint clears the dot
 
     // Switch to Instant and Save again → canonical save clears dirty.
     await act(async () => {

@@ -199,7 +199,10 @@ export function App(props: EditorProps = {}): JSX.Element {
   const history = useRef<ParsedDocument[]>([]); // undo stack of doc snapshots
   const future = useRef<ParsedDocument[]>([]); // redo stack
   const savedRef = useRef<string>(""); // last canonical-saved serialized content (for the dirty dot)
-  const checkpointRef = useRef<string>(""); // last content written to ANY store (canonical or backup) — drives the status-bar "unsaved"
+  // Last content written to ANY store (canonical or backup). State, not a ref, so the Save button
+  // and status bar re-render when a save resolves — a turn-mode Save writes a backup, which clears
+  // the unsaved indicator even though the canonical file (the `dirty` baseline) hasn't changed.
+  const [checkpoint, setCheckpoint] = useState("");
   const skipPreviewScroll = useRef(false); // set when the active line came from a click in the preview itself
   const autoResolvedRef = useRef<Set<string>>(new Set()); // thread ids already auto-resolved (so undo can't re-trigger)
   const saveNowRef = useRef<() => void>(() => {}); // latest saveNow (the ⌘/Ctrl+S handler calls via this)
@@ -418,12 +421,12 @@ export function App(props: EditorProps = {}): JSX.Element {
       // Mark the content checkpointed only AFTER the save resolves — if it fails (disk /
       // IPC error) the status bar must keep showing the work as unsaved, not safe.
       if (cadence === "instant") {
-        void hostApi().save(content, { kind: "canonical", cadence }).then(() => { checkpointRef.current = content; });
+        void hostApi().save(content, { kind: "canonical", cadence }).then(() => setCheckpoint(content));
         savedRef.current = content;
         setDirty(false);
         setStatus(t("msg.autosaving"));
       } else {
-        void hostApi().save(content, { kind: "backup", cadence }).then(() => { checkpointRef.current = content; });
+        void hostApi().save(content, { kind: "backup", cadence }).then(() => setCheckpoint(content));
         setStatus(t("msg.autosaved"));
       }
     }, delay);
@@ -555,7 +558,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     const content = serialize(docRef.current);
     const kind = cadence === "instant" ? "canonical" : "backup";
     // Checkpoint only once the save resolves, so a failed write can't be reported as saved.
-    void hostApi().save(content, { kind, cadence }).then(() => { checkpointRef.current = content; });
+    void hostApi().save(content, { kind, cadence }).then(() => setCheckpoint(content));
     if (kind === "canonical") {
       savedRef.current = content;
       setDirty(false);
@@ -746,7 +749,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       const saved = serialize(next);
       savedRef.current = saved;
       setDirty(false);
-      void hostApi().save(saved, { kind: cadence === "instant" ? "canonical" : "apply", cadence }).then(() => { checkpointRef.current = saved; });
+      void hostApi().save(saved, { kind: cadence === "instant" ? "canonical" : "apply", cadence }).then(() => setCheckpoint(saved));
     },
     [newDocReq, apply, t, cadence],
   );
@@ -1082,7 +1085,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         onZoom={onZoom}
         onAddComment={openComposer}
         onToggleFind={() => setFindOpen((v) => !v)}
-        dirty={dirty}
+        dirty={dirty && serialize(doc) !== checkpoint}
         onSave={saveNow}
         onFinishTurn={finishTurn}
         onBack={hostApi().exit?.showBackButton ? () => setQuitOpen(true) : undefined}
@@ -1452,7 +1455,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       <StatusBar
         cadence={cadence}
         status={status}
-        dirty={dirty && serialize(doc) !== checkpointRef.current}
+        dirty={dirty && serialize(doc) !== checkpoint}
         agentThinking={agentThinking}
         messages={agentMessages}
         canTakeBack={editingLocked}
