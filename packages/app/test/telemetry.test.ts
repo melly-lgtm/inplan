@@ -39,6 +39,15 @@ describe("PostHog telemetry", () => {
     expect(body.distinct_id.length).toBeGreaterThan(0);
   });
 
+  it("includes aggregate OS + runtime properties (no PII)", async () => {
+    const { track } = await import("../src/main/telemetry");
+    track("app_opened", true);
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    const expectedOs = { darwin: "Mac OS X", win32: "Windows", linux: "Linux" }[process.platform] ?? process.platform;
+    expect(body.properties.$os).toBe(expectedOs);
+    expect(body.properties.$browser).toBe("Electron");
+  });
+
   it("uses a fresh throwaway distinct_id each call (no cross-event linkage)", async () => {
     const { track } = await import("../src/main/telemetry");
     track("a", true);
