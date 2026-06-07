@@ -26,7 +26,7 @@ export interface Settings {
    *  human switched the agent to build mode; it implements what the doc specifies).
    *  Optional for back-compat; reads default to "planning" via DEFAULT_SETTINGS. */
   agentMode?: AgentMode;
-  /** Opt-in: send anonymous usage events (Plausible). Absent/false ⇒ nothing is sent.
+  /** Opt-in: send anonymous usage events (PostHog). Absent/false ⇒ nothing is sent.
    *  Off by default — not added to DEFAULT_SETTINGS, so a missing value reads as off. */
   telemetry?: boolean;
   /** How the agent's body edits are accepted: "review" parks them as a proposal for the human to
