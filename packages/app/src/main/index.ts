@@ -424,7 +424,7 @@ function registerIpc(): void {
     if (!session || typeof p !== "string" || !p.trim()) return null;
     const docDir = dirname(session.paths.file);
     let abs = resolve(docDir, p);
-    if (!abs.endsWith(".md")) abs += ".md";
+    if (!/\.md$/i.test(abs)) abs += ".md"; // case-insensitive: don't turn "x.MD" into "x.MD.md"
     if (existsSync(abs)) return null; // never clobber an existing file — the user can pick another name
     try {
       mkdirSync(dirname(abs), { recursive: true });

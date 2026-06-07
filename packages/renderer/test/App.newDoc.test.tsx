@@ -67,4 +67,14 @@ describe("new-doc actions", () => {
     // The selection turned into a link to the new doc.
     await waitFor(() => expect(document.querySelector(".ap-rendered a")).toBeTruthy());
   });
+
+  it("does not create a file when the selection can't be linked (no orphans)", async () => {
+    await mountApp();
+    mockSelection("text that is not in the body"); // unlocatable → not linkable
+    await act(async () => void fireEvent.contextMenu(document.querySelector(".ap-rendered")!));
+    await act(async () => void screen.getByRole("menuitem", { name: /create doc/i }).click());
+    await act(async () => void (await screen.findByRole("button", { name: /^create$/i })).click());
+    expect(create).not.toHaveBeenCalled(); // pre-check bailed before touching the host
+    expect(screen.getByRole("button", { name: /^create$/i })).toBeTruthy(); // modal stays open
+  });
 });

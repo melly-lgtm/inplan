@@ -683,7 +683,15 @@ export function App(props: EditorProps = {}): JSX.Element {
         return;
       }
       const body = docRef.current.body;
-      const content = req.mode === "move" ? `# ${title}\n\n${spanSource(body, req.selected, req.span ?? undefined) ?? req.selected}\n` : `# ${title}\n`;
+      // Confirm the selection can still be turned into a link BEFORE creating any file — otherwise
+      // a failed splice would orphan a doc on disk with nothing pointing at it. (`moved` doubles as
+      // the new doc's body for Move.) Keep the modal open so the user can adjust.
+      const moved = spanSource(body, req.selected, req.span ?? undefined);
+      if (moved === null) {
+        setStatus(t("msg.cantAnchor"));
+        return;
+      }
+      const content = req.mode === "move" ? `# ${title}\n\n${moved}\n` : `# ${title}\n`;
       const res = await api.newDoc.create(path, content);
       if (!res) {
         setStatus(t("newdoc.failed"));
@@ -693,11 +701,11 @@ export function App(props: EditorProps = {}): JSX.Element {
         req.mode === "move"
           ? moveSelectionToDoc(body, req.selected, req.span ?? undefined, title, res.linkTarget)
           : linkSelectionToDoc(body, req.selected, req.span ?? undefined, res.linkTarget);
-      setNewDocReq(null);
       if (nextBody === null) {
-        setStatus(t("msg.cantAnchor")); // created the doc, but the selection moved/can't be linked
+        setStatus(t("msg.cantAnchor")); // defensive: body is unchanged since the pre-check, so unreachable
         return;
       }
+      setNewDocReq(null); // success only — close the modal now
       apply({ ...docRef.current, body: nextBody }, { type: req.mode === "move" ? "text_moved" : "doc_created", payload: { path: res.linkTarget } });
     },
     [newDocReq, apply, t],
