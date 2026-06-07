@@ -1357,7 +1357,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (!existsSync(file)) {
+  // `open` is the one command that may be handed a not-yet-existing path: it creates the empty
+  // doc below (open-then-fill). Every other command needs the file to already exist.
+  if (cmd !== "open" && !existsSync(file)) {
     process.stderr.write(`inplan ${cmd}: file not found: ${file}\n`);
     process.exit(1);
   }
