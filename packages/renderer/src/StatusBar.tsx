@@ -37,9 +37,10 @@ export function StatusBar({
   // The window has two internal modes: "auto" tracks the turn (open while the agent holds it,
   // closed on the user's turn); "closed" stays shut. Opening it manually flips back to auto.
   const [mode, setMode] = useState<"auto" | "closed">("auto");
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(agentThinking); // seed from the turn (mount during an agent turn ⇒ open)
   const msgRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const prevThinking = useRef(agentThinking);
 
   useEffect(() => {
     if (!agentThinking) return;
@@ -61,10 +62,13 @@ export function StatusBar({
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
 
-  // Auto mode: the window follows the turn — open while the agent is working, closed when it's
-  // the user's turn. ("closed" mode opts out; opening manually re-enters auto — see the chip.)
+  // Auto mode: the window follows the turn — open when the agent STARTS working, close when it's
+  // the user's turn. We act only on a real `agentThinking` transition (tracked via a ref), not on
+  // a mode flip — so manually reopening the window during the user's turn isn't instantly undone.
   useEffect(() => {
-    if (mode === "auto") setOpen(agentThinking);
+    const turnChanged = prevThinking.current !== agentThinking;
+    prevThinking.current = agentThinking;
+    if (mode === "auto" && turnChanged) setOpen(agentThinking);
   }, [agentThinking, mode]);
 
   // Newest message sits at the bottom; keep the list pinned there as it opens / grows.

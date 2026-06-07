@@ -66,6 +66,16 @@ describe("StatusBar", () => {
     expect(document.querySelector(".ap-agentmsg-pop")).toBeNull(); // user's turn → auto-close
   });
 
+  it("reopening during the user's turn stays open (a mode flip must not auto-close it)", () => {
+    const messages = [{ text: "a note", ts: "2026-01-01T09:00:00Z" }];
+    render(<StatusBar {...base} messages={messages} agentThinking={false} />);
+    const chip = screen.getByRole("button", { name: /a note/i });
+    fireEvent.click(chip); // open (mode → auto)
+    fireEvent.click(chip); // dismiss (mode → closed)
+    fireEvent.click(chip); // reopen: mode closed→auto must NOT trigger an auto-close
+    expect(document.querySelector(".ap-agentmsg-pop")).toBeTruthy();
+  });
+
   it("lists messages chronologically (newest at the bottom) with toned-down markup", () => {
     const messages = [
       { text: "older", ts: "2026-01-01T08:00:00Z" },

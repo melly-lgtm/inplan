@@ -416,7 +416,7 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 .ap-agentmsg-item + .ap-agentmsg-item { border-top: 1px solid var(--line); }
 .ap-agentmsg-time { display: block; font-size: 10px; color: var(--muted); margin-bottom: 2px; }
 /* Terminal feel: monospace log lines, with toned-down emphasis (not heavy bold). */
-.ap-agentmsg-text { color: var(--fg); white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; }
+.ap-agentmsg-text { color: var(--fg); white-space: pre-wrap; word-break: normal; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; }
 .ap-agentmsg-text .ap-md-strong { font-weight: 600; color: var(--fg); }
 .ap-agentmsg-text .ap-md-code { font-family: inherit; background: var(--accent-soft); border-radius: 4px; padding: 0 3px; }
 /* "Agent is thinking …" indicator: fixed-width dots so the animation never
