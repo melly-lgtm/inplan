@@ -13,31 +13,25 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.js");
-// install-skill is a no-op ("unavailable") unless the bundled skill resolves next to dist/.
-const SKILL_DIR = join(dirname(CLI), "..", "skill");
 
 let home: string;
-let stubbedSkill = false;
+let skillSrc: string; // a per-test bundled-skill source (INPLAN_SKILL_SRC) — hermetic, no shared dir
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "inplan-skill-"));
   mkdirSync(join(home, ".claude"), { recursive: true }); // make the "Claude Code" target exist
-  if (!existsSync(SKILL_DIR)) {
-    mkdirSync(SKILL_DIR, { recursive: true });
-    writeFileSync(join(SKILL_DIR, "SKILL.md"), "# inplan (test stub)\n");
-    stubbedSkill = true;
-  }
+  // Each spec gets its OWN bundled skill under its temp HOME (install-skill is a no-op without
+  // one). Avoids racing on the shared sibling `skill/` dir when test files run in parallel.
+  skillSrc = join(home, "_skill", "SKILL.md");
+  mkdirSync(dirname(skillSrc), { recursive: true });
+  writeFileSync(skillSrc, "# inplan (test stub)\n");
 });
 afterEach(() => {
   rmSync(home, { recursive: true, force: true });
-  if (stubbedSkill) {
-    rmSync(SKILL_DIR, { recursive: true, force: true });
-    stubbedSkill = false;
-  }
 });
 
 function install(extraEnv: NodeJS.ProcessEnv = {}) {
-  return spawnSync(process.execPath, [CLI, "install-skill", "--quiet"], { env: { ...process.env, HOME: home, ...extraEnv }, encoding: "utf8" });
+  return spawnSync(process.execPath, [CLI, "install-skill", "--quiet"], { env: { ...process.env, HOME: home, INPLAN_SKILL_SRC: skillSrc, ...extraEnv }, encoding: "utf8" });
 }
 const readSettings = () => JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8"));
 

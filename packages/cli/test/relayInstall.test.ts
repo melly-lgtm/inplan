@@ -6,16 +6,15 @@
 
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.js");
-const SKILL_DIR = join(dirname(CLI), "..", "skill"); // install-skill is a no-op unless a skill is bundled
 
 let home: string;
-let stubbedSkill = false;
+let skillSrc: string; // per-test bundled-skill source (INPLAN_SKILL_SRC) — hermetic, no shared dir
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "inplan-relay-install-"));
@@ -23,22 +22,18 @@ beforeEach(() => {
   mkdirSync(join(home, ".claude"), { recursive: true });
   mkdirSync(join(home, ".codex"), { recursive: true });
   mkdirSync(join(home, ".pi", "agent"), { recursive: true });
-  if (!existsSync(SKILL_DIR)) {
-    mkdirSync(SKILL_DIR, { recursive: true });
-    writeFileSync(join(SKILL_DIR, "SKILL.md"), "# inplan (test stub)\n");
-    stubbedSkill = true;
-  }
+  // Per-test bundled skill (install-skill is a no-op without one); avoids racing on the shared
+  // sibling `skill/` dir across parallel test files.
+  skillSrc = join(home, "_skill", "SKILL.md");
+  mkdirSync(dirname(skillSrc), { recursive: true });
+  writeFileSync(skillSrc, "# inplan (test stub)\n");
 });
 afterEach(() => {
   rmSync(home, { recursive: true, force: true });
-  if (stubbedSkill) {
-    rmSync(SKILL_DIR, { recursive: true, force: true });
-    stubbedSkill = false;
-  }
 });
 
 function install() {
-  const r = spawnSync(process.execPath, [CLI, "install-skill", "--quiet"], { env: { ...process.env, HOME: home }, encoding: "utf8" });
+  const r = spawnSync(process.execPath, [CLI, "install-skill", "--quiet"], { env: { ...process.env, HOME: home, INPLAN_SKILL_SRC: skillSrc }, encoding: "utf8" });
   // Surface the installer's own error rather than a downstream file-not-found assertion.
   if (r.status !== 0) throw new Error(`install-skill exited ${r.status}\nstderr: ${r.stderr}\nstdout: ${r.stdout}`);
   return r;

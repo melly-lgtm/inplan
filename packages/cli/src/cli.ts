@@ -585,9 +585,12 @@ async function doToken(): Promise<void> {
 
 /** The bundled `skill/SKILL.md` shipped in the published package (next to bin/), or null
  *  when running from source/dev (no sibling skill — auto-install is a published-package
- *  feature). */
+ *  feature). `INPLAN_SKILL_SRC` overrides the path (used by tests so each spec points at its
+ *  own SKILL.md instead of racing on the shared sibling `skill/` dir). */
 function bundledSkillPath(): string | null {
   try {
+    const override = process.env.INPLAN_SKILL_SRC;
+    if (override) return existsSync(override) ? override : null;
     const p = join(dirname(fileURLToPath(import.meta.url)), "..", "skill", "SKILL.md");
     return existsSync(p) ? p : null;
   } catch {
