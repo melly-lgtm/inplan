@@ -53,17 +53,19 @@ export function NewDocModal({
           <span>{t("newdoc.titleLabel")}</span>
           <input value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={onEnter} />
         </label>
-        <label className="ap-newdoc-field">
+        {/* Not a <label> wrapper here: it also contains the Browse button, and wrapping a button in a
+            label folds the label text into the button's accessible name. Use an aria-label instead. */}
+        <div className="ap-newdoc-field">
           <span>{t("newdoc.location")}</span>
           <div className="ap-newdoc-path">
-            <input value={path} onChange={(e) => setPath(e.target.value)} onKeyDown={onEnter} />
+            <input aria-label={t("newdoc.location")} value={path} onChange={(e) => setPath(e.target.value)} onKeyDown={onEnter} />
             {onPick && (
               <button type="button" className="ap-link" onClick={async () => { const p = await onPick(path); if (p) setPath(p); }}>
                 {t("newdoc.browse")}
               </button>
             )}
           </div>
-        </label>
+        </div>
         <div className="ap-newdoc-actions">
           <button className="ap-link" onClick={onCancel}>
             {t("quit.cancel")}

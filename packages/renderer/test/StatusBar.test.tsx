@@ -87,4 +87,12 @@ describe("StatusBar", () => {
     expect(items[items.length - 1]!.textContent).toContain("done"); // newest last
     expect(document.querySelector(".ap-md-strong")?.textContent).toBe("done"); // not literal **
   });
+
+  it("dismisses the popup on an outside click (→ closed mode)", () => {
+    const messages = [{ text: "a note", ts: "2026-01-01T09:00:00Z" }];
+    render(<StatusBar {...base} messages={messages} agentThinking />); // agent's turn → auto-open
+    expect(document.querySelector(".ap-agentmsg-pop")).toBeTruthy();
+    fireEvent.mouseDown(document.body); // outside the popup
+    expect(document.querySelector(".ap-agentmsg-pop")).toBeNull();
+  });
 });
