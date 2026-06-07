@@ -10,6 +10,11 @@ out/
 # legacy sidecar dir name (pre-rename) — keep ignored so stale backups never return
 .agent-planner/
 
+# Playwright e2e artifacts
+test-results/
+playwright-report/
+.playwright-mcp/
+
 # OS / editor cruft
 .DS_Store
 *.log

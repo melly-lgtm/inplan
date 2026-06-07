@@ -16,10 +16,13 @@ test.beforeAll(async () => {
   const doc = join(dir, "design.plan.md");
   writeFileSync(doc, "# E2E Plan\n\nalpha beta alpha gamma alpha\n\nSecond paragraph here.\n\n<!--inplan v1\n[]\n-->\n");
   app = await electron.launch({
-    // Fresh user-data-dir so localStorage is empty → the first-run onboarding deterministically shows.
+    // Fresh user-data-dir AND a throwaway INPLAN_HOME so the first-run onboarding
+    // deterministically shows: the "onboarded" flag lives in $INPLAN_HOME/state.json
+    // (not the Electron userData), so without overriding it the tour is skipped on any
+    // machine that has already run inplan.
     args: [`--user-data-dir=${join(dir, "userdata")}`, join(REPO, "packages/app"), doc],
     executablePath: join(REPO, "node_modules/.bin/electron"),
-    env: { ...process.env, INPLAN_SIDECAR_DIR: join(dir, "sidecars") },
+    env: { ...process.env, INPLAN_HOME: join(dir, "home"), INPLAN_SIDECAR_DIR: join(dir, "sidecars") },
   });
   win = await app.firstWindow();
   // First launch shows the onboarding tour over a throwaway sample; skip it to reach the
