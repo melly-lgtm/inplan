@@ -49,7 +49,7 @@ describe("Add comment disabled on un-anchorable selections", () => {
     await mountApp();
     mockSelection("Postgres"); // the label of the existing anchor → overlap
     await act(async () => void document.dispatchEvent(new Event("selectionchange")));
-    const btn = screen.getByRole("button", { name: /add comment/i }) as HTMLButtonElement;
+    const btn = screen.getByRole("button", { name: /comment on text/i }) as HTMLButtonElement;
     await waitFor(() => expect(btn.disabled).toBe(true));
     expect(btn.title.toLowerCase()).toContain("overlap");
   });
@@ -65,7 +65,7 @@ describe("Add comment disabled on un-anchorable selections", () => {
     sel.removeAllRanges();
     sel.addRange(range);
     await act(async () => void document.dispatchEvent(new Event("selectionchange")));
-    const btn = screen.getByRole("button", { name: /add comment/i }) as HTMLButtonElement;
+    const btn = screen.getByRole("button", { name: /comment on text/i }) as HTMLButtonElement;
     await waitFor(() => expect(btn.disabled).toBe(true));
     expect(btn.title.toLowerCase()).toContain("overlap"); // the overlap message, not cant-anchor
   });
@@ -74,7 +74,7 @@ describe("Add comment disabled on un-anchorable selections", () => {
     await mountApp();
     mockSelection("here");
     await act(async () => void document.dispatchEvent(new Event("selectionchange")));
-    const btn = screen.getByRole("button", { name: /add comment/i }) as HTMLButtonElement;
+    const btn = screen.getByRole("button", { name: /comment on text/i }) as HTMLButtonElement;
     expect(btn.disabled).toBe(false);
   });
 });

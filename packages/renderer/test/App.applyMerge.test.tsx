@@ -54,7 +54,7 @@ describe("App applyProposal comment merge (memory-backed)", () => {
     // WHILE the proposal is open, the human adds a document-level comment.
     // With no text selected, "+ Add Doc Comment" opens the composer for a
     // doc-level note. (No selection → target null → addDocComment.)
-    const addBtn = screen.getByRole("button", { name: /add doc comment/i });
+    const addBtn = screen.getByRole("button", { name: /comment on doc/i });
     expect((addBtn as HTMLButtonElement).disabled).toBe(false);
     await act(async () => {
       addBtn.click();

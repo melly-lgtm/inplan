@@ -38,7 +38,7 @@ afterEach(cleanup);
 // Add a document-level comment through the real composer popover. Leaves the
 // undo history with one snapshot to revert.
 async function addDocComment(text: string) {
-  const addBtn = screen.getByRole("button", { name: /add doc comment/i });
+  const addBtn = screen.getByRole("button", { name: /comment on doc/i });
   await act(async () => {
     addBtn.click();
   });
@@ -117,7 +117,7 @@ describe("App undo/redo + Escape shortcuts (memory-backed)", () => {
     render(<App />);
     await waitFor(() => expect(document.body.textContent).toContain("Hello world."));
 
-    const addBtn = screen.getByRole("button", { name: /add doc comment/i });
+    const addBtn = screen.getByRole("button", { name: /comment on doc/i });
     await act(async () => {
       addBtn.click();
     });

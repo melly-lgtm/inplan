@@ -46,7 +46,7 @@ describe("span comment creation (regression)", () => {
     await mountApp();
     mockSelection("Hello world.");
     await act(async () => void document.dispatchEvent(new Event("selectionchange")));
-    await act(async () => void screen.getByRole("button", { name: /^add comment$/i }).click());
+    await act(async () => void screen.getByRole("button", { name: /^comment on text$/i }).click());
     const ta = await screen.findByPlaceholderText(/Add a comment/i);
     await act(async () => void fireEvent.change(ta, { target: { value: "On the greeting." } }));
     await act(async () => void screen.getByRole("button", { name: /^comment$/i }).click());
@@ -60,7 +60,7 @@ describe("span comment creation (regression)", () => {
     // selection were lost afterward (the regression).
     await act(async () => void fireEvent.contextMenu(document.querySelector(".ap-rendered")!));
     mockSelection(""); // simulate the selection being collapsed by the menu interaction
-    await act(async () => void screen.getByRole("menuitem", { name: /add comment/i }).click());
+    await act(async () => void screen.getByRole("menuitem", { name: /comment on text/i }).click());
     const ta = await screen.findByPlaceholderText(/Add a comment/i);
     await act(async () => void fireEvent.change(ta, { target: { value: "Menu-anchored note." } }));
     await act(async () => void screen.getByRole("button", { name: /^comment$/i }).click());
@@ -81,7 +81,7 @@ describe("span comment creation (regression)", () => {
     await mountApp();
     mockSelection("   "); // selected only spaces
     await act(async () => void document.dispatchEvent(new Event("selectionchange")));
-    const btn = screen.getByRole("button", { name: /add comment/i }) as HTMLButtonElement;
+    const btn = screen.getByRole("button", { name: /comment on text/i }) as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
     expect(btn.title.toLowerCase()).toContain("white space");
     // ⌘/Ctrl+/ doesn't open a composer for whitespace either.

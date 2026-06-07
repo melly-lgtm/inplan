@@ -1173,28 +1173,34 @@ export function App(props: EditorProps = {}): JSX.Element {
       )}
 
       <div className="ap-main" style={{ zoom }}>
-        <section className="ap-preview" ref={previewRef} data-onboard="preview">
+        <section
+          className="ap-preview"
+          ref={previewRef}
+          data-onboard="preview"
+          onContextMenu={(e) => {
+            if (proposal && reviewOpen) return; // reviewing a diff — no comment menu
+            e.preventDefault();
+            // Capture the selection (text + range) and the block under the cursor NOW — clicking a
+            // menu item can collapse the selection in some browsers, so the menu acts on what was
+            // captured here. A click in the empty ("white") area below the text has no [data-line]
+            // block and usually no selection → it opens the document-level comment item.
+            ctxBlockRef.current = (e.target as HTMLElement).closest("[data-line]") as HTMLElement | null;
+            const sel = window.getSelection();
+            const raw = sel?.toString() ?? "";
+            const trimmed = raw.trim();
+            const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+            ctxSelTextRef.current = trimmed; // find/copy/anchor act on the trimmed text
+            commentRangeRef.current = trimmed && range ? range.cloneRange() : null;
+            const block = commentBlockReason(raw, docRef.current.body, range, previewRef.current);
+            setCtxMenu({ x: Math.max(8, Math.min(e.clientX, window.innerWidth - 200)), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 220)), hasSel: trimmed.length > 0, hasRawSel: raw.length > 0, block });
+          }}
+        >
           {proposal && reviewOpen ? (
             <DiffPreview segs={reviewSegs} accepted={accepted} focused={reviewCursor} onToggle={toggleHunk} />
           ) : (
           <div
             className="ap-rendered"
             dangerouslySetInnerHTML={{ __html: previewHtml }}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              // Capture the selection (text + range) and the block under the cursor NOW —
-              // clicking a menu item can collapse the selection in some browsers, so the
-              // menu acts on what was captured here, not a later re-read.
-              ctxBlockRef.current = (e.target as HTMLElement).closest("[data-line]") as HTMLElement | null;
-              const sel = window.getSelection();
-              const raw = sel?.toString() ?? "";
-              const trimmed = raw.trim();
-              const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
-              ctxSelTextRef.current = trimmed; // find/copy/anchor act on the trimmed text
-              commentRangeRef.current = trimmed && range ? range.cloneRange() : null;
-              const block = commentBlockReason(raw, docRef.current.body, range, previewRef.current);
-              setCtxMenu({ x: Math.max(8, Math.min(e.clientX, window.innerWidth - 200)), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 220)), hasSel: trimmed.length > 0, hasRawSel: raw.length > 0, block });
-            }}
             onClick={(e) => {
               const target = e.target as HTMLElement;
               const a = target.closest("a");
@@ -1303,7 +1309,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                 />
               </Fragment>
             ))}
-            {visible.length === 0 && <div className="ap-empty">No comments. Select text and use “+ Add Comment”.</div>}
+            {visible.length === 0 && <div className="ap-empty">No comments. Select text and use “+ Comment on Text”.</div>}
             </div>
           </section>
           </>

@@ -35,20 +35,27 @@ async function mountApp() {
 describe("App preview context menu (item 3)", () => {
   it("right-click opens a menu with the five items", async () => {
     await mountApp();
-    expect(screen.queryByRole("menuitem", { name: /add doc comment/i })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /comment on doc/i })).toBeNull();
     fireEvent.contextMenu(document.querySelector(".ap-rendered")!);
     // No selection ⇒ the first item is the document-level "Add Doc Comment".
-    for (const name of [/add doc comment/i, /find text/i, /copy/i, /select line/i, /select all/i]) {
+    for (const name of [/comment on doc/i, /find text/i, /copy/i, /select line/i, /select all/i]) {
       expect(screen.getByRole("menuitem", { name })).toBeTruthy();
     }
   });
 
-  it("'Add Doc Comment' opens the composer and closes the menu", async () => {
+  it("right-click on the empty preview area (white space) still opens the menu", async () => {
+    await mountApp();
+    // Fire on the preview pane itself, not the rendered text — the empty "white" region.
+    fireEvent.contextMenu(document.querySelector(".ap-preview")!);
+    expect(screen.getByRole("menuitem", { name: /comment on doc/i })).toBeTruthy();
+  });
+
+  it("'Comment on Doc' opens the composer and closes the menu", async () => {
     await mountApp();
     fireEvent.contextMenu(document.querySelector(".ap-rendered")!);
-    fireEvent.click(screen.getByRole("menuitem", { name: /add doc comment/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /comment on doc/i }));
     await waitFor(() => expect(screen.getByPlaceholderText(/Add a comment/i)).toBeTruthy());
-    expect(screen.queryByRole("menuitem", { name: /add doc comment/i })).toBeNull(); // menu closed
+    expect(screen.queryByRole("menuitem", { name: /comment on doc/i })).toBeNull(); // menu closed
   });
 
   it("'Select all' runs and closes the menu without error", async () => {

@@ -88,6 +88,12 @@ anchored comment is an inline Markdown link whose href is the comment id:
   use back as **`agentAuthor`** (e.g. `"Opus 4.8 <claude@inplan.ai>"`). Copy that
   value verbatim into the `author` field — never hardcode the generic
   `"Agent <agent@inplan>"`.
+- **The document body must stand alone — never mention comments or their ids in prose.**
+  Comments are ephemeral; the document is permanent, and a reader has no way to resolve a
+  comment id. So do not write things like "see cmt-ab12cd", "as discussed in the comment
+  above", or "per the resolved thread". (The anchored `[text](#cmt-id)` *link* is the comment
+  mechanism itself and is fine — this is about the surrounding prose.) The body should read as
+  a complete document with every comment stripped out.
 
 ## Turn-taking & control — read this first
 

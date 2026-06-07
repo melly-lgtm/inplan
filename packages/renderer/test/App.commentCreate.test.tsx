@@ -46,7 +46,7 @@ describe("App comment creation (memory-backed)", () => {
     // No composer textarea before the button is clicked.
     expect(screen.queryByPlaceholderText(/Add a comment/i)).toBeNull();
 
-    const addBtn = screen.getByRole("button", { name: /add doc comment/i });
+    const addBtn = screen.getByRole("button", { name: /comment on doc/i });
     await act(async () => {
       addBtn.click();
     });
@@ -60,7 +60,7 @@ describe("App comment creation (memory-backed)", () => {
     await mountApp();
 
     await act(async () => {
-      screen.getByRole("button", { name: /add doc comment/i }).click();
+      screen.getByRole("button", { name: /comment on doc/i }).click();
     });
     const ta = await screen.findByPlaceholderText(/Add a comment/i);
 
@@ -82,7 +82,7 @@ describe("App comment creation (memory-backed)", () => {
     await mountApp();
 
     await act(async () => {
-      screen.getByRole("button", { name: /add doc comment/i }).click();
+      screen.getByRole("button", { name: /comment on doc/i }).click();
     });
     const ta = await screen.findByPlaceholderText(/Add a comment/i);
 
@@ -101,7 +101,7 @@ describe("App comment creation (memory-backed)", () => {
     await mountApp();
 
     await act(async () => {
-      screen.getByRole("button", { name: /add doc comment/i }).click();
+      screen.getByRole("button", { name: /comment on doc/i }).click();
     });
     const ta = await screen.findByPlaceholderText(/Add a comment/i);
 

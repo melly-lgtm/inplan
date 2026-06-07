@@ -127,6 +127,21 @@ The plan should [use Postgres](#cmt-abfdb1) for storage.
 Because the format is plain Markdown plus one HTML comment, a plan renders fine in any
 Markdown viewer and diffs cleanly in code review.
 
+## Project status
+
+inplan **aims** to support every combination of:
+
+- **OS** — macOS and Windows
+- **Cadence** — turn-taking and instant modes
+- **Agent** — Claude Code, Codex, and Pi
+
+…but so far it is **primarily developed and tested on macOS, in turn mode, with Claude Code**.
+The other operating systems, modes, and agents are wired but lightly exercised, so expect
+rough edges there.
+
+**Contributions are very welcome** — especially anything that broadens and hardens support for
+the OSes, modes, and agents above. See [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
 ## License
 
 inplan is **dual-licensed**:
