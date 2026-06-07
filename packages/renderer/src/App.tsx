@@ -1235,11 +1235,22 @@ export function App(props: EditorProps = {}): JSX.Element {
               ...(ctxMenu.block ? { title: blockerTip(ctxMenu.block) ?? "" } : {}),
               onSelect: openComposerFromCapture,
             },
-            // New-doc actions: only when there's a selection AND the host can create docs.
+            // New-doc actions: only when there's a selection AND the host can create docs. Like
+            // "Comment on Text", they're disabled (with the reason) for an un-anchorable selection.
             ...(ctxMenu.hasRawSel && hostApi().newDoc
               ? [
-                  { label: t("ctx.createDoc"), disabled: editingLocked, onSelect: () => openNewDoc("create") },
-                  { label: t("ctx.moveToDoc"), disabled: editingLocked, onSelect: () => openNewDoc("move") },
+                  {
+                    label: t("ctx.createDoc"),
+                    disabled: editingLocked || ctxMenu.block !== null,
+                    ...(ctxMenu.block ? { title: blockerTip(ctxMenu.block) ?? "" } : {}),
+                    onSelect: () => openNewDoc("create"),
+                  },
+                  {
+                    label: t("ctx.moveToDoc"),
+                    disabled: editingLocked || ctxMenu.block !== null,
+                    ...(ctxMenu.block ? { title: blockerTip(ctxMenu.block) ?? "" } : {}),
+                    onSelect: () => openNewDoc("move"),
+                  },
                 ]
               : []),
             { label: t("menu.findText"), disabled: !ctxMenu.hasSel, onSelect: () => { setFindSeed(ctxSelTextRef.current); setFindOpen(true); } },
