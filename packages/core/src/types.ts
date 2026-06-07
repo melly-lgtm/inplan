@@ -31,6 +31,10 @@ export interface Comment {
   /** ISO-8601 timestamp. */
   date: string;
   resolved: boolean;
+  /** The agent's resolve suggestion: set on a thread it has incorporated. The agent never sets
+   *  `resolved` itself — the app/human owns that. When the thread's *last* comment carries this,
+   *  the editor resolves it (auto-resolve on) or shows an "Agent suggested to resolve" badge (off). */
+  may_resolve?: boolean;
   /** Choice-based question (agent -> human). */
   question?: Question;
   /** Answer replies: the chosen choice labels (length 1 for multiple choice, 0..n for multiple selection). */

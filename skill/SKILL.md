@@ -43,10 +43,8 @@ but the human can't review in the GUI — surface the fix to them and proceed.
 
 ## File convention
 
-Save plans as `<name>.plan.md`. The editor keeps its sidecars under
-`~/.inplan/sidecars/<key>/` (the control log `log.jsonl`, the canonical base
-`canonical.md`, any parked proposal `proposed.md`, backups, and `status.json`) —
-the `inplan` CLI owns these; never edit them by hand.
+Save plans as `<name>.plan.md`. The `inplan` CLI keeps its own working files under
+`~/.inplan/sidecars/<key>/` — it owns these; never read or edit them by hand.
 
 ## Auto-approval (review happens in the app)
 
@@ -128,8 +126,8 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
    so the editor shows which model is attached and stamps your comments with a
    model-qualified author. Use the same value every turn.
 3. Read the printed JSON `status` (it also carries `mode`, `humanLocked`, and
-   `settings` — the current materialized user settings, e.g. `autoResolve` and
-   `agentMode`). **`settings.agentMode`** is your operating mode: `planning` (the
+   `settings` — the current materialized user settings, e.g. `agentMode`).
+   **`settings.agentMode`** is your operating mode: `planning` (the
    default — draft and refine the document, the normal loop below) or `implementation`
    (the human switched you to build mode — stop refining the plan and **build what the
    document specifies**). It can change mid-session; re-check it each turn.
@@ -172,11 +170,10 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
    Reply by appending a comment with `parentId`. Read `selected` on the human's
    answers. If nothing needs changing, that's fine — you still take your (empty)
    turn and proceed to step 5.
-   **Resolving:** by default, set `"resolved": true` once you've incorporated a
-   comment. But honor `settings.autoResolve` from the wait result (it is always
-   present — the current value, no log-scanning needed): if it's `false`, do
-   **not** auto-resolve — instead reply that the thread can be resolved and leave
-   it `resolved: false` for the human to resolve.
+   **Resolving:** never set `"resolved"` yourself — that's the human's (and the
+   app's) call. When you've incorporated a comment, set `"may_resolve": true` on it
+   (your reply on the thread); the app resolves it or offers the human a one-click
+   Resolve, per their preference. If a thread is **already resolved**, leave it untouched.
 5. **Relay a one-line summary, then hand control back by calling `wait` again**
    (no `--cursor` — it self-manages), then loop to step 3. The `message` keeps the
    human's status-bar history populated; the `wait` unlocks their editor and blocks

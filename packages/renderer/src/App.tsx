@@ -8,11 +8,13 @@ import {
   addDocComment,
   addReply,
   addSpanComment,
+  autoResolveSuggested,
   buildThreads,
   deleteComment,
   editCommentText,
   setResolved,
   spanCommentBlocker,
+  suggestsResolve,
   type SourceSpan,
   type Thread,
 } from "./docOps";
@@ -484,6 +486,15 @@ export function App(props: EditorProps = {}): JSX.Element {
     },
     [cadence],
   );
+
+  // Auto-resolve: when the setting is on, resolve threads the agent suggested (its `may_resolve`
+  // on the thread's last comment). Runs on load + when the setting flips on; resolving clears the
+  // suggestion so it never re-fires (the resolved thread leaves the suggested set).
+  useEffect(() => {
+    if (!autoResolve || !loaded) return;
+    const next = autoResolveSuggested(docRef.current);
+    if (next) apply(next, { type: "comment_resolved", payload: { auto: true } });
+  }, [doc, autoResolve, loaded, apply]);
 
   const onModeChange = useCallback((c: Cadence, a: Acceptance) => {
     setCadence(c);
@@ -1273,6 +1284,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                   thread={o.thread}
                   body={doc.body}
                   orphaned={o.orphaned}
+                  suggested={!autoResolve && suggestsResolve(o.thread)}
                   focused={focused === o.thread.root.id}
                   synced={syncedCommentId === o.thread.root.id}
                   disabled={editingLocked}
@@ -1868,6 +1880,8 @@ function ThreadCard(props: {
   thread: Thread;
   body: string;
   orphaned: boolean;
+  /** The agent flagged this thread's last comment `may_resolve` (auto-resolve off) → show a badge. */
+  suggested: boolean;
   focused: boolean;
   synced: boolean;
   disabled: boolean;
@@ -2013,6 +2027,7 @@ function ThreadCard(props: {
       onClick={props.onFocus}
     >
       {quote && <div className="ap-thread-quote">{quote}</div>}
+      {props.suggested && <div className="ap-suggested-badge">✓ {t("rail.agentSuggestedResolve")}</div>}
       {renderComment(root, false)}
       {root.question && <QuestionChips question={root.question} disabled={disabled} answered={answeredSelection} onAnswer={props.onAnswer} />}
       {thread.replies.map((r) => renderComment(r, true))}

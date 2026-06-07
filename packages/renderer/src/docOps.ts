@@ -358,3 +358,23 @@ export function buildThreads(comments: Comment[]): Thread[] {
   };
   return comments.filter((c) => c.parentId === undefined).map((root) => ({ root, replies: collect(root.id) }));
 }
+
+/** The newest comment in a thread (its last reply in date order, or the root if none). */
+export function lastComment(thread: Thread): Comment {
+  return thread.replies.length ? thread.replies[thread.replies.length - 1]! : thread.root;
+}
+
+/** A thread the agent suggested resolving: its LAST comment carries `may_resolve` (the agent's
+ *  latest reply) and it isn't already resolved. A later human reply (a new last comment without
+ *  the flag) clears the suggestion. */
+export function suggestsResolve(thread: Thread): boolean {
+  return !thread.root.resolved && lastComment(thread).may_resolve === true;
+}
+
+/** Resolve every thread the agent suggested (for auto-resolve on load / when the setting flips on).
+ *  Returns a new document, or null when nothing was suggested (so callers don't re-persist). */
+export function autoResolveSuggested(doc: ParsedDocument): ParsedDocument | null {
+  const ids = new Set(buildThreads(doc.comments).filter(suggestsResolve).map((t) => t.root.id));
+  if (ids.size === 0) return null;
+  return { ...doc, comments: doc.comments.map((c) => (ids.has(c.id) ? { ...c, resolved: true } : c)) };
+}

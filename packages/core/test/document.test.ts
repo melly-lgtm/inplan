@@ -49,6 +49,18 @@ describe("parse / serialize", () => {
     expect(parse(serialize(doc))).toEqual(doc);
   });
 
+  it("round-trips the optional may_resolve flag (agent's resolve suggestion)", () => {
+    const doc: ParsedDocument = {
+      version: 1,
+      body: "Use [Postgres](#cmt-r00001).",
+      comments: [
+        { id: "cmt-r00001", author: "You", date: "2026-06-06T00:00:00Z", resolved: false, text: "datastore?" },
+        { id: "cmt-r00002", parentId: "cmt-r00001", author: "Opus 4.8 <claude@inplan.ai>", date: "2026-06-06T00:00:01Z", resolved: false, text: "Adopted Postgres.", may_resolve: true },
+      ],
+    };
+    expect(parse(serialize(doc))).toEqual(doc);
+  });
+
   it("parses an answer reply carrying `selected`", () => {
     const doc: ParsedDocument = {
       version: 1,

@@ -154,6 +154,7 @@ export const EN: Catalog = {
   "menu.selectAll": "Select All",
   "rail.resolveThread": "Resolve thread",
   "rail.reopenThread": "Reopen thread",
+  "rail.agentSuggestedResolve": "Agent suggested to resolve",
   "rail.reply": "Reply",
   // banners
   "banner.agentReady": "The agent thinks the plan is ready.",
