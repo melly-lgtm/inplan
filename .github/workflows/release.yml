@@ -48,7 +48,7 @@ jobs:
       # enables it. Rotate by editing this value (or set a repo Variable and reference it here).
       - run: node scripts/build-release.mjs
         env:
-          INPLAN_POSTHOG_KEY: phc_sMdbuR25hr6Ae59GZQwiDLf2DRxaoUVEmu6KsoU6bCFh
+          INPLAN_POSTHOG_KEY: phc_sMdbuR25hr6Ae59GZQwiDLf2DRxaoUVEmu6KsoU6bCFh # public write-only ingest key (phc_*) — not a secret; ships in the client bundle
       - name: Publish (OIDC trusted publisher)
         working-directory: release
         run: npm publish --provenance --access public
