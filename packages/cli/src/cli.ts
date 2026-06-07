@@ -37,6 +37,7 @@ import { evaluateAgentEdit } from "./gate";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
+import { toolActivityText } from "./relayActivity";
 
 // Version is read from the adjacent package.json (see ./version) so a release bumps one place.
 const VERSION = versionFromModule(import.meta.url);
@@ -750,8 +751,8 @@ export function notesFromHook(kind: string, stdin: string, argv: string[]): stri
     if (last) notes.push(last);
   }
   if (kind === "claude-tool" || kind === "codex-tool") {
-    const tool = str(p.tool_name);
-    if (tool) notes.push(`▸ ${tool}`); // activity line, after any prose the agent wrote first
+    const line = toolActivityText(p.tool_name, p.tool_input);
+    if (line) notes.push(`▸ ${line}`); // activity line, after any prose the agent wrote first
   }
   return notes;
 }
@@ -1004,7 +1005,15 @@ export default function (pi) {
     if (text) relay(["--text", text]);
   });
   pi.on("tool_execution_start", (event) => {
-    if (event && event.toolName) relay(["--activity", "--text", String(event.toolName)]);
+    if (!event || !event.toolName) return;
+    // Best-effort detail when Pi exposes the tool input on the event (field name varies):
+    // Bash → first 30 chars of the command; file tools → the file (tail). Else the tool name.
+    const a = event.args || event.toolInput || event.input || {};
+    const clip = (s, head) => (s.length > 30 ? (head ? s.slice(0, 30) + "…" : "…" + s.slice(s.length - 30)) : s);
+    let detail = "";
+    if (event.toolName === "Bash" && typeof a.command === "string") detail = clip(a.command.replace(/\\s+/g, " ").trim(), true);
+    else { const f = a.file_path || a.notebook_path || a.path; if (typeof f === "string" && f.trim()) detail = clip(f.trim(), false); }
+    relay(["--activity", "--text", detail ? String(event.toolName) + ": " + detail : String(event.toolName)]);
   });
 }
 `;

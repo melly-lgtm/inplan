@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { Cadence } from "./api";
 import { useT } from "./i18n";
+import { RelativeTime } from "./RelativeTime";
+import { renderInline } from "./inlineMarkup";
 
 /**
  * Bottom status bar. While the agent holds the turn it animates "Agent is
@@ -32,8 +34,12 @@ export function StatusBar({
 }): JSX.Element {
   const t = useT();
   const [dots, setDots] = useState(".");
+  // The window has two internal modes: "auto" tracks the turn (open while the agent holds it,
+  // closed on the user's turn); "closed" stays shut. Opening it manually flips back to auto.
+  const [mode, setMode] = useState<"auto" | "closed">("auto");
   const [open, setOpen] = useState(false);
   const msgRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!agentThinking) return;
@@ -41,15 +47,30 @@ export function StatusBar({
     return () => clearInterval(id);
   }, [agentThinking]);
 
-  // Close the messages popup on any outside click.
+  // Close the messages popup on any outside click (an explicit dismiss → "closed" mode, so it
+  // won't auto-reopen until the user opens it again).
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (msgRef.current && !msgRef.current.contains(e.target as Node)) setOpen(false);
+      if (msgRef.current && !msgRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setMode("closed");
+      }
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
+
+  // Auto mode: the window follows the turn — open while the agent is working, closed when it's
+  // the user's turn. ("closed" mode opts out; opening manually re-enters auto — see the chip.)
+  useEffect(() => {
+    if (mode === "auto") setOpen(agentThinking);
+  }, [agentThinking, mode]);
+
+  // Newest message sits at the bottom; keep the list pinned there as it opens / grows.
+  useEffect(() => {
+    if (open && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+  }, [open, messages.length]);
 
   const latest = messages.at(-1);
 
@@ -79,22 +100,34 @@ export function StatusBar({
       {/* RIGHT: the agent's relayed-message history. */}
       {latest && (
         <div className="ap-agentmsg" ref={msgRef}>
-          <button className="ap-agentmsg-latest" onClick={() => setOpen((v) => !v)} title={t("status.agentMessages")} aria-expanded={open}>
+          <button
+            className="ap-agentmsg-latest"
+            onClick={() => {
+              // Opening the window puts it in auto mode; closing it puts it in "closed".
+              if (open) {
+                setOpen(false);
+                setMode("closed");
+              } else {
+                setOpen(true);
+                setMode("auto");
+              }
+            }}
+            title={t("status.agentMessages")}
+            aria-expanded={open}
+          >
             <span aria-hidden="true">💬</span> {latest.text}
           </button>
           {open && (
             <div className="ap-agentmsg-pop ap-agentmsg-pop--right" role="dialog" aria-label={t("status.agentMessages")}>
               <div className="ap-agentmsg-head">{t("status.agentMessages")}</div>
-              <div className="ap-agentmsg-list">
-                {messages
-                  .slice()
-                  .reverse()
-                  .map((m, i) => (
-                    <div className="ap-agentmsg-item" key={`${m.ts}-${i}`}>
-                      <div className="ap-agentmsg-time">{m.ts.slice(0, 16).replace("T", " ")}</div>
-                      <div className="ap-agentmsg-text">{m.text}</div>
-                    </div>
-                  ))}
+              <div className="ap-agentmsg-list" ref={listRef}>
+                {/* Chronological — newest at the bottom (like a terminal log). */}
+                {messages.map((m, i) => (
+                  <div className="ap-agentmsg-item" key={`${m.ts}-${i}`}>
+                    <RelativeTime iso={m.ts} className="ap-agentmsg-time" />
+                    <div className="ap-agentmsg-text">{renderInline(m.text)}</div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
