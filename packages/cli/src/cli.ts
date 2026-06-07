@@ -38,6 +38,7 @@ import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
 import { toolActivityText } from "./relayActivity";
+import { ensureDocFile } from "./ensureDoc";
 
 // Version is read from the adjacent package.json (see ./version) so a release bumps one place.
 const VERSION = versionFromModule(import.meta.url);
@@ -1362,6 +1363,7 @@ async function main(): Promise<void> {
   }
 
   if (cmd === "open") {
+    ensureDocFile(file); // a fresh path → create an empty doc, so open-then-fill works without a separate write
     const p = docPaths(file);
     mkdirSync(p.controlDir, { recursive: true });
     // Record this local doc's path in its status so the agent-console relay can resolve

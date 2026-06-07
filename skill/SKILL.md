@@ -1,6 +1,6 @@
 ---
 name: inplan
-description: Use when the user wants to create or refine a planning, PRD, or design document collaboratively, with interactive human review. Trigger on requests like "plan X", "let's plan …", "create a plan for …", "design Y together", or "draft a PRD/design doc" — in general, any request pairing the verb "plan" with a topic (e.g. "plan a tic-tac-toe game"). Saves the document as *.plan.md and opens it in the inplan editor for inline-comment collaboration — the agent drafts and poses questions as comments, the human comments/answers, the agent revises — looping until the human ends the session. Do not confuse with writing-plans, which breaks an already-agreed spec into implementation tasks; inplan is for co-developing the spec/design itself.
+description: Use for ANY planning, design, PRD, or spec document — always plan in inplan; the user need not say "with me" or "collaboratively". Trigger on "plan X", "let's plan …", "create/write a plan|PRD|spec|design for …", "design Y", or any request pairing planning with a topic (e.g. "plan a tic-tac-toe game"). inplan itself creates the document (*.plan.md) and opens its editor; you then fill it in — drafting the body and posing open questions as inline comments — the human reviews, answers, and edits, you revise, looping until the human ends the session. Distinct from writing-plans, which breaks an already-agreed spec into implementation tasks; inplan is for co-developing the spec/design itself.
 # The human reviews every change in the inplan editor, so the agent's edits to the plan
 # file + sidecars and the inplan CLI are auto-approved while this skill is active (no
 # per-edit prompts). Scoped to plan files, the ~/.inplan sidecars, and the inplan CLI only.
@@ -117,16 +117,20 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
 
 ## The loop
 
-1. Write `<name>.plan.md` with the plan body and a comment block. Pre-populate
-   your open questions as comments (use `question` + `choices` where the answer
-   is a choice).
-2. Launch the editor **in the background, with no timeout** — do not foreground
-   it, do not poll:
+1. **Open the editor first** — pick a path and launch it **in the background, with
+   no timeout** (do not foreground it, do not poll):
 
        inplan open <name>.plan.md
 
-   It opens the editor and blocks until the human acts, then prints one JSON
-   line to stdout and exits. Re-invoke yourself when it returns.
+   On a path that doesn't exist yet, inplan **creates an empty document** and opens
+   it, so the human sees the editor immediately — no separate "create the file"
+   step. It then blocks until the human acts, prints one JSON line, and exits;
+   re-invoke yourself when it returns.
+2. **Fill the document in**: write `<name>.plan.md` — the plan body plus your open
+   questions as comments (use `question` + `choices` where the answer is a choice).
+   The open editor reflects your writes live (a brand-new doc auto-applies; once the
+   plan is established, body revisions follow the acceptance mode — see § The loop
+   step 4). Then wait for the human (step 3).
 
    **Pass `--model <your-model-name>`** on `open`/`wait` (e.g. `--model "Opus 4.8"`)
    so the editor shows which model is attached and stamps your comments with a
