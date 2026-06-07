@@ -42,7 +42,13 @@ jobs:
       - run: npm install -g npm@latest
       - run: npm ci
       # Assemble release/ (CLI bundle + bundled Electron app + skill + generated package.json).
+      # INPLAN_POSTHOG_KEY is PostHog's public, write-only ingest key (project 458336, US Cloud) —
+      # safe to embed in client bundles. electron.vite.config.ts bakes it into the main bundle so
+      # opt-in telemetry has an endpoint in published builds; telemetry stays off unless the user
+      # enables it. Rotate by editing this value (or set a repo Variable and reference it here).
       - run: node scripts/build-release.mjs
+        env:
+          INPLAN_POSTHOG_KEY: phc_sMdbuR25hr6Ae59GZQwiDLf2DRxaoUVEmu6KsoU6bCFh
       - name: Publish (OIDC trusted publisher)
         working-directory: release
         run: npm publish --provenance --access public
