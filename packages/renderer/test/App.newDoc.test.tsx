@@ -99,5 +99,6 @@ describe("new-doc actions", () => {
     });
     expect(document.body.textContent).toContain("Replaced by the agent."); // newer text survives
     expect(document.querySelector(".ap-rendered a")).toBeNull(); // no stale link spliced over it
+    expect(screen.getByRole("button", { name: /^create$/i })).toBeTruthy(); // modal stays open to retry/cancel
   });
 });
