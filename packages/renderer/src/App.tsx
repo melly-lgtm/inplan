@@ -293,6 +293,10 @@ export function App(props: EditorProps = {}): JSX.Element {
         setDoc(d);
         savedRef.current = serialize(d);
         setDirty(false);
+        // Undo/redo is per-doc: drop the previous doc's snapshots so an undo here can't pull its
+        // content into (and then save it over) the doc we just navigated to.
+        history.current = [];
+        future.current = [];
         setProposal(null);
         setReviewOpen(false);
         setAgentThinking(false);

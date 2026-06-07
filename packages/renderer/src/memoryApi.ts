@@ -27,6 +27,8 @@ export interface MemoryAgent {
   suggestReload(): void;
   /** The agent relayed a human-facing note (fires onAgentMessage). */
   message(text: string): void;
+  /** Desktop-style in-window navigation to another doc (fires onNavigated). */
+  navigate(content: string, path?: string): void;
   /** The full control log so far (for assertions). */
   log(): Promise<LogEntry[]>;
 }
@@ -50,6 +52,7 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
   const active: Array<() => void> = [];
   const reload: Array<() => void> = [];
   const messages: Array<(m: { text: string; ts: string }) => void> = [];
+  const navigated: Array<(p: DocPayload) => void> = [];
   // Register a callback and return a disposer that removes it (no listener buildup on remount).
   const subscribe = <T>(arr: T[], cb: T): (() => void) => {
     arr.push(cb);
@@ -107,6 +110,7 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
     onAgentActive: (cb) => subscribe(active, cb),
     onReload: (cb) => subscribe(reload, cb),
     onAgentMessage: (cb) => subscribe(messages, cb),
+    onNavigated: (cb) => subscribe(navigated, cb),
     async closeWindow(): Promise<void> {
       closed = true;
     },
@@ -151,6 +155,11 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
       const ts = new Date().toISOString();
       void channel.append({ actor: "agent", type: LogEventType.AgentMessage, payload: { text }, ts });
       for (const cb of messages) cb({ text, ts });
+    },
+    navigate(content: string, path = "memory://doc2") {
+      void store.saveDoc(content);
+      void store.setCanonical(content);
+      for (const cb of navigated) cb({ path, content });
     },
     async log(): Promise<LogEntry[]> {
       return (await channel.readSince(0)).entries;

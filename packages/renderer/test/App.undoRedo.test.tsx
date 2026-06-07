@@ -164,4 +164,27 @@ describe("App undo/redo + Escape shortcuts (memory-backed)", () => {
     await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"));
     expect(document.body.textContent).toContain("awaiting your review");
   });
+
+  it("undo/redo is per-doc: navigating clears the stack so undo can't pull the old doc in", async () => {
+    mount(DOC);
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("Hello world."));
+
+    // Edit doc A (grows its undo history), then follow a link to doc B.
+    await addDocComment("note on doc A");
+    await waitFor(() => expect(document.body.textContent).toContain("note on doc A"));
+    await act(async () => {
+      agent.navigate("# Doc B\n\nFresh content.\n\n<!--inplan v1\n[]\n-->\n");
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("Fresh content."));
+
+    // ⌘Z must be a no-op on doc B — not revert into doc A's pre-comment state.
+    await act(async () => {
+      fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+    });
+    await waitFor(() => expect(document.body.textContent).toMatch(/nothing to undo/i));
+    expect(document.body.textContent).toContain("Fresh content."); // still doc B
+    expect(document.body.textContent).not.toContain("note on doc A"); // didn't pull doc A back
+  });
 });
