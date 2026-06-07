@@ -36,20 +36,10 @@ import { runningEditorPid } from "./editorProcess";
 import { evaluateAgentEdit } from "./gate";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { wakePredicate, waitForActions } from "./wait";
+import { versionFromModule } from "./version";
 
-/** Single source of truth for the version: the adjacent package.json — so a release bumps
- *  one place. Resolves in both layouts: dev `dist/cli.js → ../package.json` (@inplan/cli) and
- *  the published `bin/cli.js → ../package.json` (the generated `inplan` pkg, whose version
- *  build-release.mjs sets to the CLI's). Falls back to 0.0.0 if it can't be read. */
-function readVersion(): string {
-  try {
-    const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")) as { version?: string };
-    return pkg.version ?? "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-}
-const VERSION = readVersion();
+// Version is read from the adjacent package.json (see ./version) so a release bumps one place.
+const VERSION = versionFromModule(import.meta.url);
 
 function output(obj: unknown): void {
   process.stdout.write(JSON.stringify(obj) + "\n");
