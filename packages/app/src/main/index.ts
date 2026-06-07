@@ -3,9 +3,9 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from "electron";
 import { APP_ICON_DATA_URL } from "./appIcon";
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import type { Acceptance, Cadence, SaveOptions, Settings } from "@inplan/renderer";
 import { isOnboarded, markOnboarded } from "@inplan/core/node";
 import { Session } from "./session";
@@ -405,6 +405,35 @@ function registerIpc(): void {
   ipcMain.handle("proposal:get", () => session?.pendingProposal() ?? null);
   ipcMain.handle("proposal:clear", () => {
     session?.clearProposal();
+  });
+  // New-doc actions (Create Doc / Move Text to New Doc): the renderer owns the body edit + the
+  // (relative) link; main owns the location picker + the file write, both relative to the current
+  // doc's directory so the embedded link is a normal sibling-relative Markdown link.
+  const toPosix = (s: string): string => s.replace(/\\/g, "/");
+  ipcMain.handle("newdoc:pick", async (_e, suggestedName: string) => {
+    if (!session || !win) return null;
+    const docDir = dirname(session.paths.file);
+    const res = await dialog.showSaveDialog(win, {
+      defaultPath: join(docDir, suggestedName || "untitled.md"),
+      filters: [{ name: "Markdown", extensions: ["md"] }],
+    });
+    if (res.canceled || !res.filePath) return null;
+    return toPosix(relative(docDir, res.filePath)); // a relative href the renderer can embed + resolve
+  });
+  ipcMain.handle("newdoc:create", (_e, p: string, content: string) => {
+    if (!session || typeof p !== "string" || !p.trim()) return null;
+    const docDir = dirname(session.paths.file);
+    let abs = resolve(docDir, p);
+    if (!abs.endsWith(".md")) abs += ".md";
+    if (existsSync(abs)) return null; // never clobber an existing file — the user can pick another name
+    try {
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, content);
+    } catch (e) {
+      process.stderr.write(`[inplan] newdoc:create failed: ${(e as Error).message}\n`);
+      return null;
+    }
+    return { linkTarget: toPosix(relative(docDir, abs)) };
   });
   ipcMain.handle("doc:open", (_e, target: string) => {
     // `target` is the link path the renderer resolved against the current doc

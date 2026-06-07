@@ -150,6 +150,18 @@ export interface ExitController {
   quit(content: string, opts: { save: boolean; startBuild: boolean }): void;
 }
 
+/** Host-specific new-doc creation for the Create Doc / Move Text to New Doc actions. The renderer
+ *  owns the title/filename defaults and the body edit (replacing the selection with a link); the
+ *  host owns *where* the doc lands and returns the relative link target to embed. */
+export interface NewDocController {
+  /** Open the host's location picker seeded with `suggestedName`; the chosen path, or null if
+   *  cancelled. (Desktop: a native save dialog. Web: its own chooser.) */
+  pickPath(suggestedName: string): Promise<string | null>;
+  /** Create the doc at `path` with `content`; resolves to the relative link target to embed in
+   *  the source (e.g. "./section.md"), or null on failure. */
+  create(path: string, content: string): Promise<{ linkTarget: string } | null>;
+}
+
 export interface Api {
   /** Load the document this window was opened with. */
   load(): Promise<DocPayload>;
@@ -190,6 +202,9 @@ export interface Api {
    * against this doc's path). Local: the sibling file; web: /docs/<org>/<repo>/<path>.
    */
   openDoc(target: string): Promise<void>;
+  /** Host-specific new-doc creation (Create Doc / Move Text to New Doc). Absent ⇒ the renderer
+   *  hides those menu items (e.g. tests, or a host that can't create docs). */
+  newDoc?: NewDocController | null;
   /** Desktop only: navigate the window's back/forward history of opened docs.
    *  Absent on web (the browser's own history handles it) + tests. */
   navigate?(dir: "back" | "forward"): Promise<void>;

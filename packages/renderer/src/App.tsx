@@ -12,12 +12,17 @@ import {
   buildThreads,
   deleteComment,
   editCommentText,
+  linkSelectionToDoc,
+  moveSelectionToDoc,
   setResolved,
   spanCommentBlocker,
+  spanSource,
   suggestsResolve,
   type SourceSpan,
   type Thread,
 } from "./docOps";
+import { moveDocTitle, slugifyFilename } from "./newDoc";
+import { NewDocModal } from "./NewDocModal";
 import { renderMarkdown } from "./markdown";
 import { isInternalDocLink, resolveDocPath } from "./links";
 import { ComposerPopover } from "./ComposerPopover";
@@ -170,6 +175,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [showResolvedOrphaned, setShowResolvedOrphaned] = useState(false);
   const [selectionText, setSelectionText] = useState("");
   const [composer, setComposer] = useState<{ target: string | null; pos: { x: number; y: number }; span?: SourceSpan | null } | null>(null);
+  const [newDocReq, setNewDocReq] = useState<{ mode: "create" | "move"; selected: string; span: SourceSpan | null } | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; hasSel: boolean; hasRawSel: boolean; block: BlockReason | null } | null>(null);
   const [findSeed, setFindSeed] = useState(""); // pre-fills the find box (e.g. from the preview "Find text" menu item)
   const [focused, setFocused] = useState<string | null>(null);
@@ -653,6 +659,49 @@ export function App(props: EditorProps = {}): JSX.Element {
       setComposer({ target: null, pos: { x: 24, y: 56 } });
     }
   }, [selectionSourceSpan]);
+
+  // Open the Create Doc / Move Text to New Doc modal from the right-click selection (captured
+  // text + range, like openComposerFromCapture — a menu click can collapse the live selection).
+  const openNewDoc = useCallback(
+    (mode: "create" | "move") => {
+      const selected = ctxSelTextRef.current;
+      if (!selected) return;
+      setNewDocReq({ mode, selected, span: selectionSourceSpan(commentRangeRef.current) });
+    },
+    [selectionSourceSpan],
+  );
+
+  // Confirm the modal: the host creates the file (it owns where + returns the relative link), then
+  // we rewrite the selection — Create links the text in place; Move replaces it with [title](link)
+  // and the body moves to the new doc.
+  const createNewDoc = useCallback(
+    async (title: string, path: string) => {
+      const req = newDocReq;
+      const api = hostApi();
+      if (!req || !api.newDoc) {
+        setNewDocReq(null);
+        return;
+      }
+      const body = docRef.current.body;
+      const content = req.mode === "move" ? `# ${title}\n\n${spanSource(body, req.selected, req.span ?? undefined) ?? req.selected}\n` : `# ${title}\n`;
+      const res = await api.newDoc.create(path, content);
+      if (!res) {
+        setStatus(t("newdoc.failed"));
+        return; // keep the modal open so the user can retry / pick another path
+      }
+      const nextBody =
+        req.mode === "move"
+          ? moveSelectionToDoc(body, req.selected, req.span ?? undefined, title, res.linkTarget)
+          : linkSelectionToDoc(body, req.selected, req.span ?? undefined, res.linkTarget);
+      setNewDocReq(null);
+      if (nextBody === null) {
+        setStatus(t("msg.cantAnchor")); // created the doc, but the selection moved/can't be linked
+        return;
+      }
+      apply({ ...docRef.current, body: nextBody }, { type: req.mode === "move" ? "text_moved" : "doc_created", payload: { path: res.linkTarget } });
+    },
+    [newDocReq, apply, t],
+  );
 
   // Select a DOM node's text contents (used by the preview context menu's
   // "Select line" / "Select all"). Replaces the current selection.
@@ -1146,6 +1195,17 @@ export function App(props: EditorProps = {}): JSX.Element {
         />
       )}
 
+      {newDocReq && (
+        <NewDocModal
+          mode={newDocReq.mode}
+          initialTitle={newDocReq.mode === "move" ? moveDocTitle(newDocReq.selected) : newDocReq.selected.replace(/\s+/g, " ").trim()}
+          initialPath={slugifyFilename(newDocReq.mode === "move" ? moveDocTitle(newDocReq.selected) : newDocReq.selected)}
+          onPick={hostApi().newDoc ? (name) => hostApi().newDoc!.pickPath(name) : null}
+          onSubmit={createNewDoc}
+          onCancel={() => setNewDocReq(null)}
+        />
+      )}
+
       {props.onboarding && props.onFinishOnboarding && (
         <Onboarding signals={onboardingSignals} onFinish={props.onFinishOnboarding} onActiveStep={(id) => setForceSettingsOpen(id === "settings")} />
       )}
@@ -1164,6 +1224,13 @@ export function App(props: EditorProps = {}): JSX.Element {
               ...(ctxMenu.block ? { title: blockerTip(ctxMenu.block) ?? "" } : {}),
               onSelect: openComposerFromCapture,
             },
+            // New-doc actions: only when there's a selection AND the host can create docs.
+            ...(ctxMenu.hasRawSel && hostApi().newDoc
+              ? [
+                  { label: t("ctx.createDoc"), disabled: editingLocked, onSelect: () => openNewDoc("create") },
+                  { label: t("ctx.moveToDoc"), disabled: editingLocked, onSelect: () => openNewDoc("move") },
+                ]
+              : []),
             { label: t("menu.findText"), disabled: !ctxMenu.hasSel, onSelect: () => { setFindSeed(ctxSelTextRef.current); setFindOpen(true); } },
             { label: t("menu.copy"), disabled: !ctxMenu.hasSel, onSelect: () => void navigator.clipboard?.writeText?.(ctxSelTextRef.current) },
             { label: t("menu.selectLine"), disabled: !ctxBlockRef.current, onSelect: () => selectNodeContents(ctxBlockRef.current) },

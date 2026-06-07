@@ -222,6 +222,46 @@ function mergeSeam(s: string, at: number): string {
   return s;
 }
 
+// --- new-doc actions: Create Doc / Move Text to New Doc -----------------------
+//
+// Both replace the selected span in the body with a Markdown link to the new doc. We reuse the
+// span-comment locator (findSpanRange), and only act when the selection doesn't cross an inline-
+// emphasis boundary — so the splice can't leave a dangling marker. Crossing selections return
+// null and the caller surfaces the same "can't anchor" message as a span comment.
+
+/** Locate `selected` in the body and confirm the open-emphasis stack is identical at both ends
+ *  (so any markup inside the selection is self-balanced and safe to replace). null otherwise. */
+function locateCleanSpan(body: string, selected: string, span?: SourceSpan): { start: number; end: number } | null {
+  const range = findSpanRange(body, selected, span);
+  if (!range) return null;
+  const a = scanOpenMarkers(body, range.start);
+  const b = scanOpenMarkers(body, range.end);
+  if (a.length !== b.length || a.some((m, i) => m !== b[i])) return null; // crosses formatting
+  return range;
+}
+
+/** The source text of the located span (the body Markdown the user selected), or null. Used to
+ *  seed the new doc's body for Move Text to New Doc. */
+export function spanSource(body: string, selected: string, span?: SourceSpan): string | null {
+  const r = locateCleanSpan(body, selected, span);
+  return r ? body.slice(r.start, r.end) : null;
+}
+
+/** Create Doc: keep the selected text in place but turn it into a link to the new doc. */
+export function linkSelectionToDoc(body: string, selected: string, span: SourceSpan | undefined, target: string): string | null {
+  const r = locateCleanSpan(body, selected, span);
+  if (!r) return null;
+  return body.slice(0, r.start) + `[${body.slice(r.start, r.end)}](${target})` + body.slice(r.end);
+}
+
+/** Move Text to New Doc: replace the selection with `[title](target)` (the body moves to the new
+ *  doc); returns the new body. The moved source is obtained separately via {@link spanSource}. */
+export function moveSelectionToDoc(body: string, selected: string, span: SourceSpan | undefined, title: string, target: string): string | null {
+  const r = locateCleanSpan(body, selected, span);
+  if (!r) return null;
+  return body.slice(0, r.start) + `[${title}](${target})` + body.slice(r.end);
+}
+
 const ANCHOR_RE = /\[[^\]]*\]\(#cmt-[0-9a-z]+\)/gi;
 
 /**

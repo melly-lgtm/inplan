@@ -132,6 +132,10 @@ const api: Api = {
     return () => ipcRenderer.removeListener("doc:proposal", h);
   },
   openDoc: (target: string) => ipcRenderer.invoke("doc:open", target),
+  newDoc: {
+    pickPath: (suggestedName: string) => ipcRenderer.invoke("newdoc:pick", suggestedName) as Promise<string | null>,
+    create: (path: string, content: string) => ipcRenderer.invoke("newdoc:create", path, content) as Promise<{ linkTarget: string } | null>,
+  },
   navigate: (dir: "back" | "forward") => ipcRenderer.invoke("nav:go", dir),
   onNavState: (cb: (s: { canBack: boolean; canForward: boolean }) => void) => {
     const h = (_e: unknown, s: { canBack: boolean; canForward: boolean }): void => cb(s);

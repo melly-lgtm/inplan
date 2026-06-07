@@ -266,6 +266,14 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 /* Quit-confirmation modal (shared desktop + web). */
 .ap-modal-backdrop { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: rgba(28, 26, 23, 0.28); }
 .ap-modal { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 18px 20px; min-width: 320px; max-width: 440px; }
+.ap-newdoc { min-width: 420px; }
+.ap-newdoc-title { font-weight: 600; font-size: 15px; margin-bottom: 14px; }
+.ap-newdoc-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; font-size: 12px; color: var(--muted); }
+.ap-newdoc-field input { font: inherit; font-size: 13px; color: var(--fg); padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--bg); }
+.ap-newdoc-field input:focus { outline: none; border-color: var(--accent); }
+.ap-newdoc-path { display: flex; gap: 8px; align-items: stretch; }
+.ap-newdoc-path input { flex: 1; }
+.ap-newdoc-actions { display: flex; justify-content: flex-end; align-items: center; gap: 14px; margin-top: 4px; }
 .ap-quit-title { font-weight: 600; font-size: 15px; margin-bottom: 12px; }
 .ap-quit-opts { display: flex; flex-direction: column; gap: 9px; margin-bottom: 16px; }
 .ap-quit-opt { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
