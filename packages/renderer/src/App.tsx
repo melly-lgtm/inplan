@@ -1309,7 +1309,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                 />
               </Fragment>
             ))}
-            {visible.length === 0 && <div className="ap-empty">No comments. Select text and use “+ Comment on Text”.</div>}
+            {visible.length === 0 && <div className="ap-empty">{t("rail.emptyHint", { action: t("topbar.addComment") })}</div>}
             </div>
           </section>
           </>

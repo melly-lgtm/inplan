@@ -142,6 +142,7 @@ export const EN: Catalog = {
   "agent.connection": "Agent connection",
   // comment rail
   "rail.comments": "Comments",
+  "rail.emptyHint": "No comments. Select text and use “+ {action}”.",
   "rail.prevThread": "Previous Thread",
   "rail.nextThread": "Next Thread",
   "rail.showResolved": "Show resolved ({resolved}) & orphaned ({orphaned}) comments",
