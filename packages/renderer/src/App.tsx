@@ -499,7 +499,9 @@ export function App(props: EditorProps = {}): JSX.Element {
         const s = serialize(next);
         savedRef.current = s;
         setDirty(false);
-        void hostApi().save(s, { kind: cadence === "instant" ? "canonical" : "apply", cadence });
+        // A canonical/apply save also advances the checkpoint (canonical IS a store), so keep
+        // them in sync — otherwise checkpoint goes stale and the Save dot can mis-clear later.
+        void hostApi().save(s, { kind: cadence === "instant" ? "canonical" : "apply", cadence }).then(() => setCheckpoint(s));
       } else {
         setDirty(serialize(next) !== savedRef.current);
       }
@@ -569,7 +571,8 @@ export function App(props: EditorProps = {}): JSX.Element {
 
   const finishTurn = useCallback(() => {
     const content = serialize(docRef.current);
-    void hostApi().save(content, { kind: "canonical", cadence: "turn" });
+    // Canonical save → advance both baselines (savedRef and the any-store checkpoint).
+    void hostApi().save(content, { kind: "canonical", cadence: "turn" }).then(() => setCheckpoint(content));
     savedRef.current = content;
     setDirty(false);
     setAgentThinking(true);
@@ -887,8 +890,9 @@ export function App(props: EditorProps = {}): JSX.Element {
       setDirty(false);
       const acceptedCount = accepted.filter(Boolean).length;
       // Decision made → persist canonical *silently* (accepting a proposal must
-      // not end your turn) and discard the parked proposal.
-      void hostApi().save(serialized, { kind: "apply", cadence });
+      // not end your turn) and discard the parked proposal. The apply save advances the
+      // checkpoint too (keeps it in sync with savedRef so the Save dot stays accurate).
+      void hostApi().save(serialized, { kind: "apply", cadence }).then(() => setCheckpoint(serialized));
       void hostApi().clearProposal();
       void hostApi().logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", { accepted: acceptedCount, total: accepted.length });
       setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`);
