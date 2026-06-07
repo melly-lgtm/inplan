@@ -8,6 +8,7 @@
   "scripts": {
     "build": "npm run build -w @inplan/core && npm run build -w @inplan/backend-supabase && npm run build -w @inplan/renderer && npm run build -w @inplan/cli && npm run build -w @inplan/app",
     "typecheck": "npm run typecheck --workspaces --if-present",
+    "check:lockfile": "node scripts/check-lockfile-sync.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

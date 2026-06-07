@@ -30,6 +30,9 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci
+      # Guard against a stale lockfile: `npm ci` tolerates a workspace self-version mismatch, so a
+      # hand-edited version bump can leave package-lock behind (it drifted 0.1.6→0.1.10 once).
+      - run: npm run check:lockfile
       # Build first so cross-package imports (cli/app → @inplan/core dist) resolve
       # for the type-check and test steps.
       - run: npm run build
