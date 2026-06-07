@@ -52,9 +52,10 @@ export function track(event: string, enabled: boolean, props?: TelemetryProps): 
       event,
       distinct_id: randomUUID(), // throwaway: no stable identifier, no cross-event linkage
       properties: {
-        $process_person_profile: false, // anonymous event — PostHog creates no person profile
         ...ENV_PROPS,
         ...props, // per-event, non-PII (undefined values dropped by JSON.stringify)
+        // Pinned LAST so a caller can never override it: events stay anonymous (no person profile).
+        $process_person_profile: false,
       },
     }),
   }).catch(() => {

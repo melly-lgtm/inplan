@@ -68,6 +68,14 @@ describe("PostHog telemetry", () => {
     expect(body.properties.$browser).toBe("Electron");
   });
 
+  it("never lets per-event props override anonymity ($process_person_profile stays false)", async () => {
+    const { track } = await import("../src/main/telemetry");
+    // A caller (mistakenly or maliciously) tries to flip on person processing.
+    track("app_opened", true, { $process_person_profile: true } as never);
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.properties.$process_person_profile).toBe(false); // pinned — anonymity holds
+  });
+
   it("sends nothing when the user has not opted in", async () => {
     const { track } = await import("../src/main/telemetry");
     track("app_opened", false);
