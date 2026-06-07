@@ -40,7 +40,7 @@ describe("global settings", () => {
   it("round-trips through the global file under INPLAN_HOME", () => {
     writeGlobalSettings({ autoResolve: false });
     expect(globalSettingsPath()).toBe(join(home, "settings.json"));
-    expect(readGlobalSettings()).toEqual({ autoResolve: false, agentMode: "planning" });
+    expect(readGlobalSettings()).toEqual({ autoResolve: false, agentMode: "planning", acceptance: "review" });
     // human-readable on disk
     expect(readFileSync(globalSettingsPath(), "utf8")).toContain('"autoResolve": false');
   });
@@ -66,6 +66,19 @@ describe("global settings", () => {
 
   it("currentSettings uses the global value when the session log has no changes", () => {
     writeGlobalSettings({ autoResolve: false });
-    expect(currentSettings(logPath)).toEqual({ autoResolve: false, agentMode: "planning" });
+    expect(currentSettings(logPath)).toEqual({ autoResolve: false, agentMode: "planning", acceptance: "review" });
+  });
+
+  it("defaults acceptance to review and reads it from the global file", () => {
+    expect(DEFAULT_SETTINGS.acceptance).toBe("review");
+    expect(readGlobalSettings().acceptance).toBe("review");
+    writeGlobalSettings({ autoResolve: false, acceptance: "auto" });
+    expect(readGlobalSettings().acceptance).toBe("auto");
+  });
+
+  it("currentSettings folds an in-session acceptance change over the global base", () => {
+    writeGlobalSettings({ autoResolve: false, acceptance: "review" });
+    appendLog(logPath, { actor: "user", type: LogEventType.SettingsChanged, payload: { acceptance: "auto" } });
+    expect(currentSettings(logPath).acceptance).toBe("auto"); // session change wins over the global base
   });
 });

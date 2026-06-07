@@ -40,6 +40,9 @@ export interface Settings {
   agentMode?: AgentMode;
   /** Opt-in anonymous usage analytics (off/absent = nothing sent). */
   telemetry?: boolean;
+  /** How the agent's body edits are accepted — "review" (park as a proposal) or "auto" (apply
+   *  directly). Global preference read on launch; defaults to "review". */
+  acceptance?: Acceptance;
 }
 
 /** Where an agent is attached right now — derived from live presence by the host

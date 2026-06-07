@@ -29,13 +29,16 @@ export interface Settings {
   /** Opt-in: send anonymous usage events (Plausible). Absent/false ⇒ nothing is sent.
    *  Off by default — not added to DEFAULT_SETTINGS, so a missing value reads as off. */
   telemetry?: boolean;
+  /** How the agent's body edits are accepted: "review" parks them as a proposal for the human to
+   *  accept/reject; "auto" applies them directly. A **global** preference (read from settings.json
+   *  by both the app and the CLI gate), default "review". */
+  acceptance?: "auto" | "review";
 }
 
-// Both agent-behavior defaults start OFF for first-time users: the agent parks
-// edits for review (acceptance default lives in the renderer) and leaves threads
-// for the human to resolve. The agent starts in planning mode. The first-run
-// onboarding explains how to turn these on.
-export const DEFAULT_SETTINGS: Settings = { autoResolve: false, agentMode: "planning" };
+// Agent-behavior defaults for first-time users: the agent parks its edits for **review** (the
+// human approves each change), leaves threads for the human to resolve, and starts in planning
+// mode. The first-run onboarding explains how to change these.
+export const DEFAULT_SETTINGS: Settings = { autoResolve: false, agentMode: "planning", acceptance: "review" };
 
 /** `~/.inplan/settings.json` — the global, cross-session source of truth.
  *  `INPLAN_HOME` overrides the base dir (used by tests; avoids touching $HOME). */

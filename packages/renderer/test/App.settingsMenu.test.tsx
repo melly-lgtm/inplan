@@ -3,8 +3,8 @@
 //
 // App-level integration tests for the ⚙ Settings menu (SettingsMenu) against the
 // real <App/> with a memory-backed window.api. Covers opening the menu, toggling
-// Agent-change acceptance between Auto-accept and Review (a mode_changed control
-// event), and toggling the auto-resolve setting (a settings_changed event).
+// Agent-change acceptance between Auto-accept and Review (a global setting persisted
+// via a settings_changed event), and toggling the auto-resolve setting (likewise).
 //
 // SourceEditor (CodeMirror) is stubbed: it needs layout APIs happy-dom only
 // stubs, and the settings flow under test lives in App, not the editor.
@@ -13,6 +13,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { forwardRef, useImperativeHandle } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryApi, type MemoryAgent } from "../src/memoryApi";
+import type { Settings } from "../src/api";
 
 vi.mock("../src/SourceEditor", () => ({
   SourceEditor: forwardRef(function SourceEditorStub(_props: unknown, ref: React.Ref<unknown>) {
@@ -24,15 +25,15 @@ vi.mock("../src/SourceEditor", () => ({
 const DOC = "# Plan\n\nHello world.\n\n<!--inplan v1\n[]\n-->\n";
 let agent: MemoryAgent;
 
-function mount(content: string) {
+function mount(content: string, settings?: Settings) {
   document.body.innerHTML = '<div id="root"></div>';
-  const session = createMemoryApi({ content });
+  const session = createMemoryApi({ content, settings });
   (window as unknown as { api: unknown }).api = session.api;
   agent = session.agent;
 }
 afterEach(() => {
   cleanup();
-  localStorage.clear(); // acceptance/layout is seeded from ap-layout; don't leak across tests
+  localStorage.clear(); // layout is seeded from ap-layout; don't leak across tests
 });
 
 async function openMenu() {
@@ -60,7 +61,9 @@ describe("App settings menu (memory-backed)", () => {
     expect(screen.getByRole("switch", { name: /auto-resolve comments/i })).toBeTruthy();
   });
 
-  it("turning the Auto-accept switch on logs a mode_changed event with acceptance=auto", async () => {
+  it("turning the Auto-accept switch on logs a settings_changed event with acceptance=auto", async () => {
+    // Acceptance is a global setting: the toggle persists via setSettings (a
+    // settings_changed event), not the per-doc mode_changed.
     mount(DOC);
     const { App } = await import("../src/App");
     render(<App />);
@@ -76,18 +79,19 @@ describe("App settings menu (memory-backed)", () => {
 
     await waitFor(async () => {
       const log = await agent.log();
-      const mode = log.filter((e) => e.type === "mode_changed");
-      expect(mode.length).toBeGreaterThan(0);
-      const last = mode[mode.length - 1];
+      const changed = log.filter(
+        (e) => e.type === "settings_changed" && (e.payload as { acceptance?: string }).acceptance != null,
+      );
+      expect(changed.length).toBeGreaterThan(0);
+      const last = changed[changed.length - 1];
       expect((last.payload as { acceptance: string }).acceptance).toBe("auto");
     });
   });
 
   it("turning the Auto-accept switch off logs acceptance=review", async () => {
-    // Seed acceptance=auto via the persisted layout so the switch starts on — one
+    // Seed acceptance=auto via the global settings so the switch starts on — one
     // click off → review (avoids relying on a controlled-checkbox double toggle).
-    localStorage.setItem("ap-layout", JSON.stringify({ acceptance: "auto" }));
-    mount(DOC);
+    mount(DOC, { autoResolve: true, acceptance: "auto" });
     const { App } = await import("../src/App");
     render(<App />);
     await waitFor(() => expect(document.body.textContent).toContain("Hello world."));
@@ -101,8 +105,10 @@ describe("App settings menu (memory-backed)", () => {
 
     await waitFor(async () => {
       const log = await agent.log();
-      const mode = log.filter((e) => e.type === "mode_changed");
-      const last = mode[mode.length - 1];
+      const changed = log.filter(
+        (e) => e.type === "settings_changed" && (e.payload as { acceptance?: string }).acceptance != null,
+      );
+      const last = changed[changed.length - 1];
       expect((last.payload as { acceptance: string }).acceptance).toBe("review");
     });
   });

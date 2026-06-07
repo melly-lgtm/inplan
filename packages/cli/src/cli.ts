@@ -170,15 +170,10 @@ function cadenceFrom(entries: LogEntry[]): "turn" | "instant" {
   return "turn";
 }
 
-/** Latest agent-change acceptance from the protocol history (Auto unless a mode_changed says Review). */
+/** Agent-change acceptance — a **global** setting (settings.json), read fresh each turn via
+ *  settingsFromEntries (global file + this session's settings_changed), default "review". */
 function acceptanceFrom(entries: LogEntry[]): "auto" | "review" {
-  for (let i = entries.length - 1; i >= 0; i--) {
-    if (entries[i]!.type === LogEventType.ModeChanged) {
-      const a = (entries[i]!.payload as { acceptance?: string } | undefined)?.acceptance;
-      if (a === "auto" || a === "review") return a;
-    }
-  }
-  return "auto";
+  return settingsFromEntries(entries).acceptance === "auto" ? "auto" : "review";
 }
 
 /** The highest seq in the protocol history (0 if empty). */

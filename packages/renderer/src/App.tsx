@@ -213,7 +213,6 @@ export function App(props: EditorProps = {}): JSX.Element {
       if (typeof s.zoom === "number") setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s.zoom)));
       if (typeof s.showResolvedOrphaned === "boolean") setShowResolvedOrphaned(s.showResolvedOrphaned);
       if (s.cadence === "turn" || s.cadence === "instant") setCadence(s.cadence);
-      if (s.acceptance === "auto" || s.acceptance === "review") setAcceptance(s.acceptance);
       if (typeof s.srcW === "number") setSrcW(Math.min(900, Math.max(220, s.srcW)));
       if (typeof s.cmtW === "number") setCmtW(Math.min(900, Math.max(220, s.cmtW)));
     } catch {
@@ -221,16 +220,18 @@ export function App(props: EditorProps = {}): JSX.Element {
     }
   }, []);
   useEffect(() => {
-    localStorage.setItem("ap-layout", JSON.stringify({ panes, rightTab, zoom, showResolvedOrphaned, cadence, acceptance, srcW, cmtW }));
-  }, [panes, rightTab, zoom, showResolvedOrphaned, cadence, acceptance, srcW, cmtW]);
+    localStorage.setItem("ap-layout", JSON.stringify({ panes, rightTab, zoom, showResolvedOrphaned, cadence, srcW, cmtW }));
+  }, [panes, rightTab, zoom, showResolvedOrphaned, cadence, srcW, cmtW]);
 
-  // autoResolve is a global, cross-session user setting (affects agent behavior),
-  // loaded from ~/.inplan/settings.json on launch — not localStorage.
+  // Global, cross-session user settings (they shape agent behavior), loaded from
+  // ~/.inplan/settings.json on launch — not localStorage. Acceptance lives here too now, so the
+  // editor's toggle and the CLI gate read the same source of truth (default "review").
   useEffect(() => {
     void hostApi().getSettings().then((s) => {
       setAutoResolve(s.autoResolve);
       setAgentMode(s.agentMode ?? "planning");
       setTelemetry(s.telemetry === true);
+      setAcceptance(s.acceptance === "auto" ? "auto" : "review");
     });
   }, []);
 
@@ -524,9 +525,9 @@ export function App(props: EditorProps = {}): JSX.Element {
   }, []);
 
   // Global agent-behavior settings: persist the whole object (the host overwrites the
-  // file), so always send both fields — refs keep the callbacks fresh without re-creating.
-  const settingsRef = useRef({ autoResolve, agentMode, telemetry });
-  settingsRef.current = { autoResolve, agentMode, telemetry };
+  // file), so always send every field — refs keep the callbacks fresh without re-creating.
+  const settingsRef = useRef({ autoResolve, agentMode, telemetry, acceptance });
+  settingsRef.current = { autoResolve, agentMode, telemetry, acceptance };
   const onAutoResolve = useCallback((v: boolean) => {
     setAutoResolve(v);
     void hostApi().setSettings({ ...settingsRef.current, autoResolve: v });
@@ -538,6 +539,12 @@ export function App(props: EditorProps = {}): JSX.Element {
   const onTelemetry = useCallback((v: boolean) => {
     setTelemetry(v);
     void hostApi().setSettings({ ...settingsRef.current, telemetry: v });
+  }, []);
+  // Acceptance is a global setting now (so the CLI gate reads the same value on launch) — persist
+  // via setSettings, not the per-doc mode_changed that the cadence toggle still uses.
+  const onAcceptanceChange = useCallback((a: Acceptance) => {
+    setAcceptance(a);
+    void hostApi().setSettings({ ...settingsRef.current, acceptance: a });
   }, []);
 
   const onZoom = useCallback((dir: -1 | 0 | 1) => {
@@ -1067,6 +1074,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         hasSelection={selectionText.length > 0}
         commentBlockTip={blockerTip(selBlocker)}
         onMode={onModeChange}
+        onAcceptance={onAcceptanceChange}
         onAutoResolve={onAutoResolve}
         onAgentMode={onAgentMode}
         onTelemetry={onTelemetry}
@@ -1589,6 +1597,7 @@ function TopBar(props: {
   hasSelection: boolean;
   commentBlockTip: string | null; // why Add Comment is disabled (tooltip text), or null if allowed
   onMode: (c: Cadence, a: Acceptance) => void;
+  onAcceptance: (a: Acceptance) => void;
   onAutoResolve: (v: boolean) => void;
   onAgentMode: (m: "planning" | "implementation") => void;
   onTelemetry: (v: boolean) => void;
@@ -1727,7 +1736,7 @@ function TopBar(props: {
         autoResolve={props.autoResolve}
         agentMode={props.agentMode}
         telemetry={props.telemetry}
-        onAcceptance={(a) => onMode(cadence, a)}
+        onAcceptance={props.onAcceptance}
         onAutoResolve={props.onAutoResolve}
         onAgentMode={props.onAgentMode}
         onTelemetry={props.onTelemetry}
