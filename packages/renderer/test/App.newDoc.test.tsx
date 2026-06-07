@@ -70,6 +70,16 @@ describe("new-doc actions", () => {
     await waitFor(() => expect(document.querySelector(".ap-rendered a")).toBeTruthy());
   });
 
+  it("hides the Browse button when the host has no pickPath (e.g. web)", async () => {
+    delete (window as unknown as { api: { newDoc: { pickPath?: unknown } } }).api.newDoc.pickPath; // host without a file browser
+    await mountApp();
+    mockSelection("Hello world.");
+    await act(async () => void fireEvent.contextMenu(document.querySelector(".ap-rendered")!));
+    await act(async () => void screen.getByRole("menuitem", { name: /create doc/i }).click());
+    await screen.findByRole("button", { name: /^create$/i }); // modal still opens
+    expect(screen.queryByRole("button", { name: /browse/i })).toBeNull();
+  });
+
   it("disables BOTH new-doc actions for an un-anchorable selection (no modal, no file)", async () => {
     await mountApp();
     mockSelection("text that is not in the body"); // can't map to a source span → blocked

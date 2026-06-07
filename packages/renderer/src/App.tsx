@@ -1211,7 +1211,7 @@ export function App(props: EditorProps = {}): JSX.Element {
           mode={newDocReq.mode}
           initialTitle={newDocReq.mode === "move" ? moveDocTitle(newDocReq.selected) : newDocReq.selected.replace(/\s+/g, " ").trim()}
           initialPath={slugifyFilename(newDocReq.mode === "move" ? moveDocTitle(newDocReq.selected) : newDocReq.selected)}
-          onPick={hostApi().newDoc ? (name) => hostApi().newDoc!.pickPath(name) : null}
+          onPick={hostApi().newDoc?.pickPath ? (name) => hostApi().newDoc!.pickPath!(name) : null}
           onSubmit={createNewDoc}
           onCancel={() => setNewDocReq(null)}
         />

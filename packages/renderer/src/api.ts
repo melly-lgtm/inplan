@@ -155,8 +155,9 @@ export interface ExitController {
  *  host owns *where* the doc lands and returns the relative link target to embed. */
 export interface NewDocController {
   /** Open the host's location picker seeded with `suggestedName`; the chosen path, or null if
-   *  cancelled. (Desktop: a native save dialog. Web: its own chooser.) */
-  pickPath(suggestedName: string): Promise<string | null>;
+   *  cancelled. Optional — a host without a file browser (e.g. web, where the user just types a
+   *  repo-relative path) omits it and the modal shows no Browse button. (Desktop: a save dialog.) */
+  pickPath?(suggestedName: string): Promise<string | null>;
   /** Create the doc at `path` with `content`; resolves to the relative link target to embed in
    *  the source (e.g. "./section.md"), or null on failure. */
   create(path: string, content: string): Promise<{ linkTarget: string } | null>;
