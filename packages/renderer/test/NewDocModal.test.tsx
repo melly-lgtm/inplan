@@ -35,7 +35,14 @@ describe("NewDocModal", () => {
     render(<NewDocModal {...base} />);
     const create = screen.getByRole("button", { name: /^create$/i }) as HTMLButtonElement;
     expect(create.disabled).toBe(false);
-    fireEvent.change(titleInput(), { target: { value: "   " } });
+    // Hold the inputs by reference — the helpers query by display value, which changes below.
+    const title = titleInput();
+    const path = pathInput();
+    fireEvent.change(title, { target: { value: "   " } });
+    expect(create.disabled).toBe(true);
+    // A whitespace-only path also disables the action (the second guard).
+    fireEvent.change(title, { target: { value: "Valid Title" } });
+    fireEvent.change(path, { target: { value: "   " } });
     expect(create.disabled).toBe(true);
   });
 
