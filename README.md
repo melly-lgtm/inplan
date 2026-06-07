@@ -82,7 +82,7 @@ npm install -g inplan
 **2. Ask your agent to plan**, in plain language — for example:
 
 > Let's plan a tic-tac-toe game.
-
+>
 > Plan the auth rewrite with me.
 
 The skill triggers on any "plan X" request: your agent writes `<name>.plan.md`, **opens
@@ -106,8 +106,9 @@ block until you act), `inplan wait <file>` (resume after the next action), `inpl
 From a **source checkout**, set `INPLAN_APP_CMD` to your built `@inplan/app` (or the CLI
 runs headless); run the editor standalone with `npm run dev -w @inplan/app`.
 
-The editor keeps its sidecars (control log, canonical base, backups) in an `.inplan/`
-directory next to the file — never edit those by hand.
+The editor keeps its sidecars (control log, canonical base, backups) centrally under
+`~/.inplan/sidecars/<key>` (where `<key>` is derived from the document's absolute path;
+override the root with `INPLAN_HOME` or `INPLAN_SIDECAR_DIR`) — never edit those by hand.
 
 </details>
 
