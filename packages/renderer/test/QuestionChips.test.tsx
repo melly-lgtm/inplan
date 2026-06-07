@@ -97,5 +97,14 @@ describe("QuestionChips (FR4 choice answering)", () => {
       fireEvent.click(answerBtn());
       expect(onAnswer).toHaveBeenCalledWith(["Postgres"], "");
     });
+
+    it("'Change answer' then Cancel restores the settled view without re-posting", () => {
+      const onAnswer = vi.fn();
+      render(<QuestionChips question={single} disabled={false} answered={["SQLite"]} onAnswer={onAnswer} />);
+      fireEvent.click(screen.getByRole("button", { name: /change answer/i }));
+      fireEvent.click(screen.getByRole("button", { name: /cancel/i })); // bail out of the picker
+      expect(onAnswer).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: /change answer/i })).toBeTruthy(); // back to settled
+    });
   });
 });

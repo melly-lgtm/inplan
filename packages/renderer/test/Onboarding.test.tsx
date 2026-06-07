@@ -28,6 +28,29 @@ describe("Onboarding", () => {
     expect(nextBtn().disabled).toBe(false);
   });
 
+  it("swallows an off-step click and blinks the coach card (but allows the card itself)", () => {
+    // A stray control the tour doesn't point at — clicks on it should be ignored.
+    const stray = document.createElement("button");
+    stray.textContent = "Distraction";
+    const onStray = vi.fn();
+    stray.addEventListener("click", onStray);
+    document.body.appendChild(stray);
+    try {
+      render(<Onboarding signals={NONE} onFinish={() => {}} />);
+      fireEvent.click(stray);
+      expect(onStray).not.toHaveBeenCalled(); // the guard swallowed it
+      expect(document.querySelector(".ap-coach-card")!.classList.contains("ap-coach-blink")).toBe(true); // blinked
+      // The coach card's own controls still work (allowed region).
+      const skip = screen.getByRole("button", { name: /skip tutorial/i });
+      const onSkipClick = vi.fn();
+      skip.addEventListener("click", onSkipClick);
+      fireEvent.click(skip);
+      expect(onSkipClick).toHaveBeenCalled(); // not swallowed
+    } finally {
+      stray.remove();
+    }
+  });
+
   it("Skip finishes from any step", () => {
     const onFinish = vi.fn();
     render(<Onboarding signals={NONE} onFinish={onFinish} />);

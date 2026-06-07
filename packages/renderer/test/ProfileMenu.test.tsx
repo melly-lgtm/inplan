@@ -79,4 +79,62 @@ describe("ProfileMenu", () => {
     fireEvent.mouseDown(document.body);
     expect(screen.queryByRole("menuitem", { name: "Sign out" })).toBeNull();
   });
+
+  it("renders the four settings toggles and fires their callbacks", () => {
+    const onAcceptance = vi.fn();
+    const onAutoResolve = vi.fn();
+    const onAgentMode = vi.fn();
+    const onTelemetry = vi.fn();
+    render(
+      <ProfileMenu
+        user={user}
+        actions={[]}
+        acceptance="review"
+        autoResolve={false}
+        agentMode="planning"
+        telemetry={false}
+        onAcceptance={onAcceptance}
+        onAutoResolve={onAutoResolve}
+        onAgentMode={onAgentMode}
+        onTelemetry={onTelemetry}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /account menu/i }));
+    fireEvent.click(screen.getByRole("switch", { name: /keep agent in planning/i }));
+    expect(onAgentMode).toHaveBeenCalledWith("implementation"); // on(planning) → off
+    fireEvent.click(screen.getByRole("switch", { name: /auto-accept agent's changes/i }));
+    expect(onAcceptance).toHaveBeenCalledWith("auto"); // review → on
+    fireEvent.click(screen.getByRole("switch", { name: /auto-resolve comments/i }));
+    expect(onAutoResolve).toHaveBeenCalledWith(true);
+    fireEvent.click(screen.getByRole("switch", { name: /share anonymous data/i }));
+    expect(onTelemetry).toHaveBeenCalledWith(true);
+  });
+
+  it("edits the profile and saves name + email", () => {
+    const onEditProfile = vi.fn();
+    render(<ProfileMenu user={user} actions={[]} onEditProfile={onEditProfile} />);
+    fireEvent.click(screen.getByRole("button", { name: /account menu/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /edit profile/i }));
+    fireEvent.change(screen.getByPlaceholderText("Name"), { target: { value: "Mel" } });
+    fireEvent.change(screen.getByPlaceholderText(/email/i), { target: { value: "mel@x.io" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onEditProfile).toHaveBeenCalledWith("Mel", "mel@x.io");
+  });
+
+  it("offers 'Set up your profile' when signed out and cancels back to the action list", () => {
+    render(<ProfileMenu user={null} actions={[]} onEditProfile={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /not signed in/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /set up your profile/i }));
+    expect(screen.getByPlaceholderText("Name")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    expect(screen.queryByPlaceholderText("Name")).toBeNull();
+  });
+
+  it("replays the tutorial from the settings section", () => {
+    const onReplayTutorial = vi.fn();
+    render(<ProfileMenu user={user} actions={[]} acceptance="review" autoResolve={false} onAcceptance={vi.fn()} onAutoResolve={vi.fn()} onReplayTutorial={onReplayTutorial} />);
+    fireEvent.click(screen.getByRole("button", { name: /account menu/i }));
+    fireEvent.click(screen.getByText(/replay tutorial/i));
+    expect(onReplayTutorial).toHaveBeenCalled();
+  });
 });

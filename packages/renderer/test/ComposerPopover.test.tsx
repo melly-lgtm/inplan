@@ -53,4 +53,21 @@ describe("ComposerPopover", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(onSubmit).not.toHaveBeenCalled();
   });
+
+  it("drags via the header, and only dismisses on an outside click when empty", () => {
+    const onClose = vi.fn();
+    render(<ComposerPopover {...base} onClose={onClose} />);
+    const head = document.querySelector(".ap-composer-head") as HTMLElement;
+    fireEvent.mouseDown(head, { clientX: 50, clientY: 50 }); // start drag
+    fireEvent.mouseMove(document, { clientX: 80, clientY: 90 }); // moves the popover (setP)
+    fireEvent.mouseUp(document); // end drag
+    // Outside click with text present must NOT dismiss (don't discard a draft).
+    fireEvent.change(textarea(), { target: { value: "draft" } });
+    fireEvent.mouseDown(document.body);
+    expect(onClose).not.toHaveBeenCalled();
+    // Emptied → an outside click dismisses.
+    fireEvent.change(textarea(), { target: { value: "" } });
+    fireEvent.mouseDown(document.body);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });
