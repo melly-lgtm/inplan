@@ -8,7 +8,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { forwardRef, useImperativeHandle } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createMemoryApi } from "../src/memoryApi";
+import { createMemoryApi, type MemoryAgent } from "../src/memoryApi";
 
 vi.mock("../src/SourceEditor", () => ({
   SourceEditor: forwardRef(function SourceEditorStub(_props: unknown, ref: React.Ref<unknown>) {
@@ -19,11 +19,13 @@ vi.mock("../src/SourceEditor", () => ({
 
 const DOC = "# Plan\n\nHello world.\n\n<!--inplan v1\n[]\n-->\n";
 let create: ReturnType<typeof vi.fn>;
+let agent: MemoryAgent;
 let origGetSelection: typeof window.getSelection;
 
 beforeEach(() => {
   document.body.innerHTML = '<div id="root"></div>';
   const session = createMemoryApi({ content: DOC });
+  agent = session.agent;
   create = vi.fn(async (path: string) => ({ linkTarget: path }));
   (session.api as unknown as { newDoc: unknown }).newDoc = { pickPath: vi.fn(async () => null), create };
   (window as unknown as { api: unknown }).api = session.api;
@@ -76,5 +78,26 @@ describe("new-doc actions", () => {
     await act(async () => void (await screen.findByRole("button", { name: /^create$/i })).click());
     expect(create).not.toHaveBeenCalled(); // pre-check bailed before touching the host
     expect(screen.getByRole("button", { name: /^create$/i })).toBeTruthy(); // modal stays open
+  });
+
+  it("does not clobber a newer doc if the agent rewrites it while create() is in flight", async () => {
+    await mountApp();
+    mockSelection("Hello world.");
+    // Keep create() pending so we can rewrite the doc (a committed render) BEFORE it resolves —
+    // mirroring the real interleaving of the external-change IPC and the create response.
+    let resolveCreate: () => void = () => {};
+    create.mockImplementation(() => new Promise<{ linkTarget: string }>((r) => { resolveCreate = () => r({ linkTarget: "hello_world.md" }); }));
+    await act(async () => void fireEvent.contextMenu(document.querySelector(".ap-rendered")!));
+    await act(async () => void screen.getByRole("menuitem", { name: /create doc/i }).click());
+    await act(async () => void (await screen.findByRole("button", { name: /^create$/i })).click());
+    // create() is in flight; the agent rewrites the doc, dropping the selection.
+    await act(async () => agent.externalChange("# Plan\n\nReplaced by the agent.\n\n<!--inplan v1\n[]\n-->\n"));
+    // Now create resolves — the splice runs against the FRESH body, can't find the selection, aborts.
+    await act(async () => {
+      resolveCreate();
+      await Promise.resolve();
+    });
+    expect(document.body.textContent).toContain("Replaced by the agent."); // newer text survives
+    expect(document.querySelector(".ap-rendered a")).toBeNull(); // no stale link spliced over it
   });
 });
