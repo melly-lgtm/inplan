@@ -80,6 +80,26 @@ describe("new-doc actions", () => {
     expect(screen.queryByRole("button", { name: /browse/i })).toBeNull();
   });
 
+  it("Move: the new doc gets just the moved body — no synthetic title heading", async () => {
+    await mountApp();
+    mockSelection("Hello world.");
+    await act(async () => void fireEvent.contextMenu(document.querySelector(".ap-rendered")!));
+    await act(async () => void screen.getByRole("menuitem", { name: /move text to new doc/i }).click());
+    await act(async () => void (await screen.findByRole("button", { name: /^move$/i })).click());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    const content = create.mock.calls[0]![1] as string;
+    expect(content).toContain("Hello world."); // the moved body
+    expect(content).not.toMatch(/^#\s/m); // no "# Title" heading prepended
+    // The original now links to the new doc (the moved text was replaced).
+    await waitFor(() => expect(document.querySelector(".ap-rendered a")).toBeTruthy());
+  });
+
+  it("⌘/Ctrl+S saves (the shortcut is bound)", async () => {
+    await mountApp();
+    await act(async () => void fireEvent.keyDown(document, { key: "s", metaKey: true }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/saved/i)); // "saved" / "checkpoint saved"
+  });
+
   it("disables Create for an un-anchorable selection but ALLOWS Move (Move is less restrictive)", async () => {
     await mountApp();
     mockSelection("text that is not in the body"); // can't anchor a comment here

@@ -202,6 +202,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const checkpointRef = useRef<string>(""); // last content written to ANY store (canonical or backup) — drives the status-bar "unsaved"
   const skipPreviewScroll = useRef(false); // set when the active line came from a click in the preview itself
   const autoResolvedRef = useRef<Set<string>>(new Set()); // thread ids already auto-resolved (so undo can't re-trigger)
+  const saveNowRef = useRef<() => void>(() => {}); // latest saveNow (the ⌘/Ctrl+S handler calls via this)
 
   // --- persisted layout ---
   useEffect(() => {
@@ -372,6 +373,10 @@ export function App(props: EditorProps = {}): JSX.Element {
           el?.focus();
           el?.select();
         });
+      } else if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "s" || e.key === "S")) {
+        // ⌘/Ctrl+S — save (canonical in Instant, a checkpoint backup in Turn), from anywhere.
+        e.preventDefault();
+        saveNowRef.current();
       } else if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key === "/") {
         // ⌘/Ctrl+/ — add a comment on the selection (devs' "toggle comment" muscle memory).
         e.preventDefault();
@@ -546,6 +551,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     }
     setStatus(kind === "canonical" ? "saved" : "checkpoint saved");
   }, [cadence]);
+  saveNowRef.current = saveNow; // keep the ⌘/Ctrl+S handler pointed at the current saveNow
 
   const finishTurn = useCallback(() => {
     const content = serialize(docRef.current);
@@ -692,7 +698,9 @@ export function App(props: EditorProps = {}): JSX.Element {
           setStatus(t("newdoc.cantMove")); // unanchorable, crosses formatting, or a comment straddles the edge
           return;
         }
-        content = serialize({ body: `# ${title}\n\n${pre.movedBody}\n`, comments: pre.movedComments });
+        // Just the moved blocks (+ their comments) — no synthetic title heading; the moved text
+        // usually carries its own heading, and the title is only for the link + filename.
+        content = serialize({ body: `${pre.movedBody}\n`, comments: pre.movedComments });
       } else {
         if (spanSource(docRef.current.body, req.selected, req.span ?? undefined) === null) {
           setStatus(t("msg.cantAnchor"));
@@ -721,8 +729,15 @@ export function App(props: EditorProps = {}): JSX.Element {
       }
       setNewDocReq(null); // success only — close the modal now
       apply(next, { type: req.mode === "move" ? "text_moved" : "doc_created", payload: { path: res.linkTarget } });
+      // Persist the original immediately (silent, like accepting a change): the new file already
+      // exists on disk pointing back here, so the link/comment edit must be durable right away —
+      // otherwise it lingers unsaved and a navigation round-trip can drop it.
+      const saved = serialize(next);
+      savedRef.current = saved;
+      setDirty(false);
+      void hostApi().save(saved, { kind: cadence === "instant" ? "canonical" : "apply", cadence }).then(() => { checkpointRef.current = saved; });
     },
-    [newDocReq, apply, t],
+    [newDocReq, apply, t, cadence],
   );
 
   // Select a DOM node's text contents (used by the preview context menu's
