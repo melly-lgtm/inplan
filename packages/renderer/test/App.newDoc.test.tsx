@@ -70,13 +70,19 @@ describe("new-doc actions", () => {
     await waitFor(() => expect(document.querySelector(".ap-rendered a")).toBeTruthy());
   });
 
-  it("disables the new-doc actions for an un-anchorable selection (no modal, no file)", async () => {
+  it("disables BOTH new-doc actions for an un-anchorable selection (no modal, no file)", async () => {
     await mountApp();
     mockSelection("text that is not in the body"); // can't map to a source span → blocked
     await act(async () => void fireEvent.contextMenu(document.querySelector(".ap-rendered")!));
-    // The items render but are disabled, so clicking them opens no modal and never calls the host.
-    await act(async () => void screen.getByRole("menuitem", { name: /create doc/i }).click());
-    expect(screen.queryByRole("button", { name: /^create$/i })).toBeNull();
+    const createItem = screen.getByRole("menuitem", { name: /create doc/i }) as HTMLButtonElement;
+    const moveItem = screen.getByRole("menuitem", { name: /move text to new doc/i }) as HTMLButtonElement;
+    expect(createItem.disabled).toBe(true);
+    expect(moveItem.disabled).toBe(true);
+    // Clicking a disabled item is a no-op: no modal opens (Create/Move buttons) and the host
+    // create() is never called. (A disabled button doesn't fire onClick, so the menu stays open.)
+    await act(async () => void createItem.click());
+    await act(async () => void moveItem.click());
+    expect(screen.queryByRole("button", { name: /^(create|move)$/i })).toBeNull();
     expect(create).not.toHaveBeenCalled();
   });
 
