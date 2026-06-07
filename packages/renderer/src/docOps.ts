@@ -372,9 +372,17 @@ export function suggestsResolve(thread: Thread): boolean {
 }
 
 /** Resolve every thread the agent suggested (for auto-resolve on load / when the setting flips on).
- *  Returns a new document, or null when nothing was suggested (so callers don't re-persist). */
-export function autoResolveSuggested(doc: ParsedDocument): ParsedDocument | null {
-  const ids = new Set(buildThreads(doc.comments).filter(suggestsResolve).map((t) => t.root.id));
+ *  Returns a new document, or null when nothing was suggested (so callers don't re-persist).
+ *
+ *  `skip` lists thread root ids already auto-resolved this session: they're left untouched so that
+ *  undoing an auto-resolution doesn't immediately re-trigger it (which would clear the redo stack). */
+export function autoResolveSuggested(doc: ParsedDocument, skip?: ReadonlySet<string>): ParsedDocument | null {
+  const ids = new Set(
+    buildThreads(doc.comments)
+      .filter(suggestsResolve)
+      .map((t) => t.root.id)
+      .filter((id) => !skip?.has(id)),
+  );
   if (ids.size === 0) return null;
   return { ...doc, comments: doc.comments.map((c) => (ids.has(c.id) ? { ...c, resolved: true } : c)) };
 }

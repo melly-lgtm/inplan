@@ -56,4 +56,19 @@ describe("may_resolve — agent resolve suggestion", () => {
     expect(byId["cmt-b"]!.resolved).toBe(false);
     expect(autoResolveSuggested(next)).toBeNull(); // nothing left to resolve
   });
+
+  it("autoResolveSuggested skips thread ids in `skip` (so an undone auto-resolution isn't re-applied)", () => {
+    const doc: ParsedDocument = {
+      body: "body",
+      comments: [
+        C({ id: "cmt-a", date: "2026-01-01T00:00:01Z" }),
+        C({ id: "cmt-a1", parentId: "cmt-a", date: "2026-01-01T00:00:02Z", may_resolve: true }),
+      ],
+    };
+    // The thread was already auto-resolved once (its root id is in `skip`), then the user undid it —
+    // so it's suggested again, but must be left untouched rather than immediately re-resolved.
+    expect(autoResolveSuggested(doc, new Set(["cmt-a"]))).toBeNull();
+    // A fresh suggestion (not in `skip`) still resolves.
+    expect(autoResolveSuggested(doc, new Set(["cmt-other"]))).not.toBeNull();
+  });
 });

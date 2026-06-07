@@ -5,7 +5,7 @@
 // OFF the thread shows an "Agent suggested to resolve" badge; with it ON the editor resolves the
 // thread on load (so it leaves the rail). SourceEditor (CodeMirror) is stubbed.
 
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { forwardRef, useImperativeHandle } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryApi, type MemoryAgent } from "../src/memoryApi";
@@ -58,5 +58,32 @@ describe("App — may_resolve suggestion", () => {
       expect(log.some((e) => e.type === "comment_resolved")).toBe(true);
     });
     expect(screen.queryByText(/agent suggested to resolve/i)).toBeNull();
+  });
+
+  it("auto-resolve ON: undo brings the thread back and does NOT re-resolve it; redo re-resolves", async () => {
+    mount({ autoResolve: true });
+    const { App } = await import("../src/App");
+    await act(async () => {
+      render(<App />);
+    });
+    // Resolved on load → the thread leaves the rail (its comment text is gone).
+    await waitFor(() => expect(screen.queryByText("Which datastore?")).toBeNull());
+
+    // Undo the auto-resolution → the thread must come back and STAY back (the effect must not
+    // immediately re-resolve it, which is the bug: re-resolving would clear redo).
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "z", metaKey: true });
+    });
+    await waitFor(() => expect(screen.getByText("Which datastore?")).toBeTruthy());
+    await act(async () => {
+      await Promise.resolve(); // let any (erroneous) re-resolve effect flush
+    });
+    expect(screen.getByText("Which datastore?")).toBeTruthy(); // still here ⇒ not re-resolved
+
+    // Redo still works (it wasn't lost) → the thread resolves again and leaves the rail.
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "z", metaKey: true, shiftKey: true });
+    });
+    await waitFor(() => expect(screen.queryByText("Which datastore?")).toBeNull());
   });
 });

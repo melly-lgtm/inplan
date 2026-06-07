@@ -195,6 +195,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const savedRef = useRef<string>(""); // last canonical-saved serialized content (for the dirty dot)
   const checkpointRef = useRef<string>(""); // last content written to ANY store (canonical or backup) — drives the status-bar "unsaved"
   const skipPreviewScroll = useRef(false); // set when the active line came from a click in the preview itself
+  const autoResolvedRef = useRef<Set<string>>(new Set()); // thread ids already auto-resolved (so undo can't re-trigger)
 
   // --- persisted layout ---
   useEffect(() => {
@@ -488,12 +489,17 @@ export function App(props: EditorProps = {}): JSX.Element {
   );
 
   // Auto-resolve: when the setting is on, resolve threads the agent suggested (its `may_resolve`
-  // on the thread's last comment). Runs on load + when the setting flips on; resolving clears the
-  // suggestion so it never re-fires (the resolved thread leaves the suggested set).
+  // on the thread's last comment). Runs on load + when the setting flips on. We remember which
+  // threads we've auto-resolved (`autoResolvedRef`) and skip them on later passes, so undoing an
+  // auto-resolution doesn't immediately re-resolve it (which would clear the redo stack).
   useEffect(() => {
     if (!autoResolve || !loaded) return;
-    const next = autoResolveSuggested(docRef.current);
-    if (next) apply(next, { type: "comment_resolved", payload: { auto: true } });
+    const next = autoResolveSuggested(docRef.current, autoResolvedRef.current);
+    if (!next) return;
+    for (const t of buildThreads(docRef.current.comments)) {
+      if (suggestsResolve(t)) autoResolvedRef.current.add(t.root.id);
+    }
+    apply(next, { type: "comment_resolved", payload: { auto: true } });
   }, [doc, autoResolve, loaded, apply]);
 
   const onModeChange = useCallback((c: Cadence, a: Acceptance) => {
