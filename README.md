@@ -70,30 +70,46 @@ Packages: `@inplan/core` (pure, embeddable editor + plan-format logic),
 
 ## Quick start
 
-Plans are just Markdown files named `<name>.plan.md`. The intended workflow is
-collaborative: a coding agent drafts the plan and poses questions as inline comments,
-you answer them in the editor, and the agent revises — looping until you finish.
+You don't run `inplan` yourself — your **coding agent** does. There are two steps:
 
-The easiest way in is the bundled **agent skill** (`skill/SKILL.md`): point your
-coding agent at it and ask for a plan. The agent writes `<name>.plan.md`, opens the
-editor, and iterates with you through comments. Under the hood it uses the CLI:
+**1. Install** (once) — this also drops the agent skill into your coding agent (Claude
+Code, Pi, Codex):
 
 ```bash
-inplan open  <file>           # open the editor and block until the human acts
-inplan wait  <file>           # wait for the next human action (resume the loop)
-inplan signal <file> --done   # signal the plan looks ready (the human still decides)
+npm install -g inplan
 ```
 
-When installed from npm, `inplan open` launches the **bundled** desktop editor. (From a
-source checkout, set `INPLAN_APP_CMD` to your built `@inplan/app`, or the CLI runs
-headless.) To run the editor on its own during development:
+**2. Ask your agent to plan**, in plain language — for example:
 
-```bash
-npm run dev -w @inplan/app
-```
+> Let's plan a tic-tac-toe game.
+
+> Plan the auth rewrite with me.
+
+The skill triggers on any "plan X" request: your agent writes `<name>.plan.md`, **opens
+the inplan editor**, and poses its open questions as inline comments. You read the draft,
+**answer in the editor** (reply to comments, pick a choice chip, or edit the text
+directly), and the agent revises and replies — back-and-forth, like two people on a
+shared doc — until you close the session. Plans are plain Markdown, so they render and
+diff anywhere.
+
+That's it. (If your agent doesn't pick it up automatically, just point it at the bundled
+skill, `skill/SKILL.md`, and ask again.)
+
+<details>
+<summary>Under the hood / development</summary>
+
+The agent drives the loop through the CLI — `inplan open <file>` (open the editor and
+block until you act), `inplan wait <file>` (resume after the next action), `inplan signal
+<file> --done` (suggest the plan is ready; you still decide). When installed from npm,
+`inplan open` launches the **bundled** desktop editor.
+
+From a **source checkout**, set `INPLAN_APP_CMD` to your built `@inplan/app` (or the CLI
+runs headless); run the editor standalone with `npm run dev -w @inplan/app`.
 
 The editor keeps its sidecars (control log, canonical base, backups) in an `.inplan/`
 directory next to the file — never edit those by hand.
+
+</details>
 
 ## Document format
 
