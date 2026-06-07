@@ -40,6 +40,7 @@ export const EN: Catalog = {
   "newdoc.create": "Create",
   "newdoc.move": "Move",
   "newdoc.failed": "Couldn’t create the document.",
+  "newdoc.cantMove": "Can’t move this selection — it crosses formatting or a comment’s edge.",
   "topbar.cantOverlap": "Comments can't overlap",
   "topbar.cantWhitespace": "Comments can't be added to white space",
   "topbar.cantSpanBlocks": "Comments can't span multiple blocks",

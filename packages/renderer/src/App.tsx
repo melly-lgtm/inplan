@@ -682,34 +682,45 @@ export function App(props: EditorProps = {}): JSX.Element {
         setNewDocReq(null);
         return;
       }
-      // Confirm the selection can still be turned into a link BEFORE creating any file — otherwise
-      // a failed splice would orphan a doc on disk with nothing pointing at it. (`moved` doubles as
-      // the new doc's body for Move.) Keep the modal open so the user can adjust.
-      const moved = spanSource(docRef.current.body, req.selected, req.span ?? undefined);
-      if (moved === null) {
-        setStatus(t("msg.cantAnchor"));
-        return;
+      // Build the new doc's content BEFORE creating any file — and confirm the move/link is even
+      // possible — so a failed splice can't orphan a doc on disk. Move carries the selection's
+      // comment threads with it (serialized into the new doc); Create just seeds a titled stub.
+      let content: string;
+      if (req.mode === "move") {
+        const pre = moveSelectionToDoc(docRef.current, req.selected, req.span ?? undefined, title, path);
+        if (!pre) {
+          setStatus(t("newdoc.cantMove")); // unanchorable, crosses formatting, or a comment straddles the edge
+          return;
+        }
+        content = serialize({ body: `# ${title}\n\n${pre.movedBody}\n`, comments: pre.movedComments });
+      } else {
+        if (spanSource(docRef.current.body, req.selected, req.span ?? undefined) === null) {
+          setStatus(t("msg.cantAnchor"));
+          return;
+        }
+        content = `# ${title}\n`;
       }
-      const content = req.mode === "move" ? `# ${title}\n\n${moved}\n` : `# ${title}\n`;
       const res = await api.newDoc.create(path, content);
       if (!res) {
         setStatus(t("newdoc.failed"));
         return; // keep the modal open so the user can retry / pick another path
       }
-      // Re-read the body AFTER the await — the agent may have rewritten the doc while create() was
-      // in flight. Splice against the FRESH text so we never clobber a newer version; if the
-      // selection no longer maps cleanly, abort (the file exists, but a stale overwrite is worse).
-      const fresh = docRef.current.body;
-      const nextBody =
-        req.mode === "move"
-          ? moveSelectionToDoc(fresh, req.selected, req.span ?? undefined, title, res.linkTarget)
-          : linkSelectionToDoc(fresh, req.selected, req.span ?? undefined, res.linkTarget);
-      if (nextBody === null) {
+      // Re-run AFTER the await against the CURRENT doc — the agent may have rewritten it while
+      // create() was in flight. Splice against the fresh state so we never clobber a newer version;
+      // if it no longer maps cleanly, abort (the file exists, but a stale overwrite is worse).
+      let next: ParsedDocument | null;
+      if (req.mode === "move") {
+        next = moveSelectionToDoc(docRef.current, req.selected, req.span ?? undefined, title, res.linkTarget)?.remaining ?? null;
+      } else {
+        const body = linkSelectionToDoc(docRef.current.body, req.selected, req.span ?? undefined, res.linkTarget);
+        next = body === null ? null : { ...docRef.current, body };
+      }
+      if (next === null) {
         setStatus(t("msg.cantAnchor")); // the doc changed under us during create() — don't overwrite it
         return;
       }
       setNewDocReq(null); // success only — close the modal now
-      apply({ ...docRef.current, body: nextBody }, { type: req.mode === "move" ? "text_moved" : "doc_created", payload: { path: res.linkTarget } });
+      apply(next, { type: req.mode === "move" ? "text_moved" : "doc_created", payload: { path: res.linkTarget } });
     },
     [newDocReq, apply, t],
   );
@@ -1235,8 +1246,11 @@ export function App(props: EditorProps = {}): JSX.Element {
               ...(ctxMenu.block ? { title: blockerTip(ctxMenu.block) ?? "" } : {}),
               onSelect: openComposerFromCapture,
             },
-            // New-doc actions: only when there's a selection AND the host can create docs. Like
-            // "Comment on Text", they're disabled (with the reason) for an un-anchorable selection.
+            // New-doc actions: only when there's a selection AND the host can create docs.
+            // Create wraps the selection in a link in place, so it's blocked on any anchor overlap
+            // (a nested link would corrupt). Move *takes the text out*, carrying its comment threads
+            // along, so it allows an enclosed anchor — only "not-found" (un-mappable selection)
+            // disables it (a boundary-straddling anchor is caught at submit with a clear message).
             ...(ctxMenu.hasRawSel && hostApi().newDoc
               ? [
                   {
@@ -1247,8 +1261,11 @@ export function App(props: EditorProps = {}): JSX.Element {
                   },
                   {
                     label: t("ctx.moveToDoc"),
-                    disabled: editingLocked || ctxMenu.block !== null,
-                    ...(ctxMenu.block ? { title: blockerTip(ctxMenu.block) ?? "" } : {}),
+                    // Far less restrictive than commenting: Move extracts whole blocks (by line span)
+                    // and carries any enclosed comment threads, so multi-block / table / whitespace /
+                    // anchor-overlapping selections are all fine. Only the turn-lock disables it; a
+                    // genuinely un-locatable selection fails at submit with a clear message.
+                    disabled: editingLocked,
                     onSelect: () => openNewDoc("move"),
                   },
                 ]

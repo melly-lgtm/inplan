@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, it } from "vitest";
+import type { Comment, ParsedDocument } from "@inplan/core";
 import { moveDocTitle, slugifyFilename } from "../src/newDoc";
 import { linkSelectionToDoc, moveSelectionToDoc, spanSource } from "../src/docOps";
+
+const c = (over: Partial<Comment> & { id: string }): Comment => ({ author: "a", date: "2026-01-01T00:00:00Z", resolved: false, text: "t", ...over });
+const ids = (cs: Comment[]): string[] => cs.map((x) => x.id);
 
 describe("slugifyFilename", () => {
   it("lowercases, turns spaces into underscores, and appends .md", () => {
@@ -38,12 +42,37 @@ describe("body edits (Create Doc / Move Text to New Doc)", () => {
     );
   });
 
-  it("moveSelectionToDoc replaces the selection with a [title](link), and spanSource returns the moved text", () => {
+  it("moveSelectionToDoc (verbatim, no span) replaces the inline selection with a [title](link)", () => {
     const sel = "Use Postgres for storage and scale.";
     expect(spanSource(body, sel)).toBe(sel);
-    expect(moveSelectionToDoc(body, sel, undefined, "Datastore", "./datastore.md")).toBe(
-      "# Plan\n\n[Datastore](./datastore.md)\n",
-    );
+    const r = moveSelectionToDoc({ body, comments: [] }, sel, undefined, "Datastore", "./datastore.md")!;
+    expect(r.remaining.body).toBe("# Plan\n\n[Datastore](./datastore.md)\n");
+    expect(r.movedBody).toBe(sel);
+    expect(r.movedComments).toEqual([]);
+  });
+
+  it("moves whole blocks by line span (multi-block) and carries the enclosed comment thread", () => {
+    const doc: ParsedDocument = {
+      body: "# Plan\n\n## Section A\n\nUse [Postgres](#cmt-a1) here.\n\n## Section B\n\nKeep this.\n",
+      comments: [
+        c({ id: "cmt-a1", text: "datastore?" }), // span comment anchored inside Section A
+        c({ id: "cmt-r1", parentId: "cmt-a1", text: "Postgres." }), // its reply
+        c({ id: "cmt-doc", anchor: "doc", text: "overall" }), // doc-level — stays
+      ],
+    };
+    const r = moveSelectionToDoc(doc, "ignored-when-span", { startLine: 2, endLine: 4 }, "Section A", "./a.md")!;
+    // moved body = the two blocks (heading + paragraph), with the anchor intact
+    expect(r.movedBody).toBe("## Section A\n\nUse [Postgres](#cmt-a1) here.");
+    expect(ids(r.movedComments)).toEqual(["cmt-a1", "cmt-r1"]); // thread travels with the text
+    // original: section replaced by a link; thread gone; doc-level + Section B remain
+    expect(ids(r.remaining.comments)).toEqual(["cmt-doc"]);
+    expect(r.remaining.body).toBe("# Plan\n\n[Section A](./a.md)\n\n## Section B\n\nKeep this.\n");
+  });
+
+  it("returns null when a comment anchor straddles the selection boundary", () => {
+    // Verbatim selection starts in the middle of an anchor → can't move without splitting it.
+    const doc: ParsedDocument = { body: "a [foo](#cmt-x) b", comments: [c({ id: "cmt-x" })] };
+    expect(moveSelectionToDoc(doc, "foo](#cmt-x) b", undefined, "T", "./t.md")).toBeNull();
   });
 
   it("returns null when the selection can't be located", () => {

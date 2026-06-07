@@ -254,12 +254,68 @@ export function linkSelectionToDoc(body: string, selected: string, span: SourceS
   return body.slice(0, r.start) + `[${body.slice(r.start, r.end)}](${target})` + body.slice(r.end);
 }
 
-/** Move Text to New Doc: replace the selection with `[title](target)` (the body moves to the new
- *  doc); returns the new body. The moved source is obtained separately via {@link spanSource}. */
-export function moveSelectionToDoc(body: string, selected: string, span: SourceSpan | undefined, title: string, target: string): string | null {
-  const r = locateCleanSpan(body, selected, span);
+/** Move Text to New Doc: replace the selection with `[title](target)` and carry its span-comment
+ *  threads (each anchored root + its replies/answers, resolved ones included) into the new doc, so
+ *  they travel with the text instead of being orphaned. Returns:
+ *   - `remaining`: the original document after the move (selection → link, moved threads removed),
+ *   - `movedBody`: the selected Markdown (the new doc's body),
+ *   - `movedComments`: the threads to seed the new doc's comment block.
+ *  Returns null when the span can't be located, crosses inline formatting, or a comment anchor
+ *  straddles the selection boundary (splitting it would corrupt the link). Doc-level comments
+ *  (`anchor:"doc"`, no body link) aren't anchored to the text, so they stay with the original. */
+/** The byte range of the WHOLE source lines a block span covers (`startLine`..`endLine`,
+ *  inclusive, through the trailing newline). null for a missing/invalid span. Move uses this so a
+ *  multi-block selection (e.g. a heading + a blockquote) extracts entire blocks, unlike a comment
+ *  anchor which must be a single in-block inline span. */
+function spanLineRange(body: string, span?: SourceSpan): { start: number; end: number } | null {
+  if (!span || !Number.isInteger(span.startLine) || !Number.isInteger(span.endLine) || span.startLine < 0 || span.endLine < span.startLine) return null;
+  const lines = body.split("\n");
+  if (span.startLine >= lines.length) return null;
+  let start = 0;
+  for (let i = 0; i < span.startLine; i++) start += lines[i]!.length + 1;
+  let end = start;
+  for (let i = span.startLine; i <= span.endLine && i < lines.length; i++) end += lines[i]!.length + 1;
+  return { start, end: Math.min(end, body.length) };
+}
+
+export function moveSelectionToDoc(
+  doc: ParsedDocument,
+  selected: string,
+  span: SourceSpan | undefined,
+  title: string,
+  target: string,
+): { remaining: ParsedDocument; movedBody: string; movedComments: Comment[] } | null {
+  // Move whole blocks the selection covers (line span) — far less restrictive than a comment
+  // anchor; falls back to a verbatim inline match when no usable block span is available.
+  const r = spanLineRange(doc.body, span) ?? locateCleanSpan(doc.body, selected, span);
   if (!r) return null;
-  return body.slice(0, r.start) + `[${title}](${target})` + body.slice(r.end);
+  // Classify each in-body comment anchor against the span: fully inside (its thread moves), fully
+  // outside (stays), or straddling the edge (can't move without splitting the link → abort).
+  const rootIds = new Set<string>();
+  for (const m of doc.body.matchAll(ANCHOR_RE)) {
+    const aStart = m.index;
+    const aEnd = aStart + m[0].length;
+    const inside = aStart >= r.start && aEnd <= r.end;
+    const outside = aEnd <= r.start || aStart >= r.end;
+    if (!inside && !outside) return null; // anchor straddles the selection boundary
+    if (inside) {
+      const id = /#(cmt-[0-9a-z]+)/i.exec(m[0])?.[1];
+      if (id) rootIds.add(id);
+    }
+  }
+  // A moved thread = its anchored root + every reply/answer pointing at that root.
+  const moved = new Set(rootIds);
+  for (const c of doc.comments) if (c.parentId && moved.has(c.parentId)) moved.add(c.id);
+  // A block (line-span) range consumes the trailing newline; re-add one after the link so it stays
+  // its own paragraph, and drop it from the moved body so the new doc starts clean.
+  const slice = doc.body.slice(r.start, r.end);
+  const block = slice.endsWith("\n");
+  const remaining: ParsedDocument = {
+    ...doc,
+    body: doc.body.slice(0, r.start) + `[${title}](${target})` + (block ? "\n" : "") + doc.body.slice(r.end),
+    comments: doc.comments.filter((c) => !moved.has(c.id)),
+  };
+  return { remaining, movedBody: block ? slice.slice(0, -1) : slice, movedComments: doc.comments.filter((c) => moved.has(c.id)) };
 }
 
 const ANCHOR_RE = /\[[^\]]*\]\(#cmt-[0-9a-z]+\)/gi;

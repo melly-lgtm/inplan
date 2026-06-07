@@ -80,19 +80,17 @@ describe("new-doc actions", () => {
     expect(screen.queryByRole("button", { name: /browse/i })).toBeNull();
   });
 
-  it("disables BOTH new-doc actions for an un-anchorable selection (no modal, no file)", async () => {
+  it("disables Create for an un-anchorable selection but ALLOWS Move (Move is less restrictive)", async () => {
     await mountApp();
-    mockSelection("text that is not in the body"); // can't map to a source span → blocked
+    mockSelection("text that is not in the body"); // can't anchor a comment here
     await act(async () => void fireEvent.contextMenu(document.querySelector(".ap-rendered")!));
     const createItem = screen.getByRole("menuitem", { name: /create doc/i }) as HTMLButtonElement;
     const moveItem = screen.getByRole("menuitem", { name: /move text to new doc/i }) as HTMLButtonElement;
-    expect(createItem.disabled).toBe(true);
-    expect(moveItem.disabled).toBe(true);
-    // Clicking a disabled item is a no-op: no modal opens (Create/Move buttons) and the host
-    // create() is never called. (A disabled button doesn't fire onClick, so the menu stays open.)
+    expect(createItem.disabled).toBe(true); // Create wraps in place → blocked when un-anchorable
+    expect(moveItem.disabled).toBe(false); // Move extracts whole blocks → allowed
+    // The disabled Create is a no-op (no modal, no host call).
     await act(async () => void createItem.click());
-    await act(async () => void moveItem.click());
-    expect(screen.queryByRole("button", { name: /^(create|move)$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^create$/i })).toBeNull();
     expect(create).not.toHaveBeenCalled();
   });
 
