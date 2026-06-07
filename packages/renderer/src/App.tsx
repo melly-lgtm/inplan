@@ -576,6 +576,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     savedRef.current = content;
     setDirty(false);
     setAgentThinking(true);
+    hostApi().telemetry?.("turn_finished"); // activation funnel (opt-in, gated by the host)
     setStatus(t("msg.turnFinished"));
   }, []);
 
@@ -616,10 +617,12 @@ export function App(props: EditorProps = {}): JSX.Element {
           return;
         }
         apply(res.doc, { type: "comment_created", payload: { id: res.id } });
+        hostApi().telemetry?.("comment_created", { kind: "span" }); // activation funnel; never the text
         setFocused(res.id);
       } else {
         const res = addDocComment(docRef.current, { text, author: userAuthorRef.current, question });
         apply(res.doc, { type: "comment_created", payload: { id: res.id, anchor: "doc" } });
+        hostApi().telemetry?.("comment_created", { kind: "doc" });
         setFocused(res.id);
       }
     },

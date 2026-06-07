@@ -57,6 +57,17 @@ describe("PostHog telemetry", () => {
     expect(id0).not.toBe(id1);
   });
 
+  it("merges per-event props over the base properties", async () => {
+    const { track } = await import("../src/main/telemetry");
+    track("session_closed", true, { reason: "completed", startBuild: true });
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.event).toBe("session_closed");
+    expect(body.properties.reason).toBe("completed");
+    expect(body.properties.startBuild).toBe(true);
+    expect(body.properties.$process_person_profile).toBe(false); // base props still present
+    expect(body.properties.$browser).toBe("Electron");
+  });
+
   it("sends nothing when the user has not opted in", async () => {
     const { track } = await import("../src/main/telemetry");
     track("app_opened", false);

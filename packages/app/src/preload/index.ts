@@ -87,6 +87,8 @@ const api: Api = {
   load: () => ipcRenderer.invoke("doc:load"),
   save: (content: string, options: SaveOptions) => ipcRenderer.invoke("doc:save", content, options),
   logAction: (type: string, payload?: unknown) => ipcRenderer.invoke("doc:log-action", type, payload),
+  telemetry: (event: string, props?: Record<string, string | number | boolean | undefined>) =>
+    void ipcRenderer.invoke("telemetry", event, props),
   reportState: (dirty: boolean, content: string) => ipcRenderer.invoke("doc:report-state", dirty, content),
   setMode: (cadence: Cadence, acceptance: Acceptance) => ipcRenderer.invoke("doc:set-mode", cadence, acceptance),
   getSettings: () => ipcRenderer.invoke("settings:get"),

@@ -10,7 +10,7 @@ import type { Acceptance, Cadence, SaveOptions, Settings } from "@inplan/rendere
 import { isOnboarded, markOnboarded } from "@inplan/core/node";
 import { Session } from "./session";
 import { createI18nController } from "./i18nController";
-import { track } from "./telemetry";
+import { track, type TelemetryProps } from "./telemetry";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -278,6 +278,8 @@ function quitNow(reason: "completed" | "window_closed"): void {
     quitFallbackTimer = null;
   }
   session?.logClose(reason);
+  // Activation funnel: how the session ended — "completed" = switched the agent to build mode.
+  track("session_closed", session?.getSettings().telemetry === true, { reason });
   quitConfirmed = true;
   app.quit();
 }
@@ -383,6 +385,11 @@ function registerIpc(): void {
   });
   ipcMain.handle("doc:log-action", (_e, type: string, payload?: unknown) => {
     session?.logAction(type, payload);
+  });
+  // Opt-in, anonymous telemetry from the renderer (gated here on the user's setting, so the
+  // renderer never needs to know it). Fire-and-forget; track() no-ops when not opted in.
+  ipcMain.handle("telemetry", (_e, event: string, props?: TelemetryProps) => {
+    track(event, session?.getSettings().telemetry === true, props);
   });
   ipcMain.handle("doc:report-state", (_e, dirty: boolean, content: string) => {
     session?.setPending(dirty, content);

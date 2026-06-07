@@ -37,8 +37,12 @@ const ENV_PROPS = {
   chrome_version: process.versions.chrome,
 };
 
+/** Extra per-event properties. Keep these non-PII: enums, booleans, counts, coarse buckets —
+ *  never document content, titles, paths, comment text, or ids. */
+export type TelemetryProps = Record<string, string | number | boolean | undefined>;
+
 /** Fire-and-forget an anonymous event — only when the user opted in and a key is set. */
-export function track(event: string, enabled: boolean): void {
+export function track(event: string, enabled: boolean, props?: TelemetryProps): void {
   if (!enabled || !KEY) return; // opted out (the default) or unconfigured → no network call
   void fetch(ENDPOINT, {
     method: "POST",
@@ -50,6 +54,7 @@ export function track(event: string, enabled: boolean): void {
       properties: {
         $process_person_profile: false, // anonymous event — PostHog creates no person profile
         ...ENV_PROPS,
+        ...props, // per-event, non-PII (undefined values dropped by JSON.stringify)
       },
     }),
   }).catch(() => {

@@ -36,6 +36,8 @@ export interface MemoryAgent {
 export interface MemorySession {
   api: Api;
   agent: MemoryAgent;
+  /** Opt-in telemetry events the renderer fired (recorded for assertions; no network in memory). */
+  telemetryEvents: Array<{ event: string; props?: Record<string, string | number | boolean | undefined> }>;
   /** True once the renderer completed/closed the session. */
   isClosed(): boolean;
 }
@@ -45,6 +47,7 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
   const channel = new MemoryControlChannel();
   let settings: Settings = opts.settings ?? { autoResolve: true };
   let closed = false;
+  const telemetryEvents: MemorySession["telemetryEvents"] = [];
 
   const external: Array<(p: DocPayload) => void> = [];
   const proposal: Array<(p: { content: string }) => void> = [];
@@ -79,6 +82,9 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
     },
     async logAction(type: string, payload?: unknown): Promise<void> {
       await channel.append({ actor: "user", type, ...(payload !== undefined ? { payload } : {}) });
+    },
+    telemetry(event: string, props?: Record<string, string | number | boolean | undefined>): void {
+      telemetryEvents.push({ event, ...(props ? { props } : {}) });
     },
     async reportState(): Promise<void> {
       /* no unsaved-close prompt in memory */
@@ -166,5 +172,5 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
     },
   };
 
-  return { api, agent, isClosed: () => closed };
+  return { api, agent, telemetryEvents, isClosed: () => closed };
 }
