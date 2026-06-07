@@ -70,14 +70,14 @@ describe("new-doc actions", () => {
     await waitFor(() => expect(document.querySelector(".ap-rendered a")).toBeTruthy());
   });
 
-  it("does not create a file when the selection can't be linked (no orphans)", async () => {
+  it("disables the new-doc actions for an un-anchorable selection (no modal, no file)", async () => {
     await mountApp();
-    mockSelection("text that is not in the body"); // unlocatable → not linkable
+    mockSelection("text that is not in the body"); // can't map to a source span → blocked
     await act(async () => void fireEvent.contextMenu(document.querySelector(".ap-rendered")!));
+    // The items render but are disabled, so clicking them opens no modal and never calls the host.
     await act(async () => void screen.getByRole("menuitem", { name: /create doc/i }).click());
-    await act(async () => void (await screen.findByRole("button", { name: /^create$/i })).click());
-    expect(create).not.toHaveBeenCalled(); // pre-check bailed before touching the host
-    expect(screen.getByRole("button", { name: /^create$/i })).toBeTruthy(); // modal stays open
+    expect(screen.queryByRole("button", { name: /^create$/i })).toBeNull();
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("does not clobber a newer doc if the agent rewrites it while create() is in flight", async () => {
