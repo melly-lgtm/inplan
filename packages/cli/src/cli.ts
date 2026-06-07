@@ -19,6 +19,7 @@ import {
   type LogEntry,
   LogEventType,
   parse,
+  readGlobalSettings,
   readLog,
   readStatus,
   settingsFromEntries,
@@ -39,6 +40,7 @@ import { wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
 import { toolActivityText } from "./relayActivity";
 import { ensureDocFile } from "./ensureDoc";
+import { trackCli } from "./telemetry";
 
 // Version is read from the adjacent package.json (see ./version) so a release bumps one place.
 const VERSION = versionFromModule(import.meta.url);
@@ -138,10 +140,15 @@ function spawnApp(file: string): number | null {
     child.unref();
     return child.pid ?? null;
   }
-  // No editor — surface WHY (not just "no editor"), so the failure is actionable.
+  // No editor — surface WHY (not just "no editor"), so the failure is actionable. Also report it
+  // (opt-in, anonymous): the app never starts here, so this is the only place the launch failure
+  // is observable — a high-value install-health signal (proxy/AV blocking the Electron download).
+  const telemetryOn = readGlobalSettings().telemetry === true;
   if (bundled.appMain === null) {
+    trackCli("editor_launch_failed", telemetryOn, { reason: "no_bundled_editor" });
     process.stderr.write("[inplan] no bundled editor (running from source?) — set INPLAN_APP_CMD to your editor; running headless\n");
   } else {
+    trackCli("editor_launch_failed", telemetryOn, { reason: "electron_unavailable" });
     // The literal install dir (not a shell expansion like $(npm root -g), which doesn't
     // exist on Windows cmd) so the fix command is copy-pasteable on any OS.
     const root = resolve(dirname(bundled.appMain), "..", "..");
