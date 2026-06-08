@@ -57,6 +57,10 @@ function startHubFor(file: string): void {
       return { url: h.url, docName: h.docName };
     })
     .catch((e) => {
+      // Clear any stale hubUrl so the CLI doesn't keep probing a dead hub (a prior unclean exit
+      // may have left one). Guard on the generation: if a newer start has superseded us it owns
+      // the status now, so don't clobber its URL.
+      if (gen === hubGen) setHubStatus(file, undefined);
       process.stderr.write(`[inplan] local hub failed to start: ${e instanceof Error ? e.message : String(e)}\n`);
       return null;
     });
