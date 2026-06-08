@@ -2,6 +2,7 @@
 
 import type { Extension } from "@codemirror/state";
 import type { CommentStore } from "./commentStore";
+import type { ModeDescriptor, ModePolicy } from "./mode";
 
 /** A live-collaboration binding the host can inject into the source editor. Open-core ships no
  *  collaboration transport; a host that has one (the cloud edition) builds the CodeMirror
@@ -14,8 +15,9 @@ export interface CollabBinding {
   getText: () => string;
 }
 
-/** Collaboration cadence. */
-export type Cadence = "turn" | "instant";
+/** Collaboration cadence — a mode id (see ModeDescriptor). Open-core's only built-in is "turn";
+ *  a host can advertise more via `Api.extraModes`. */
+export type Cadence = "turn" | (string & {});
 /** Agent-change acceptance policy. */
 export type Acceptance = "auto" | "review";
 
@@ -181,8 +183,12 @@ export interface Api {
   telemetry?(event: string, props?: Record<string, string | number | boolean | undefined>): void;
   /** Tell main about unsaved state + latest content, so window-close can prompt Save/Don't Save. */
   reportState(dirty: boolean, content: string): Promise<void>;
-  /** Record a mode change (cadence/acceptance) to the control log. */
-  setMode(cadence: Cadence, acceptance: Acceptance): Promise<void>;
+  /** Record a mode change (cadence/acceptance) to the control log. `policy` carries the mode's
+   *  gate semantics (wake/lock) so the mode-agnostic CLI can honour it; defaults to turn. */
+  setMode(cadence: Cadence, acceptance: Acceptance, policy?: ModePolicy): Promise<void>;
+  /** Extra collaboration modes a host advertises beyond the built-in TURN (e.g. the cloud's
+   *  instant mode). The editor renders a toggle per mode and reads each one's policy. */
+  extraModes?: ModeDescriptor[];
   /** Read global user settings (loaded on launch). */
   getSettings(): Promise<Settings>;
   /** Persist global user settings and log the change to this doc's control log. */

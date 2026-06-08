@@ -33,18 +33,18 @@ export interface WaitOptions {
 const defaultActionable = (e: LogEntry): boolean => e.actor === "user";
 
 /**
- * The wake condition for a given cadence:
- *  - Turn mode wakes only on turn-end / session-close (not on every comment action);
- *  - Instant mode wakes on any user-authored action.
+ * The wake condition for a mode's gate policy:
+ *  - "turn-end": wake only on turn-end / session-close (not on every comment action);
+ *  - "any-action": wake on any user-authored action.
  */
-export function wakePredicate(cadence: "turn" | "instant"): (e: LogEntry) => boolean {
+export function wakePredicate(wake: "turn-end" | "any-action"): (e: LogEntry) => boolean {
   // Save-locally and navigate-to are control directives (the human is moving the
   // doc back to disk, or following a link to a sibling doc), so they wake the agent
-  // in either cadence — not just instant.
+  // under either policy — not just any-action.
   // A settings toggle (auto-resolve, agent mode, telemetry, …) is logged as a user
   // entry but isn't a doc/turn action — the agent reads settings when it next acts, so
   // a change must never wake a wait (otherwise toggling telemetry would end the turn).
-  return cadence === "instant"
+  return wake === "any-action"
     ? (e) => e.actor === "user" && e.type !== LogEventType.SettingsChanged
     : (e) => e.type === LogEventType.TurnEnded || e.type === LogEventType.SessionClosed || e.type === LogEventType.SaveLocallyRequested || e.type === LogEventType.NavigatedTo;
 }

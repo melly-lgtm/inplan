@@ -12,6 +12,7 @@
 
 import { LogEventType, MemoryControlChannel, MemoryDocumentStore, type LogEntry } from "@inplan/core";
 import type { Acceptance, Api, Cadence, DocPayload, SaveOptions, Settings } from "./api";
+import type { ModePolicy } from "./mode";
 
 /** The scripted "agent" side of an in-memory session, for tests / harnesses. */
 export interface MemoryAgent {
@@ -89,8 +90,12 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
     async reportState(): Promise<void> {
       /* no unsaved-close prompt in memory */
     },
-    async setMode(cadence: Cadence, acceptance: Acceptance): Promise<void> {
-      await channel.append({ actor: "user", type: LogEventType.ModeChanged, payload: { cadence, acceptance } });
+    async setMode(cadence: Cadence, acceptance: Acceptance, policy?: ModePolicy): Promise<void> {
+      await channel.append({
+        actor: "user",
+        type: LogEventType.ModeChanged,
+        payload: { cadence, acceptance, ...(policy ? { wake: policy.wake, locksEditor: policy.locksEditor } : {}) },
+      });
     },
     async getSettings(): Promise<Settings> {
       return settings;

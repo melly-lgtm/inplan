@@ -10,6 +10,7 @@ import { forwardRef, useImperativeHandle } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryApi } from "../src/memoryApi";
 import type { ProfileController, ProfileState } from "../src/api";
+import { INSTANT_TEST_MODE } from "./testModes";
 
 vi.mock("../src/SourceEditor", () => ({
   SourceEditor: forwardRef(function SourceEditorStub(_props: unknown, ref: React.Ref<unknown>) {
@@ -29,6 +30,7 @@ afterEach(cleanup);
 
 async function renderApp(profile?: ProfileState) {
   const session = createMemoryApi({ content: DOC });
+  session.api.extraModes = [INSTANT_TEST_MODE]; // instant is host-injected (open-core ships turn-only)
   const api = session.api as unknown as { profile?: ProfileController };
   if (profile) api.profile = profileOf(profile);
   (window as unknown as { api: unknown }).api = api;

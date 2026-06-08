@@ -7,6 +7,8 @@ export { App, AppRoot } from "./App";
 export { createMemoryApi } from "./memoryApi";
 export { createMemoryCommentStore, reconcileComments, orderComments } from "./commentStore";
 export type { CommentStore } from "./commentStore";
+export { TURN_MODE, resolveMode } from "./mode";
+export type { ModeDescriptor, ModePolicy } from "./mode";
 export { renderMarkdown } from "./markdown";
 export { isInternalDocLink, resolveDocPath } from "./links";
 export { ProfileMenu } from "./ProfileMenu";

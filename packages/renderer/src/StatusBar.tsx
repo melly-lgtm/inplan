@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useEffect, useRef, useState } from "react";
-import type { Cadence } from "./api";
 import { useT } from "./i18n";
 import { RelativeTime } from "./RelativeTime";
 import { renderInline } from "./inlineMarkup";
@@ -16,7 +15,7 @@ import { renderInline } from "./inlineMarkup";
  * clickable chip; clicking opens a scrollable popup with the full session history.
  */
 export function StatusBar({
-  cadence,
+  modeLabelKey,
   status,
   dirty,
   agentThinking,
@@ -24,7 +23,7 @@ export function StatusBar({
   canTakeBack,
   onTakeBack,
 }: {
-  cadence: Cadence;
+  modeLabelKey: string;
   status: string;
   dirty: boolean;
   agentThinking: boolean;
@@ -82,7 +81,7 @@ export function StatusBar({
     <footer className="ap-statusbar">
       {/* LEFT: current mode, then the status message (or "Agent is thinking…"). */}
       <span className="ap-status-mode">
-        {t(cadence === "instant" ? "topbar.instant" : "topbar.turn")} {t("status.mode")}
+        {t(modeLabelKey)} {t("status.mode")}
       </span>
       <span className="ap-status-sep" aria-hidden="true">|</span>
       {agentThinking ? (

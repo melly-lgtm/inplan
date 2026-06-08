@@ -7,7 +7,7 @@ import { StatusBar } from "../src/StatusBar";
 
 afterEach(cleanup);
 
-const base = { cadence: "turn" as const, status: "", dirty: false, agentThinking: false, messages: [], canTakeBack: false, onTakeBack: () => {} };
+const base = { modeLabelKey: "topbar.turn", status: "", dirty: false, agentThinking: false, messages: [], canTakeBack: false, onTakeBack: () => {} };
 
 describe("StatusBar", () => {
   it("shows the status text and no take-back button when the agent isn't thinking", () => {
@@ -32,7 +32,7 @@ describe("StatusBar", () => {
   });
 
   it("shows the cadence and an unsaved marker", () => {
-    render(<StatusBar {...base} cadence="instant" dirty />);
+    render(<StatusBar {...base} modeLabelKey="topbar.instant" dirty />);
     expect(document.body.textContent).toContain("Instant mode");
     expect(document.body.textContent).toContain("unsaved");
   });

@@ -3,6 +3,7 @@
 import { isDocComment, isSpanComment, LogEventType, parse, serialize, type Comment, type ParsedDocument, type Question } from "@inplan/core";
 import { Fragment, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hostApi, realHostApi, setApiOverride, type Acceptance, type Api, type Cadence, type ProfileState } from "./api";
+import { TURN_MODE, resolveMode, type ModeDescriptor } from "./mode";
 import {
   setAnswer,
   addDocComment,
@@ -148,6 +149,10 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [loaded, setLoaded] = useState(false);
   const [doc, setDoc] = useState<ParsedDocument>(EMPTY);
   const [cadence, setCadence] = useState<Cadence>("turn");
+  // Available collaboration modes: the built-in TURN plus any the host advertises (the cloud's
+  // instant mode). The active mode's descriptor drives lock/autosave/apply/Finish-turn behaviour.
+  const modes = useMemo(() => [TURN_MODE, ...(hostApi().extraModes ?? [])], []);
+  const mode = resolveMode(cadence, modes);
   const [acceptance, setAcceptance] = useState<Acceptance>("review"); // first-run default: agent parks edits for review
   const [autoResolve, setAutoResolve] = useState(false); // first-run default: leave threads for the human to resolve
   const [agentMode, setAgentMode] = useState<"planning" | "implementation">("planning"); // default: planning loop
@@ -216,7 +221,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       if (s.rightTab === "comments" || s.rightTab === "source") setRightTab(s.rightTab);
       if (typeof s.zoom === "number") setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s.zoom)));
       if (typeof s.showResolvedOrphaned === "boolean") setShowResolvedOrphaned(s.showResolvedOrphaned);
-      if (s.cadence === "turn" || s.cadence === "instant") setCadence(s.cadence);
+      if (typeof s.cadence === "string" && modes.some((m) => m.id === s.cadence)) setCadence(s.cadence);
       if (typeof s.srcW === "number") setSrcW(Math.min(900, Math.max(220, s.srcW)));
       if (typeof s.cmtW === "number") setCmtW(Math.min(900, Math.max(220, s.cmtW)));
     } catch {
@@ -412,7 +417,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     return () => document.removeEventListener("keydown", onKey);
   }, [composer, findOpen, proposal, reviewOpen, undo, redo]);
 
-  const editingLocked = cadence === "turn" && agentThinking;
+  const editingLocked = mode.locksEditor && agentThinking;
 
   // Stuck-lock escape: while the editor is locked (the agent holds the turn), the
   // status bar reveals a "take back control" button on hover over "Agent is
@@ -428,18 +433,19 @@ export function App(props: EditorProps = {}): JSX.Element {
   useEffect(() => {
     if (!dirty || !loaded) return;
     if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
-    const delay = cadence === "instant" ? 5000 : 1500;
+    const delay = mode.autosaveDelayMs;
     autosaveTimer.current = setTimeout(() => {
       const content = serialize(docRef.current);
       // Mark the content checkpointed only AFTER the save resolves — if it fails (disk /
       // IPC error) the status bar must keep showing the work as unsaved, not safe.
-      if (cadence === "instant") {
-        void hostApi().save(content, { kind: "canonical", cadence }).then(() => setCheckpoint(content));
+      void hostApi().save(content, { kind: mode.autosaveKind, cadence }).then(() => setCheckpoint(content));
+      if (mode.autosaveKind === "canonical") {
+        // A canonical autosave is a real save (it wakes the agent) — clear dirty.
         savedRef.current = content;
         setDirty(false);
         setStatus(t("msg.autosaving"));
       } else {
-        void hostApi().save(content, { kind: "backup", cadence }).then(() => setCheckpoint(content));
+        // A backup is silent and does NOT end the turn — keep showing work as in-progress.
         setStatus(t("msg.autosaved"));
       }
     }, delay);
@@ -522,7 +528,7 @@ export function App(props: EditorProps = {}): JSX.Element {
           setDirty(false);
           // A canonical/apply save also advances the checkpoint (canonical IS a store), so keep
           // them in sync — otherwise checkpoint goes stale and the Save dot can mis-clear later.
-          void hostApi().save(s, { kind: cadence === "instant" ? "canonical" : "apply", cadence }).then(() => setCheckpoint(s));
+          void hostApi().save(s, { kind: mode.applyKind, cadence }).then(() => setCheckpoint(s));
         }
       } else {
         setDirty(serialize(next) !== savedRef.current);
@@ -545,11 +551,16 @@ export function App(props: EditorProps = {}): JSX.Element {
     apply(next, { type: "comment_resolved", payload: { auto: true } });
   }, [doc, autoResolve, loaded, apply]);
 
-  const onModeChange = useCallback((c: Cadence, a: Acceptance) => {
-    setCadence(c);
-    setAcceptance(a);
-    void hostApi().setMode(c, a);
-  }, []);
+  const onModeChange = useCallback(
+    (c: Cadence, a: Acceptance) => {
+      setCadence(c);
+      setAcceptance(a);
+      // Record the mode's gate policy so the (mode-agnostic) CLI honours it.
+      const m = resolveMode(c, modes);
+      void hostApi().setMode(c, a, { wake: m.wake, locksEditor: m.locksEditor });
+    },
+    [modes],
+  );
 
   // Global agent-behavior settings: persist the whole object (the host overwrites the
   // file), so always send every field — refs keep the callbacks fresh without re-creating.
@@ -580,7 +591,7 @@ export function App(props: EditorProps = {}): JSX.Element {
 
   const saveNow = useCallback(() => {
     const content = serialize(docRef.current);
-    const kind = cadence === "instant" ? "canonical" : "backup";
+    const kind = mode.autosaveKind;
     // Checkpoint only once the save resolves, so a failed write can't be reported as saved.
     void hostApi().save(content, { kind, cadence }).then(() => setCheckpoint(content));
     if (kind === "canonical") {
@@ -588,7 +599,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       setDirty(false);
     }
     setStatus(kind === "canonical" ? "saved" : "checkpoint saved");
-  }, [cadence]);
+  }, [cadence, mode]);
   saveNowRef.current = saveNow; // keep the ⌘/Ctrl+S handler pointed at the current saveNow
 
   const finishTurn = useCallback(() => {
@@ -777,7 +788,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       const saved = serialize(next);
       savedRef.current = saved;
       setDirty(false);
-      void hostApi().save(saved, { kind: cadence === "instant" ? "canonical" : "apply", cadence }).then(() => setCheckpoint(saved));
+      void hostApi().save(saved, { kind: mode.applyKind, cadence }).then(() => setCheckpoint(saved));
     },
     [newDocReq, apply, t, cadence],
   );
@@ -1097,6 +1108,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     <div className="ap-app">
       <TopBar
         cadence={cadence}
+        modes={modes}
         acceptance={acceptance}
         autoResolve={autoResolve}
         agentMode={agentMode}
@@ -1482,7 +1494,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       </div>
 
       <StatusBar
-        cadence={cadence}
+        modeLabelKey={mode.labelKey}
         status={status}
         dirty={dirty && serialize(doc) !== checkpoint}
         agentThinking={agentThinking}
@@ -1620,6 +1632,7 @@ function useProfile(): ProfileState | null {
 
 function TopBar(props: {
   cadence: Cadence;
+  modes: ModeDescriptor[];
   acceptance: Acceptance;
   autoResolve: boolean;
   agentMode: "planning" | "implementation";
@@ -1662,19 +1675,23 @@ function TopBar(props: {
           {t("topbar.back")}
         </button>
       )}
-      <div className="ap-seg" role="group" aria-label="cadence">
-        <button className={cadence === "turn" ? "active" : ""} onClick={() => onMode("turn", acceptance)}>
-          {t("topbar.turn")}
-        </button>
-        <button
-          className={cadence === "instant" ? "active" : ""}
-          disabled={noAgent}
-          title={noAgentTitle}
-          onClick={() => onMode("instant", acceptance)}
-        >
-          {t("topbar.instant")}
-        </button>
-      </div>
+      {/* Cadence toggle — only when the host advertises more than the built-in TURN mode (e.g.
+          the cloud's instant mode). Non-turn modes disable when a presence-aware host has no agent. */}
+      {props.modes.length > 1 && (
+        <div className="ap-seg" role="group" aria-label="cadence">
+          {props.modes.map((m) => (
+            <button
+              key={m.id}
+              className={cadence === m.id ? "active" : ""}
+              disabled={m.id !== "turn" && noAgent}
+              title={m.id !== "turn" ? noAgentTitle : undefined}
+              onClick={() => onMode(m.id, acceptance)}
+            >
+              {t(m.labelKey)}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="ap-seg" role="group" aria-label="panes">
         {([1, 2, 3] as const).map((n) => (
           <button
@@ -1737,7 +1754,7 @@ function TopBar(props: {
           <IconSave />
           {props.dirty && <span className="ap-dirty" aria-hidden="true" />}
         </button>
-        {cadence === "turn" && (
+        {resolveMode(cadence, props.modes).showFinishTurn && (
           <button
             className="ap-iconbtn"
             onClick={props.onFinishTurn}

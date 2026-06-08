@@ -13,6 +13,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import { forwardRef, useImperativeHandle } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryApi, type MemoryAgent, type MemorySession } from "../src/memoryApi";
+import { INSTANT_TEST_MODE } from "./testModes";
 
 vi.mock("../src/SourceEditor", () => ({
   SourceEditor: forwardRef(function SourceEditorStub(_props: unknown, ref: React.Ref<unknown>) {
@@ -31,6 +32,7 @@ beforeEach(() => {
   localStorage.clear();
   document.body.innerHTML = '<div id="root"></div>';
   session = createMemoryApi({ content: DOC, backButton: true }); // expose the Back control for the quit-flow test
+  session.api.extraModes = [INSTANT_TEST_MODE]; // inject the instant mode (open-core ships turn-only)
   (window as unknown as { api: unknown }).api = session.api;
   agent = session.agent;
 });

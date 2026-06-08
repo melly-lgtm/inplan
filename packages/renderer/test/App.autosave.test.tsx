@@ -17,6 +17,7 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { forwardRef, useImperativeHandle } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryApi, type MemoryAgent } from "../src/memoryApi";
+import { INSTANT_TEST_MODE } from "./testModes";
 
 // The latest onChange handed to the stubbed SourceEditor. Calling it simulates a
 // CodeMirror body edit, which App turns into a dirty doc (App.tsx onChange).
@@ -42,6 +43,7 @@ function mount(content: string) {
   localStorage.clear();
   document.body.innerHTML = '<div id="root"></div>';
   const session = createMemoryApi({ content });
+  session.api.extraModes = [INSTANT_TEST_MODE]; // inject instant (open-core ships turn-only)
   (window as unknown as { api: unknown }).api = session.api;
   agent = session.agent;
 }

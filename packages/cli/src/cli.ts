@@ -131,15 +131,23 @@ function spawnApp(file: string): number | null {
   return null;
 }
 
-/** Latest cadence from the protocol history (Turn unless a mode_changed says otherwise). */
-function cadenceFrom(entries: LogEntry[]): "turn" | "instant" {
+/** The doc's current collaboration mode from the protocol history. The CLI is mode-agnostic: it
+ *  reads the gate policy (wake/lock) the editor recorded into the latest mode_changed, never a
+ *  specific mode by name. Defaults to the turn-taking policy (the open-core built-in). */
+function modeFrom(entries: LogEntry[]): { cadence: string; wake: "turn-end" | "any-action"; locksEditor: boolean } {
   for (let i = entries.length - 1; i >= 0; i--) {
     if (entries[i]!.type === LogEventType.ModeChanged) {
-      const c = (entries[i]!.payload as { cadence?: string } | undefined)?.cadence;
-      if (c === "instant" || c === "turn") return c;
+      const p = entries[i]!.payload as { cadence?: string; wake?: string; locksEditor?: boolean } | undefined;
+      const wake = p?.wake === "any-action" ? "any-action" : "turn-end";
+      return {
+        cadence: typeof p?.cadence === "string" ? p.cadence : "turn",
+        wake,
+        // Fall back from the wake policy when an older event lacks locksEditor: turn-end locks.
+        locksEditor: typeof p?.locksEditor === "boolean" ? p.locksEditor : wake === "turn-end",
+      };
     }
   }
-  return "turn";
+  return { cadence: "turn", wake: "turn-end", locksEditor: true };
 }
 
 /** Agent-change acceptance — a **global** setting (settings.json), read fresh each turn via
@@ -276,9 +284,10 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
     });
   }
 
-  // Mode-aware wake: Turn mode wakes only on turn-end / session-close; Instant on any user action.
-  const cadence = cadenceFrom(history);
-  const isActionable = wakePredicate(cadence);
+  // Mode-aware wake from the recorded policy: a turn-end mode wakes only on turn-end /
+  // session-close; an any-action mode wakes on any user action.
+  const mode = modeFrom(history);
+  const isActionable = wakePredicate(mode.wake);
   const result = await waitForActions({ channel, cursor, debounceMs, pollMs, isActionable, token: lockToken });
 
   // Superseded: a newer waiter owns the doc now. Step down quietly without
@@ -328,12 +337,14 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
     status = "closed";
     reason = "crashed_or_killed";
   } else {
-    status = cadence === "turn" ? "your_turn" : "activity";
+    // A locking mode means the human's editor is locked waiting for the agent (your_turn);
+    // a non-locking (live) mode means they keep editing (activity).
+    status = mode.locksEditor ? "your_turn" : "activity";
   }
   backend.logExit(`status:${status}${reason ? `/${reason}` : ""}`);
   output({
     status,
-    mode: cadence,
+    mode: mode.cadence,
     humanLocked: status === "your_turn",
     // Materialized current settings (global file + this session's settings_changed),
     // so the agent always has them without scanning the log history.
