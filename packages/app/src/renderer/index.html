@@ -2,7 +2,14 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'" />
+    <!-- connect-src allows the editor-hosted local ***REMOVED*** hub (INPLAN_LOCAL_HUB): a loopback-only
+         ***REMOVED*** ws endpoint on an ephemeral 127.0.0.1 port. Loopback is safe to allow — it
+         only reaches a local server the same user already controls — and the default 'self'
+         fallback would otherwise block the renderer's own WebSocket peer. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*"
+    />
     <title>inplan</title>
   </head>
   <body>
