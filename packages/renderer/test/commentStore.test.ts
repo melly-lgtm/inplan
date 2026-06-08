@@ -42,6 +42,14 @@ describe.each(FACTORIES)("CommentStore (%s)", (_name, make) => {
     expect(s.list().map((x) => x.id)).toEqual(["cmt-aaa111"]);
   });
 
+  it("round-trips unknown / forward-compat fields (not just the known schema)", () => {
+    const s = make();
+    s.add({ ...c("cmt-fwd001"), extra_meta: { k: "v" }, future_flag: true } as unknown as Comment);
+    const got = s.list().find((x) => x.id === "cmt-fwd001")! as unknown as Record<string, unknown>;
+    expect(got.extra_meta).toEqual({ k: "v" });
+    expect(got.future_flag).toBe(true);
+  });
+
   it("round-trips structured fields (question + selected)", () => {
     const s = make();
     s.add(

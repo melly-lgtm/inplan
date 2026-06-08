@@ -35,10 +35,10 @@ export interface CommentStore {
   observe(cb: () => void): () => void;
 }
 
-// Every comment field. Scalars round-trip directly through ***REMOVED***; the structured fields
-// (`question`, `selected`) are stored as opaque JSON values, replaced atomically — never
-// sub-edited concurrently, so they need no nested ***REMOVED***.
-const ALL_KEYS: (keyof Comment)[] = ["id", "parentId", "anchor", "text", "author", "date", "resolved", "may_resolve", "question", "selected"];
+// The ***REMOVED*** store round-trips EVERY field a comment carries — known schema fields plus any
+// unknown/forward-compat ones — so it preserves exactly what @inplan/core's serializeCanonical
+// preserves. Scalars round-trip directly; structured fields (question/selected and any nested
+// values) are stored as opaque JSON, replaced atomically — never sub-edited concurrently.
 
 /**
  * Apply the delta between two comment lists to a store — add new, patch changed (including
@@ -122,7 +122,7 @@ type YComment = ***REMOVED***<unknown>;
 function toYMap(c: Comment): YComment {
   const entries: [string, unknown][] = [];
   const rec = c as unknown as Record<string, unknown>;
-  for (const k of ALL_KEYS) {
+  for (const k of Object.keys(rec)) {
     const v = rec[k];
     if (v !== undefined) entries.push([k, v]);
   }
@@ -131,10 +131,9 @@ function toYMap(c: Comment): YComment {
 
 function fromYMap(m: YComment): Comment {
   const c: Record<string, unknown> = {};
-  for (const k of ALL_KEYS) {
-    const v = m.get(k);
+  m.forEach((v, k) => {
     if (v !== undefined) c[k] = v;
-  }
+  });
   return c as unknown as Comment;
 }
 
