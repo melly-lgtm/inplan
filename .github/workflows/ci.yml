@@ -21,6 +21,10 @@ concurrency:
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    # CI builds + tests but never launches Electron, so skip the (sometimes-flaky, ~100MB)
+    # Electron binary download during install — a CDN 504 there shouldn't fail the build.
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
