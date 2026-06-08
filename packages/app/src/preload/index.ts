@@ -164,9 +164,5 @@ const api: Api = {
   setOnboarded: () => ipcRenderer.invoke("onboarding:set") as Promise<void>,
 };
 
-// The renderer assembles the final `window.api` from this IPC host (so it can attach live
-// ***REMOVED*** objects — collab binding + comment store — which can't cross the contextBridge). When
-// the local hub is off, the renderer just uses the host as-is, preserving today's behavior.
-contextBridge.exposeInMainWorld("__inplanHost", api);
-// The local ***REMOVED*** hub's connection info ({url, docName} | null) for the renderer to connect to.
-contextBridge.exposeInMainWorld("__inplanCollabHub", () => ipcRenderer.invoke("collab:hub") as Promise<{ url: string; docName: string } | null>);
+// The file-backed editor API the renderer drives (window.api). The renderer reads it directly.
+contextBridge.exposeInMainWorld("api", api);

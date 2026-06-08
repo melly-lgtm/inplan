@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, it, expect } from "vitest";
-import * as Y from ***REMOVED***;
 import type { Comment } from "@inplan/core";
-import { createMemoryCommentStore, ***REMOVED***, orderComments, reconcileComments, type CommentStore } from "../src/commentStore";
+import { createMemoryCommentStore, orderComments, reconcileComments, type CommentStore } from "../src/commentStore";
 
 const c = (id: string, over: Partial<Comment> = {}): Comment => ({
   id,
@@ -14,17 +13,8 @@ const c = (id: string, over: Partial<Comment> = {}): Comment => ({
   ...over,
 });
 
-function yStore(): { store: CommentStore; arr: Y.Array<***REMOVED***<unknown>> } {
-  const doc = new ***REMOVED***();
-  const arr = doc.getArray<***REMOVED***<unknown>>("comments");
-  return { store: ***REMOVED***(arr), arr };
-}
-
-// Run the same behavioral contract against both implementations.
-const FACTORIES: [string, () => CommentStore][] = [
-  ["memory", () => createMemoryCommentStore()],
-  [***REMOVED***, () => yStore().store],
-];
+// The behavioral contract for the (open-core) memory store.
+const FACTORIES: [string, () => CommentStore][] = [["memory", () => createMemoryCommentStore()]];
 
 describe.each(FACTORIES)("CommentStore (%s)", (_name, make) => {
   it("adds, lists, patches, and removes", () => {
@@ -167,21 +157,5 @@ describe.each(FACTORIES)("reconcileComments (%s)", (_name, make) => {
     reconcileComments(s, s.list(), s.list());
     off();
     expect(hits).toBe(0);
-  });
-});
-
-describe("***REMOVED*** over a shared doc", () => {
-  it("reflects remote ops applied to the underlying Y.Array", () => {
-    const { store, arr } = yStore();
-    // Simulate a remote peer pushing a comment straight onto the array.
-    const m = new ***REMOVED***<unknown>([
-      ["id", "cmt-remote1"],
-      ["text", "from a peer"],
-      ["author", "Peer <p@inplan.ai>"],
-      ["date", "2026-06-08T00:00:01Z"],
-      ["resolved", false],
-    ]);
-    arr.doc!.transact(() => arr.push([m]));
-    expect(store.list().map((x) => x.id)).toEqual(["cmt-remote1"]);
   });
 });

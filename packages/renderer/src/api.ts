@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { Text as YText } from ***REMOVED***;
-import type { Awareness } from "***REMOVED***/awareness";
+import type { Extension } from "@codemirror/state";
 import type { CommentStore } from "./commentStore";
 
-/** A live-collaboration binding: a shared ***REMOVED*** + presence awareness. When a host
- *  exposes one (web/cloud), the source editor binds to it (multiplayer); otherwise
- *  the editor is the usual controlled single-writer (desktop / tests). */
+/** A live-collaboration binding the host can inject into the source editor. Open-core ships no
+ *  collaboration transport; a host that has one (the cloud edition) builds the CodeMirror
+ *  `extensions` (e.g. via `yCollab`) and supplies the shared document's current `getText`. When
+ *  present, the editor binds to it (multiplayer) instead of being a controlled single-writer. */
 export interface CollabBinding {
-  ytext: YText;
-  awareness: Awareness;
+  /** CodeMirror extensions that bind the editor to the shared document. */
+  extensions: Extension[];
+  /** The shared document's current text, used to seed the editor (the binding then owns content). */
+  getText: () => string;
 }
 
 /** Collaboration cadence. */

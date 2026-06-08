@@ -10,13 +10,10 @@
   },
   "files": ["dist"],
   "dependencies": {
-    "***REMOVED***": "^2.13.0",
     "@inplan/backend-supabase": "0.0.0",
-    "***REMOVED***": "0.0.0",
     "@inplan/core": "0.0.0",
     "@supabase/supabase-js": "^2.45.0",
-    "ws": "^8.18.0",
-    ***REMOVED***: "^13.6.31"
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/ws": "^8.5.10"

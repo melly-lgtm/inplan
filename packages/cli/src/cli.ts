@@ -25,10 +25,6 @@ import {
   settingsFromEntries,
   writeStatus,
 } from "@inplan/core/node";
-import { ***REMOVED***, ***REMOVED***Websocket } from "***REMOVED***";
-import { readDocViaHub, applyRevisionViaHub } from "***REMOVED***";
-import * as Y from ***REMOVED***;
-import WebSocket from "ws";
 import { agentAuthorFor } from "./agentAuthor";
 import { gitProvenance } from "./provenance";
 import { authedSession, clearAuth, currentUser, remoteBackend, saveAuth } from "./cliAuth";
@@ -64,38 +60,6 @@ function hasFlag(args: string[], name: string): boolean {
 
 const debounceMs = Number(process.env.INPLAN_DEBOUNCE_MS ?? 3000);
 const pollMs = Number(process.env.INPLAN_POLL_MS ?? 200);
-const COLLAB_URL = process.env.INPLAN_COLLAB_URL || "wss://inplan-collab.fly.dev";
-
-/**
- * Announce this local agent in a cloud doc's awareness room (***REMOVED*** presence), so
- * the web shows an "agent · your machine" badge while the CLI is attached. Agent
- * attachment is **derived from live presence, not stored** — disconnecting (the
- * wait exiting) clears it. Best-effort: presence must never break the wait, so
- * any failure is swallowed and the wait proceeds.
- */
-function announcePresence(docId: string, token: string, model?: string): { destroy: () => void } {
-  try {
-    const ydoc = new ***REMOVED***();
-    // Node has no DOM WebSocket; hand the socket the `ws` polyfill.
-    const socket = new ***REMOVED***Websocket({ url: COLLAB_URL, WebSocketPolyfill: WebSocket });
-    const provider = new ***REMOVED***({ websocketProvider: socket, name: docId, document: ydoc, token });
-    provider.awareness?.setLocalStateField("inplanPresence", { kind: "agent", agentLocation: "local", ...(model ? { model } : {}) });
-    return {
-      destroy: () => {
-        try {
-          provider.destroy();
-          socket.destroy();
-          ydoc.destroy();
-        } catch {
-          /* best-effort teardown */
-        }
-      },
-    };
-  } catch {
-    return { destroy: () => {} };
-  }
-}
-
 /**
  * Result of locating the Electron editor bundled alongside this CLI in the published
  * `inplan` package (layout: `bin/cli.js` + `app/main/index.js`, with `electron` as a
@@ -237,7 +201,7 @@ function logWaitExit(p: DocPaths, reason: string): void {
  * cursor, else "start from now" (current max). It is persisted on return so the
  * agent never hand-manages it and turns can't be skipped.
  */
-async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string, hubUrl: string | null = null): Promise<void> {
+async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string): Promise<void> {
   const { channel, store } = backend;
   const history = await backend.history();
 
@@ -247,22 +211,12 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
 
   const current = await store.loadDoc();
 
-  // The gate's canonical base: when the desktop editor is hosting a local ***REMOVED*** hub for this doc,
-  // it's the live ***REMOVED*** projection (and we apply through the hub, never writing the .md — the
-  // hub owns it). A stale/unreachable hubUrl (editor closed) falls back to the file model.
-  let useHub = false;
-  let canonicalText: string;
-  if (hubUrl) {
-    try {
-      canonicalText = await readDocViaHub(hubUrl, { timeoutMs: 2500 });
-      useHub = true;
-    } catch {
-      canonicalText = (await store.getCanonical()) ?? current;
-    }
-  } else {
-    canonicalText = (await store.getCanonical()) ?? current;
+  // The gate's canonical base is the persisted canonical (the file on first run).
+  let canonicalText = await store.getCanonical();
+  if (canonicalText === null) {
+    canonicalText = current;
+    await store.setCanonical(current);
   }
-  if (!useHub && (await store.getCanonical()) === null) await store.setCanonical(current);
 
   const ev = evaluateAgentEdit(canonicalText, current, confirmed);
   if (ev.unconfirmed.length > 0) {
@@ -287,30 +241,21 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
   const bodyChanged = parse(canonicalText).body !== parse(current).body;
 
   if (ev.removedIds.length > 0) {
-    // Confirmed deletions: drop the orphaned comment objects. With a hub, apply through it (it
-    // reprojects the .md); otherwise write the file + canonical directly.
-    if (useHub) await applyRevisionViaHub(hubUrl!, ev.acceptedText);
-    else {
-      await store.saveDoc(ev.acceptedText);
-      await store.setCanonical(ev.acceptedText);
-      await store.clearProposed();
-    }
+    // Confirmed deletions: drop the orphaned comment objects, write the file + canonical.
+    await store.saveDoc(ev.acceptedText);
+    await store.setCanonical(ev.acceptedText);
+    await store.clearProposed();
     await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { removed: ev.removedIds } });
   } else if (ev.changed && acceptance === "review" && bodyChanged) {
-    // Quarantine: park the proposal for the human to accept/reject in the editor. In the file
-    // model we revert the working file to canonical; with a hub the editor owns the file, so we
-    // leave it (the live ***REMOVED*** body is unchanged until the human accepts).
+    // Quarantine: park the proposal for the human to accept/reject in the editor, and revert the
+    // working file to canonical (the human's accept later writes canonical).
     await store.setProposed(current);
-    if (!useHub) await store.saveDoc(canonicalText);
+    await store.saveDoc(canonicalText);
     await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: current.length } });
   } else if (ev.changed) {
-    // Auto-accept (auto mode, or review mode with comment-only changes). With a hub, apply the
-    // revision to the live ***REMOVED*** (it reprojects the .md); otherwise advance the canonical base.
-    if (useHub) await applyRevisionViaHub(hubUrl!, current);
-    else {
-      await store.setCanonical(current);
-      await store.clearProposed();
-    }
+    // Auto-accept (auto mode, or review mode with comment-only changes): advance the canonical base.
+    await store.setCanonical(current);
+    await store.clearProposed();
     await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: current.length } });
   }
 
@@ -499,25 +444,18 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       }
     : undefined;
 
-  // While we hold the turn on a cloud doc, announce the local agent in the doc's
-  // presence room so the web badge shows "agent · your machine"; clear it on exit.
-  const presence = announcePresence(docId, backend.token, model);
-  try {
-    await waitCycle(
-      {
-        channel: backend.channel,
-        store: backend.store,
-        history: async () => (await backend.channel.readSince(0)).entries,
-        logExit: () => {}, // no local sidecar for a cloud doc
-        ...(onSaveLocally ? { onSaveLocally } : {}),
-      },
-      explicitCursor,
-      confirmed,
-      model,
-    );
-  } finally {
-    presence.destroy();
-  }
+  await waitCycle(
+    {
+      channel: backend.channel,
+      store: backend.store,
+      history: async () => (await backend.channel.readSince(0)).entries,
+      logExit: () => {}, // no local sidecar for a cloud doc
+      ...(onSaveLocally ? { onSaveLocally } : {}),
+    },
+    explicitCursor,
+    confirmed,
+    model,
+  );
 }
 
 /** Print where a document currently lives (local vs cloud) and its cloud pointer. */
@@ -1408,11 +1346,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // If the desktop editor is hosting a local ***REMOVED*** hub for this doc (status.hubUrl), the CLI
-  // gates through the live ***REMOVED*** instead of the .md. Only for local docs; waitCycle
-  // reachability-checks + falls back to the file path if the hub is gone.
-  const hubUrl = readStatus(docPaths(file).statusPath).hubUrl ?? null;
-  await waitCycle(fsBackend(file), explicitCursor, confirmed, model, hubUrl);
+  await waitCycle(fsBackend(file), explicitCursor, confirmed, model);
 }
 
 main().catch((err) => {

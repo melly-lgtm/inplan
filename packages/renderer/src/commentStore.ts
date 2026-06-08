@@ -1,21 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// The comment seam for the unified-***REMOVED*** document architecture. The renderer's comment CRUD
-// (list / add / patch / remove / observe) goes through a single CommentStore, decoupling the
-// editor's comment code from transport:
-//
-//   - Memory-backed (createMemoryCommentStore): single-writer local editing, where the .md
-//     file is the canonical artifact and comments live in the parsed document.
-//   - ***REMOVED***-backed (***REMOVED***): collaborative editing, where comments are a
-//     Y.Array of ***REMOVED*** (one per comment) so add/reply/resolve/answer are independent ***REMOVED***
-//     ops that never corrupt each other (no JSON-in-text merging).
-//
-// Both expose the same interface; the host (desktop vs. cloud) picks the implementation.
-// `orderComments` imposes the canonical order used when projecting to the serialized .md /
-// documents.body, so that round-trip is deterministic regardless of ***REMOVED*** insertion order.
+// The comment seam: the renderer's comment CRUD (list / add / patch / remove / observe) goes
+// through a single CommentStore, decoupling the editor's comment code from transport. Open-core
+// ships the memory-backed store (createMemoryCommentStore): single-writer local editing, where
+// the .md file is the canonical artifact and comments live in the parsed document. A collaborative
+// (***REMOVED***) store can be injected by a host that provides one (the cloud edition). `orderComments`
+// imposes the canonical order used when projecting to the serialized .md, so round-trip is
+// deterministic regardless of insertion order.
 
 import { type Comment, orderComments } from "@inplan/core";
-import * as Y from ***REMOVED***;
 
 export { orderComments };
 
@@ -133,73 +126,3 @@ export function createMemoryCommentStore(initial: Comment[] = []): CommentStore 
   };
 }
 
-// ---- ***REMOVED***-backed store (collaborative) --------------------------------------------------
-
-type YComment = ***REMOVED***<unknown>;
-
-function toYMap(c: Comment): YComment {
-  const entries: [string, unknown][] = [];
-  const rec = c as unknown as Record<string, unknown>;
-  for (const k of Object.keys(rec)) {
-    const v = rec[k];
-    if (v !== undefined) entries.push([k, v]);
-  }
-  return new ***REMOVED***(entries);
-}
-
-function fromYMap(m: YComment): Comment {
-  const c: Record<string, unknown> = {};
-  m.forEach((v, k) => {
-    if (v !== undefined) c[k] = v;
-  });
-  return c as unknown as Comment;
-}
-
-function find(arr: Y.Array<YComment>, id: string): { map: YComment; index: number } | null {
-  let i = 0;
-  for (const m of arr) {
-    if (m.get("id") === id) return { map: m, index: i };
-    i++;
-  }
-  return null;
-}
-
-/** A CommentStore over a Y.Array of ***REMOVED*** (one per comment) on a shared ***REMOVED***. */
-export function ***REMOVED***(yarray: Y.Array<YComment>): CommentStore {
-  const doc = yarray.doc;
-  const transact = (fn: () => void): void => (doc ? doc.transact(fn) : fn());
-  return {
-    list: () => orderComments(yarray.toArray().map(fromYMap)),
-    add(comment) {
-      transact(() => yarray.push([toYMap(comment)]));
-    },
-    patch(id, patch) {
-      assertValidPatch(patch);
-      const hit = find(yarray, id);
-      if (!hit) return;
-      // Structured fields (question/selected) are replaced atomically as opaque values.
-      transact(() => {
-        for (const [k, v] of Object.entries(patch)) {
-          if (v === undefined) hit.map.delete(k);
-          else hit.map.set(k, v);
-        }
-      });
-    },
-    remove(id) {
-      const hit = find(yarray, id);
-      if (!hit) return;
-      transact(() => yarray.delete(hit.index, 1));
-    },
-    replaceAll(next) {
-      transact(() => {
-        if (yarray.length > 0) yarray.delete(0, yarray.length);
-        yarray.push(next.map(toYMap));
-      });
-    },
-    observe(cb) {
-      const handler = (): void => cb();
-      yarray.observeDeep(handler);
-      return () => yarray.unobserveDeep(handler);
-    },
-  };
-}

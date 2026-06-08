@@ -4,7 +4,6 @@ import { markdown } from "@codemirror/lang-markdown";
 import { Compartment, EditorState, Prec, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
 import { basicSetup } from "codemirror";
-import { yCollab } from "y-codemirror.next";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import type { CollabBinding } from "./api";
 
@@ -91,8 +90,8 @@ export const SourceEditor = forwardRef<
     const v = new EditorView({
       parent: host.current,
       state: EditorState.create({
-        // In collab mode ***REMOVED*** owns the content; otherwise it's the controlled value.
-        doc: collab ? collab.ytext.toString() : value,
+        // In collab mode the injected binding owns the content; otherwise the controlled value.
+        doc: collab ? collab.getText() : value,
         extensions: [
           // ⌘F should open the app's find bar, not CodeMirror's own search panel.
           Prec.highest(
@@ -117,8 +116,8 @@ export const SourceEditor = forwardRef<
               onCursorLineRef.current(u.state.doc.lineAt(u.state.selection.main.head).number - 1);
             }
           }),
-          // Live collaboration: bind to the shared ***REMOVED*** + render remote cursors.
-          ...(collab ? [yCollab(collab.ytext, collab.awareness)] : []),
+          // Live collaboration: host-injected binding extensions (e.g. yCollab + remote cursors).
+          ...(collab ? collab.extensions : []),
         ],
       }),
     });

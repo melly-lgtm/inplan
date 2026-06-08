@@ -7,75 +7,12 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import type { Acceptance, Cadence, SaveOptions, Settings } from "@inplan/renderer";
-import { isOnboarded, markOnboarded, docPaths, readStatus, writeStatus } from "@inplan/core/node";
+import { isOnboarded, markOnboarded } from "@inplan/core/node";
 import { Session } from "./session";
 import { createI18nController } from "./i18nController";
 import { track, type TelemetryProps } from "./telemetry";
-import { startLocalHub, type LocalHub } from "***REMOVED***";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// Phase 4 (flag-gated): host an in-process ***REMOVED*** hub for the open file so the renderer (and a
-// local CLI peer) collaborate on one ***REMOVED*** instead of reconciling file rewrites. OFF by
-// default — the editor's file-backed path is unchanged until INPLAN_LOCAL_HUB=1.
-const LOCAL_HUB = process.env.INPLAN_LOCAL_HUB === "1";
-let hub: LocalHub | null = null;
-/** Bumped on every start/stop. A `startLocalHub` is async, so a fast nav/close can call
- *  stopHub() while a start is still in flight; the generation lets that late start detect it's
- *  been superseded and stop itself instead of resurrecting a hub for the old file. */
-let hubGen = 0;
-/** The file the current hub is hosting — so stopHub() can clear its status.json handshake. */
-let hubFile: string | null = null;
-/** Resolves to the hub's connection info once it's listening (the renderer awaits this via
- *  the `collab:hub` IPC), or null when the hub is off/unavailable. */
-let hubReady: Promise<{ url: string; docName: string } | null> = Promise.resolve(null);
-
-/** Record (or clear) the hub URL in the doc's status.json so the CLI can find + join it. */
-function setHubStatus(file: string, url: string | undefined): void {
-  try {
-    const sp = docPaths(file).statusPath;
-    writeStatus(sp, { ...readStatus(sp), ...(url ? { hubUrl: url } : { hubUrl: undefined }) });
-  } catch {
-    /* status handshake is best-effort — the hub still works for the renderer */
-  }
-}
-
-function startHubFor(file: string): void {
-  if (!LOCAL_HUB) return;
-  const gen = ++hubGen;
-  hubFile = file;
-  hubReady = startLocalHub(file)
-    .then((h) => {
-      if (gen !== hubGen) {
-        // Superseded while starting (a nav/close happened) — don't adopt it; shut it down.
-        void h.stop().catch(() => {});
-        return null;
-      }
-      hub = h;
-      setHubStatus(file, h.url);
-      process.stderr.write(`[inplan] local ***REMOVED*** hub listening at ${h.url} (doc "${h.docName}") for ${file}\n`);
-      return { url: h.url, docName: h.docName };
-    })
-    .catch((e) => {
-      // Clear any stale hubUrl so the CLI doesn't keep probing a dead hub (a prior unclean exit
-      // may have left one). Guard on the generation: if a newer start has superseded us it owns
-      // the status now, so don't clobber its URL.
-      if (gen === hubGen) setHubStatus(file, undefined);
-      process.stderr.write(`[inplan] local hub failed to start: ${e instanceof Error ? e.message : String(e)}\n`);
-      return null;
-    });
-}
-
-async function stopHub(): Promise<void> {
-  hubGen++; // invalidate any in-flight start so it won't resurrect after we stop
-  const h = hub;
-  const file = hubFile;
-  hub = null;
-  hubFile = null;
-  hubReady = Promise.resolve(null);
-  if (file) setHubStatus(file, undefined); // clear so a later CLI run doesn't chase a dead hub
-  if (h) await h.stop().catch(() => {});
-}
 
 // Identify as "inplan" instead of the default "Electron" — set before `whenReady` so the
 // macOS app menu (built from app.name) and the About panel read it. (Run via the bundled
@@ -329,17 +266,7 @@ function navigateTo(file: string): boolean {
   session.logEditorPid(process.pid);
   stopWatching = watchSession();
   setDocTitle(file);
-  if (LOCAL_HUB) {
-    // The hub serves exactly one file, and the renderer's collab binding (CodeMirror's yCollab)
-    // is bound at editor init — so swapping docs in-window would leave it on the old ***REMOVED***.
-    // Restart the hub for the new file and reload the renderer, which re-bootstraps cleanly
-    // against the new hub (instead of a fragile live rebind).
-    void stopHub();
-    startHubFor(file);
-    win.webContents.reload();
-  } else {
-    win.webContents.send("doc:navigated", session.load());
-  }
+  win.webContents.send("doc:navigated", session.load());
   return true;
 }
 
@@ -444,7 +371,6 @@ function createWindow(): void {
 
   win.on("closed", () => {
     stopWatching?.();
-    void stopHub();
     win = null;
   });
 }
@@ -603,9 +529,6 @@ function registerIpc(): void {
   // Localization seam (paid perk): the renderer reads the snapshot + switches locale.
   ipcMain.handle("i18n:get", () => i18n.getSnapshot());
   ipcMain.handle("i18n:set-locale", (_e, code: string) => i18n.setLocale(code));
-  // Local ***REMOVED*** hub connection info (or null when the flag is off / not yet listening). The
-  // renderer awaits this before deciding whether to wire a collab binding + comment store.
-  ipcMain.handle("collab:hub", () => hubReady);
 }
 
 void app.whenReady().then(() => {
@@ -620,7 +543,6 @@ void app.whenReady().then(() => {
     session.logEditorPid(process.pid);
     navHistory.push(target);
     navIdx = 0;
-    startHubFor(target); // no-op unless INPLAN_LOCAL_HUB=1
     track("app_opened", session.getSettings().telemetry === true); // opt-in only
   }
   registerIpc();

@@ -5,7 +5,7 @@
 
 export { App, AppRoot } from "./App";
 export { createMemoryApi } from "./memoryApi";
-export { createMemoryCommentStore, ***REMOVED***, reconcileComments, orderComments } from "./commentStore";
+export { createMemoryCommentStore, reconcileComments, orderComments } from "./commentStore";
 export type { CommentStore } from "./commentStore";
 export { renderMarkdown } from "./markdown";
 export { isInternalDocLink, resolveDocPath } from "./links";

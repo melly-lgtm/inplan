@@ -16,14 +16,6 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: resolve(__dirname, "src/main/index.ts"),
-        // `ws` (bundled transitively via ***REMOVED*** in the local ***REMOVED*** hub) optionally
-        // `require()`s these two native addons for fast frame masking. Bundling rewrites that
-        // optional require into an empty stub `{}` instead of letting it throw, which defeats
-        // ws's pure-JS fallback (it only falls back when the require *throws*) — the result is
-        // `bufferUtil.unmask is not a function` on any frame ≥32 bytes, so the hub never syncs.
-        // Keep them external: at runtime the require throws MODULE_NOT_FOUND (they aren't
-        // installed) and ws uses its JS mask/unmask. Pure JS is plenty for a localhost hub.
-        external: ["bufferutil", "utf-8-validate"],
       },
     },
   },
