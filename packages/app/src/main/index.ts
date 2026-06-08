@@ -297,7 +297,17 @@ function navigateTo(file: string): boolean {
   session.logEditorPid(process.pid);
   stopWatching = watchSession();
   setDocTitle(file);
-  win.webContents.send("doc:navigated", session.load());
+  if (LOCAL_HUB) {
+    // The hub serves exactly one file, and the renderer's collab binding (CodeMirror's yCollab)
+    // is bound at editor init — so swapping docs in-window would leave it on the old ***REMOVED***.
+    // Restart the hub for the new file and reload the renderer, which re-bootstraps cleanly
+    // against the new hub (instead of a fragile live rebind).
+    void stopHub();
+    startHubFor(file);
+    win.webContents.reload();
+  } else {
+    win.webContents.send("doc:navigated", session.load());
+  }
   return true;
 }
 

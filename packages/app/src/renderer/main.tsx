@@ -34,6 +34,16 @@ async function bootstrap(): Promise<void> {
           collab: { ytext: ydoc.getText("body"), awareness },
           commentStore: ***REMOVED***(ydoc.getArray("comments")),
         };
+        // Tear down the provider/doc when the window unloads (incl. a reload on doc navigation,
+        // which re-bootstraps against the new doc's hub) so connections/docs don't leak.
+        window.addEventListener("beforeunload", () => {
+          try {
+            provider.destroy();
+            ydoc.destroy();
+          } catch {
+            /* best-effort */
+          }
+        });
       }
     }
   } catch (err) {
