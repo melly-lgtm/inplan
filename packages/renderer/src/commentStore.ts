@@ -71,6 +71,23 @@ function diffComment(prev: Comment, next: Comment): Partial<Comment> {
   return patch as Partial<Comment>;
 }
 
+/** Comment fields a patch must never remove (a comment without them isn't a valid Comment). */
+const REQUIRED_KEYS = new Set(["text", "author", "date", "resolved"]);
+
+/** Guard a patch: `id` is immutable (rewriting it would orphan later lookups by id), and the
+ *  required fields can't be deleted. Throws on misuse — these never occur in normal reconcile
+ *  flow (the diff never includes an unchanged id, and never drops a required field), so this
+ *  only catches programmer error. */
+function assertValidPatch(patch: Partial<Comment>): void {
+  const rec = patch as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(rec, "id")) throw new Error("CommentStore.patch: id is immutable");
+  for (const k of REQUIRED_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(rec, k) && rec[k] === undefined) {
+      throw new Error(`CommentStore.patch: cannot remove required field "${k}"`);
+    }
+  }
+}
+
 // ---- Memory-backed store (single-writer / local file) ----------------------------------
 
 export function createMemoryCommentStore(initial: Comment[] = []): CommentStore {
@@ -86,6 +103,7 @@ export function createMemoryCommentStore(initial: Comment[] = []): CommentStore 
       notify();
     },
     patch(id, patch) {
+      assertValidPatch(patch);
       let changed = false;
       comments = comments.map((c) => {
         if (c.id !== id) return c;
@@ -156,6 +174,7 @@ export function ***REMOVED***(yarray: Y.Array<YComment>): CommentStore {
       transact(() => yarray.push([toYMap(comment)]));
     },
     patch(id, patch) {
+      assertValidPatch(patch);
       const hit = find(yarray, id);
       if (!hit) return;
       // Structured fields (question/selected) are replaced atomically as opaque values.

@@ -65,6 +65,16 @@ describe.each(FACTORIES)("CommentStore (%s)", (_name, make) => {
     expect(ans.parentId).toBe("cmt-q00001");
   });
 
+  it("rejects an id rewrite and removal of required fields (invariant guard)", () => {
+    const s = make();
+    s.add(c("cmt-aaa111"));
+    expect(() => s.patch("cmt-aaa111", { id: "cmt-other1" } as Partial<Comment>)).toThrow(/id is immutable/);
+    expect(() => s.patch("cmt-aaa111", { text: undefined } as Partial<Comment>)).toThrow(/required field/);
+    expect(() => s.patch("cmt-aaa111", { resolved: undefined } as Partial<Comment>)).toThrow(/required field/);
+    // The comment is untouched after the rejected patches.
+    expect(s.list()[0]).toMatchObject({ id: "cmt-aaa111", resolved: false });
+  });
+
   it("patch with undefined removes a field", () => {
     const s = make();
     s.add(c("cmt-aaa111", { may_resolve: true }));
