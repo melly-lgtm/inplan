@@ -26,6 +26,7 @@ import {
   writeStatus,
 } from "@inplan/core/node";
 import { ***REMOVED***, ***REMOVED***Websocket } from "***REMOVED***";
+import { readDocViaHub, applyRevisionViaHub } from "***REMOVED***";
 import * as Y from ***REMOVED***;
 import WebSocket from "ws";
 import { agentAuthorFor } from "./agentAuthor";
@@ -236,7 +237,7 @@ function logWaitExit(p: DocPaths, reason: string): void {
  * cursor, else "start from now" (current max). It is persisted on return so the
  * agent never hand-manages it and turns can't be skipped.
  */
-async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string): Promise<void> {
+async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string, hubUrl: string | null = null): Promise<void> {
   const { channel, store } = backend;
   const history = await backend.history();
 
@@ -245,11 +246,23 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
   const cursor = explicitCursor ?? ((await channel.getCursor()) || maxSeqFrom(history));
 
   const current = await store.loadDoc();
-  let canonicalText = await store.getCanonical();
-  if (canonicalText === null) {
-    canonicalText = current;
-    await store.setCanonical(current);
+
+  // The gate's canonical base: when the desktop editor is hosting a local ***REMOVED*** hub for this doc,
+  // it's the live ***REMOVED*** projection (and we apply through the hub, never writing the .md — the
+  // hub owns it). A stale/unreachable hubUrl (editor closed) falls back to the file model.
+  let useHub = false;
+  let canonicalText: string;
+  if (hubUrl) {
+    try {
+      canonicalText = await readDocViaHub(hubUrl, { timeoutMs: 2500 });
+      useHub = true;
+    } catch {
+      canonicalText = (await store.getCanonical()) ?? current;
+    }
+  } else {
+    canonicalText = (await store.getCanonical()) ?? current;
   }
+  if (!useHub && (await store.getCanonical()) === null) await store.setCanonical(current);
 
   const ev = evaluateAgentEdit(canonicalText, current, confirmed);
   if (ev.unconfirmed.length > 0) {
@@ -274,20 +287,30 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
   const bodyChanged = parse(canonicalText).body !== parse(current).body;
 
   if (ev.removedIds.length > 0) {
-    // Confirmed deletions: drop the orphaned comment objects from the document and canonical base.
-    await store.saveDoc(ev.acceptedText);
-    await store.setCanonical(ev.acceptedText);
-    await store.clearProposed();
+    // Confirmed deletions: drop the orphaned comment objects. With a hub, apply through it (it
+    // reprojects the .md); otherwise write the file + canonical directly.
+    if (useHub) await applyRevisionViaHub(hubUrl!, ev.acceptedText);
+    else {
+      await store.saveDoc(ev.acceptedText);
+      await store.setCanonical(ev.acceptedText);
+      await store.clearProposed();
+    }
     await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { removed: ev.removedIds } });
   } else if (ev.changed && acceptance === "review" && bodyChanged) {
-    // Quarantine: park the proposal, revert the working file to canonical.
+    // Quarantine: park the proposal for the human to accept/reject in the editor. In the file
+    // model we revert the working file to canonical; with a hub the editor owns the file, so we
+    // leave it (the live ***REMOVED*** body is unchanged until the human accepts).
     await store.setProposed(current);
-    await store.saveDoc(canonicalText);
+    if (!useHub) await store.saveDoc(canonicalText);
     await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: current.length } });
   } else if (ev.changed) {
-    // Auto-accept (auto mode, or review mode with comment-only changes).
-    await store.setCanonical(current);
-    await store.clearProposed();
+    // Auto-accept (auto mode, or review mode with comment-only changes). With a hub, apply the
+    // revision to the live ***REMOVED*** (it reprojects the .md); otherwise advance the canonical base.
+    if (useHub) await applyRevisionViaHub(hubUrl!, current);
+    else {
+      await store.setCanonical(current);
+      await store.clearProposed();
+    }
     await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: current.length } });
   }
 
@@ -1385,7 +1408,11 @@ async function main(): Promise<void> {
     }
   }
 
-  await waitCycle(fsBackend(file), explicitCursor, confirmed, model);
+  // If the desktop editor is hosting a local ***REMOVED*** hub for this doc (status.hubUrl), the CLI
+  // gates through the live ***REMOVED*** instead of the .md. Only for local docs; waitCycle
+  // reachability-checks + falls back to the file path if the hub is gone.
+  const hubUrl = readStatus(docPaths(file).statusPath).hubUrl ?? null;
+  await waitCycle(fsBackend(file), explicitCursor, confirmed, model, hubUrl);
 }
 
 main().catch((err) => {

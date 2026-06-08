@@ -40,6 +40,11 @@ export interface DocStatus {
   /** Hash of the file body at the last local⇄cloud sync, so a reconcile-on-open
    *  can tell a freshly downloaded / locally-edited file from an in-sync one. */
   lastSyncedHash?: string;
+  /** When the desktop editor is hosting an in-process ***REMOVED*** hub for this local doc
+   *  (INPLAN_LOCAL_HUB), its ws URL — the CLI joins it as a peer and gates through the live
+   *  ***REMOVED*** instead of the .md. Set by the editor on open, cleared on close; the CLI also
+   *  reachability-checks it (a crashed editor may leave it stale). */
+  hubUrl?: string;
 }
 
 /** A brand-new / never-promoted document is local. */

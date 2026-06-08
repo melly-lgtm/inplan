@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import type { Acceptance, Cadence, SaveOptions, Settings } from "@inplan/renderer";
-import { isOnboarded, markOnboarded } from "@inplan/core/node";
+import { isOnboarded, markOnboarded, docPaths, readStatus, writeStatus } from "@inplan/core/node";
 import { Session } from "./session";
 import { createI18nController } from "./i18nController";
 import { track, type TelemetryProps } from "./telemetry";
@@ -24,13 +24,26 @@ let hub: LocalHub | null = null;
  *  stopHub() while a start is still in flight; the generation lets that late start detect it's
  *  been superseded and stop itself instead of resurrecting a hub for the old file. */
 let hubGen = 0;
+/** The file the current hub is hosting — so stopHub() can clear its status.json handshake. */
+let hubFile: string | null = null;
 /** Resolves to the hub's connection info once it's listening (the renderer awaits this via
  *  the `collab:hub` IPC), or null when the hub is off/unavailable. */
 let hubReady: Promise<{ url: string; docName: string } | null> = Promise.resolve(null);
 
+/** Record (or clear) the hub URL in the doc's status.json so the CLI can find + join it. */
+function setHubStatus(file: string, url: string | undefined): void {
+  try {
+    const sp = docPaths(file).statusPath;
+    writeStatus(sp, { ...readStatus(sp), ...(url ? { hubUrl: url } : { hubUrl: undefined }) });
+  } catch {
+    /* status handshake is best-effort — the hub still works for the renderer */
+  }
+}
+
 function startHubFor(file: string): void {
   if (!LOCAL_HUB) return;
   const gen = ++hubGen;
+  hubFile = file;
   hubReady = startLocalHub(file)
     .then((h) => {
       if (gen !== hubGen) {
@@ -39,6 +52,7 @@ function startHubFor(file: string): void {
         return null;
       }
       hub = h;
+      setHubStatus(file, h.url);
       process.stderr.write(`[inplan] local ***REMOVED*** hub listening at ${h.url} (doc "${h.docName}") for ${file}\n`);
       return { url: h.url, docName: h.docName };
     })
@@ -51,8 +65,11 @@ function startHubFor(file: string): void {
 async function stopHub(): Promise<void> {
   hubGen++; // invalidate any in-flight start so it won't resurrect after we stop
   const h = hub;
+  const file = hubFile;
   hub = null;
+  hubFile = null;
   hubReady = Promise.resolve(null);
+  if (file) setHubStatus(file, undefined); // clear so a later CLI run doesn't chase a dead hub
   if (h) await h.stop().catch(() => {});
 }
 
