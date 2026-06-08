@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
@@ -114,5 +114,32 @@ describe("resolveDesktopCollab", () => {
 
   it("logged out (no token) + no cache → null", async () => {
     expect(await resolveDesktopCollab({ apiBase: API, token: null, cacheDir: cacheDir(), publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) })).toBeNull();
+  });
+
+  it("rejects a manifest whose entry name escapes the cache dir (path traversal) without writing it", async () => {
+    const cd = cacheDir();
+    const evil = entry("../../escape.js", HUB); // a signed file, but the NAME tries to climb out
+    const tbl = {
+      [`${API}/api/v1/desktop-collab`]: { ok: true, json: { entitled: true, lease: lease(9_999_999_999_999), bundleUrl: BUNDLE } },
+      [`${BUNDLE}manifest.json`]: { ok: true, json: { version: "v1", files: [evil] } },
+      [`${BUNDLE}../../escape.js`]: { ok: true, bytes: HUB },
+    };
+    expect(await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(tbl) })).toBeNull();
+    expect(existsSync(join(cd, "..", "..", "escape.js"))).toBe(false); // never written outside the root
+  });
+
+  it("rejects a manifest whose version escapes the cache dir (path traversal)", async () => {
+    const tbl = { ...happyTable, [`${BUNDLE}manifest.json`]: { ok: true, json: { version: "../../evil", files: manifest.files } } };
+    expect(await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cacheDir(), publicKey: pub, now: 1000, fetchImpl: fakeFetch(tbl) })).toBeNull();
+  });
+
+  it("fail-closed: an online entitled grant with an invalid-signature lease → null even with a valid cache", async () => {
+    const cd = cacheDir();
+    await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) }); // prime a valid cache
+    const other = generateKeyPairSync("ed25519").privateKey;
+    const body = Buffer.from(JSON.stringify({ sub: "u1", plan: "pro", features: ["instant"], iat: 0, exp: 9_999_999_999_999 })).toString("base64url");
+    const forgedLease = `${body}.${sign(null, Buffer.from(body), other).toString("base64url")}`; // signed by the wrong key
+    const tbl = { [`${API}/api/v1/desktop-collab`]: { ok: true, json: { entitled: true, lease: forgedLease, bundleUrl: BUNDLE } } };
+    expect(await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 2000, fetchImpl: fakeFetch(tbl) })).toBeNull();
   });
 });

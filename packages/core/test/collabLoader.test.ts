@@ -43,6 +43,17 @@ describe("verifyLease", () => {
     expect(verifyLease("garbage", pub, 2000)).toBeNull();
     expect(verifyLease("", pub, 2000)).toBeNull();
   });
+  it("rejects a validly-signed but malformed payload (missing required claims)", () => {
+    // A real signature over a payload that lacks sub/plan/features/iat — must not pass as claims.
+    const body = Buffer.from(JSON.stringify({ exp: 9_999_999_999_999 })).toString("base64url");
+    const s = sign(null, Buffer.from(body), priv).toString("base64url");
+    expect(verifyLease(`${body}.${s}`, pub, 2000)).toBeNull();
+  });
+  it("rejects a signed payload with wrong-typed claims (features not an array)", () => {
+    const body = Buffer.from(JSON.stringify({ sub: "u", plan: "pro", features: "instant", iat: 1, exp: 9_999_999_999_999 })).toString("base64url");
+    const s = sign(null, Buffer.from(body), priv).toString("base64url");
+    expect(verifyLease(`${body}.${s}`, pub, 2000)).toBeNull();
+  });
 });
 
 describe("verifyBundleBytes", () => {

@@ -15,12 +15,22 @@
 // verify core. Import from `@inplan/core/node`.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { COLLAB_PUBLIC_KEY, verifyBundleBytes, verifyLease, type BundleManifestEntry, type LeaseClaims } from "./collabLoader";
 
 interface Manifest {
   version: string;
   files: BundleManifestEntry[];
+}
+
+/** Join `child` under `root`, returning null if it escapes the root. The manifest's `version` and
+ *  each `entry.name` are server-supplied strings; a `../` segment must never let a cache read/write
+ *  land outside the cache root (path traversal), even though the file *bytes* are signature-checked. */
+function safeJoin(root: string, child: string): string | null {
+  const rootPath = resolve(root);
+  const full = resolve(rootPath, child);
+  const rel = relative(rootPath, full);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel)) ? full : null;
 }
 
 export interface ResolvedCollab {
@@ -52,15 +62,16 @@ const base = (u: string): string => (u.endsWith("/") ? u : `${u}/`);
  *  null if the lease is missing/expired/invalid or any file fails verification (tampered cache). */
 function loadCached(cacheDir: string, version: string, publicKey: string, now: number): ResolvedCollab | null {
   try {
-    const dir = join(cacheDir, version);
+    const dir = safeJoin(cacheDir, version);
+    if (!dir) return null; // version escapes the cache root
     const leaseToken = readFileSync(join(dir, "lease.txt"), "utf8").trim();
     const lease = verifyLease(leaseToken, publicKey, now);
     if (!lease) return null;
     const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as Manifest;
     const files: Record<string, string> = {};
     for (const entry of manifest.files) {
-      const path = join(dir, entry.name);
-      if (!existsSync(path)) return null;
+      const path = safeJoin(dir, entry.name);
+      if (!path || !existsSync(path)) return null; // name escapes the version dir / missing
       if (!verifyBundleBytes(readFileSync(path), entry, publicKey)) return null; // re-verify, never trust the path
       files[entry.name] = path;
     }
@@ -79,14 +90,17 @@ async function fetchAndCache(bundleUrl: string, leaseToken: string, opts: Requir
   if (!mres.ok) return null;
   const manifest = (await mres.json()) as Manifest;
   if (!manifest?.version || !Array.isArray(manifest.files)) return null;
-  const dir = join(opts.cacheDir, manifest.version);
+  const dir = safeJoin(opts.cacheDir, manifest.version);
+  if (!dir) return null; // version escapes the cache root
   mkdirSync(dir, { recursive: true });
   for (const entry of manifest.files) {
+    const filePath = safeJoin(dir, entry.name);
+    if (!filePath) return null; // name escapes the version dir
     const r = await opts.fetchImpl(`${root}${entry.name}`);
     if (!r.ok) return null;
     const bytes = Buffer.from(await r.arrayBuffer());
     if (!verifyBundleBytes(bytes, entry, opts.publicKey)) return null; // refuse to cache unverified bytes
-    writeFileSync(join(dir, entry.name), bytes);
+    writeFileSync(filePath, bytes);
   }
   writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
   writeFileSync(join(dir, "lease.txt"), leaseToken);
@@ -112,7 +126,11 @@ export async function resolveDesktopCollab(options: ResolveCollabOptions): Promi
       if (res.ok) {
         const grant = (await res.json()) as { entitled?: boolean; lease?: string; bundleUrl?: string };
         if (grant.entitled === false) return null; // server says no — don't fall back to a stale cache
-        if (grant.entitled && grant.lease && grant.bundleUrl && verifyLease(grant.lease, publicKey, now)) {
+        if (grant.entitled && grant.lease && grant.bundleUrl) {
+          // A positive grant ships a fresh, signed lease. A lease that fails verification is a
+          // tampering signal — fail closed rather than silently using the cache. (A transient
+          // bundle-CDN miss still falls through to the independently re-verified cache below.)
+          if (!verifyLease(grant.lease, publicKey, now)) return null;
           const version = await fetchAndCache(grant.bundleUrl, grant.lease, { cacheDir: options.cacheDir, publicKey, fetchImpl });
           if (version) return loadCached(options.cacheDir, version, publicKey, now);
         }

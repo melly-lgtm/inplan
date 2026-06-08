@@ -42,7 +42,17 @@ export function verifyLease(token: string, publicKeyPem: string = COLLAB_PUBLIC_
     const sig = token.slice(dot + 1);
     if (!verify(null, Buffer.from(body), createPublicKey(publicKeyPem), Buffer.from(sig, "base64url"))) return null;
     const claims = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as LeaseClaims;
-    if (typeof claims.exp !== "number" || claims.exp <= now) return null; // expired / malformed
+    // A valid signature only proves authenticity, not shape — validate every claim so callers
+    // never read an undefined field off a malformed-but-signed payload. Reject if expired.
+    if (
+      typeof claims.sub !== "string" ||
+      typeof claims.plan !== "string" ||
+      !Array.isArray(claims.features) ||
+      typeof claims.iat !== "number" ||
+      typeof claims.exp !== "number" ||
+      claims.exp <= now
+    )
+      return null;
     return claims;
   } catch {
     return null;
