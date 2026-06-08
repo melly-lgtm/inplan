@@ -11,8 +11,39 @@ import { isOnboarded, markOnboarded } from "@inplan/core/node";
 import { Session } from "./session";
 import { createI18nController } from "./i18nController";
 import { track, type TelemetryProps } from "./telemetry";
+import { startLocalHub, type LocalHub } from "***REMOVED***";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Phase 4 (flag-gated): host an in-process ***REMOVED*** hub for the open file so the renderer (and a
+// local CLI peer) collaborate on one ***REMOVED*** instead of reconciling file rewrites. OFF by
+// default — the editor's file-backed path is unchanged until INPLAN_LOCAL_HUB=1.
+const LOCAL_HUB = process.env.INPLAN_LOCAL_HUB === "1";
+let hub: LocalHub | null = null;
+/** Resolves to the hub's connection info once it's listening (the renderer awaits this via
+ *  the `collab:hub` IPC), or null when the hub is off/unavailable. */
+let hubReady: Promise<{ url: string; docName: string } | null> = Promise.resolve(null);
+
+function startHubFor(file: string): void {
+  if (!LOCAL_HUB) return;
+  hubReady = startLocalHub(file)
+    .then((h) => {
+      hub = h;
+      process.stderr.write(`[inplan] local ***REMOVED*** hub listening at ${h.url} (doc "${h.docName}") for ${file}\n`);
+      return { url: h.url, docName: h.docName };
+    })
+    .catch((e) => {
+      process.stderr.write(`[inplan] local hub failed to start: ${e instanceof Error ? e.message : String(e)}\n`);
+      return null;
+    });
+}
+
+async function stopHub(): Promise<void> {
+  const h = hub;
+  hub = null;
+  hubReady = Promise.resolve(null);
+  if (h) await h.stop().catch(() => {});
+}
 
 // Identify as "inplan" instead of the default "Electron" — set before `whenReady` so the
 // macOS app menu (built from app.name) and the About panel read it. (Run via the bundled
@@ -371,6 +402,7 @@ function createWindow(): void {
 
   win.on("closed", () => {
     stopWatching?.();
+    void stopHub();
     win = null;
   });
 }
@@ -529,6 +561,9 @@ function registerIpc(): void {
   // Localization seam (paid perk): the renderer reads the snapshot + switches locale.
   ipcMain.handle("i18n:get", () => i18n.getSnapshot());
   ipcMain.handle("i18n:set-locale", (_e, code: string) => i18n.setLocale(code));
+  // Local ***REMOVED*** hub connection info (or null when the flag is off / not yet listening). The
+  // renderer awaits this before deciding whether to wire a collab binding + comment store.
+  ipcMain.handle("collab:hub", () => hubReady);
 }
 
 void app.whenReady().then(() => {
@@ -543,6 +578,7 @@ void app.whenReady().then(() => {
     session.logEditorPid(process.pid);
     navHistory.push(target);
     navIdx = 0;
+    startHubFor(target); // no-op unless INPLAN_LOCAL_HUB=1
     track("app_opened", session.getSettings().telemetry === true); // opt-in only
   }
   registerIpc();

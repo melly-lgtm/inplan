@@ -13,10 +13,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "***REMOVED***": "^2.13.0",
+    "***REMOVED***": "0.0.0",
     "@inplan/core": "0.0.0",
     "@inplan/renderer": "0.0.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    ***REMOVED***: "^13.6.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.5",
