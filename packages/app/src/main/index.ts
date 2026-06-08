@@ -11,8 +11,23 @@ import { isOnboarded, markOnboarded } from "@inplan/core/node";
 import { Session } from "./session";
 import { createI18nController } from "./i18nController";
 import { track, type TelemetryProps } from "./telemetry";
+import { registerCollabScheme, handleCollabScheme, collabInfo, startDesktopCollab, stopDesktopCollab } from "./desktopCollab";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Privileged scheme for the (paid) live-collab plugin — must register before app 'ready'. No-op
+// effect unless an entitled, verified bundle is later loaded (startDesktopCollab).
+registerCollabScheme();
+
+/** Mint the user's JWT for the entitlement check (the CLI owns auth; logged-out ⇒ null). */
+const collabToken = (): Promise<string | null> =>
+  runCli(["token"]).then((r) => {
+    try {
+      return (JSON.parse(r.stdout.trim() || "{}") as { token?: string }).token ?? null;
+    } catch {
+      return null;
+    }
+  });
 
 // Identify as "inplan" instead of the default "Electron" — set before `whenReady` so the
 // macOS app menu (built from app.name) and the About panel read it. (Run via the bundled
@@ -266,8 +281,19 @@ function navigateTo(file: string): boolean {
   session.logEditorPid(process.pid);
   stopWatching = watchSession();
   setDocTitle(file);
-  win.webContents.send("doc:navigated", session.load());
+  void refreshCollabAndView(file);
   return true;
+}
+
+/** After a doc swap: restart the (paid) collab plugin for the new file. If it's active, reload the
+ *  renderer so it re-bootstraps against the new hub (the binding is bound at editor init); else
+ *  take the light file-backed path (send the new doc to the existing renderer). */
+async function refreshCollabAndView(file: string): Promise<void> {
+  await stopDesktopCollab();
+  await startDesktopCollab(file, collabToken);
+  if (!win || !session) return;
+  if (collabInfo()) win.webContents.reload();
+  else win.webContents.send("doc:navigated", session.load());
 }
 
 /** Record the close reason once and exit, bypassing the confirm-quit dialog.
@@ -371,6 +397,7 @@ function createWindow(): void {
 
   win.on("closed", () => {
     stopWatching?.();
+    void stopDesktopCollab();
     win = null;
   });
 }
@@ -529,13 +556,16 @@ function registerIpc(): void {
   // Localization seam (paid perk): the renderer reads the snapshot + switches locale.
   ipcMain.handle("i18n:get", () => i18n.getSnapshot());
   ipcMain.handle("i18n:set-locale", (_e, code: string) => i18n.setLocale(code));
+  // Live-collab connection info for the renderer ({hubUrl, desktopUrl} | null). Null ⇒ turn-only.
+  ipcMain.handle("collab:hub", () => collabInfo());
 }
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
   // macOS shows the dock icon from the app bundle / running binary (not the window's
   // `icon`); set it explicitly so we don't show the default Electron icon when run via
   // the bundled `electron` dependency.
   if (process.platform === "darwin" && !appIcon.isEmpty()) app.dock?.setIcon(appIcon);
+  handleCollabScheme(); // serve the verified collab bundle to the renderer (when one is loaded)
   const target = resolveTargetFile();
   if (target) {
     session = new Session(target);
@@ -543,6 +573,7 @@ void app.whenReady().then(() => {
     session.logEditorPid(process.pid);
     navHistory.push(target);
     navIdx = 0;
+    await startDesktopCollab(target, collabToken); // entitlement-gated; fail-soft to turn-only
     track("app_opened", session.getSettings().telemetry === true); // opt-in only
   }
   registerIpc();

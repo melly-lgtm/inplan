@@ -2,7 +2,14 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'" />
+    <!-- The paid live-collab plugin (when entitled): the renderer imports the verified bundle main
+         serves over the privileged inplan-collab: scheme (script-src), and the ***REMOVED*** binding connects
+         to the editor-hosted loopback hub (connect-src ws://127.0.0.1). Both are inert on the
+         open-core / free path (main exposes nothing to import + hosts no hub). -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' inplan-collab:; connect-src 'self' inplan-collab: ws://127.0.0.1:* ws://localhost:*"
+    />
     <title>inplan</title>
   </head>
   <body>

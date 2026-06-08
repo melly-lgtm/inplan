@@ -164,5 +164,10 @@ const api: Api = {
   setOnboarded: () => ipcRenderer.invoke("onboarding:set") as Promise<void>,
 };
 
-// The file-backed editor API the renderer drives (window.api). The renderer reads it directly.
+// The file-backed editor API the renderer drives (window.api). The renderer reads it directly,
+// and — when the paid live-collab plugin is loaded — augments it with the collab binding it
+// imports from the verified bundle (see renderer/main.tsx).
 contextBridge.exposeInMainWorld("api", api);
+// Live-collab connection info ({ hubUrl, desktopUrl } | null) for the renderer to decide whether
+// to load the (verified) collab bundle. Null on the open-core / free / logged-out path.
+contextBridge.exposeInMainWorld("__inplanCollabHub", () => ipcRenderer.invoke("collab:hub") as Promise<{ hubUrl: string; desktopUrl: string } | null>);
