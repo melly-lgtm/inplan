@@ -134,11 +134,26 @@ export function orderComments(comments: Comment[]): Comment[] {
   return out;
 }
 
-/** Like {@link serialize}, but emits comments in the canonical {@link orderComments} order so
- *  the output is deterministic regardless of ***REMOVED*** insertion order. Used at the projection
- *  boundary (collab server -> documents.body; the local .md write). */
+/** Canonical field order for a serialized comment. A round-trip through a ***REMOVED*** (***REMOVED***) loses
+ *  the original key order, so the canonical projection must re-impose one or the JSON bytes
+ *  differ between peers. Matches the Comment interface declaration order. */
+const COMMENT_KEY_ORDER: (keyof Comment)[] = ["id", "parentId", "anchor", "text", "author", "date", "resolved", "may_resolve", "question", "selected"];
+
+function canonicalizeComment(c: Comment): Comment {
+  const out: Record<string, unknown> = {};
+  const rec = c as unknown as Record<string, unknown>;
+  for (const k of COMMENT_KEY_ORDER) if (rec[k] !== undefined) out[k] = rec[k];
+  // Preserve any unknown/forward-compat keys (after the known ones, in a stable order).
+  for (const k of Object.keys(rec).sort()) if (!(k in out) && rec[k] !== undefined) out[k] = rec[k];
+  return out as unknown as Comment;
+}
+
+/** Like {@link serialize}, but emits comments in the canonical {@link orderComments} order and
+ *  with a canonical field order, so the output is byte-deterministic regardless of ***REMOVED***
+ *  insertion/key order. Used at the projection boundary (collab server -> documents.body; the
+ *  local .md write). */
 export function serializeCanonical(doc: ParsedDocument): string {
-  return serialize({ ...doc, comments: orderComments(doc.comments) });
+  return serialize({ ...doc, comments: orderComments(doc.comments).map(canonicalizeComment) });
 }
 
 export class ParseError extends Error {
