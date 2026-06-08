@@ -14,8 +14,10 @@
 // `orderComments` imposes the canonical order used when projecting to the serialized .md /
 // documents.body, so that round-trip is deterministic regardless of ***REMOVED*** insertion order.
 
-import type { Comment } from "@inplan/core";
+import { type Comment, orderComments } from "@inplan/core";
 import * as Y from ***REMOVED***;
+
+export { orderComments };
 
 /** A transport-agnostic store of a document's comments. */
 export interface CommentStore {
@@ -37,39 +39,6 @@ export interface CommentStore {
 // (`question`, `selected`) are stored as opaque JSON values, replaced atomically — never
 // sub-edited concurrently, so they need no nested ***REMOVED***.
 const ALL_KEYS: (keyof Comment)[] = ["id", "parentId", "anchor", "text", "author", "date", "resolved", "may_resolve", "question", "selected"];
-
-/**
- * Canonical comment order for the serialized projection: a stable depth-first walk where
- * roots are ordered by (date, id) and each comment's replies follow it, also by (date, id).
- * Deterministic for any input order (so two peers serialize byte-identically), and robust to
- * orphan replies (treated as roots) and cycles (emitted once via the visited guard).
- */
-export function orderComments(comments: Comment[]): Comment[] {
-  const cmp = (a: Comment, b: Comment): number =>
-    a.date < b.date ? -1 : a.date > b.date ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  const ids = new Set(comments.map((c) => c.id));
-  const byParent = new Map<string, Comment[]>();
-  for (const c of comments) {
-    if (c.parentId === undefined) continue;
-    const list = byParent.get(c.parentId) ?? [];
-    list.push(c);
-    byParent.set(c.parentId, list);
-  }
-  const out: Comment[] = [];
-  const visited = new Set<string>();
-  const emit = (c: Comment): void => {
-    if (visited.has(c.id)) return;
-    visited.add(c.id);
-    out.push(c);
-    for (const kid of (byParent.get(c.id) ?? []).slice().sort(cmp)) emit(kid);
-  };
-  // A root has no parent, or points at a parent that isn't present (orphan -> treated as root).
-  const roots = comments.filter((c) => c.parentId === undefined || !ids.has(c.parentId)).sort(cmp);
-  for (const r of roots) emit(r);
-  // Cycle / unreachable guard: emit anything still unvisited in a stable order.
-  for (const c of comments.slice().sort(cmp)) emit(c);
-  return out;
-}
 
 // ---- Memory-backed store (single-writer / local file) ----------------------------------
 

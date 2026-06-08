@@ -99,6 +99,48 @@ export function serialize(doc: ParsedDocument): string {
   return body.length === 0 ? `\n${block}` : `${body}\n\n${block}`;
 }
 
+/**
+ * Canonical comment order for the serialized projection (the `.md` / `documents.body`).
+ *
+ * In the unified-***REMOVED*** model comments live in an unordered ***REMOVED*** array, so the serializer must
+ * impose a deterministic order or the projection churns. This is a stable depth-first walk:
+ * roots ordered by (date, then id); each comment's replies follow it, also by (date, id). The
+ * result is identical for any input order — so two peers serialize byte-identically — and is
+ * robust to orphan replies (a reply whose parent is absent is treated as a root) and to cycles
+ * (the visited guard emits each comment exactly once).
+ */
+export function orderComments(comments: Comment[]): Comment[] {
+  const cmp = (a: Comment, b: Comment): number =>
+    a.date < b.date ? -1 : a.date > b.date ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  const ids = new Set(comments.map((c) => c.id));
+  const byParent = new Map<string, Comment[]>();
+  for (const c of comments) {
+    if (c.parentId === undefined) continue;
+    const list = byParent.get(c.parentId) ?? [];
+    list.push(c);
+    byParent.set(c.parentId, list);
+  }
+  const out: Comment[] = [];
+  const visited = new Set<string>();
+  const emit = (c: Comment): void => {
+    if (visited.has(c.id)) return;
+    visited.add(c.id);
+    out.push(c);
+    for (const kid of (byParent.get(c.id) ?? []).slice().sort(cmp)) emit(kid);
+  };
+  const roots = comments.filter((c) => c.parentId === undefined || !ids.has(c.parentId)).sort(cmp);
+  for (const r of roots) emit(r);
+  for (const c of comments.slice().sort(cmp)) emit(c); // cycle / unreachable guard
+  return out;
+}
+
+/** Like {@link serialize}, but emits comments in the canonical {@link orderComments} order so
+ *  the output is deterministic regardless of ***REMOVED*** insertion order. Used at the projection
+ *  boundary (collab server -> documents.body; the local .md write). */
+export function serializeCanonical(doc: ParsedDocument): string {
+  return serialize({ ...doc, comments: orderComments(doc.comments) });
+}
+
 export class ParseError extends Error {
   constructor(message: string) {
     super(message);
