@@ -20,14 +20,24 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // default — the editor's file-backed path is unchanged until INPLAN_LOCAL_HUB=1.
 const LOCAL_HUB = process.env.INPLAN_LOCAL_HUB === "1";
 let hub: LocalHub | null = null;
+/** Bumped on every start/stop. A `startLocalHub` is async, so a fast nav/close can call
+ *  stopHub() while a start is still in flight; the generation lets that late start detect it's
+ *  been superseded and stop itself instead of resurrecting a hub for the old file. */
+let hubGen = 0;
 /** Resolves to the hub's connection info once it's listening (the renderer awaits this via
  *  the `collab:hub` IPC), or null when the hub is off/unavailable. */
 let hubReady: Promise<{ url: string; docName: string } | null> = Promise.resolve(null);
 
 function startHubFor(file: string): void {
   if (!LOCAL_HUB) return;
+  const gen = ++hubGen;
   hubReady = startLocalHub(file)
     .then((h) => {
+      if (gen !== hubGen) {
+        // Superseded while starting (a nav/close happened) — don't adopt it; shut it down.
+        void h.stop().catch(() => {});
+        return null;
+      }
       hub = h;
       process.stderr.write(`[inplan] local ***REMOVED*** hub listening at ${h.url} (doc "${h.docName}") for ${file}\n`);
       return { url: h.url, docName: h.docName };
@@ -39,6 +49,7 @@ function startHubFor(file: string): void {
 }
 
 async function stopHub(): Promise<void> {
+  hubGen++; // invalidate any in-flight start so it won't resurrect after we stop
   const h = hub;
   hub = null;
   hubReady = Promise.resolve(null);
