@@ -274,7 +274,10 @@ export function App(props: EditorProps = {}): JSX.Element {
     // can't stack ipcRenderer listeners and double-handle events.
     const subs: Array<(() => void) | void> = [
       hostApi().onExternalChange(({ content }) => {
-        const next = parse(content);
+        const parsed = parse(content);
+        // Store-backed (collab): comments are owned by the shared store, not the rewritten
+        // body — keep them from the store so an agent/body refresh can't blank/stale the rail.
+        const next = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
         setAgentThinking(false);
         setDoc(next);
         savedRef.current = serialize(next);
@@ -299,7 +302,8 @@ export function App(props: EditorProps = {}): JSX.Element {
       // load), clearing any in-flight proposal/turn state, then re-show a parked proposal.
       hostApi().onNavigated?.(({ content, path }) => {
         docPathRef.current = path;
-        const d = parse(content);
+        const parsed = parse(content);
+        const d = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
         setDoc(d);
         savedRef.current = serialize(d);
         setDirty(false);
