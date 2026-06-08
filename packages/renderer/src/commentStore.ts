@@ -40,6 +40,37 @@ export interface CommentStore {
 // sub-edited concurrently, so they need no nested ***REMOVED***.
 const ALL_KEYS: (keyof Comment)[] = ["id", "parentId", "anchor", "text", "author", "date", "resolved", "may_resolve", "question", "selected"];
 
+/**
+ * Apply the delta between two comment lists to a store — add new, patch changed (including
+ * field removals), remove gone. Unlike replaceAll this preserves concurrent ***REMOVED*** ops from
+ * other peers (it only touches the comments that actually changed), so it's safe to drive a
+ * ***REMOVED*** store from the editor's optimistic ParsedDocument state.
+ */
+export function reconcileComments(store: CommentStore, prev: Comment[], next: Comment[]): void {
+  const prevById = new Map(prev.map((c) => [c.id, c]));
+  const nextById = new Map(next.map((c) => [c.id, c]));
+  for (const c of next) {
+    const p = prevById.get(c.id);
+    if (!p) store.add(c);
+    else {
+      const patch = diffComment(p, c);
+      if (Object.keys(patch).length > 0) store.patch(c.id, patch);
+    }
+  }
+  for (const c of prev) if (!nextById.has(c.id)) store.remove(c.id);
+}
+
+/** The fields that differ between two comments, with `undefined` for fields removed in `next`. */
+function diffComment(prev: Comment, next: Comment): Partial<Comment> {
+  const a = prev as unknown as Record<string, unknown>;
+  const b = next as unknown as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) patch[k] = b[k];
+  }
+  return patch as Partial<Comment>;
+}
+
 // ---- Memory-backed store (single-writer / local file) ----------------------------------
 
 export function createMemoryCommentStore(initial: Comment[] = []): CommentStore {

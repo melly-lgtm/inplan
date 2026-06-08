@@ -21,6 +21,7 @@ import {
   type SourceSpan,
   type Thread,
 } from "./docOps";
+import { reconcileComments } from "./commentStore";
 import { moveDocTitle, slugifyFilename } from "./newDoc";
 import { NewDocModal } from "./NewDocModal";
 import { renderMarkdown } from "./markdown";
@@ -249,11 +250,16 @@ export function App(props: EditorProps = {}): JSX.Element {
       setStatus(t("msg.proposedReview"));
     };
 
+    const commentStore = hostApi().commentStore ?? null;
+
     hostApi()
       .load()
       .then(({ content, path }) => {
         docPathRef.current = path;
-        const d = parse(content);
+        const parsed = parse(content);
+        // With a comment store (web/cloud) comments are owned by the shared ***REMOVED***, not the
+        // serialized body — source them from the store; its observer keeps them in sync.
+        const d = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
         setDoc(d);
         savedRef.current = serialize(d);
         setLoaded(true);
@@ -312,6 +318,9 @@ export function App(props: EditorProps = {}): JSX.Element {
       hostApi().onNavState?.((s) => setNavState(s)),
       // Desktop only: a newer npm version is available.
       hostApi().onUpdateAvailable?.((info) => setUpdate(info)),
+      // Comment store (web/cloud): adopt the shared ***REMOVED***'s comments whenever a peer (or this
+      // editor) changes them. Body stays driven by the editor/ytext; only `comments` is synced.
+      commentStore?.observe(() => setDoc((d) => ({ ...d, comments: commentStore.list() }))),
     ];
 
     // Store the RAW selection (untrimmed) so a whitespace-only selection is distinguishable
@@ -496,12 +505,21 @@ export function App(props: EditorProps = {}): JSX.Element {
       // *silent* save (no turn-end / no wake — comments don't end your turn).
       // Body edits (find/replace) keep the normal save flow.
       if (commentOnly) {
-        const s = serialize(next);
-        savedRef.current = s;
-        setDirty(false);
-        // A canonical/apply save also advances the checkpoint (canonical IS a store), so keep
-        // them in sync — otherwise checkpoint goes stale and the Save dot can mis-clear later.
-        void hostApi().save(s, { kind: cadence === "instant" ? "canonical" : "apply", cadence }).then(() => setCheckpoint(s));
+        const store = hostApi().commentStore;
+        if (store) {
+          // Comments live in the shared store (***REMOVED***). Write only the delta — the collab server
+          // persists the ***REMOVED***, so there's no documents.body save here (that second writer is
+          // exactly what caused the back-and-forth-nav data loss, #71).
+          reconcileComments(store, docRef.current.comments, next.comments);
+          setDirty(false);
+        } else {
+          const s = serialize(next);
+          savedRef.current = s;
+          setDirty(false);
+          // A canonical/apply save also advances the checkpoint (canonical IS a store), so keep
+          // them in sync — otherwise checkpoint goes stale and the Save dot can mis-clear later.
+          void hostApi().save(s, { kind: cadence === "instant" ? "canonical" : "apply", cadence }).then(() => setCheckpoint(s));
+        }
       } else {
         setDirty(serialize(next) !== savedRef.current);
       }

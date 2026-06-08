@@ -2,6 +2,7 @@
 
 import type { Text as YText } from ***REMOVED***;
 import type { Awareness } from "***REMOVED***/awareness";
+import type { CommentStore } from "./commentStore";
 
 /** A live-collaboration binding: a shared ***REMOVED*** + presence awareness. When a host
  *  exposes one (web/cloud), the source editor binds to it (multiplayer); otherwise
@@ -224,6 +225,11 @@ export interface Api {
   /** Live-collaboration binding for the source editor, if the host provides one
    *  (web/cloud). Absent/null on desktop + tests (single-writer). */
   collab?: CollabBinding | null;
+  /** Comment seam: when the host provides a store (web/cloud, ***REMOVED***-backed), the editor
+   *  sources comments from it and routes comment CRUD through it (so comments live in the
+   *  shared ***REMOVED***, not in documents.body via save()). Absent ⇒ the editor owns comments in
+   *  its parsed document and serializes them on save (desktop / tests). */
+  commentStore?: CommentStore | null;
   /** Identity + presence for the shared `<ProfileMenu>`, when the host wires one
    *  (web/cloud, and the signed-in desktop app). Absent on tests / single-writer. */
   profile?: ProfileController | null;

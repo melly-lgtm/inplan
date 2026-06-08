@@ -3,7 +3,7 @@
 import { describe, it, expect } from "vitest";
 import * as Y from ***REMOVED***;
 import type { Comment } from "@inplan/core";
-import { createMemoryCommentStore, ***REMOVED***, orderComments, type CommentStore } from "../src/commentStore";
+import { createMemoryCommentStore, ***REMOVED***, orderComments, reconcileComments, type CommentStore } from "../src/commentStore";
 
 const c = (id: string, over: Partial<Comment> = {}): Comment => ({
   id,
@@ -114,6 +114,41 @@ describe("orderComments (canonical projection order)", () => {
     const ordered = orderComments([orphan, root]);
     expect(ordered.map((x) => x.id).sort()).toEqual(["cmt-orph01", "cmt-root01"]);
     expect(ordered).toHaveLength(2);
+  });
+});
+
+describe.each(FACTORIES)("reconcileComments (%s)", (_name, make) => {
+  it("adds new, patches changed, removes gone — and preserves untouched ones", () => {
+    const s = make();
+    s.replaceAll([c("cmt-keep01"), c("cmt-edit01", { resolved: false }), c("cmt-gone01")]);
+    const prev = s.list();
+    const next = [
+      c("cmt-keep01"), // untouched
+      c("cmt-edit01", { resolved: true }), // patched
+      c("cmt-new001", { date: "2026-06-08T00:00:09Z" }), // added
+      // cmt-gone01 removed
+    ];
+    reconcileComments(s, prev, next);
+    const byId = new Map(s.list().map((x) => [x.id, x]));
+    expect([...byId.keys()].sort()).toEqual(["cmt-edit01", "cmt-keep01", "cmt-new001"]);
+    expect(byId.get("cmt-edit01")!.resolved).toBe(true);
+  });
+
+  it("patch removes a field cleared in next", () => {
+    const s = make();
+    s.replaceAll([c("cmt-aaa111", { may_resolve: true })]);
+    reconcileComments(s, s.list(), [c("cmt-aaa111")]);
+    expect(s.list()[0]!.may_resolve).toBeUndefined();
+  });
+
+  it("a no-op delta touches nothing (no spurious notifications)", () => {
+    const s = make();
+    s.replaceAll([c("cmt-aaa111"), c("cmt-bbb222")]);
+    let hits = 0;
+    const off = s.observe(() => hits++);
+    reconcileComments(s, s.list(), s.list());
+    off();
+    expect(hits).toBe(0);
   });
 });
 
