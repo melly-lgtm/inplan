@@ -1,6 +1,6 @@
 {
   "name": "@inplan/cli",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "description": "inplan CLI: open / wait / signal orchestration over the document core.",
   "license": "AGPL-3.0-or-later",
@@ -8,7 +8,9 @@
   "bin": {
     "inplan": "./dist/cli.js"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "dependencies": {
     "@inplan/backend-supabase": "0.0.0",
     "@inplan/core": "0.0.0",

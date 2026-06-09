@@ -50,6 +50,15 @@ jobs:
       - run: node scripts/build-release.mjs
         env:
           INPLAN_POSTHOG_KEY: phc_sMdbuR25hr6Ae59GZQwiDLf2DRxaoUVEmu6KsoU6bCFh # public write-only ingest key (phc_*) — not a secret; ships in the client bundle
+          # The plugin trust-root PUBLIC key. The main process verifies the entitlement lease + the
+          # fetched plugin bundle against it. Public (SPKI) — safe to ship in the client. Pairs with
+          # the cloud's INPLAN_LEASE_PRIVATE_KEY. INPLAN_REQUIRE_PLUGIN_KEY=1 makes a forgotten key a
+          # hard build failure instead of silently shipping a release with no plugin trust root.
+          INPLAN_REQUIRE_PLUGIN_KEY: "1"
+          INPLAN_PLUGIN_PUBLIC_KEY: |
+            -----BEGIN PUBLIC KEY-----
+            MCowBQYDK2VwAyEAVP11te5E7xzNJ4reKg0+mAnrr91gcyD1bMr43Homq98=
+            -----END PUBLIC KEY-----
       - name: Publish (OIDC trusted publisher)
         working-directory: release
         run: npm publish --provenance --access public
