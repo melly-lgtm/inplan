@@ -4,6 +4,9 @@
 // provide an `Api` implementation on `window.api`, then mount `<App />`.
 
 export { App, AppRoot } from "./App";
+// Hosts that augment the base api (the desktop merges the verified live-collab binding at startup)
+// install it here, since `window.api` is a frozen contextBridge property and can't be reassigned.
+export { setHostApi } from "./api";
 export { createMemoryApi } from "./memoryApi";
 export { createMemoryCommentStore, reconcileComments, orderComments } from "./commentStore";
 export type { CommentStore } from "./commentStore";

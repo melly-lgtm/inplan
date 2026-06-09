@@ -2,15 +2,16 @@
 
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { AppRoot, type Api } from "@inplan/renderer";
+import { AppRoot, setHostApi, type Api } from "@inplan/renderer";
 import "@inplan/renderer/styles.css";
 
 // The preload exposes the file-backed editor API on `window.api`. When the user is entitled, the
 // main process has loaded + verified the paid live-collab plugin and exposes its connection info
 // via `__inplanCollabHub`. If present, we import the VERIFIED browser bundle (served by main over
 // the privileged `inplan-collab:` scheme — main only serves bytes it signature-verified), connect
-// it to the local hub, and merge the collab binding + comment store + instant mode onto
-// `window.api`. Any failure falls back to the file-backed editor (turn-only).
+// it to the local hub, and merge the collab binding + comment store + instant mode onto the host
+// api via `setHostApi` (`window.api` is a frozen contextBridge property and can't be reassigned).
+// Any failure falls back to the file-backed editor (turn-only).
 interface CollabWindow {
   __inplanCollabHub?: () => Promise<{ hubUrl: string; desktopUrl: string } | null>;
   api?: Api;
@@ -26,8 +27,8 @@ async function bootstrap(): Promise<void> {
     if (info && w.api) {
       const mod = (await import(/* @vite-ignore */ info.desktopUrl)) as DesktopCollabModule;
       const ext = mod.connectDesktopCollab(info.hubUrl);
-      if (ext) {
-        w.api = { ...w.api, collab: ext.collab, commentStore: ext.commentStore, extraModes: ext.extraModes };
+      if (ext && w.api) {
+        setHostApi({ ...w.api, collab: ext.collab, commentStore: ext.commentStore, extraModes: ext.extraModes });
         window.addEventListener("beforeunload", () => {
           try {
             ext.dispose();

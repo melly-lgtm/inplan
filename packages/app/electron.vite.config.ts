@@ -12,6 +12,13 @@ import { defineConfig } from "electron-vite";
 // safe to ship; absent ⇒ a runtime env lookup (dev) and otherwise turn-only (fail-closed).
 const POSTHOG_KEY = process.env.INPLAN_POSTHOG_KEY;
 const COLLAB_PUBLIC_KEY = process.env.INPLAN_COLLAB_PUBLIC_KEY;
+// An absent collab key degrades to a runtime env lookup → otherwise turn-only (fail-closed, safe) —
+// which is correct for dev / source / fork builds. But an OFFICIAL release that forgets to bake the
+// verifier key would silently ship without the paid live-collab trust root. So the release pipeline
+// sets INPLAN_REQUIRE_COLLAB_KEY=1 to turn that silent degrade into a hard, loud build failure.
+if (process.env.INPLAN_REQUIRE_COLLAB_KEY && !COLLAB_PUBLIC_KEY) {
+  throw new Error("INPLAN_REQUIRE_COLLAB_KEY is set but INPLAN_COLLAB_PUBLIC_KEY is missing — refusing to ship a release without the live-collab verifier key.");
+}
 const mainDefine = {
   ...(POSTHOG_KEY ? { "process.env.INPLAN_POSTHOG_KEY": JSON.stringify(POSTHOG_KEY) } : {}),
   ...(COLLAB_PUBLIC_KEY ? { "process.env.INPLAN_COLLAB_PUBLIC_KEY": JSON.stringify(COLLAB_PUBLIC_KEY) } : {}),

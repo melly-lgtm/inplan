@@ -265,23 +265,34 @@ declare global {
 }
 
 // The host's `window.api` is exposed via Electron's contextBridge, which makes it a
-// read-only property — it can't be reassigned. The onboarding sandbox therefore can't
-// swap `window.api`; instead all renderer code reads the api through `hostApi()`, and
-// AppRoot installs/clears a temporary override for the duration of the tour.
+// read-only, frozen property — it can't be reassigned or mutated. So renderer code never
+// touches `window.api` directly; it reads the api through `hostApi()`, layered as:
+//   _apiOverride (the onboarding sample, temporary) ?? _hostApi (the installed base) ?? window.api
+// A host that augments the base api (the desktop merges the paid live-collab binding at
+// startup) installs it via `setHostApi`; AppRoot installs/clears the onboarding override on
+// top, and clearing it falls back to the augmented base — never losing the augmentation.
 let _apiOverride: Api | null = null;
+let _hostApi: Api | null = null;
+
+/** Install the base host api the renderer uses (the desktop calls this to merge the verified
+ *  live-collab binding onto `window.api`, which can't be reassigned). Persists beneath any
+ *  temporary onboarding override. */
+export function setHostApi(api: Api): void {
+  _hostApi = api;
+}
 
 /** Route renderer api access through an optional override (the onboarding sample). */
 export function setApiOverride(api: Api | null): void {
   _apiOverride = api;
 }
 
-/** The api the renderer should use right now: the onboarding override if set, else the host. */
-export function hostApi(): Api {
-  return _apiOverride ?? (window as unknown as { api: Api }).api;
+/** The real host api (installed base, else `window.api`), ignoring any onboarding override —
+ *  for host-level concerns like the desktop window-close intercept and the collab merge. */
+export function realHostApi(): Api {
+  return _hostApi ?? (window as unknown as { api: Api }).api;
 }
 
-/** The real host api, ignoring any onboarding override — for host-level concerns like the
- *  desktop window-close intercept (the throwaway sample doesn't implement those). */
-export function realHostApi(): Api {
-  return (window as unknown as { api: Api }).api;
+/** The api the renderer should use right now: the onboarding override if set, else the host. */
+export function hostApi(): Api {
+  return _apiOverride ?? realHostApi();
 }
