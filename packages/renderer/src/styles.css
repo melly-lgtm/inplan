@@ -115,7 +115,10 @@ body {
 .ap-agent-local { background: #2bb673; }   /* agent on your machine */
 .ap-agent-off { background: var(--danger); } /* no agent connected */
 .ap-agent-pie { width: 13px; height: 13px; border-radius: 50%; flex: 0 0 auto; }
-.ap-agent-menu { position: absolute; top: 34px; left: 0; z-index: 40; width: 220px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 8px; }
+/* Anchor to the trigger's RIGHT edge (it sits on the right of the topbar) so the 220px menu opens
+   leftward and stays on-screen — left:0 made it overflow off the right of the viewport, clipping the
+   item labels. Mirrors .ap-profile-menu. */
+.ap-agent-menu { position: absolute; top: 34px; right: 0; z-index: 40; width: 220px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 8px; }
 .ap-agent-detail { font-size: 12px; padding: 2px 6px 6px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
 .ap-agent-quota { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .ap-agent-policy { display: flex; flex-direction: column; gap: 2px; }
