@@ -1562,7 +1562,11 @@ export function AppRoot(): JSX.Element {
 
   const installSample = useCallback(() => {
     const sample = createMemoryApi({ content: ONBOARDING_SAMPLE, settings: { autoResolve: false } }).api;
-    sample.i18n = (window as unknown as { api?: Api }).api?.i18n; // keep the user's locale during the tour
+    const real = (window as unknown as { api?: Api }).api;
+    sample.i18n = real?.i18n; // keep the user's locale during the tour
+    // Surface the host's extra modes (e.g. the cloud's instant mode) during the tour too, so the
+    // mode switch the user will see in the real editor isn't mysteriously absent in the tutorial.
+    sample.extraModes = real?.extraModes;
     setApiOverride(sample);
   }, []);
 

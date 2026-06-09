@@ -56,4 +56,21 @@ describe("AppRoot onboarding gate", () => {
     expect(screen.queryByText(/welcome to inplan/i)).toBeNull();
     expect(screen.queryByText(/skip tutorial/i)).toBeNull();
   });
+
+  it("surfaces the host's extra modes (e.g. the cloud's instant mode) during the tour", async () => {
+    // A host that advertises a second mode (the cloud injects instant mode this way). The cadence
+    // toggle only renders when more than the built-in TURN mode is available — and it must appear
+    // in the tutorial too, not only in the real editor.
+    const api = createMemoryApi({ content: REAL_DOC }).api;
+    api.extraModes = [
+      { id: "instant", labelKey: "topbar.instant", locksEditor: false, wake: "any-action", autosaveKind: "canonical", autosaveDelayMs: 400, applyKind: "canonical", showFinishTurn: false },
+    ];
+    (window as unknown as { api: unknown }).api = api;
+
+    const { AppRoot } = await import("../src/App");
+    render(<AppRoot />);
+
+    await waitFor(() => expect(document.body.textContent).toContain("Sample Plan")); // the tour, on the sample
+    expect(screen.getByRole("group", { name: /cadence/i })).toBeTruthy(); // the mode switch is present
+  });
 });
