@@ -34,7 +34,7 @@ import { runningEditorPid } from "./editorProcess";
 import { applyGatedEdit } from "./applyEdit";
 import { evaluateAgentEdit } from "./gate";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
-import { loadHubGate, type HubGate } from "./peerGate";
+import { loadPluginGate, type PluginGate } from "./pluginGate";
 import { wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
 import { toolActivityText } from "./relayActivity";
@@ -211,7 +211,7 @@ function logWaitExit(p: DocPaths, reason: string): void {
  * cursor, else "start from now" (current max). It is persisted on return so the
  * agent never hand-manages it and turns can't be skipped.
  */
-async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string, hub: HubGate | null = null): Promise<void> {
+async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string, gate: PluginGate | null = null): Promise<void> {
   const { channel, store } = backend;
   const history = await backend.history();
 
@@ -221,16 +221,16 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
 
   const current = await store.loadDoc();
 
-  // The gate's canonical base: the live hub projection when an entitled peer is connected (the
-  // editor is hosting a loopback hub for this doc — the hub owns it, so we apply through it, never
-  // writing the .md). A hub read failure (editor closed / unreachable) falls back to the file
-  // model. Without a hub it's the persisted canonical (seeded from the file on first run).
-  let useHub = false;
+  // The gate's canonical base: the plugin's projection when an entitled plugin is active (the editor
+  // published a session for this doc — the plugin owns it, so we apply through it, never writing the
+  // .md). A plugin read failure (editor closed / unreachable) falls back to the file model. Without
+  // a plugin it's the persisted canonical (seeded from the file on first run).
+  let usePlugin = false;
   let canonicalText: string;
-  if (hub) {
+  if (gate) {
     try {
-      canonicalText = await hub.readCanonical();
-      useHub = true;
+      canonicalText = await gate.readCanonical();
+      usePlugin = true;
     } catch {
       canonicalText = (await store.getCanonical()) ?? current;
     }
@@ -265,8 +265,8 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
   // decision leaves the proposal pending, never silently accepted.
   const acceptance = acceptanceFrom(history);
   const quarantine = acceptance === "review" && parse(canonicalText).body !== parse(current).body;
-  // `useHub ? hub : null` — only route through the hub when the live read succeeded.
-  await applyGatedEdit(store, channel, ev, { current, canonicalText, quarantine, hub: useHub ? hub : null });
+  // `usePlugin ? gate : null` — only route through the plugin when its read succeeded.
+  await applyGatedEdit(store, channel, ev, { current, canonicalText, quarantine, gate: usePlugin ? gate : null });
 
   // Signal the agent has (re)engaged this round so the editor can clear its
   // "Agent is thinking…" indicator even when the agent made no body change.
@@ -1358,17 +1358,17 @@ async function main(): Promise<void> {
     }
   }
 
-  // If the editor is hosting a loopback live-collab hub for this doc (status.hubUrl, published by
-  // the entitled desktop app), gate the agent through the live doc instead of the .md. The loader
-  // verifies the user's entitlement + the signed peer bundle before loading it; unverified / not
-  // entitled / logged out ⇒ null ⇒ the file-backed gate. Only local docs (not cloud) carry a hub.
-  let hub: HubGate | null = null;
-  const hubUrl = readStatus(docPaths(file).statusPath).hubUrl;
-  if (hubUrl) {
+  // If a runtime plugin is active for this doc (status.pluginSession, published by the entitled
+  // desktop app), gate the agent through the plugin instead of the .md. The loader verifies the
+  // user's entitlement + the signed plugin bundle before loading it; unverified / not entitled /
+  // logged out ⇒ null ⇒ the file-backed gate. Only local docs (not cloud) carry a plugin session.
+  let gate: PluginGate | null = null;
+  const pluginSession = readStatus(docPaths(file).statusPath).pluginSession;
+  if (pluginSession) {
     const session = await authedSession();
-    hub = await loadHubGate(hubUrl, { token: session?.session.access_token ?? null });
+    gate = await loadPluginGate(pluginSession, { token: session?.session.access_token ?? null });
   }
-  await waitCycle(fsBackend(file), explicitCursor, confirmed, model, hub);
+  await waitCycle(fsBackend(file), explicitCursor, confirmed, model, gate);
 }
 
 main().catch((err) => {

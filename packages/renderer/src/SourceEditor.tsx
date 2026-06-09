@@ -5,7 +5,7 @@ import { Compartment, EditorState, Prec, StateEffect, StateField } from "@codemi
 import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
-import type { CollabBinding } from "./api";
+import type { EditorBinding } from "./api";
 
 export interface SourceEditorHandle {
   /** Scroll to a 0-based source line and highlight it. */
@@ -48,8 +48,8 @@ const findField = StateField.define<{ deco: DecorationSet; query: string; ci: bo
 
 export const SourceEditor = forwardRef<
   SourceEditorHandle,
-  { value: string; editable: boolean; onChange: (v: string) => void; onCursorLine?: (line: number) => void; onFind?: () => void; find?: { query: string; ci: boolean } | null; collab?: CollabBinding | null }
->(function SourceEditor({ value, editable, onChange, onCursorLine, onFind, find, collab }, ref): JSX.Element {
+  { value: string; editable: boolean; onChange: (v: string) => void; onCursorLine?: (line: number) => void; onFind?: () => void; find?: { query: string; ci: boolean } | null; binding?: EditorBinding | null }
+>(function SourceEditor({ value, editable, onChange, onCursorLine, onFind, find, binding }, ref): JSX.Element {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const editableComp = useRef(new Compartment());
@@ -59,8 +59,8 @@ export const SourceEditor = forwardRef<
   onCursorLineRef.current = onCursorLine;
   const onFindRef = useRef(onFind);
   onFindRef.current = onFind;
-  const collabRef = useRef(collab);
-  collabRef.current = collab;
+  const bindingRef = useRef(binding);
+  bindingRef.current = binding;
 
   useImperativeHandle(ref, () => ({
     scrollToLine(line: number) {
@@ -90,8 +90,8 @@ export const SourceEditor = forwardRef<
     const v = new EditorView({
       parent: host.current,
       state: EditorState.create({
-        // In collab mode the injected binding owns the content; otherwise the controlled value.
-        doc: collab ? collab.getText() : value,
+        // With a plugin binding, it owns the content; otherwise the controlled value.
+        doc: binding ? binding.getText() : value,
         extensions: [
           // ⌘F should open the app's find bar, not CodeMirror's own search panel.
           Prec.highest(
@@ -116,8 +116,8 @@ export const SourceEditor = forwardRef<
               onCursorLineRef.current(u.state.doc.lineAt(u.state.selection.main.head).number - 1);
             }
           }),
-          // Live collaboration: host-injected binding extensions (e.g. yCollab + remote cursors).
-          ...(collab ? collab.extensions : []),
+          // Plugin-injected binding extensions (e.g. remote cursors).
+          ...(binding ? binding.extensions : []),
         ],
       }),
     });
@@ -128,7 +128,7 @@ export const SourceEditor = forwardRef<
 
   useEffect(() => {
     const v = view.current;
-    if (!v || collabRef.current) return; // in collab mode ***REMOVED*** is the source of truth
+    if (!v || bindingRef.current) return; // with a plugin binding, it is the source of truth
     const current = v.state.doc.toString();
     if (value !== current) {
       v.dispatch({ changes: { from: 0, to: current.length, insert: value } });

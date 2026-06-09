@@ -5,30 +5,30 @@ import { createRoot } from "react-dom/client";
 import { AppRoot, setHostApi, type Api } from "@inplan/renderer";
 import "@inplan/renderer/styles.css";
 
-// The preload exposes the file-backed editor API on `window.api`. When the user is entitled, the
-// main process has loaded + verified the paid live-collab plugin and exposes its connection info
-// via `__inplanCollabHub`. If present, we import the VERIFIED browser bundle (served by main over
-// the privileged `inplan-collab:` scheme — main only serves bytes it signature-verified), connect
-// it to the local hub, and merge the collab binding + comment store + instant mode onto the host
-// api via `setHostApi` (`window.api` is a frozen contextBridge property and can't be reassigned).
-// Any failure falls back to the file-backed editor (turn-only).
-interface CollabWindow {
-  __inplanCollabHub?: () => Promise<{ hubUrl: string; desktopUrl: string } | null>;
+// The preload exposes the file-backed editor API on `window.api`. When a runtime plugin is entitled,
+// the main process has verified it and exposes its info via `__inplanPlugin`. If present, we import
+// the VERIFIED plugin renderer entry (served by main over the privileged `inplan-plugin:` scheme —
+// main only serves bytes it signature-verified), activate it with the opaque session, and merge the
+// capabilities it returns (binding / comment store / extra modes) onto the host api via `setHostApi`
+// (`window.api` is a frozen contextBridge property and can't be reassigned). Any failure falls back
+// to the plain file-backed editor.
+interface PluginWindow {
+  __inplanPlugin?: () => Promise<{ session: string; rendererUrl: string } | null>;
   api?: Api;
 }
-interface DesktopCollabModule {
-  connectDesktopCollab: (hubUrl: string) => { collab: Api["collab"]; commentStore: Api["commentStore"]; extraModes: Api["extraModes"]; dispose: () => void } | null;
+interface PluginRendererModule {
+  activate: (session: string) => { binding?: Api["binding"]; commentStore?: Api["commentStore"]; extraModes?: Api["extraModes"]; dispose: () => void } | null;
 }
 
 async function bootstrap(): Promise<void> {
-  const w = window as unknown as CollabWindow;
+  const w = window as unknown as PluginWindow;
   try {
-    const info = w.__inplanCollabHub ? await w.__inplanCollabHub() : null;
+    const info = w.__inplanPlugin ? await w.__inplanPlugin() : null;
     if (info && w.api) {
-      const mod = (await import(/* @vite-ignore */ info.desktopUrl)) as DesktopCollabModule;
-      const ext = mod.connectDesktopCollab(info.hubUrl);
+      const mod = (await import(/* @vite-ignore */ info.rendererUrl)) as PluginRendererModule;
+      const ext = mod.activate(info.session);
       if (ext && w.api) {
-        setHostApi({ ...w.api, collab: ext.collab, commentStore: ext.commentStore, extraModes: ext.extraModes });
+        setHostApi({ ...w.api, binding: ext.binding, commentStore: ext.commentStore, extraModes: ext.extraModes });
         window.addEventListener("beforeunload", () => {
           try {
             ext.dispose();
@@ -39,8 +39,8 @@ async function bootstrap(): Promise<void> {
       }
     }
   } catch (err) {
-    // A collab wiring failure must never block the editor — fall back to the file-backed api.
-    console.error("[inplan] live-collab unavailable; using the file-backed editor", err);
+    // A plugin wiring failure must never block the editor — fall back to the file-backed api.
+    console.error("[inplan] plugin unavailable; using the file-backed editor", err);
   }
 
   const root = document.getElementById("root");

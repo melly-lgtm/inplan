@@ -2,13 +2,13 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <!-- The paid live-collab plugin (when entitled): the renderer imports the verified bundle main
-         serves over the privileged inplan-collab: scheme (script-src), and the ***REMOVED*** binding connects
-         to the editor-hosted loopback hub (connect-src ws://127.0.0.1). Both are inert on the
-         open-core / free path (main exposes nothing to import + hosts no hub). -->
+    <!-- A runtime plugin (when entitled): the renderer imports the verified bundle main serves over
+         the privileged inplan-plugin: scheme (script-src), and the plugin may connect to an
+         editor-hosted loopback endpoint (connect-src ws://127.0.0.1). Both are inert on the base /
+         no-plugin path (main exposes nothing to import + runs no plugin). -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' inplan-collab:; connect-src 'self' inplan-collab: ws://127.0.0.1:* ws://localhost:*"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' inplan-plugin:; connect-src 'self' inplan-plugin: ws://127.0.0.1:* ws://localhost:*"
     />
     <title>inplan</title>
   </head>

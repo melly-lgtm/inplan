@@ -149,8 +149,8 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [loaded, setLoaded] = useState(false);
   const [doc, setDoc] = useState<ParsedDocument>(EMPTY);
   const [cadence, setCadence] = useState<Cadence>("turn");
-  // Available collaboration modes: the built-in TURN plus any the host advertises (the cloud's
-  // instant mode). The active mode's descriptor drives lock/autosave/apply/Finish-turn behaviour.
+  // Available modes: the built-in TURN plus any a plugin advertises via extraModes. The active
+  // mode's descriptor drives lock/autosave/apply/Finish-turn behaviour.
   const modes = useMemo(() => [TURN_MODE, ...(hostApi().extraModes ?? [])], []);
   const mode = resolveMode(cadence, modes);
   const [acceptance, setAcceptance] = useState<Acceptance>("review"); // first-run default: agent parks edits for review
@@ -265,7 +265,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       .then(({ content, path }) => {
         docPathRef.current = path;
         const parsed = parse(content);
-        // With a comment store (web/cloud) comments are owned by the shared ***REMOVED***, not the
+        // With an external comment store (plugin) comments are owned by the store, not the
         // serialized body — source them from the store; its observer keeps them in sync.
         const d = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
         setDoc(d);
@@ -283,7 +283,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     const subs: Array<(() => void) | void> = [
       hostApi().onExternalChange(({ content }) => {
         const parsed = parse(content);
-        // Store-backed (collab): comments are owned by the shared store, not the rewritten
+        // Store-backed (plugin): comments are owned by the external store, not the rewritten
         // body — keep them from the store so an agent/body refresh can't blank/stale the rail.
         const next = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
         setAgentThinking(false);
@@ -333,8 +333,8 @@ export function App(props: EditorProps = {}): JSX.Element {
       hostApi().onNavState?.((s) => setNavState(s)),
       // Desktop only: a newer npm version is available.
       hostApi().onUpdateAvailable?.((info) => setUpdate(info)),
-      // Comment store (web/cloud): adopt the shared ***REMOVED***'s comments whenever a peer (or this
-      // editor) changes them. Body stays driven by the editor/ytext; only `comments` is synced.
+      // Comment store (plugin): adopt the external store's comments whenever it (or this editor)
+      // changes them. Body stays driven by the editor/binding; only `comments` is synced.
       commentStore?.observe(() => setDoc((d) => ({ ...d, comments: commentStore.list() }))),
     ];
 
@@ -523,9 +523,9 @@ export function App(props: EditorProps = {}): JSX.Element {
       if (commentOnly) {
         const store = hostApi().commentStore;
         if (store) {
-          // Comments live in the shared store (***REMOVED***). Write only the delta — the collab server
-          // persists the ***REMOVED***, so there's no documents.body save here (that second writer is
-          // exactly what caused the back-and-forth-nav data loss, #71).
+          // Comments live in the external store (plugin). Write only the delta — the store
+          // persists them, so there's no body save here (that second writer is exactly what
+          // caused the back-and-forth-nav data loss, #71).
           reconcileComments(store, docRef.current.comments, next.comments);
           setDirty(false);
         } else {
@@ -1446,7 +1446,7 @@ export function App(props: EditorProps = {}): JSX.Element {
             ) : (
               <SourceEditor
                 ref={editorRef}
-                collab={hostApi().collab ?? null}
+                binding={hostApi().binding ?? null}
                 value={doc.body}
                 editable={!editingLocked}
                 onChange={(body) => {

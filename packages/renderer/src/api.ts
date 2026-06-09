@@ -5,14 +5,14 @@ import type { Comment } from "@inplan/core";
 import type { CommentStore } from "./commentStore";
 import type { ModeDescriptor, ModePolicy } from "./mode";
 
-/** A live-collaboration binding the host can inject into the source editor. Open-core ships no
- *  collaboration transport; a host that has one (the cloud edition) builds the CodeMirror
- *  `extensions` (e.g. via `yCollab`) and supplies the shared document's current `getText`. When
- *  present, the editor binds to it (multiplayer) instead of being a controlled single-writer. */
-export interface CollabBinding {
-  /** CodeMirror extensions that bind the editor to the shared document. */
+/** A binding a plugin can inject to drive the source editor from an external document source.
+ *  Open-core ships no such source; a plugin that has one supplies the CodeMirror `extensions` that
+ *  bind the editor and the source's current `getText`. When present, the editor binds to it instead
+ *  of being a controlled single-writer. */
+export interface EditorBinding {
+  /** CodeMirror extensions that bind the editor to the external document. */
   extensions: Extension[];
-  /** The shared document's current text, used to seed the editor (the binding then owns content). */
+  /** The external document's current text, used to seed the editor (the binding then owns content). */
   getText: () => string;
 }
 
@@ -236,13 +236,13 @@ export interface Api {
   /** Desktop only: the window swapped to another doc (in-window link follow); the
    *  renderer resets to this payload like a fresh load. */
   onNavigated?(cb: (payload: DocPayload) => void): (() => void) | void;
-  /** Live-collaboration binding for the source editor, if the host provides one
-   *  (web/cloud). Absent/null on desktop + tests (single-writer). */
-  collab?: CollabBinding | null;
-  /** Comment seam: when the host provides a store (web/cloud, ***REMOVED***-backed), the editor
-   *  sources comments from it and routes comment CRUD through it (so comments live in the
-   *  shared ***REMOVED***, not in documents.body via save()). Absent ⇒ the editor owns comments in
-   *  its parsed document and serializes them on save (desktop / tests). */
+  /** External-source binding for the source editor, if a plugin provides one. Absent/null on the
+   *  base single-writer path (no plugin) + tests. */
+  binding?: EditorBinding | null;
+  /** Comment seam: when a plugin provides an external store, the editor sources comments from it
+   *  and routes comment CRUD through it (so comments live in the plugin's shared store, not in the
+   *  serialized body via save()). Absent ⇒ the editor owns comments in its parsed document and
+   *  serializes them on save (the base single-writer path / tests). */
   commentStore?: CommentStore | null;
   /** Identity + presence for the shared `<ProfileMenu>`, when the host wires one
    *  (web/cloud, and the signed-in desktop app). Absent on tests / single-writer. */

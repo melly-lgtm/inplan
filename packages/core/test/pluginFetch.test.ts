@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { resolveDesktopCollab, type LeaseClaims } from "../src/node";
+import { resolveDesktopPlugin, type LeaseClaims } from "../src/node";
 
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 const pub = publicKey.export({ type: "spki", format: "pem" }).toString();
@@ -17,8 +17,8 @@ const entry = (name: string, bytes: Buffer) => ({ name, sha384: createHash("sha3
 
 const DESKTOP = Buffer.from("export const desktop = 1;\n");
 const HUB = Buffer.from("export const hub = 1;\n");
-const BUNDLE = "https://bundle.example/collab/";
-const API = "https://collab.example";
+const BUNDLE = "https://bundle.example/plugin/";
+const API = "https://plugin.example";
 
 // A fake fetch over a {url: {ok, json?, bytes?}} table.
 function fakeFetch(table: Record<string, { ok: boolean; json?: unknown; bytes?: Buffer }>): typeof fetch {
@@ -36,7 +36,7 @@ function fakeFetch(table: Record<string, { ok: boolean; json?: unknown; bytes?: 
 
 const manifest = { version: "v1", files: [entry("desktop.js", DESKTOP), entry("hub.js", HUB)] };
 const happyTable = {
-  [`${API}/api/v1/desktop-collab`]: { ok: true, json: { entitled: true, lease: lease(9_999_999_999_999), bundleUrl: BUNDLE } },
+  [`${API}/api/v1/desktop-plugin`]: { ok: true, json: { entitled: true, lease: lease(9_999_999_999_999), bundleUrl: BUNDLE } },
   [`${BUNDLE}manifest.json`]: { ok: true, json: manifest },
   [`${BUNDLE}desktop.js`]: { ok: true, bytes: DESKTOP },
   [`${BUNDLE}hub.js`]: { ok: true, bytes: HUB },
@@ -47,11 +47,11 @@ afterEach(() => {
   if (dir) rmSync(dir, { recursive: true, force: true });
   dir = "";
 });
-const cacheDir = () => (dir = mkdtempSync(join(tmpdir(), "inplan-collab-")));
+const cacheDir = () => (dir = mkdtempSync(join(tmpdir(), "inplan-plugin-")));
 
-describe("resolveDesktopCollab", () => {
+describe("resolveDesktopPlugin", () => {
   it("entitled online → fetches, verifies, caches, returns verified paths + lease", async () => {
-    const r = await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cacheDir(), publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
+    const r = await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cacheDir(), publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
     expect(r).not.toBeNull();
     expect(r!.version).toBe("v1");
     expect(r!.lease.plan).toBe("pro");
@@ -63,91 +63,91 @@ describe("resolveDesktopCollab", () => {
     // The bundle is built format:"esm" but named .js; without a package.json a bare .js in the cache
     // is treated as CommonJS and `import()` throws on `export`. fetchAndCache must write type:module.
     const cd = cacheDir();
-    await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
+    await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
     expect(JSON.parse(readFileSync(join(cd, "v1", "package.json"), "utf8"))).toEqual({ type: "module" });
   });
 
   it("server says entitled:false → null (and does not fall back to a stale cache)", async () => {
     const cd = cacheDir();
     // Prime a valid cache first.
-    await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
-    const r = await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch({ [`${API}/api/v1/desktop-collab`]: { ok: true, json: { entitled: false } } }) });
+    await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
+    const r = await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch({ [`${API}/api/v1/desktop-plugin`]: { ok: true, json: { entitled: false } } }) });
     expect(r).toBeNull();
   });
 
   it("offline (fetch throws) but cached lease still valid → returns the cached bundle", async () => {
     const cd = cacheDir();
-    await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
+    await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
     const offline = (async () => {
       throw new Error("offline");
     }) as unknown as typeof fetch;
-    const r = await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 2000, fetchImpl: offline });
+    const r = await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 2000, fetchImpl: offline });
     expect(r?.version).toBe("v1");
   });
 
   it("offline + cached lease expired → null", async () => {
     const cd = cacheDir();
     // Cache a lease that expires at 5000.
-    const tbl = { ...happyTable, [`${API}/api/v1/desktop-collab`]: { ok: true, json: { entitled: true, lease: lease(5000), bundleUrl: BUNDLE } } };
-    await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(tbl) });
+    const tbl = { ...happyTable, [`${API}/api/v1/desktop-plugin`]: { ok: true, json: { entitled: true, lease: lease(5000), bundleUrl: BUNDLE } } };
+    await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(tbl) });
     const offline = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
-    expect(await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 6000, fetchImpl: offline })).toBeNull();
+    expect(await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 6000, fetchImpl: offline })).toBeNull();
   });
 
   it("tampered cached bundle file → null (re-verified on load)", async () => {
     const cd = cacheDir();
-    const r = await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
+    const r = await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
     writeFileSync(r!.files["hub.js"]!, "evil()\n"); // tamper the cache
     const offline = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
-    expect(await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 2000, fetchImpl: offline })).toBeNull();
+    expect(await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 2000, fetchImpl: offline })).toBeNull();
   });
 
   it("refuses to cache a bundle file whose signature doesn't match the baked key", async () => {
     const other = generateKeyPairSync("ed25519").privateKey;
     const badEntry = { name: "hub.js", sha384: createHash("sha384").update(HUB).digest("base64"), sig: sign(null, HUB, other).toString("base64") };
     const tbl = {
-      [`${API}/api/v1/desktop-collab`]: { ok: true, json: { entitled: true, lease: lease(9_999_999_999_999), bundleUrl: BUNDLE } },
+      [`${API}/api/v1/desktop-plugin`]: { ok: true, json: { entitled: true, lease: lease(9_999_999_999_999), bundleUrl: BUNDLE } },
       [`${BUNDLE}manifest.json`]: { ok: true, json: { version: "v2", files: [badEntry] } },
       [`${BUNDLE}hub.js`]: { ok: true, bytes: HUB },
     };
-    expect(await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cacheDir(), publicKey: pub, now: 1000, fetchImpl: fakeFetch(tbl) })).toBeNull();
+    expect(await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cacheDir(), publicKey: pub, now: 1000, fetchImpl: fakeFetch(tbl) })).toBeNull();
   });
 
   it("no public key (unconfigured build) → null without any fetch", async () => {
     let called = false;
     const spy = (async () => { called = true; return { ok: false } as Response; }) as unknown as typeof fetch;
-    expect(await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cacheDir(), publicKey: "", now: 1000, fetchImpl: spy })).toBeNull();
+    expect(await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cacheDir(), publicKey: "", now: 1000, fetchImpl: spy })).toBeNull();
     expect(called).toBe(false);
   });
 
   it("logged out (no token) + no cache → null", async () => {
-    expect(await resolveDesktopCollab({ apiBase: API, token: null, cacheDir: cacheDir(), publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) })).toBeNull();
+    expect(await resolveDesktopPlugin({ apiBase: API, token: null, cacheDir: cacheDir(), publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) })).toBeNull();
   });
 
   it("rejects a manifest whose entry name escapes the cache dir (path traversal) without writing it", async () => {
     const cd = cacheDir();
     const evil = entry("../../escape.js", HUB); // a signed file, but the NAME tries to climb out
     const tbl = {
-      [`${API}/api/v1/desktop-collab`]: { ok: true, json: { entitled: true, lease: lease(9_999_999_999_999), bundleUrl: BUNDLE } },
+      [`${API}/api/v1/desktop-plugin`]: { ok: true, json: { entitled: true, lease: lease(9_999_999_999_999), bundleUrl: BUNDLE } },
       [`${BUNDLE}manifest.json`]: { ok: true, json: { version: "v1", files: [evil] } },
       [`${BUNDLE}../../escape.js`]: { ok: true, bytes: HUB },
     };
-    expect(await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(tbl) })).toBeNull();
+    expect(await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(tbl) })).toBeNull();
     expect(existsSync(join(cd, "..", "..", "escape.js"))).toBe(false); // never written outside the root
   });
 
   it("rejects a manifest whose version escapes the cache dir (path traversal)", async () => {
     const tbl = { ...happyTable, [`${BUNDLE}manifest.json`]: { ok: true, json: { version: "../../evil", files: manifest.files } } };
-    expect(await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cacheDir(), publicKey: pub, now: 1000, fetchImpl: fakeFetch(tbl) })).toBeNull();
+    expect(await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cacheDir(), publicKey: pub, now: 1000, fetchImpl: fakeFetch(tbl) })).toBeNull();
   });
 
   it("fail-closed: an online entitled grant with an invalid-signature lease → null even with a valid cache", async () => {
     const cd = cacheDir();
-    await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) }); // prime a valid cache
+    await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) }); // prime a valid cache
     const other = generateKeyPairSync("ed25519").privateKey;
     const body = Buffer.from(JSON.stringify({ sub: "u1", plan: "pro", features: ["instant"], iat: 0, exp: 9_999_999_999_999 })).toString("base64url");
     const forgedLease = `${body}.${sign(null, Buffer.from(body), other).toString("base64url")}`; // signed by the wrong key
-    const tbl = { [`${API}/api/v1/desktop-collab`]: { ok: true, json: { entitled: true, lease: forgedLease, bundleUrl: BUNDLE } } };
-    expect(await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 2000, fetchImpl: fakeFetch(tbl) })).toBeNull();
+    const tbl = { [`${API}/api/v1/desktop-plugin`]: { ok: true, json: { entitled: true, lease: forgedLease, bundleUrl: BUNDLE } } };
+    expect(await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 2000, fetchImpl: fakeFetch(tbl) })).toBeNull();
   });
 });

@@ -11,16 +11,16 @@ import { isOnboarded, markOnboarded, parse, serialize, type Comment } from "@inp
 import { Session } from "./session";
 import { createI18nController } from "./i18nController";
 import { track, type TelemetryProps } from "./telemetry";
-import { registerCollabScheme, handleCollabScheme, collabInfo, startDesktopCollab, stopDesktopCollab } from "./desktopCollab";
+import { registerPluginScheme, handlePluginScheme, pluginInfo, startDesktopPlugin, stopDesktopPlugin } from "./desktopPlugin";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Privileged scheme for the (paid) live-collab plugin — must register before app 'ready'. No-op
-// effect unless an entitled, verified bundle is later loaded (startDesktopCollab).
-registerCollabScheme();
+// Privileged scheme for runtime plugins — must register before app 'ready'. No-op effect unless an
+// entitled, verified plugin bundle is later loaded (startDesktopPlugin).
+registerPluginScheme();
 
-/** Mint the user's JWT for the entitlement check (the CLI owns auth; logged-out ⇒ null). */
-const collabToken = (): Promise<string | null> =>
+/** Mint the user's token for the plugin entitlement check (the CLI owns auth; logged-out ⇒ null). */
+const pluginToken = (): Promise<string | null> =>
   runCli(["token"]).then((r) => {
     try {
       return (JSON.parse(r.stdout.trim() || "{}") as { token?: string }).token ?? null;
@@ -281,18 +281,18 @@ function navigateTo(file: string): boolean {
   session.logEditorPid(process.pid);
   stopWatching = watchSession();
   setDocTitle(file);
-  void refreshCollabAndView(file);
+  void refreshPluginAndView(file);
   return true;
 }
 
-/** After a doc swap: restart the (paid) collab plugin for the new file. If it's active, reload the
- *  renderer so it re-bootstraps against the new hub (the binding is bound at editor init); else
- *  take the light file-backed path (send the new doc to the existing renderer). */
-async function refreshCollabAndView(file: string): Promise<void> {
-  await stopDesktopCollab();
-  await startDesktopCollab(file, collabToken);
+/** After a doc swap: restart the plugin for the new file. If a plugin is active, reload the renderer
+ *  so it re-bootstraps against the new session (the binding is bound at editor init); else take the
+ *  light file-backed path (send the new doc to the existing renderer). */
+async function refreshPluginAndView(file: string): Promise<void> {
+  await stopDesktopPlugin();
+  await startDesktopPlugin(file, pluginToken);
   if (!win || !session) return;
-  if (collabInfo()) win.webContents.reload();
+  if (pluginInfo()) win.webContents.reload();
   else win.webContents.send("doc:navigated", session.load());
 }
 
@@ -397,7 +397,7 @@ function createWindow(): void {
 
   win.on("closed", () => {
     stopWatching?.();
-    void stopDesktopCollab();
+    void stopDesktopPlugin();
     win = null;
   });
 }
@@ -581,8 +581,8 @@ function registerIpc(): void {
   // Localization seam (paid perk): the renderer reads the snapshot + switches locale.
   ipcMain.handle("i18n:get", () => i18n.getSnapshot());
   ipcMain.handle("i18n:set-locale", (_e, code: string) => i18n.setLocale(code));
-  // Live-collab connection info for the renderer ({hubUrl, desktopUrl} | null). Null ⇒ turn-only.
-  ipcMain.handle("collab:hub", () => collabInfo());
+  // Plugin connection info for the renderer ({session, rendererUrl} | null). Null ⇒ no plugin.
+  ipcMain.handle("plugin:info", () => pluginInfo());
 }
 
 void app.whenReady().then(async () => {
@@ -590,7 +590,7 @@ void app.whenReady().then(async () => {
   // `icon`); set it explicitly so we don't show the default Electron icon when run via
   // the bundled `electron` dependency.
   if (process.platform === "darwin" && !appIcon.isEmpty()) app.dock?.setIcon(appIcon);
-  handleCollabScheme(); // serve the verified collab bundle to the renderer (when one is loaded)
+  handlePluginScheme(); // serve the verified plugin bundle to the renderer (when one is loaded)
   const target = resolveTargetFile();
   if (target) {
     session = new Session(target);
@@ -598,7 +598,7 @@ void app.whenReady().then(async () => {
     session.logEditorPid(process.pid);
     navHistory.push(target);
     navIdx = 0;
-    await startDesktopCollab(target, collabToken); // entitlement-gated; fail-soft to turn-only
+    await startDesktopPlugin(target, pluginToken); // entitlement-gated; fail-soft to no-plugin
     track("app_opened", session.getSettings().telemetry === true); // opt-in only
   }
   registerIpc();

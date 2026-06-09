@@ -25,7 +25,7 @@ export type {
   SaveOptions,
   Settings,
   DocPayload,
-  CollabBinding,
+  EditorBinding,
   AgentLocation,
   AgentPolicy,
   ProfileMenuItem,

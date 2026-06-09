@@ -170,6 +170,6 @@ const api: Api = {
 // and — when the paid live-collab plugin is loaded — augments it with the collab binding it
 // imports from the verified bundle (see renderer/main.tsx).
 contextBridge.exposeInMainWorld("api", api);
-// Live-collab connection info ({ hubUrl, desktopUrl } | null) for the renderer to decide whether
-// to load the (verified) collab bundle. Null on the open-core / free / logged-out path.
-contextBridge.exposeInMainWorld("__inplanCollabHub", () => ipcRenderer.invoke("collab:hub") as Promise<{ hubUrl: string; desktopUrl: string } | null>);
+// Runtime-plugin info ({ session, rendererUrl } | null) for the renderer to decide whether to load
+// the (verified) plugin bundle. Null on the base / no-plugin / logged-out path.
+contextBridge.exposeInMainWorld("__inplanPlugin", () => ipcRenderer.invoke("plugin:info") as Promise<{ session: string; rendererUrl: string } | null>);

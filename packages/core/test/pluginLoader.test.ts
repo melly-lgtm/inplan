@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { verifyLease, verifyBundleBytes, type LeaseClaims, type BundleManifestEntry } from "../src/collabLoader";
+import { verifyLease, verifyBundleBytes, type LeaseClaims, type BundleManifestEntry } from "../src/pluginLoader";
 
 const kp = () => {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -10,7 +10,7 @@ const kp = () => {
 };
 const { pub, priv } = kp();
 
-// Mint a lease exactly as the collab server's signLease does: base64url(payload).base64url(sig).
+// Mint a lease exactly as the plugin server signLease does: base64url(payload).base64url(sig).
 function mintLease(claims: LeaseClaims): string {
   const body = Buffer.from(JSON.stringify(claims)).toString("base64url");
   const s = sign(null, Buffer.from(body), priv).toString("base64url");

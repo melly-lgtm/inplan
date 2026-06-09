@@ -11,5 +11,5 @@ export * from "./paths";
 export * from "./settings";
 export * from "./onboarding";
 export * from "./status";
-export * from "./collabLoader";
-export * from "./collabFetch";
+export * from "./pluginLoader";
+export * from "./pluginFetch";

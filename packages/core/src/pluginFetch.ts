@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// Desktop collab plugin: fetch → verify → cache (the orchestration around the verify core). Used
-// by the app main and the CLI. Open-core ships this loader but NEVER the plugin code — it only
-// runs a bundle whose Ed25519 signature + sha384 validate against the baked-in public key.
+// Runtime plugin loader: fetch → verify → cache (the orchestration around the verify core). Used by
+// the app main and the CLI. Open-core ships this loader but NEVER any plugin code — it only runs a
+// bundle whose Ed25519 signature + sha384 validate against the baked-in public key.
 //
-// Flow: ask the collab server (with the user's JWT) whether this user is entitled; if so, verify
+// Flow: ask the plugin server (with the user's token) whether this user is entitled; if so, verify
 // the short-lived lease, fetch the signed bundle, verify every file, and cache it under
-// `<cacheDir>/<version>/`. Offline, fall back to the cached bundle while its lease is unexpired —
-// so a lapsed subscription stops the perk within one lease window. Anything unverified / not
-// entitled / expired ⇒ null (the caller falls back to the turn-only file editor).
+// `<cacheDir>/<version>/`. Offline, fall back to the cached bundle while its lease is unexpired — so
+// a lapsed entitlement disables the plugin within one lease window. Anything unverified / not
+// entitled / expired ⇒ null (the caller runs without the plugin).
 //
 // SECURITY: cached files are RE-VERIFIED on every load (we never trust a cached path alone), and
 // `import()` of any file must be gated on this returning it. fs + network; node:crypto via the
@@ -16,11 +16,23 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { COLLAB_PUBLIC_KEY, verifyBundleBytes, verifyLease, type BundleManifestEntry, type LeaseClaims } from "./collabLoader";
+import { PLUGIN_PUBLIC_KEY, verifyBundleBytes, verifyLease, type BundleManifestEntry, type LeaseClaims } from "./pluginLoader";
+
+/** Which bundle file fills each host role. The plugin names its own files; open-core loads them by
+ *  role, so the base repo never hardcodes a plugin-specific filename. */
+export interface PluginEntries {
+  /** Node entry the app main imports to start the plugin (returns an opaque session string). */
+  main?: string;
+  /** Browser entry the renderer imports (over the privileged scheme) to activate the plugin. */
+  renderer?: string;
+  /** Node entry the CLI imports to gate the agent through the plugin. */
+  cli?: string;
+}
 
 interface Manifest {
   version: string;
   files: BundleManifestEntry[];
+  entries?: PluginEntries;
 }
 
 /** Join `child` under `root`, returning null if it escapes the root. The manifest's `version` and
@@ -33,23 +45,25 @@ function safeJoin(root: string, child: string): string | null {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel)) ? full : null;
 }
 
-export interface ResolvedCollab {
+export interface ResolvedPlugin {
   /** The verified entitlement lease. */
   lease: LeaseClaims;
   /** Bundle version (cache subdir). */
   version: string;
-  /** Verified local paths by file name (e.g. { "hub.js": "/…/hub.js" }). Safe to import(). */
+  /** Verified local paths by file name. Safe to import(). */
   files: Record<string, string>;
+  /** Role → filename, from the manifest (which file is the main/renderer/cli entry). */
+  entries: PluginEntries;
 }
 
-export interface ResolveCollabOptions {
-  /** Collab HTTP base, e.g. "https://inplan-collab.fly.dev" (ws→http already mapped). */
+export interface ResolvePluginOptions {
+  /** Plugin server HTTP base, e.g. "https://…fly.dev" (ws→http already mapped). */
   apiBase: string;
-  /** The user's Supabase JWT (from `inplan token`), or null when logged out. */
+  /** The user's auth token (from `inplan token`), or null when logged out. */
   token: string | null;
-  /** Cache root, e.g. `<INPLAN_HOME>/collab-cache`. */
+  /** Cache root, e.g. `<INPLAN_HOME>/plugin-cache`. */
   cacheDir: string;
-  /** Defaults to the baked-in COLLAB_PUBLIC_KEY. */
+  /** Defaults to the baked-in PLUGIN_PUBLIC_KEY. */
   publicKey?: string;
   now?: number;
   /** Injectable fetch (tests). */
@@ -60,7 +74,7 @@ const base = (u: string): string => (u.endsWith("/") ? u : `${u}/`);
 
 /** Read a cached bundle version and RE-VERIFY it (lease + every file) before returning. Returns
  *  null if the lease is missing/expired/invalid or any file fails verification (tampered cache). */
-function loadCached(cacheDir: string, version: string, publicKey: string, now: number): ResolvedCollab | null {
+function loadCached(cacheDir: string, version: string, publicKey: string, now: number): ResolvedPlugin | null {
   try {
     const dir = safeJoin(cacheDir, version);
     if (!dir) return null; // version escapes the cache root
@@ -75,7 +89,7 @@ function loadCached(cacheDir: string, version: string, publicKey: string, now: n
       if (!verifyBundleBytes(readFileSync(path), entry, publicKey)) return null; // re-verify, never trust the path
       files[entry.name] = path;
     }
-    return { lease, version, files };
+    return { lease, version, files, entries: manifest.entries ?? {} };
   } catch {
     return null;
   }
@@ -84,7 +98,7 @@ function loadCached(cacheDir: string, version: string, publicKey: string, now: n
 /** Fetch the manifest + each file, verifying every file before writing, then cache the lease +
  *  manifest + files under <cacheDir>/<version>/ and record it as current. Returns the version, or
  *  null on any fetch / verification failure (nothing unverified is ever cached or returned). */
-async function fetchAndCache(bundleUrl: string, leaseToken: string, opts: Required<Pick<ResolveCollabOptions, "cacheDir" | "publicKey" | "fetchImpl">>): Promise<string | null> {
+async function fetchAndCache(bundleUrl: string, leaseToken: string, opts: Required<Pick<ResolvePluginOptions, "cacheDir" | "publicKey" | "fetchImpl">>): Promise<string | null> {
   const root = base(bundleUrl);
   const mres = await opts.fetchImpl(`${root}manifest.json`);
   if (!mres.ok) return null;
@@ -93,10 +107,10 @@ async function fetchAndCache(bundleUrl: string, leaseToken: string, opts: Requir
   const dir = safeJoin(opts.cacheDir, manifest.version);
   if (!dir) return null; // version escapes the cache root
   mkdirSync(dir, { recursive: true });
-  // The bundle files are ESM (format:"esm") but named `.js`; Node treats a bare `.js` as CJS unless
-  // the nearest package.json says otherwise, so a Node-side `import()` of hub.js/peer.js would throw
-  // on `export`. Mark the cache dir as an ESM scope so they load as modules. (desktop.js is imported
-  // by the renderer over a scheme — browser ESM by MIME — so this only matters for the Node files.)
+  // Plugin bundle files are ESM (format:"esm") but named `.js`; Node treats a bare `.js` as CJS
+  // unless the nearest package.json says otherwise, so a Node-side `import()` of a `.js` entry would
+  // throw on `export`. Mark the cache dir as an ESM scope so they load as modules. (The renderer
+  // entry is imported over a scheme — browser ESM by MIME — so this only matters for Node entries.)
   writeFileSync(join(dir, "package.json"), '{"type":"module"}\n');
   for (const entry of manifest.files) {
     const filePath = safeJoin(dir, entry.name);
@@ -114,20 +128,20 @@ async function fetchAndCache(bundleUrl: string, leaseToken: string, opts: Requir
 }
 
 /**
- * Resolve the desktop collab bundle for this user: prefer a fresh server check (catches a lapsed
- * sub), fall back to the cached bundle offline. Returns the verified lease + local file paths, or
- * null (⇒ turn-only). Fail-closed on every error / missing public key.
+ * Resolve the desktop plugin bundle for this user: prefer a fresh server check (catches a lapsed
+ * entitlement), fall back to the cached bundle offline. Returns the verified lease + local file
+ * paths + entry roles, or null (⇒ run without the plugin). Fail-closed on every error / missing key.
  */
-export async function resolveDesktopCollab(options: ResolveCollabOptions): Promise<ResolvedCollab | null> {
-  const publicKey = options.publicKey ?? COLLAB_PUBLIC_KEY;
+export async function resolveDesktopPlugin(options: ResolvePluginOptions): Promise<ResolvedPlugin | null> {
+  const publicKey = options.publicKey ?? PLUGIN_PUBLIC_KEY;
   const now = options.now ?? Date.now();
   const fetchImpl = options.fetchImpl ?? fetch;
-  if (!publicKey) return null; // nothing can be verified ⇒ turn-only
+  if (!publicKey) return null; // nothing can be verified ⇒ no plugin
 
   // 1. Online check (only when we have a token).
   if (options.token) {
     try {
-      const res = await fetchImpl(`${base(options.apiBase)}api/v1/desktop-collab`, { headers: { authorization: `Bearer ${options.token}` } });
+      const res = await fetchImpl(`${base(options.apiBase)}api/v1/desktop-plugin`, { headers: { authorization: `Bearer ${options.token}` } });
       if (res.ok) {
         const grant = (await res.json()) as { entitled?: boolean; lease?: string; bundleUrl?: string };
         if (grant.entitled === false) return null; // server says no — don't fall back to a stale cache
