@@ -93,6 +93,11 @@ async function fetchAndCache(bundleUrl: string, leaseToken: string, opts: Requir
   const dir = safeJoin(opts.cacheDir, manifest.version);
   if (!dir) return null; // version escapes the cache root
   mkdirSync(dir, { recursive: true });
+  // The bundle files are ESM (format:"esm") but named `.js`; Node treats a bare `.js` as CJS unless
+  // the nearest package.json says otherwise, so a Node-side `import()` of hub.js/peer.js would throw
+  // on `export`. Mark the cache dir as an ESM scope so they load as modules. (desktop.js is imported
+  // by the renderer over a scheme — browser ESM by MIME — so this only matters for the Node files.)
+  writeFileSync(join(dir, "package.json"), '{"type":"module"}\n');
   for (const entry of manifest.files) {
     const filePath = safeJoin(dir, entry.name);
     if (!filePath) return null; // name escapes the version dir

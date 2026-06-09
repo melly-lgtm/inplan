@@ -59,6 +59,14 @@ describe("resolveDesktopCollab", () => {
     expect(readFileSync(r!.files["hub.js"]!).toString()).toBe(HUB.toString());
   });
 
+  it("marks the cached version dir as an ESM scope so Node import()s the .js bundle files as modules", async () => {
+    // The bundle is built format:"esm" but named .js; without a package.json a bare .js in the cache
+    // is treated as CommonJS and `import()` throws on `export`. fetchAndCache must write type:module.
+    const cd = cacheDir();
+    await resolveDesktopCollab({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
+    expect(JSON.parse(readFileSync(join(cd, "v1", "package.json"), "utf8"))).toEqual({ type: "module" });
+  });
+
   it("server says entitled:false → null (and does not fall back to a stale cache)", async () => {
     const cd = cacheDir();
     // Prime a valid cache first.
