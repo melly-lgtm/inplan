@@ -98,10 +98,18 @@ export function readLog(ctx: Ctx): Array<{ type: string; actor: string; payload?
   for (const key of readdirSync(root)) {
     const p = join(root, key, "log.jsonl");
     if (!existsSync(p)) continue;
+    // A read mid-write can catch a partially-flushed trailing line; skip any line that
+    // doesn't parse rather than throwing (waitForEvent polls while the app is writing).
     return readFileSync(p, "utf8")
       .split("\n")
       .filter(Boolean)
-      .map((l) => JSON.parse(l) as { type: string; actor: string; payload?: unknown });
+      .flatMap((l) => {
+        try {
+          return [JSON.parse(l) as { type: string; actor: string; payload?: unknown }];
+        } catch {
+          return [];
+        }
+      });
   }
   return [];
 }
