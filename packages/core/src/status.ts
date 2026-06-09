@@ -40,6 +40,12 @@ export interface DocStatus {
   /** Hash of the file body at the last local⇄cloud sync, so a reconcile-on-open
    *  can tell a freshly downloaded / locally-edited file from an in-sync one. */
   lastSyncedHash?: string;
+  /** When the desktop editor is hosting a loopback live-collab hub for this local doc (the paid
+   *  plugin), its ws URL — published by the app on hub start, cleared on stop. A separate process
+   *  (the CLI) reads it to join as a peer and gate through the live doc instead of the `.md`. Just
+   *  a string here; open-core ships no hub/peer code — the CLI verifies + loads that at runtime.
+   *  A stale URL (editor crashed) is tolerated: the peer connection times out and falls back. */
+  hubUrl?: string;
 }
 
 /** A brand-new / never-promoted document is local. */

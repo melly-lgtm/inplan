@@ -31,8 +31,10 @@ import { authedSession, clearAuth, currentUser, remoteBackend, saveAuth } from "
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
 import { checkForUpdate, selfUpdate, UPDATE_PKG } from "./update";
 import { runningEditorPid } from "./editorProcess";
+import { applyGatedEdit } from "./applyEdit";
 import { evaluateAgentEdit } from "./gate";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
+import { loadHubGate, type HubGate } from "./peerGate";
 import { wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
 import { toolActivityText } from "./relayActivity";
@@ -209,7 +211,7 @@ function logWaitExit(p: DocPaths, reason: string): void {
  * cursor, else "start from now" (current max). It is persisted on return so the
  * agent never hand-manages it and turns can't be skipped.
  */
-async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string): Promise<void> {
+async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string, hub: HubGate | null = null): Promise<void> {
   const { channel, store } = backend;
   const history = await backend.history();
 
@@ -219,11 +221,27 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
 
   const current = await store.loadDoc();
 
-  // The gate's canonical base is the persisted canonical (the file on first run).
-  let canonicalText = await store.getCanonical();
-  if (canonicalText === null) {
-    canonicalText = current;
-    await store.setCanonical(current);
+  // The gate's canonical base: the live hub projection when an entitled peer is connected (the
+  // editor is hosting a loopback hub for this doc — the hub owns it, so we apply through it, never
+  // writing the .md). A hub read failure (editor closed / unreachable) falls back to the file
+  // model. Without a hub it's the persisted canonical (seeded from the file on first run).
+  let useHub = false;
+  let canonicalText: string;
+  if (hub) {
+    try {
+      canonicalText = await hub.readCanonical();
+      useHub = true;
+    } catch {
+      canonicalText = (await store.getCanonical()) ?? current;
+    }
+  } else {
+    const persisted = await store.getCanonical();
+    if (persisted === null) {
+      canonicalText = current;
+      await store.setCanonical(current);
+    } else {
+      canonicalText = persisted;
+    }
   }
 
   const ev = evaluateAgentEdit(canonicalText, current, confirmed);
@@ -246,26 +264,9 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
   // file the source of truth WITHOUT auto-applying — killing the app before a
   // decision leaves the proposal pending, never silently accepted.
   const acceptance = acceptanceFrom(history);
-  const bodyChanged = parse(canonicalText).body !== parse(current).body;
-
-  if (ev.removedIds.length > 0) {
-    // Confirmed deletions: drop the orphaned comment objects, write the file + canonical.
-    await store.saveDoc(ev.acceptedText);
-    await store.setCanonical(ev.acceptedText);
-    await store.clearProposed();
-    await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { removed: ev.removedIds } });
-  } else if (ev.changed && acceptance === "review" && bodyChanged) {
-    // Quarantine: park the proposal for the human to accept/reject in the editor, and revert the
-    // working file to canonical (the human's accept later writes canonical).
-    await store.setProposed(current);
-    await store.saveDoc(canonicalText);
-    await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: current.length } });
-  } else if (ev.changed) {
-    // Auto-accept (auto mode, or review mode with comment-only changes): advance the canonical base.
-    await store.setCanonical(current);
-    await store.clearProposed();
-    await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: current.length } });
-  }
+  const quarantine = acceptance === "review" && parse(canonicalText).body !== parse(current).body;
+  // `useHub ? hub : null` — only route through the hub when the live read succeeded.
+  await applyGatedEdit(store, channel, ev, { current, canonicalText, quarantine, hub: useHub ? hub : null });
 
   // Signal the agent has (re)engaged this round so the editor can clear its
   // "Agent is thinking…" indicator even when the agent made no body change.
@@ -1357,7 +1358,17 @@ async function main(): Promise<void> {
     }
   }
 
-  await waitCycle(fsBackend(file), explicitCursor, confirmed, model);
+  // If the editor is hosting a loopback live-collab hub for this doc (status.hubUrl, published by
+  // the entitled desktop app), gate the agent through the live doc instead of the .md. The loader
+  // verifies the user's entitlement + the signed peer bundle before loading it; unverified / not
+  // entitled / logged out ⇒ null ⇒ the file-backed gate. Only local docs (not cloud) carry a hub.
+  let hub: HubGate | null = null;
+  const hubUrl = readStatus(docPaths(file).statusPath).hubUrl;
+  if (hubUrl) {
+    const session = await authedSession();
+    hub = await loadHubGate(hubUrl, { token: session?.session.access_token ?? null });
+  }
+  await waitCycle(fsBackend(file), explicitCursor, confirmed, model, hub);
 }
 
 main().catch((err) => {

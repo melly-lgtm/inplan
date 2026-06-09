@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { resolveDesktopCollab } from "@inplan/core/node";
+import { docPaths, readStatus, resolveDesktopCollab, writeStatus } from "@inplan/core/node";
 
 /** Collab server HTTP base (ws→http), for the entitlement check. */
 const COLLAB_HTTP = (process.env.INPLAN_COLLAB_URL || "wss://inplan-collab.fly.dev").replace(/^ws/, "http");
@@ -29,11 +29,29 @@ interface HubModule {
   startLocalHub: (file: string) => Promise<{ url: string; stop: () => Promise<void> }>;
 }
 interface CollabState {
+  file: string; // the doc this hub hosts (so we clear its status on stop)
   hubUrl: string;
   desktopPath: string; // verified local path of desktop.js (served over the scheme)
   stop: () => Promise<void>;
 }
 let state: CollabState | null = null;
+
+/** Publish/clear the hub URL on the doc's status sidecar so the CLI (a separate process) can find
+ *  the editor-hosted hub and gate the agent through the live doc. Merge so we never drop the
+ *  doc's other status fields (location / originalPath / cloud pointers). Best-effort. */
+function setStatusHubUrl(file: string, hubUrl: string | undefined): void {
+  try {
+    const { statusPath } = docPaths(file);
+    const st = readStatus(statusPath);
+    if (hubUrl) writeStatus(statusPath, { ...st, hubUrl });
+    else {
+      const { hubUrl: _drop, ...rest } = st;
+      writeStatus(statusPath, rest);
+    }
+  } catch {
+    /* a status write failure just means the CLI stays on the file-backed path */
+  }
+}
 
 /** Register the privileged scheme. MUST run before app 'ready' (Electron requirement). */
 export function registerCollabScheme(): void {
@@ -65,7 +83,8 @@ export async function startDesktopCollab(file: string, getToken: () => Promise<s
     if (!bundle?.files["hub.js"] || !bundle.files["desktop.js"]) return; // not entitled / unverified
     const hubMod = (await import(pathToFileURL(bundle.files["hub.js"]).href)) as HubModule;
     const hub = await hubMod.startLocalHub(file);
-    state = { hubUrl: hub.url, desktopPath: bundle.files["desktop.js"], stop: () => hub.stop() };
+    state = { file, hubUrl: hub.url, desktopPath: bundle.files["desktop.js"], stop: () => hub.stop() };
+    setStatusHubUrl(file, hub.url); // let the CLI peer-gate through the live doc
     process.stderr.write(`[inplan] desktop live-collab active for ${file}\n`);
   } catch (e) {
     process.stderr.write(`[inplan] desktop collab unavailable (file-backed): ${e instanceof Error ? e.message : String(e)}\n`);
@@ -76,5 +95,8 @@ export async function startDesktopCollab(file: string, getToken: () => Promise<s
 export async function stopDesktopCollab(): Promise<void> {
   const s = state;
   state = null;
-  if (s) await s.stop().catch(() => {});
+  if (s) {
+    setStatusHubUrl(s.file, undefined); // the hub is gone — the CLI must fall back to the file
+    await s.stop().catch(() => {});
+  }
 }
