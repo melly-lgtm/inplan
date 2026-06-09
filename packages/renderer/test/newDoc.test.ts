@@ -64,9 +64,26 @@ describe("body edits (Create Doc / Move Text to New Doc)", () => {
     // moved body = the two blocks (heading + paragraph), with the anchor intact
     expect(r.movedBody).toBe("## Section A\n\nUse [Postgres](#cmt-a1) here.");
     expect(ids(r.movedComments)).toEqual(["cmt-a1", "cmt-r1"]); // thread travels with the text
-    // original: section replaced by a link; thread gone; doc-level + Section B remain
+    // original: section replaced by a link that KEEPS the block's heading form; thread gone;
+    // doc-level + Section B remain, with the blank-line separation intact.
     expect(ids(r.remaining.comments)).toEqual(["cmt-doc"]);
-    expect(r.remaining.body).toBe("# Plan\n\n[Section A](./a.md)\n\n## Section B\n\nKeep this.\n");
+    expect(r.remaining.body).toBe("# Plan\n\n## [Section A](./a.md)\n\n## Section B\n\nKeep this.\n");
+  });
+
+  it("keeps the link its own block: doesn't fuse onto the next paragraph (span swallows the blank line)", () => {
+    // selectionSourceSpan extends endLine to the blank line before the next block, so the span
+    // includes the trailing blank — the link must still get its own paragraph break.
+    const doc: ParsedDocument = { body: "# Plan\n\nfirst para\n\nsecond para\n", comments: [] };
+    const r = moveSelectionToDoc(doc, "first para", { startLine: 2, endLine: 3 }, "First", "./first.md")!;
+    expect(r.remaining.body).toBe("# Plan\n\n[First](./first.md)\n\nsecond para\n");
+    expect(r.movedBody).toBe("first para");
+  });
+
+  it("a moved list item stays a list item (keeps its marker on the link)", () => {
+    const doc: ParsedDocument = { body: "# Plan\n\n- alpha\n- beta\n- gamma\n", comments: [] };
+    const r = moveSelectionToDoc(doc, "beta", { startLine: 3, endLine: 3 }, "Beta", "./beta.md")!;
+    expect(r.remaining.body).toBe("# Plan\n\n- alpha\n- [Beta](./beta.md)\n- gamma\n");
+    expect(r.movedBody).toBe("- beta");
   });
 
   it("returns null when a comment anchor straddles the selection boundary", () => {

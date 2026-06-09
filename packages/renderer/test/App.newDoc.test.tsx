@@ -19,6 +19,7 @@ vi.mock("../src/SourceEditor", () => ({
 
 const DOC = "# Plan\n\nHello world.\n\n<!--inplan v1\n[]\n-->\n";
 let create: ReturnType<typeof vi.fn>;
+let append: ReturnType<typeof vi.fn>;
 let agent: MemoryAgent;
 let origGetSelection: typeof window.getSelection;
 
@@ -26,8 +27,9 @@ beforeEach(() => {
   document.body.innerHTML = '<div id="root"></div>';
   const session = createMemoryApi({ content: DOC });
   agent = session.agent;
-  create = vi.fn(async (path: string) => ({ linkTarget: path }));
-  (session.api as unknown as { newDoc: unknown }).newDoc = { pickPath: vi.fn(async () => null), create };
+  create = vi.fn(async (path: string) => ({ status: "created" as const, linkTarget: path }));
+  append = vi.fn(async (path: string) => ({ linkTarget: path }));
+  (session.api as unknown as { newDoc: unknown }).newDoc = { pickPath: vi.fn(async () => null), create, append };
   (window as unknown as { api: unknown }).api = session.api;
   origGetSelection = window.getSelection;
 });
@@ -53,7 +55,7 @@ describe("new-doc actions", () => {
     mockSelection("Hello world.");
     await act(async () => void fireEvent.contextMenu(document.querySelector(".ap-rendered")!));
     expect(screen.getByRole("menuitem", { name: /create doc/i })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: /move text to new doc/i })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /move blocks to new doc/i })).toBeTruthy();
   });
 
   it("Create Doc: opens the modal, calls host.create, and links the selection in place", async () => {
@@ -84,13 +86,39 @@ describe("new-doc actions", () => {
     await mountApp();
     mockSelection("Hello world.");
     await act(async () => void fireEvent.contextMenu(document.querySelector(".ap-rendered")!));
-    await act(async () => void screen.getByRole("menuitem", { name: /move text to new doc/i }).click());
+    await act(async () => void screen.getByRole("menuitem", { name: /move blocks to new doc/i }).click());
     await act(async () => void (await screen.findByRole("button", { name: /^move$/i })).click());
     await waitFor(() => expect(create).toHaveBeenCalled());
     const content = create.mock.calls[0]![1] as string;
     expect(content).toContain("Hello world."); // the moved body
     expect(content).not.toMatch(/^#\s/m); // no "# Title" heading prepended
     // The original now links to the new doc (the moved text was replaced).
+    await waitFor(() => expect(document.querySelector(".ap-rendered a")).toBeTruthy());
+  });
+
+  it("Create Doc on an existing file: warns, then links to it instead of silently failing", async () => {
+    create.mockResolvedValue({ status: "exists", linkTarget: "hello_world.md" });
+    await mountApp();
+    mockSelection("Hello world.");
+    await act(async () => void fireEvent.contextMenu(document.querySelector(".ap-rendered")!));
+    await act(async () => void screen.getByRole("menuitem", { name: /create doc/i }).click());
+    await act(async () => void (await screen.findByRole("button", { name: /^create$/i })).click());
+    // The modal stays open and offers to link (rather than failing silently).
+    await act(async () => void (await screen.findByRole("button", { name: /link to it/i })).click());
+    await waitFor(() => expect(document.querySelector(".ap-rendered a")).toBeTruthy());
+    expect(create).toHaveBeenCalledTimes(1); // only the probing attempt; never clobbered
+  });
+
+  it("Move Blocks onto an existing file: appends the blocks (default) and links the original", async () => {
+    create.mockResolvedValue({ status: "exists", linkTarget: "hello_world.md" });
+    await mountApp();
+    mockSelection("Hello world.");
+    await act(async () => void fireEvent.contextMenu(document.querySelector(".ap-rendered")!));
+    await act(async () => void screen.getByRole("menuitem", { name: /move blocks to new doc/i }).click());
+    await act(async () => void (await screen.findByRole("button", { name: /^move$/i })).click());
+    // Append is checked by default → the action becomes Append; confirming appends into the existing doc.
+    await act(async () => void (await screen.findByRole("button", { name: /^append$/i })).click());
+    await waitFor(() => expect(append).toHaveBeenCalledWith("hello_world.md", expect.stringContaining("Hello world."), expect.any(Array)));
     await waitFor(() => expect(document.querySelector(".ap-rendered a")).toBeTruthy());
   });
 
@@ -105,7 +133,7 @@ describe("new-doc actions", () => {
     mockSelection("text that is not in the body"); // can't anchor a comment here
     await act(async () => void fireEvent.contextMenu(document.querySelector(".ap-rendered")!));
     const createItem = screen.getByRole("menuitem", { name: /create doc/i }) as HTMLButtonElement;
-    const moveItem = screen.getByRole("menuitem", { name: /move text to new doc/i }) as HTMLButtonElement;
+    const moveItem = screen.getByRole("menuitem", { name: /move blocks to new doc/i }) as HTMLButtonElement;
     expect(createItem.disabled).toBe(true); // Create wraps in place → blocked when un-anchorable
     expect(moveItem.disabled).toBe(false); // Move extracts whole blocks → allowed
     // The disabled Create is a no-op (no modal, no host call).
@@ -120,7 +148,7 @@ describe("new-doc actions", () => {
     // Keep create() pending so we can rewrite the doc (a committed render) BEFORE it resolves —
     // mirroring the real interleaving of the external-change IPC and the create response.
     let resolveCreate: () => void = () => {};
-    create.mockImplementation(() => new Promise<{ linkTarget: string }>((r) => { resolveCreate = () => r({ linkTarget: "hello_world.md" }); }));
+    create.mockImplementation(() => new Promise<{ status: "created"; linkTarget: string }>((r) => { resolveCreate = () => r({ status: "created", linkTarget: "hello_world.md" }); }));
     await act(async () => void fireEvent.contextMenu(document.querySelector(".ap-rendered")!));
     await act(async () => void screen.getByRole("menuitem", { name: /create doc/i }).click());
     await act(async () => void (await screen.findByRole("button", { name: /^create$/i })).click());

@@ -13,6 +13,7 @@ export function NewDocModal({
   mode,
   initialTitle,
   initialPath,
+  exists,
   onPick,
   onSubmit,
   onCancel,
@@ -20,14 +21,20 @@ export function NewDocModal({
   mode: "create" | "move";
   initialTitle: string;
   initialPath: string;
+  /** Set once a submit found the target already on disk: shows the warning + (move) the Append
+   *  option, so the user links/appends instead of the create silently failing. Null = normal. */
+  exists: boolean;
   /** Host file picker, or null when the host can't pick (then no Browse button). */
   onPick: ((suggestedName: string) => Promise<string | null>) | null;
-  onSubmit: (title: string, path: string) => void;
+  /** `append` is honored only when the target exists in move mode: true ⇒ append the blocks to it,
+   *  false ⇒ just link to it (drop the local blocks). Ignored for create / new files. */
+  onSubmit: (title: string, path: string, opts: { append: boolean }) => void;
   onCancel: () => void;
 }): JSX.Element {
   const t = useT();
   const [title, setTitle] = useState(initialTitle);
   const [path, setPath] = useState(initialPath);
+  const [append, setAppend] = useState(true); // default to the non-destructive choice
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => ref.current?.querySelector<HTMLInputElement>("input")?.focus(), []);
@@ -40,10 +47,13 @@ export function NewDocModal({
   }, [onCancel]);
 
   const ok = title.trim().length > 0 && path.trim().length > 0;
-  const submit = () => ok && onSubmit(title.trim(), path.trim());
+  const submit = () => ok && onSubmit(title.trim(), path.trim(), { append });
   const onEnter = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") submit();
   };
+  // The primary action label: a new file creates/moves; an existing one links (or, for a move with
+  // Append checked, appends the blocks into it).
+  const actionLabel = !exists ? t(mode === "move" ? "newdoc.move" : "newdoc.create") : mode === "move" && append ? t("newdoc.append") : t("newdoc.linkExisting");
 
   return (
     <div className="ap-modal-backdrop" onMouseDown={onCancel}>
@@ -66,12 +76,25 @@ export function NewDocModal({
             )}
           </div>
         </div>
+        {exists && (
+          <div className="ap-newdoc-exists" role="alert">
+            <div className="ap-newdoc-warn">{t("newdoc.exists")}</div>
+            {mode === "move" ? (
+              <label className="ap-newdoc-append">
+                <input type="checkbox" checked={append} onChange={(e) => setAppend(e.target.checked)} />
+                <span>{t("newdoc.appendExisting")}</span>
+              </label>
+            ) : (
+              <div className="ap-newdoc-warn-sub">{t("newdoc.willLink")}</div>
+            )}
+          </div>
+        )}
         <div className="ap-newdoc-actions">
           <button className="ap-link" onClick={onCancel}>
             {t("quit.cancel")}
           </button>
           <button className="ap-primary" disabled={!ok} onClick={submit}>
-            {t(mode === "move" ? "newdoc.move" : "newdoc.create")}
+            {actionLabel}
           </button>
         </div>
       </div>

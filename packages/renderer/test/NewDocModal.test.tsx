@@ -7,7 +7,7 @@ import { NewDocModal } from "../src/NewDocModal";
 
 afterEach(cleanup);
 
-const base = { mode: "create" as const, initialTitle: "My Section", initialPath: "my_section.md", onPick: null, onSubmit: vi.fn(), onCancel: vi.fn() };
+const base = { mode: "create" as const, initialTitle: "My Section", initialPath: "my_section.md", exists: false, onPick: null, onSubmit: vi.fn(), onCancel: vi.fn() };
 const titleInput = () => screen.getByDisplayValue("My Section") as HTMLInputElement;
 const pathInput = () => screen.getByDisplayValue("my_section.md") as HTMLInputElement;
 
@@ -17,7 +17,7 @@ describe("NewDocModal", () => {
     expect(document.body.textContent).toContain("Create new document");
     expect(screen.getByRole("button", { name: /^create$/i })).toBeTruthy();
     rerender(<NewDocModal {...base} mode="move" />);
-    expect(document.body.textContent).toContain("Move selection to a new document");
+    expect(document.body.textContent).toContain("Move blocks to a new document");
     expect(screen.getByRole("button", { name: /^move$/i })).toBeTruthy();
   });
 
@@ -26,9 +26,29 @@ describe("NewDocModal", () => {
     render(<NewDocModal {...base} onSubmit={onSubmit} />);
     fireEvent.change(titleInput(), { target: { value: "  Renamed  " } });
     fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
-    expect(onSubmit).toHaveBeenCalledWith("Renamed", "my_section.md");
+    expect(onSubmit).toHaveBeenCalledWith("Renamed", "my_section.md", { append: true });
     fireEvent.keyDown(pathInput(), { key: "Enter" });
     expect(onSubmit).toHaveBeenCalledTimes(2);
+  });
+
+  it("when the target exists: warns, and the action becomes Link (create) or Append (move, default)", () => {
+    const onSubmit = vi.fn();
+    // Create mode: no append option, action links to the existing doc.
+    const { rerender } = render(<NewDocModal {...base} exists onSubmit={onSubmit} />);
+    expect(document.body.textContent).toContain("That file already exists.");
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /link to it/i }));
+    expect(onSubmit).toHaveBeenCalledWith("My Section", "my_section.md", { append: true });
+
+    // Move mode: an Append checkbox (default on) → action is Append; unchecking → Link, append:false.
+    onSubmit.mockClear();
+    rerender(<NewDocModal {...base} mode="move" exists onSubmit={onSubmit} />);
+    const appendBox = screen.getByRole("checkbox") as HTMLInputElement;
+    expect(appendBox.checked).toBe(true);
+    expect(screen.getByRole("button", { name: /^append$/i })).toBeTruthy();
+    fireEvent.click(appendBox); // uncheck → link instead
+    fireEvent.click(screen.getByRole("button", { name: /link to it/i }));
+    expect(onSubmit).toHaveBeenCalledWith("My Section", "my_section.md", { append: false });
   });
 
   it("disables the action when the title or path is empty", () => {

@@ -181,7 +181,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [showResolvedOrphaned, setShowResolvedOrphaned] = useState(false);
   const [selectionText, setSelectionText] = useState("");
   const [composer, setComposer] = useState<{ target: string | null; pos: { x: number; y: number }; span?: SourceSpan | null } | null>(null);
-  const [newDocReq, setNewDocReq] = useState<{ mode: "create" | "move"; selected: string; span: SourceSpan | null } | null>(null);
+  const [newDocReq, setNewDocReq] = useState<{ mode: "create" | "move"; selected: string; span: SourceSpan | null; existing?: string } | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; hasSel: boolean; hasRawSel: boolean; block: BlockReason | null } | null>(null);
   const [findSeed, setFindSeed] = useState(""); // pre-fills the find box (e.g. from the preview "Find text" menu item)
   const [focused, setFocused] = useState<string | null>(null);
@@ -204,6 +204,9 @@ export function App(props: EditorProps = {}): JSX.Element {
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const history = useRef<ParsedDocument[]>([]); // undo stack of doc snapshots
   const future = useRef<ParsedDocument[]>([]); // redo stack
+  // Per-doc undo/redo, kept across in-window navigation: leaving a doc stashes its stacks here,
+  // returning restores them — so back/forward (or re-following a link) doesn't lose history.
+  const historyByDoc = useRef<Map<string, { undo: ParsedDocument[]; redo: ParsedDocument[] }>>(new Map());
   const savedRef = useRef<string>(""); // last canonical-saved serialized content (for the dirty dot)
   // Last content written to ANY store (canonical or backup). State, not a ref, so the Save button
   // and status bar re-render when a save resolves — a turn-mode Save writes a backup, which clears
@@ -306,16 +309,19 @@ export function App(props: EditorProps = {}): JSX.Element {
       // Desktop only: the window followed a link to another doc — reset to it (a fresh
       // load), clearing any in-flight proposal/turn state, then re-show a parked proposal.
       hostApi().onNavigated?.(({ content, path }) => {
+        // Undo/redo is per-doc: stash the leaving doc's stacks so returning restores them, and load
+        // the destination's own (empty on first visit). Per-doc still holds — an undo can never pull
+        // another doc's content — but the history now survives navigation instead of being dropped.
+        if (docPathRef.current) historyByDoc.current.set(docPathRef.current, { undo: history.current, redo: future.current });
         docPathRef.current = path;
         const parsed = parse(content);
         const d = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
         setDoc(d);
         savedRef.current = serialize(d);
         setDirty(false);
-        // Undo/redo is per-doc: drop the previous doc's snapshots so an undo here can't pull its
-        // content into (and then save it over) the doc we just navigated to.
-        history.current = [];
-        future.current = [];
+        const restored = historyByDoc.current.get(path);
+        history.current = restored?.undo ?? [];
+        future.current = restored?.redo ?? [];
         setProposal(null);
         setReviewOpen(false);
         setAgentThinking(false);
@@ -734,46 +740,72 @@ export function App(props: EditorProps = {}): JSX.Element {
   // we rewrite the selection — Create links the text in place; Move replaces it with [title](link)
   // and the body moves to the new doc.
   const createNewDoc = useCallback(
-    async (title: string, path: string) => {
+    async (title: string, path: string, opts: { append: boolean }) => {
       const req = newDocReq;
       const api = hostApi();
       if (!req || !api.newDoc) {
         setNewDocReq(null);
         return;
       }
-      // Build the new doc's content BEFORE creating any file — and confirm the move/link is even
-      // possible — so a failed splice can't orphan a doc on disk. Move carries the selection's
-      // comment threads with it (serialized into the new doc); Create just seeds a titled stub.
-      let content: string;
-      if (req.mode === "move") {
-        const pre = moveSelectionToDoc(docRef.current, req.selected, req.span ?? undefined, title, path);
-        if (!pre) {
-          setStatus(t("newdoc.cantMove")); // unanchorable, crosses formatting, or a comment straddles the edge
+      // Resolve the link target: create a NEW file, or — when a prior submit found the path already
+      // on disk (req.existing) — link/append to that existing doc instead of silently failing.
+      let linkTarget: string;
+      if (!req.existing) {
+        // First submit: build the new doc's content (confirming the move/link is even possible, so a
+        // failed splice can't orphan a file) and try to create it.
+        let content: string;
+        if (req.mode === "move") {
+          const pre = moveSelectionToDoc(docRef.current, req.selected, req.span ?? undefined, title, path);
+          if (!pre) {
+            setStatus(t("newdoc.cantMove")); // unanchorable, crosses formatting, or a comment straddles the edge
+            return;
+          }
+          content = serialize({ body: `${pre.movedBody}\n`, comments: pre.movedComments });
+        } else {
+          if (spanSource(docRef.current.body, req.selected, req.span ?? undefined) === null) {
+            setStatus(t("msg.cantAnchor"));
+            return;
+          }
+          content = `# ${title}\n`;
+        }
+        const res = await api.newDoc.create(path, content);
+        if (!res) {
+          setStatus(t("newdoc.failed"));
+          return; // keep the modal open so the user can retry / pick another path
+        }
+        if (res.status === "exists") {
+          // Don't clobber it — surface the link/append options and wait for the user to re-confirm.
+          setNewDocReq({ ...req, existing: res.linkTarget });
+          setStatus(t("newdoc.exists"));
           return;
         }
-        // Just the moved blocks (+ their comments) — no synthetic title heading; the moved text
-        // usually carries its own heading, and the title is only for the link + filename.
-        content = serialize({ body: `${pre.movedBody}\n`, comments: pre.movedComments });
+        linkTarget = res.linkTarget;
       } else {
-        if (spanSource(docRef.current.body, req.selected, req.span ?? undefined) === null) {
-          setStatus(t("msg.cantAnchor"));
-          return;
+        // Confirm against the existing file: Move + Append carries the blocks into it; otherwise we
+        // just link (Create links in place; Move-without-Append drops the local blocks).
+        linkTarget = req.existing;
+        if (req.mode === "move" && opts.append) {
+          const pre = moveSelectionToDoc(docRef.current, req.selected, req.span ?? undefined, title, linkTarget);
+          if (!pre) {
+            setStatus(t("newdoc.cantMove"));
+            return;
+          }
+          const res = await api.newDoc.append?.(path, pre.movedBody, pre.movedComments);
+          if (!res) {
+            setStatus(t("newdoc.failed"));
+            return;
+          }
+          linkTarget = res.linkTarget;
         }
-        content = `# ${title}\n`;
-      }
-      const res = await api.newDoc.create(path, content);
-      if (!res) {
-        setStatus(t("newdoc.failed"));
-        return; // keep the modal open so the user can retry / pick another path
       }
       // Re-run AFTER the await against the CURRENT doc — the agent may have rewritten it while
-      // create() was in flight. Splice against the fresh state so we never clobber a newer version;
-      // if it no longer maps cleanly, abort (the file exists, but a stale overwrite is worse).
+      // create()/append() was in flight. Splice against the fresh state so we never clobber a newer
+      // version; if it no longer maps cleanly, abort (the file exists, but a stale overwrite is worse).
       let next: ParsedDocument | null;
       if (req.mode === "move") {
-        next = moveSelectionToDoc(docRef.current, req.selected, req.span ?? undefined, title, res.linkTarget)?.remaining ?? null;
+        next = moveSelectionToDoc(docRef.current, req.selected, req.span ?? undefined, title, linkTarget)?.remaining ?? null;
       } else {
-        const body = linkSelectionToDoc(docRef.current.body, req.selected, req.span ?? undefined, res.linkTarget);
+        const body = linkSelectionToDoc(docRef.current.body, req.selected, req.span ?? undefined, linkTarget);
         next = body === null ? null : { ...docRef.current, body };
       }
       if (next === null) {
@@ -781,7 +813,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         return;
       }
       setNewDocReq(null); // success only — close the modal now
-      apply(next, { type: req.mode === "move" ? "text_moved" : "doc_created", payload: { path: res.linkTarget } });
+      apply(next, { type: req.mode === "move" ? "text_moved" : "doc_created", payload: { path: linkTarget } });
       // Persist the original immediately (silent, like accepting a change): the new file already
       // exists on disk pointing back here, so the link/comment edit must be durable right away —
       // otherwise it lingers unsaved and a navigation round-trip can drop it.
@@ -1293,6 +1325,7 @@ export function App(props: EditorProps = {}): JSX.Element {
           mode={newDocReq.mode}
           initialTitle={newDocReq.mode === "move" ? moveDocTitle(newDocReq.selected) : newDocReq.selected.replace(/\s+/g, " ").trim()}
           initialPath={slugifyFilename(newDocReq.mode === "move" ? moveDocTitle(newDocReq.selected) : newDocReq.selected)}
+          exists={!!newDocReq.existing}
           onPick={hostApi().newDoc?.pickPath ? (name) => hostApi().newDoc!.pickPath!(name) : null}
           onSubmit={createNewDoc}
           onCancel={() => setNewDocReq(null)}

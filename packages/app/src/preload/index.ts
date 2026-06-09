@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { contextBridge, ipcRenderer } from "electron";
+import type { Comment } from "@inplan/core";
 import type { Acceptance, Api, Cadence, DocPayload, I18nController, I18nState, ProfileController, ProfileState, SaveOptions, Settings } from "@inplan/renderer";
 
 /** Action shapes main sends (no functions cross IPC); the preload turns each into
@@ -136,7 +137,8 @@ const api: Api = {
   openDoc: (target: string) => ipcRenderer.invoke("doc:open", target),
   newDoc: {
     pickPath: (suggestedName: string) => ipcRenderer.invoke("newdoc:pick", suggestedName) as Promise<string | null>,
-    create: (path: string, content: string) => ipcRenderer.invoke("newdoc:create", path, content) as Promise<{ linkTarget: string } | null>,
+    create: (path: string, content: string) => ipcRenderer.invoke("newdoc:create", path, content) as Promise<{ status: "created" | "exists"; linkTarget: string } | null>,
+    append: (path: string, body: string, comments: Comment[]) => ipcRenderer.invoke("newdoc:append", path, body, comments) as Promise<{ linkTarget: string } | null>,
   },
   navigate: (dir: "back" | "forward") => ipcRenderer.invoke("nav:go", dir),
   onNavState: (cb: (s: { canBack: boolean; canForward: boolean }) => void) => {

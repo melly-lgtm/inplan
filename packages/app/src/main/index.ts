@@ -3,11 +3,11 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from "electron";
 import { APP_ICON_DATA_URL } from "./appIcon";
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import type { Acceptance, Cadence, SaveOptions, Settings } from "@inplan/renderer";
-import { isOnboarded, markOnboarded } from "@inplan/core/node";
+import { isOnboarded, markOnboarded, parse, serialize, type Comment } from "@inplan/core/node";
 import { Session } from "./session";
 import { createI18nController } from "./i18nController";
 import { track, type TelemetryProps } from "./telemetry";
@@ -454,12 +454,18 @@ function registerIpc(): void {
     if (res.canceled || !res.filePath) return null;
     return toPosix(relative(docDir, res.filePath)); // a relative href the renderer can embed + resolve
   });
-  ipcMain.handle("newdoc:create", (_e, p: string, content: string) => {
+  const resolveDocPath = (p: string): string | null => {
     if (!session || typeof p !== "string" || !p.trim()) return null;
-    const docDir = dirname(session.paths.file);
-    let abs = resolve(docDir, p);
+    let abs = resolve(dirname(session.paths.file), p);
     if (!/\.md$/i.test(abs)) abs += ".md"; // case-insensitive: don't turn "x.MD" into "x.MD.md"
-    if (existsSync(abs)) return null; // never clobber an existing file — the user can pick another name
+    return abs;
+  };
+  ipcMain.handle("newdoc:create", (_e, p: string, content: string) => {
+    const abs = resolveDocPath(p);
+    if (!abs || !session) return null;
+    const linkTarget = toPosix(relative(dirname(session.paths.file), abs));
+    // Don't clobber an existing file — report it so the renderer can offer link/append instead.
+    if (existsSync(abs)) return { status: "exists", linkTarget };
     try {
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, content);
@@ -467,7 +473,26 @@ function registerIpc(): void {
       process.stderr.write(`[inplan] newdoc:create failed: ${(e as Error).message}\n`);
       return null;
     }
-    return { linkTarget: toPosix(relative(docDir, abs)) };
+    return { status: "created", linkTarget };
+  });
+  // Append moved blocks (+ their comment threads) to an EXISTING doc: parse it, append the body
+  // after a blank line, merge the new comments (existing win on an id clash), re-serialize, write.
+  ipcMain.handle("newdoc:append", (_e, p: string, body: string, comments: Comment[]) => {
+    const abs = resolveDocPath(p);
+    if (!abs || !session || !existsSync(abs)) return null;
+    try {
+      const existing = parse(readFileSync(abs, "utf8"));
+      const seen = new Set(existing.comments.map((c) => c.id));
+      const merged = {
+        body: `${existing.body.replace(/\s*$/, "")}\n\n${body.replace(/\s*$/, "")}\n`,
+        comments: [...existing.comments, ...(Array.isArray(comments) ? comments.filter((c) => c && !seen.has(c.id)) : [])],
+      };
+      writeFileSync(abs, serialize(merged));
+    } catch (e) {
+      process.stderr.write(`[inplan] newdoc:append failed: ${(e as Error).message}\n`);
+      return null;
+    }
+    return { linkTarget: toPosix(relative(dirname(session.paths.file), abs)) };
   });
   ipcMain.handle("doc:open", (_e, target: string) => {
     // `target` is the link path the renderer resolved against the current doc

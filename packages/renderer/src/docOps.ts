@@ -306,16 +306,32 @@ export function moveSelectionToDoc(
   // A moved thread = its anchored root + every reply/answer pointing at that root.
   const moved = new Set(rootIds);
   for (const c of doc.comments) if (c.parentId && moved.has(c.parentId)) moved.add(c.id);
-  // A block (line-span) range consumes the trailing newline; re-add one after the link so it stays
-  // its own paragraph, and drop it from the moved body so the new doc starts clean.
-  const slice = doc.body.slice(r.start, r.end);
-  const block = slice.endsWith("\n");
+  // Keep the moved block's leading markdown (heading #, list marker, blockquote >) on the link that
+  // replaces it, so a moved heading stays a heading link / a list item stays a list item ("follow
+  // the existing format"). Strip trailing blank lines off the moved content and leave them in the
+  // original, so the link keeps its own paragraph break — the line span otherwise swallows the
+  // inter-block blank line and the link would fuse onto the next block.
+  const fullSlice = doc.body.slice(r.start, r.end);
+  const movedBody = fullSlice.replace(/\s+$/, "");
+  const before = doc.body.slice(0, r.start);
+  const after = doc.body.slice(r.end);
+  const prefix = blockPrefix(fullSlice);
+  let sep = fullSlice.slice(movedBody.length); // the trailing newline(s) that separated this block
+  if (after === "") sep = sep ? "\n" : ""; // at end-of-doc, don't leave a dangling blank line
   const remaining: ParsedDocument = {
     ...doc,
-    body: doc.body.slice(0, r.start) + `[${title}](${target})` + (block ? "\n" : "") + doc.body.slice(r.end),
+    body: before + prefix + `[${title}](${target})` + sep + after,
     comments: doc.comments.filter((c) => !moved.has(c.id)),
   };
-  return { remaining, movedBody: block ? slice.slice(0, -1) : slice, movedComments: doc.comments.filter((c) => moved.has(c.id)) };
+  return { remaining, movedBody, movedComments: doc.comments.filter((c) => moved.has(c.id)) };
+}
+
+/** The leading block-level markdown of a slice's first line — heading (`#`), list marker (`-`/`*`/`+`
+ *  or `1.`), or blockquote (`>`), including any indent — so the move's placeholder link keeps the
+ *  same form as the block it replaced. "" for a plain paragraph or an inline-substring fallback. */
+function blockPrefix(slice: string): string {
+  const first = slice.split("\n", 1)[0] ?? "";
+  return /^(\s*(?:#{1,6}[ \t]+|[-*+][ \t]+|\d+[.)][ \t]+|>[ \t]+))/.exec(first)?.[1] ?? "";
 }
 
 const ANCHOR_RE = /\[[^\]]*\]\(#cmt-[0-9a-z]+\)/gi;

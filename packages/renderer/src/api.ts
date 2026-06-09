@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { Extension } from "@codemirror/state";
+import type { Comment } from "@inplan/core";
 import type { CommentStore } from "./commentStore";
 import type { ModeDescriptor, ModePolicy } from "./mode";
 
@@ -166,9 +167,14 @@ export interface NewDocController {
    *  cancelled. Optional — a host without a file browser (e.g. web, where the user just types a
    *  repo-relative path) omits it and the modal shows no Browse button. (Desktop: a save dialog.) */
   pickPath?(suggestedName: string): Promise<string | null>;
-  /** Create the doc at `path` with `content`; resolves to the relative link target to embed in
-   *  the source (e.g. "./section.md"), or null on failure. */
-  create(path: string, content: string): Promise<{ linkTarget: string } | null>;
+  /** Create the doc at `path` with `content`. `status: "created"` wrote a new file; `"exists"` means
+   *  the file was already there (nothing written) so the caller can offer to link/append instead.
+   *  `linkTarget` is the relative link to embed (e.g. "./section.md"); null on a hard failure. */
+  create(path: string, content: string): Promise<{ status: "created" | "exists"; linkTarget: string } | null>;
+  /** Append moved blocks (+ their comment threads) to the EXISTING doc at `path`: merges `body` after
+   *  its current body and `comments` into its comment block. Resolves to the relative link target, or
+   *  null on failure. Used by "Move Blocks → Append to the existing doc". */
+  append?(path: string, body: string, comments: Comment[]): Promise<{ linkTarget: string } | null>;
 }
 
 export interface Api {
