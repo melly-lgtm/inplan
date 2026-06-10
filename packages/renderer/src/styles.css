@@ -36,7 +36,12 @@ body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
-.ap-app { display: flex; flex-direction: column; height: 100%; }
+/* Clamp the shell to the viewport so ONLY the inner panes scroll (preview / rail / source).
+   `height:100%` resolves to auto when an embedder (e.g. the web host) mounts us in a parent
+   without a definite height — the shell then grows to its full content height and the whole
+   page scrolls, carrying the top bar + banners off-screen. `100dvh` (with a 100vh fallback)
+   is self-clamping regardless of the parent, and `overflow:hidden` stops any shell-level scroll. */
+.ap-app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden; }
 .ap-loading { padding: 2rem; color: var(--muted); }
 
 /* top bar */
