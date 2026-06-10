@@ -96,6 +96,39 @@ describe("new-doc actions", () => {
     await waitFor(() => expect(document.querySelector(".ap-rendered a")).toBeTruthy());
   });
 
+  it("Move carries a span comment inside the moved block into the new doc (and drops it from the original)", async () => {
+    // A doc whose movable paragraph (source line 2) holds an anchored comment.
+    const withComment =
+      "# Plan\n\nUse [Postgres](#cmt-pg) for storage.\n\n<!--inplan v1\n" +
+      JSON.stringify([{ id: "cmt-pg", author: "H <h@x>", date: "2026-06-08T00:00:00Z", resolved: false, text: "why postgres?" }]) +
+      "\n-->\n";
+    document.body.innerHTML = '<div id="root"></div>';
+    const session = createMemoryApi({ content: withComment });
+    create = vi.fn(async (path: string) => ({ status: "created" as const, linkTarget: path }));
+    (session.api as unknown as { newDoc: unknown }).newDoc = { create };
+    (window as unknown as { api: unknown }).api = session.api;
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("why postgres?"));
+
+    // Select the rendered paragraph block (data-line 2) — a real range so selectionSourceSpan
+    // resolves a block line span (Move extracts whole source lines, anchor included).
+    const para = Array.from(document.querySelectorAll(".ap-rendered [data-line]")).find((el) => el.getAttribute("data-line") === "2")!;
+    const range = { startContainer: para, endContainer: para, cloneRange: () => range, getBoundingClientRect: () => ({ left: 0, bottom: 0, top: 0, right: 0, width: 0, height: 0 }) } as unknown as Range;
+    window.getSelection = (() => ({ toString: () => para.textContent ?? "", rangeCount: 1, getRangeAt: () => range, removeAllRanges() {}, addRange() {} })) as unknown as typeof window.getSelection;
+
+    await act(async () => void fireEvent.contextMenu(para));
+    await act(async () => void screen.getByRole("menuitem", { name: /move blocks to new doc/i }).click());
+    await act(async () => void (await screen.findByRole("button", { name: /^move$/i })).click());
+
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    const content = create.mock.calls[0]![1] as string;
+    expect(content).toContain("[Postgres](#cmt-pg)"); // the anchor moved with the block
+    expect(content).toContain("why postgres?"); // its comment thread rode along
+    // The original lost the moved comment (the rail no longer shows it).
+    await waitFor(() => expect(document.body.textContent).not.toContain("why postgres?"));
+  });
+
   it("Create Doc on an existing file: warns, then links to it instead of silently failing", async () => {
     create.mockResolvedValue({ status: "exists", linkTarget: "hello_world.md" });
     await mountApp();

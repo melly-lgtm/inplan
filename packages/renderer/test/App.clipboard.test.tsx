@@ -11,7 +11,7 @@ import { forwardRef, useImperativeHandle } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Comment } from "@inplan/core";
 import { createMemoryApi } from "../src/memoryApi";
-import type { ClipboardPayload } from "../src/clipboard";
+import { buildClipHtml, readClipHtml, type ClipboardPayload } from "../src/clipboard";
 
 // Captured clipboard props from the latest render of the (stubbed) SourceEditor.
 let clip: {
@@ -47,11 +47,17 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-async function mountApp() {
+async function mountApp(content = DOC, waitText = "why here?") {
+  document.body.innerHTML = '<div id="root"></div>';
+  const session = createMemoryApi({ content });
+  (window as unknown as { api: unknown }).api = session.api;
   const { App } = await import("../src/App");
   render(<App />);
-  await waitFor(() => expect(document.body.textContent).toContain("why here?"));
+  await waitFor(() => expect(document.body.textContent).toContain(waitText));
 }
+
+// A second, unrelated document to paste INTO — no comments, distinct body.
+const OTHER_DOC = "# Other plan\n\nNothing here yet.\n\n<!--inplan v1\n[]\n-->\n";
 
 describe("App clipboard carry-comments wiring", () => {
   it("commentsForCopy returns the anchored root + replies, or nothing when no anchor", async () => {
@@ -85,5 +91,29 @@ describe("App clipboard carry-comments wiring", () => {
     await waitFor(() => expect(document.body.textContent).not.toContain("why here?"));
     expect(document.body.textContent).not.toContain("follow-up reply"); // the reply went too
     expect(document.body.textContent).toContain("unrelated doc note"); // the doc comment stays
+  });
+
+  it("CROSS-DOC: cut a commented span in one doc, paste into another — the whole thread travels", async () => {
+    // Doc A: the cut handler writes text/plain + a text/html payload carrying the threads anchored
+    // in the selection. Reproduce that write here (commentsForCopy → buildClipHtml), then cut.
+    await mountApp(); // doc A (has cmt-root1 "why here?" + reply)
+    const cutText = "See [the point](#cmt-root1) here.";
+    const carried = clip.commentsForCopy!(cutText); // [root + reply]
+    const clipboardHtml = buildClipHtml(cutText, carried); // what the cut handler puts on the clipboard
+    await act(async () => clip.onCutComments!(cutText, 0, 9999)); // remove from doc A
+    await waitFor(() => expect(document.body.textContent).not.toContain("why here?")); // gone from A
+
+    // Doc B: a *different* document. The paste handler reads text/html and hands the decoded
+    // payload to onPasteComments — re-IDed against B and spliced in.
+    cleanup();
+    await mountApp(OTHER_DOC, "Nothing here yet.");
+    expect(document.body.textContent).not.toContain("why here?"); // B starts clean
+    const payload = readClipHtml(clipboardHtml)!;
+    expect(payload.comments.map((c) => c.text)).toEqual(["why here?", "follow-up reply"]);
+    await act(async () => clip.onPasteComments!(cutText, payload, 0, 0));
+
+    // The whole thread (root + reply) now lives in doc B.
+    await waitFor(() => expect(document.body.textContent).toContain("why here?"));
+    expect(document.body.textContent).toContain("follow-up reply");
   });
 });
