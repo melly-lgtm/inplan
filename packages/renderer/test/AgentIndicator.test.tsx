@@ -54,7 +54,7 @@ describe("AgentIndicator", () => {
     expect(pie.style.background).toContain("var(--agent-byo");
   });
 
-  it("shows the local-agent command (copyable) only when policy is 'local'", async () => {
+  it("shows the agent-directed instruction (with the command) copyable only when policy is 'local'", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     const cmd = "inplan wait --remote doc-123";
@@ -62,9 +62,13 @@ describe("AgentIndicator", () => {
     fireEvent.click(screen.getByRole("button", { name: /agent connection/i }));
     expect(document.body.textContent).not.toContain(cmd); // hidden under "auto"
     rerender(<AgentIndicator location={null} policy="local" onSetPolicy={vi.fn()} localCommand={cmd} />);
-    expect(document.body.textContent).toContain(cmd); // shown under "local"
+    expect(document.body.textContent).toContain(cmd); // the command appears inside the instruction
+    expect(document.body.textContent).toMatch(/coding agent/i); // framed as an agent hand-off, not a human command
     fireEvent.click(screen.getByRole("button", { name: /^copy$/i }));
-    expect(writeText).toHaveBeenCalledWith(cmd);
+    // Copies the full instruction (which embeds the command), not the bare command.
+    const copied = writeText.mock.calls[0][0] as string;
+    expect(copied).toContain(cmd);
+    expect(copied.length).toBeGreaterThan(cmd.length);
   });
 
   it("omits the local-agent command when the host supplies none (desktop)", () => {

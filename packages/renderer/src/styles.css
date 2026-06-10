@@ -131,7 +131,7 @@ body {
 .ap-agent-localcmd { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
 .ap-agent-localcmd-hint { font-size: 11px; color: var(--muted); padding: 0 6px 5px; }
 .ap-agent-localcmd-row { display: flex; align-items: stretch; gap: 6px; }
-.ap-agent-localcmd-code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font-family: var(--mono); font-size: 11px; background: var(--paper); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; color: var(--fg); }
+.ap-agent-localcmd-msg { flex: 1; min-width: 0; font-size: 11px; line-height: 1.45; background: var(--paper); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; color: var(--fg); user-select: text; -webkit-user-select: text; }
 .ap-agent-localcmd-copy { flex: 0 0 auto; border: 1px solid var(--line-strong); background: var(--bg); border-radius: 6px; padding: 0 9px; font: inherit; font-size: 11px; cursor: pointer; color: var(--fg); }
 .ap-agent-localcmd-copy:hover { background: var(--accent-soft); }
 

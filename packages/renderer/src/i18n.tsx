@@ -156,7 +156,8 @@ export const EN: Catalog = {
   "agent.overIncluded": "— over included",
   "agent.over": "(over)",
   "agent.connection": "Agent connection",
-  "agent.localCmdHint": "Run this where your agent is (after `inplan login`):",
+  "agent.localCmdHint": "Paste this to your coding agent:",
+  "agent.localCmdBody": "Collaborate with me on my inplan plan — run: {cmd}  (install the inplan CLI and run inplan login first if needed).",
   "agent.copy": "Copy",
   "agent.copied": "Copied",
   // comment rail

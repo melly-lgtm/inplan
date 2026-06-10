@@ -45,11 +45,14 @@ export function AgentIndicator({
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  // What the human pastes to their coding agent: an instruction (with the connect command inlined),
+  // not a command for the human to run themselves.
+  const agentMessage = localCommand ? t("agent.localCmdBody", { cmd: localCommand }) : "";
   const copy = (): void => {
-    if (!localCommand) return;
+    if (!agentMessage) return;
     // `navigator.clipboard?.writeText(...)` is undefined when the Clipboard API is unavailable;
     // `.then` would throw on it (?. guards only the call, not the chained .then). Guard the result.
-    const write = navigator.clipboard?.writeText(localCommand);
+    const write = navigator.clipboard?.writeText(agentMessage);
     if (!write) return;
     void write.then(
       () => {
@@ -122,12 +125,13 @@ export function AgentIndicator({
               ))}
             </div>
           )}
-          {/* "Wait for my local agent" → the command to hand to a local agent so it serves this doc. */}
-          {policy === "local" && localCommand && (
+          {/* "Wait for my local agent" → an instruction the human pastes to their coding agent so it
+              connects to + serves this cloud doc (the connect command is inlined). */}
+          {policy === "local" && agentMessage && (
             <div className="ap-agent-localcmd">
               <div className="ap-agent-localcmd-hint">{t("agent.localCmdHint")}</div>
               <div className="ap-agent-localcmd-row">
-                <code className="ap-agent-localcmd-code">{localCommand}</code>
+                <div className="ap-agent-localcmd-msg">{agentMessage}</div>
                 <button className="ap-agent-localcmd-copy" onClick={copy} aria-label={t("agent.copy")}>
                   {copied ? t("agent.copied") : t("agent.copy")}
                 </button>
