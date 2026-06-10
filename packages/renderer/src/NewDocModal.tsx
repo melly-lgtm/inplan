@@ -15,6 +15,7 @@ export function NewDocModal({
   initialPath,
   exists,
   onPick,
+  draftOption,
   onSubmit,
   onCancel,
 }: {
@@ -26,16 +27,22 @@ export function NewDocModal({
   exists: boolean;
   /** Host file picker, or null when the host can't pick (then no Browse button). */
   onPick: ((suggestedName: string) => Promise<string | null>) | null;
+  /** Host-provided (localized) labels for the optional "draft from a prompt" field — shown only in
+   *  create mode when present. Absent ⇒ no prompt field (desktop / free / tests). */
+  draftOption?: { label: string; placeholder: string } | null;
   /** `append` is honored only when the target exists in move mode: true ⇒ append the blocks to it,
-   *  false ⇒ just link to it (drop the local blocks). Ignored for create / new files. */
-  onSubmit: (title: string, path: string, opts: { append: boolean }) => void;
+   *  false ⇒ just link to it (drop the local blocks). Ignored for create / new files. `draftPrompt`
+   *  (create + draftOption only) asks the host to agent-draft the new doc from this prompt. */
+  onSubmit: (title: string, path: string, opts: { append: boolean; draftPrompt?: string }) => void;
   onCancel: () => void;
 }): JSX.Element {
   const t = useT();
   const [title, setTitle] = useState(initialTitle);
   const [path, setPath] = useState(initialPath);
   const [append, setAppend] = useState(true); // default to the non-destructive choice
+  const [prompt, setPrompt] = useState(""); // optional "draft from a prompt" (create + draftOption)
   const ref = useRef<HTMLDivElement>(null);
+  const showDraft = mode === "create" && !!draftOption;
 
   useEffect(() => ref.current?.querySelector<HTMLInputElement>("input")?.focus(), []);
   useEffect(() => {
@@ -47,7 +54,7 @@ export function NewDocModal({
   }, [onCancel]);
 
   const ok = title.trim().length > 0 && path.trim().length > 0;
-  const submit = () => ok && onSubmit(title.trim(), path.trim(), { append });
+  const submit = () => ok && onSubmit(title.trim(), path.trim(), { append, ...(showDraft && prompt.trim() ? { draftPrompt: prompt.trim() } : {}) });
   const onEnter = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") submit();
   };
@@ -76,6 +83,12 @@ export function NewDocModal({
             )}
           </div>
         </div>
+        {showDraft && (
+          <label className="ap-newdoc-field ap-newdoc-draft">
+            <span>{draftOption!.label}</span>
+            <textarea className="ap-newdoc-prompt" rows={3} placeholder={draftOption!.placeholder} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+          </label>
+        )}
         {exists && (
           <div className="ap-newdoc-exists" role="alert">
             <div className="ap-newdoc-warn">{t("newdoc.exists")}</div>

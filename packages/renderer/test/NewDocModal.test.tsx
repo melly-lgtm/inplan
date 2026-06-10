@@ -51,6 +51,26 @@ describe("NewDocModal", () => {
     expect(onSubmit).toHaveBeenCalledWith("My Section", "my_section.md", { append: false });
   });
 
+  it("shows the draft-prompt field only in create mode when the host offers it, and submits the prompt", () => {
+    const onSubmit = vi.fn();
+    const draftOption = { label: "Draft from a prompt", placeholder: "Describe the doc…" };
+    // Move mode: no prompt field even when the host offers draftOption.
+    const { rerender } = render(<NewDocModal {...base} mode="move" draftOption={draftOption} onSubmit={onSubmit} />);
+    expect(screen.queryByPlaceholderText("Describe the doc…")).toBeNull();
+    // Create mode: the field shows; a typed prompt rides along (trimmed) as draftPrompt.
+    rerender(<NewDocModal {...base} draftOption={draftOption} onSubmit={onSubmit} />);
+    fireEvent.change(screen.getByPlaceholderText("Describe the doc…"), { target: { value: "  detail the auth design  " } });
+    fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    expect(onSubmit).toHaveBeenCalledWith("My Section", "my_section.md", { append: true, draftPrompt: "detail the auth design" });
+  });
+
+  it("omits draftPrompt when the host offers the field but the prompt is left blank", () => {
+    const onSubmit = vi.fn();
+    render(<NewDocModal {...base} draftOption={{ label: "L", placeholder: "P" }} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    expect(onSubmit).toHaveBeenCalledWith("My Section", "my_section.md", { append: true }); // no draftPrompt key
+  });
+
   it("disables the action when the title or path is empty", () => {
     render(<NewDocModal {...base} />);
     const create = screen.getByRole("button", { name: /^create$/i }) as HTMLButtonElement;

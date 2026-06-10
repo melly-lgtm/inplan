@@ -829,7 +829,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   // we rewrite the selection — Create links the text in place; Move replaces it with [title](link)
   // and the body moves to the new doc.
   const createNewDoc = useCallback(
-    async (title: string, path: string, opts: { append: boolean }) => {
+    async (title: string, path: string, opts: { append: boolean; draftPrompt?: string }) => {
       const req = newDocReq;
       const api = hostApi();
       if (!req || !api.newDoc) {
@@ -857,7 +857,11 @@ export function App(props: EditorProps = {}): JSX.Element {
           }
           content = `# ${title}\n`;
         }
-        const res = await api.newDoc.create(path, content);
+        // A draft prompt (create mode, host-offered) asks the host to agent-draft the new doc from
+        // the prompt instead of just the title; the selection still links to it. Pass the 3rd arg
+        // only when drafting, so the plain create call stays a 2-arg call.
+        const draftOpts = req.mode === "create" && opts.draftPrompt ? { draftPrompt: opts.draftPrompt } : null;
+        const res = draftOpts ? await api.newDoc.create(path, content, draftOpts) : await api.newDoc.create(path, content);
         if (!res) {
           setStatus(t("newdoc.failed"));
           return; // keep the modal open so the user can retry / pick another path
@@ -1495,6 +1499,7 @@ export function App(props: EditorProps = {}): JSX.Element {
           initialPath={slugifyFilename(newDocReq.mode === "move" ? moveDocTitle(newDocReq.selected) : newDocReq.selected)}
           exists={!!newDocReq.existing}
           onPick={hostApi().newDoc?.pickPath ? (name) => hostApi().newDoc!.pickPath!(name) : null}
+          draftOption={hostApi().newDoc?.draftOption ?? null}
           onSubmit={createNewDoc}
           onCancel={() => setNewDocReq(null)}
         />

@@ -208,10 +208,17 @@ export interface NewDocController {
    *  cancelled. Optional — a host without a file browser (e.g. web, where the user just types a
    *  repo-relative path) omits it and the modal shows no Browse button. (Desktop: a save dialog.) */
   pickPath?(suggestedName: string): Promise<string | null>;
+  /** When set, the Create-Doc modal offers an optional "draft from a prompt" field. Open-core has no
+   *  notion of *who* may draft or *how*; the host supplies this (with its own localized strings) only
+   *  when it can draft the new doc from a prompt — e.g. a paid cloud org whose managed agent drafts it.
+   *  Absent ⇒ no prompt field (desktop / free / tests). */
+  draftOption?: { label: string; placeholder: string } | null;
   /** Create the doc at `path` with `content`. `status: "created"` wrote a new file; `"exists"` means
    *  the file was already there (nothing written) so the caller can offer to link/append instead.
-   *  `linkTarget` is the relative link to embed (e.g. "./section.md"); null on a hard failure. */
-  create(path: string, content: string): Promise<{ status: "created" | "exists"; linkTarget: string } | null>;
+   *  `linkTarget` is the relative link to embed (e.g. "./section.md"); null on a hard failure.
+   *  `opts.draftPrompt` (only when {@link draftOption} is offered and the user filled it): the host
+   *  seeds the new doc to be agent-drafted from this prompt instead of just the title. */
+  create(path: string, content: string, opts?: { draftPrompt?: string }): Promise<{ status: "created" | "exists"; linkTarget: string } | null>;
   /** Append moved blocks (+ their comment threads) to the EXISTING doc at `path`: merges `body` after
    *  its current body and `comments` into its comment block. Resolves to the relative link target, or
    *  null on failure. Used by "Move Blocks → Append to the existing doc". */
