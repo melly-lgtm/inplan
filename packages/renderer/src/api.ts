@@ -259,6 +259,11 @@ export interface Api {
   /** Localization seam, when the host wires one (web for everyone; paid desktop).
    *  Absent ⇒ the editor runs in its built-in English. */
   i18n?: I18nController | null;
+  /** A copy-pasteable shell command a LOCAL agent runs to serve THIS document (cloud only — e.g.
+   *  `inplan wait --remote <docId>`). Shown in the agent menu when the connection preference is
+   *  "Wait for my local agent", so the human can hand it to their local coding agent. Absent on the
+   *  desktop/file-backed editor (the agent is already local). */
+  localAgentCommand?: string;
   /** Desktop only: a newer published npm version exists (checked on launch).
    *  Web auto-updates via reload; tests omit this. */
   onUpdateAvailable?(cb: (info: { current: string; latest: string }) => void): (() => void) | void;

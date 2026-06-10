@@ -1846,6 +1846,7 @@ function TopBar(props: {
           byoKey={profile.agentByoKey}
           policy={profile.agentPolicy}
           onSetPolicy={profile.onSetAgentPolicy}
+          localCommand={hostApi().localAgentCommand}
         />
       )}
       <ProfileMenu

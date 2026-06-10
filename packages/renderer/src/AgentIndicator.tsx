@@ -30,6 +30,7 @@ export function AgentIndicator({
   byoKey,
   policy,
   onSetPolicy,
+  localCommand,
 }: {
   location: AgentLocation | null;
   model?: string;
@@ -37,10 +38,23 @@ export function AgentIndicator({
   byoKey?: boolean;
   policy?: AgentPolicy;
   onSetPolicy?: (p: AgentPolicy) => void | Promise<void>;
+  /** Host-supplied command a local agent runs to serve this doc (cloud); shown under "local". */
+  localCommand?: string;
 }): JSX.Element {
   const t = useT();
   const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const copy = (): void => {
+    if (!localCommand) return;
+    void navigator.clipboard?.writeText(localCommand).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      },
+      () => {},
+    );
+  };
   const POLICY_OPTIONS: { value: AgentPolicy; label: string }[] = [
     { value: "auto", label: t("agent.connectCloud") },
     { value: "local", label: t("agent.waitLocal") },
@@ -102,6 +116,18 @@ export function AgentIndicator({
                   {o.label}
                 </button>
               ))}
+            </div>
+          )}
+          {/* "Wait for my local agent" → the command to hand to a local agent so it serves this doc. */}
+          {policy === "local" && localCommand && (
+            <div className="ap-agent-localcmd">
+              <div className="ap-agent-localcmd-hint">{t("agent.localCmdHint")}</div>
+              <div className="ap-agent-localcmd-row">
+                <code className="ap-agent-localcmd-code">{localCommand}</code>
+                <button className="ap-agent-localcmd-copy" onClick={copy} aria-label={t("agent.copy")}>
+                  {copied ? t("agent.copied") : t("agent.copy")}
+                </button>
+              </div>
             </div>
           )}
         </div>

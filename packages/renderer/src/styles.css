@@ -127,6 +127,13 @@ body {
 .ap-policy-dot { width: 9px; height: 9px; border-radius: 50%; border: 1px solid var(--line-strong); flex: 0 0 auto; }
 .ap-agent-policy-opt.active { color: inherit; font-weight: 600; }
 .ap-agent-policy-opt.active .ap-policy-dot { background: var(--accent); border-color: var(--accent); }
+/* "Wait for my local agent" → the copy-pasteable command for a local agent to serve this doc. */
+.ap-agent-localcmd { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
+.ap-agent-localcmd-hint { font-size: 11px; color: var(--muted); padding: 0 6px 5px; }
+.ap-agent-localcmd-row { display: flex; align-items: stretch; gap: 6px; }
+.ap-agent-localcmd-code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font-family: var(--mono); font-size: 11px; background: var(--paper); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; color: var(--fg); }
+.ap-agent-localcmd-copy { flex: 0 0 auto; border: 1px solid var(--line-strong); background: var(--bg); border-radius: 6px; padding: 0 9px; font: inherit; font-size: 11px; cursor: pointer; color: var(--fg); }
+.ap-agent-localcmd-copy:hover { background: var(--accent-soft); }
 
 .ap-topbar button, .ap-tabs button { font: inherit; }
 .ap-topbar > button { border: 1px solid var(--line-strong); background: var(--bg); border-radius: 7px; padding: 4px 12px; cursor: pointer; color: var(--fg); }

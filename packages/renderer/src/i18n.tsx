@@ -156,6 +156,9 @@ export const EN: Catalog = {
   "agent.overIncluded": "— over included",
   "agent.over": "(over)",
   "agent.connection": "Agent connection",
+  "agent.localCmdHint": "Run this where your agent is (after `inplan login`):",
+  "agent.copy": "Copy",
+  "agent.copied": "Copied",
   // comment rail
   "rail.comments": "Comments",
   "rail.emptyHint": "No comments. Select text and use “+ {action}”.",
