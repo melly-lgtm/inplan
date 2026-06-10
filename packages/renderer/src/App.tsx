@@ -360,28 +360,47 @@ export function App(props: EditorProps = {}): JSX.Element {
     return () => clearTimeout(timer);
   }, [reloadIn]);
 
+  // Push a doc state to the collaborative owners — comments → the store, body → the binding (a
+  // shared ***REMOVED***) — so undo/redo (and programmatic edits) reach the shared doc, not just React
+  // state the binding would overwrite. `prevComments` is the comment set being replaced (the delta
+  // base). No-op for the file-backed editor (no store/binding); there React + save() own the doc.
+  const syncExternalDoc = useCallback((d: ParsedDocument, prevComments: Comment[]) => {
+    const store = hostApi().commentStore;
+    const binding = hostApi().binding;
+    if (store) {
+      reconcileComments(store, prevComments, d.comments);
+      binding?.setText?.(d.body);
+    } else {
+      binding?.setText?.(serialize(d)); // legacy collab: the binding owns the whole serialized doc
+    }
+    return !!(store || binding);
+  }, []);
   const undo = useCallback(() => {
     const prev = history.current.pop();
     if (!prev) {
       setStatus(t("msg.nothingUndo"));
       return;
     }
-    future.current.push(docRef.current);
+    const cur = docRef.current;
+    future.current.push(cur);
     setDoc(prev);
-    setDirty(serialize(prev) !== savedRef.current);
+    if (syncExternalDoc(prev, cur.comments)) setDirty(false);
+    else setDirty(serialize(prev) !== savedRef.current);
     setStatus(t("msg.undid"));
-  }, []);
+  }, [syncExternalDoc]);
   const redo = useCallback(() => {
     const next = future.current.pop();
     if (!next) {
       setStatus(t("msg.nothingRedo"));
       return;
     }
-    history.current.push(docRef.current);
+    const cur = docRef.current;
+    history.current.push(cur);
     setDoc(next);
-    setDirty(serialize(next) !== savedRef.current);
+    if (syncExternalDoc(next, cur.comments)) setDirty(false);
+    else setDirty(serialize(next) !== savedRef.current);
     setStatus(t("msg.redid"));
-  }, []);
+  }, [syncExternalDoc]);
 
   // --- keyboard ergonomics ---
   useEffect(() => {
@@ -513,34 +532,29 @@ export function App(props: EditorProps = {}): JSX.Element {
       if (history.current.length > 200) history.current.shift();
       future.current = [];
       const commentOnly = next.body === docRef.current.body; // body unchanged ⇒ a comment-thread change
+      const prevComments = docRef.current.comments;
       setDoc(next);
       if (action) void hostApi().logAction(action.type, action.payload);
-      // Comment-thread changes are "always applied" — persist them immediately so
-      // they survive reloads and proposals (incl. during review). In Instant mode
-      // that's a canonical save (the agent reacts live); in Turn/Review it's a
-      // *silent* save (no turn-end / no wake — comments don't end your turn).
-      // Body edits (find/replace) keep the normal save flow.
-      if (commentOnly) {
-        const store = hostApi().commentStore;
-        if (store) {
-          // Comments live in the external store (plugin). Write only the delta — the store
-          // persists them, so there's no body save here (that second writer is exactly what
-          // caused the back-and-forth-nav data loss, #71).
-          reconcileComments(store, docRef.current.comments, next.comments);
-          setDirty(false);
-        } else {
-          const s = serialize(next);
-          savedRef.current = s;
-          setDirty(false);
-          // A canonical/apply save also advances the checkpoint (canonical IS a store), so keep
-          // them in sync — otherwise checkpoint goes stale and the Save dot can mis-clear later.
-          void hostApi().save(s, { kind: mode.applyKind, cadence }).then(() => setCheckpoint(s));
-        }
+      // Collaborative: push to the external owners — comments → store, body → binding. A SPAN
+      // comment changes the body (its `[text](#cmt-id)` anchor link) AND the comments, so it must
+      // hit both owners; the controlled editor value is ignored once a binding owns the body
+      // (SourceEditor), and persistence is the shared doc's (no save() second-writer — #71).
+      if (syncExternalDoc(next, prevComments)) {
+        setDirty(false);
+      } else if (commentOnly) {
+        // File-backed single-writer. Comment-thread changes are "always applied" — persist them
+        // immediately (silent in Turn/Review; canonical in Instant) so they survive reloads/proposals.
+        const s = serialize(next);
+        savedRef.current = s;
+        setDirty(false);
+        // A canonical/apply save also advances the checkpoint (canonical IS a store), so keep them
+        // in sync — otherwise checkpoint goes stale and the Save dot can mis-clear later.
+        void hostApi().save(s, { kind: mode.applyKind, cadence }).then(() => setCheckpoint(s));
       } else {
-        setDirty(serialize(next) !== savedRef.current);
+        setDirty(serialize(next) !== savedRef.current); // body edit → the normal autosave flow
       }
     },
-    [cadence],
+    [cadence, syncExternalDoc],
   );
 
   // Auto-resolve: when the setting is on, resolve threads the agent suggested (its `may_resolve`
@@ -1451,9 +1465,13 @@ export function App(props: EditorProps = {}): JSX.Element {
                 editable={!editingLocked}
                 onChange={(body) => {
                   // Typing has its own (CodeMirror) undo; don't push app-level history per keystroke.
-                  const nd = { ...docRef.current, body };
-                  setDoc(nd);
-                  setDirty(serialize(nd) !== savedRef.current);
+                  // Use a FUNCTIONAL update so we only ever change `body` and merge into the LATEST
+                  // state — never `{...docRef.current, body}`, whose ref can lag behind rapid setDoc()s
+                  // and clobber `comments`. (In collab a programmatic body edit fires this via the
+                  // binding → ytext → CodeMirror, racing the comment the same action just added; the
+                  // stale-ref form dropped that comment from the rail until the next store re-read.)
+                  setDoc((d) => ({ ...d, body }));
+                  setDirty(serialize({ ...docRef.current, body }) !== savedRef.current);
                 }}
                 onCursorLine={(line) => setActivePreviewLine(line)}
                 onFind={() => setFindOpen(true)}

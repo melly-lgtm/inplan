@@ -14,6 +14,15 @@ export interface EditorBinding {
   extensions: Extension[];
   /** The external document's current text, used to seed the editor (the binding then owns content). */
   getText: () => string;
+  /** Apply a PROGRAMMATIC body change — a span-comment's `[text](#cmt-id)` anchor link,
+   *  find/replace, move-blocks, body undo/redo — to the bound document. Once a binding is present
+   *  the editor's controlled `value` is ignored (the binding owns content; see SourceEditor), so an
+   *  edit that doesn't originate from typing in CodeMirror has no other way to reach the shared doc.
+   *  Implementations should apply it as a MINIMAL edit (so a concurrent remote edit elsewhere isn't
+   *  clobbered) and write the shared document DIRECTLY, so it works even when the source pane
+   *  (CodeMirror) isn't mounted. Optional: a binding without it simply can't accept programmatic
+   *  body edits (open-core's file-backed editor has no binding and uses the controlled value). */
+  setText?: (text: string) => void;
 }
 
 /** Collaboration cadence — a mode id (see ModeDescriptor). Open-core's only built-in is "turn";
