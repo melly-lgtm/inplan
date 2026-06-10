@@ -36,7 +36,7 @@ import { SourceEditor, type SourceEditorHandle } from "./SourceEditor";
 import { StatusBar } from "./StatusBar";
 import { ProfileMenu } from "./ProfileMenu";
 import { AgentIndicator } from "./AgentIndicator";
-import { IconBack, IconForward, IconUp, IconDown, IconZoomOut, IconZoomIn, IconFind, IconComment, IconSave, IconFinishTurn, IconRevealArchive, IconComplete, IconReopen } from "./Icons";
+import { IconBack, IconForward, IconUp, IconDown, IconZoomOut, IconZoomIn, IconFind, IconComment, IconSave, IconFinishTurn, IconRevealArchive, IconComplete, IconReopen, IconPencil } from "./Icons";
 import { RelativeTime } from "./RelativeTime";
 import { AuthorChip } from "./Avatar";
 import { QuitDialog } from "./QuitDialog";
@@ -411,14 +411,26 @@ export function App(props: EditorProps = {}): JSX.Element {
     setStatus(t("msg.redid"));
   }, [syncExternalDoc]);
 
+  // Review undo/redo are defined later (with the review state); the keyboard handler reaches them
+  // through refs so it doesn't depend on their declaration order.
+  const reviewUndoRef = useRef<() => void>(() => {});
+  const reviewRedoRef = useRef<() => void>(() => {});
+
   // --- keyboard ergonomics ---
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z")) {
-        // While the source editor is focused, let CodeMirror handle typing undo.
-        if ((document.activeElement as HTMLElement | null)?.closest(".ap-source")) return;
+        // While the source editor OR the inline proposal-edit textarea is focused, let the native
+        // field handle typing undo.
+        const active = document.activeElement as HTMLElement | null;
+        if (active?.closest(".ap-source") || active?.closest(".ap-ihunk-edit-ta")) return;
         e.preventDefault();
-        if (e.shiftKey) redo();
+        // While a review is open the doc isn't mutated yet — undo/redo step through the review's own
+        // timeline (accept/reject toggles + hunk edits), not the document history.
+        if (proposal && reviewOpen) {
+          if (e.shiftKey) reviewRedoRef.current();
+          else reviewUndoRef.current();
+        } else if (e.shiftKey) redo();
         else undo();
       } else if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "f" || e.key === "F")) {
         // ⌘F opens the find bar and focuses its input (even if already open).
@@ -998,9 +1010,81 @@ export function App(props: EditorProps = {}): JSX.Element {
   const reviewSegs = useMemo(() => (proposal ? lineSegments(proposal.baseBody, proposal.next.body) : []), [proposal]);
   const changeCount = useMemo(() => reviewSegs.filter(isChange).length, [reviewSegs]);
   const [accepted, setAccepted] = useState<boolean[]>([]);
-  useEffect(() => setAccepted(new Array(changeCount).fill(true)), [changeCount, proposal]);
-  const toggleHunk = useCallback((idx: number, val: boolean) => setAccepted((a) => a.map((v, k) => (k === idx ? val : v))), []);
-  const applyReview = useCallback(() => applyProposal(reviewSegs, accepted), [applyProposal, reviewSegs, accepted]);
+  // Per-hunk edits to the PROPOSED (added) text, keyed by change-block index — the human can refine
+  // a change before applying it. `editedSegs` overlays them onto the diff so both panes + Apply use
+  // the edited text. Empty by default (the agent's proposal verbatim).
+  const [edits, setEdits] = useState<Record<number, string[]>>({});
+  const editedSegs = useMemo(() => {
+    let ci = -1;
+    return reviewSegs.map((s) => {
+      if (!isChange(s)) return s;
+      ci++;
+      return edits[ci] ? { ...s, added: edits[ci]! } : s;
+    });
+  }, [reviewSegs, edits]);
+  // Review is its own little undo/redo timeline (the doc isn't mutated until Apply): toggling a
+  // switch, Accept/Reject all, and editing a hunk all snapshot {accepted, edits} so ⌘Z/⌘⇧Z step
+  // through them while the review is open.
+  const reviewHist = useRef<{ accepted: boolean[]; edits: Record<number, string[]> }[]>([]);
+  const reviewFuture = useRef<{ accepted: boolean[]; edits: Record<number, string[]> }[]>([]);
+  const [editingHunk, setEditingHunk] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  useEffect(() => {
+    setAccepted(new Array(changeCount).fill(true));
+    setEdits({});
+    reviewHist.current = [];
+    reviewFuture.current = [];
+    setEditingHunk(null);
+  }, [changeCount, proposal]);
+  // Commit a review change through the undo timeline.
+  const commitReview = useCallback(
+    (nextAccepted: boolean[], nextEdits: Record<number, string[]>) => {
+      reviewHist.current.push({ accepted, edits });
+      if (reviewHist.current.length > 200) reviewHist.current.shift();
+      reviewFuture.current = [];
+      setAccepted(nextAccepted);
+      setEdits(nextEdits);
+    },
+    [accepted, edits],
+  );
+  const toggleHunk = useCallback((idx: number, val: boolean) => commitReview(accepted.map((v, k) => (k === idx ? val : v)), edits), [commitReview, accepted, edits]);
+  const setAllAccepted = useCallback((val: boolean) => commitReview(new Array(changeCount).fill(val), edits), [commitReview, changeCount, edits]);
+  const reviewUndo = useCallback(() => {
+    const prev = reviewHist.current.pop();
+    if (!prev) return;
+    reviewFuture.current.push({ accepted, edits });
+    setEditingHunk(null);
+    setAccepted(prev.accepted);
+    setEdits(prev.edits);
+    setStatus(t("msg.undid"));
+  }, [accepted, edits]);
+  const reviewRedo = useCallback(() => {
+    const next = reviewFuture.current.pop();
+    if (!next) return;
+    reviewHist.current.push({ accepted, edits });
+    setEditingHunk(null);
+    setAccepted(next.accepted);
+    setEdits(next.edits);
+    setStatus(t("msg.redid"));
+  }, [accepted, edits]);
+  reviewUndoRef.current = reviewUndo;
+  reviewRedoRef.current = reviewRedo;
+  // Open the inline editor for a hunk (seed it with that hunk's current proposed text).
+  const startEditHunk = useCallback(
+    (idx: number) => {
+      const blocks = editedSegs.filter(isChange);
+      setEditDraft((blocks[idx]?.added ?? []).join("\n"));
+      setEditingHunk(idx);
+    },
+    [editedSegs],
+  );
+  const saveEditHunk = useCallback(() => {
+    if (editingHunk == null) return;
+    commitReview(accepted, { ...edits, [editingHunk]: editDraft.split("\n") });
+    setEditingHunk(null);
+  }, [editingHunk, editDraft, commitReview, accepted, edits]);
+  const cancelEditHunk = useCallback(() => setEditingHunk(null), []);
+  const applyReview = useCallback(() => applyProposal(editedSegs, accepted), [applyProposal, editedSegs, accepted]);
 
   // "Review next": step through change hunks, scrolling each into view (in both
   // the preview and, when shown, the source diff) and highlighting it.
@@ -1306,12 +1390,12 @@ export function App(props: EditorProps = {}): JSX.Element {
             {t("banner.reviewNext")}
             {reviewCursor >= 0 ? ` (${reviewCursor + 1}/${changeCount})` : ""}
           </button>
-          <button disabled={editingLocked} onClick={() => setAccepted(new Array(changeCount).fill(true))}>
-            {t("banner.acceptAll")}
-          </button>
-          <button disabled={editingLocked} onClick={() => setAccepted(new Array(changeCount).fill(false))}>
-            {t("banner.rejectAll")}
-          </button>
+          <TriSwitch
+            state={changeCount > 0 && accepted.slice(0, changeCount).every(Boolean) ? "accept" : changeCount > 0 && accepted.slice(0, changeCount).every((v) => !v) ? "reject" : "mixed"}
+            onAccept={() => setAllAccepted(true)}
+            onReject={() => setAllAccepted(false)}
+            disabled={editingLocked || !changeCount}
+          />
           <button className="ap-primary" disabled={editingLocked} onClick={applyReview}>
             {t("banner.apply")}
           </button>
@@ -1430,7 +1514,7 @@ export function App(props: EditorProps = {}): JSX.Element {
           }}
         >
           {proposal && reviewOpen ? (
-            <DiffPreview segs={reviewSegs} accepted={accepted} focused={reviewCursor} onToggle={toggleHunk} />
+            <DiffPreview segs={editedSegs} accepted={accepted} focused={reviewCursor} onToggle={toggleHunk} onEdit={startEditHunk} editingHunk={editingHunk} editDraft={editDraft} onEditDraft={setEditDraft} onEditSave={saveEditHunk} onEditCancel={cancelEditHunk} />
           ) : (
           <div
             className="ap-rendered"
@@ -1466,7 +1550,7 @@ export function App(props: EditorProps = {}): JSX.Element {
           <section className="ap-pane" style={{ width: srcW }}>
             {panes === 2 && <PaneTabs tab={rightTab} onTab={setRightTab} />}
             {proposal && reviewOpen ? (
-              <DiffSource segs={reviewSegs} accepted={accepted} focused={reviewCursor} onToggle={toggleHunk} />
+              <DiffSource segs={editedSegs} accepted={accepted} focused={reviewCursor} onToggle={toggleHunk} />
             ) : (
               <SourceEditor
                 ref={editorRef}
@@ -2041,10 +2125,72 @@ function FindReplaceBar({
   );
 }
 
+/** Tri-state accept/reject-all control: the thumb sits left (all accepted), centre
+ *  (mixed), or right (all rejected). The two ends are the actionable targets —
+ *  clicking "accept" accepts every hunk, "reject" rejects every hunk; the centre is a
+ *  display-only state reached when the per-hunk switches are mixed. Bidirectional: the
+ *  position is derived from the hunks, and moving it sets them all. */
+function TriSwitch({ state, onAccept, onReject, disabled }: { state: "accept" | "mixed" | "reject"; onAccept: () => void; onReject: () => void; disabled?: boolean }): JSX.Element {
+  return (
+    <span className={`ap-tri ap-tri--${state}${disabled ? " disabled" : ""}`} role="group" aria-label="accept or reject all changes">
+      <button type="button" className="ap-tri-end ap-tri-accept" aria-pressed={state === "accept"} disabled={disabled} onClick={onAccept}>
+        Accept all
+      </button>
+      <span className="ap-tri-track" aria-hidden="true">
+        <span className="ap-tri-thumb" />
+      </span>
+      <button type="button" className="ap-tri-end ap-tri-reject" aria-pressed={state === "reject"} disabled={disabled} onClick={onReject}>
+        Reject all
+      </button>
+    </span>
+  );
+}
+
+/** The per-hunk control bar shared by both diff panes: an optional pencil (edit the
+ *  proposal, only when the hunk is accepted), a "will be accepted/rejected" status to
+ *  the left, and the accept switch on the right. */
+function HunkBar({ idx, on, onToggle, onEdit, editing }: { idx: number; on: boolean; onToggle: (i: number, v: boolean) => void; onEdit?: (i: number) => void; editing?: boolean }): JSX.Element {
+  return (
+    <div className="ap-hunk-bar">
+      <span className="ap-hunk-n">change {idx + 1}</span>
+      <span className="ap-spacer" />
+      {on && onEdit && (
+        <button type="button" className={`ap-hunk-edit${editing ? " active" : ""}`} aria-label={`edit change ${idx + 1}`} title="Edit this change" onClick={() => onEdit(idx)}>
+          <IconPencil />
+        </button>
+      )}
+      <span className="ap-willbe">{on ? "will be accepted" : "will be rejected"}</span>
+      <Switch checked={on} onChange={(v) => onToggle(idx, v)} ariaLabel={`accept change ${idx + 1}`} />
+    </div>
+  );
+}
+
 /** Inline diff rendered in the PREVIEW pane: changed blocks shown in place as
  *  rendered Markdown, with a per-hunk accept/reject toggle. This is the complete
  *  review surface in 1-pane mode (where the source pane isn't visible). */
-function DiffPreview({ segs, accepted, focused, onToggle }: { segs: DiffSegment[]; accepted: boolean[]; focused: number; onToggle: (i: number, v: boolean) => void }): JSX.Element {
+function DiffPreview({
+  segs,
+  accepted,
+  focused,
+  onToggle,
+  onEdit,
+  editingHunk,
+  editDraft,
+  onEditDraft,
+  onEditSave,
+  onEditCancel,
+}: {
+  segs: DiffSegment[];
+  accepted: boolean[];
+  focused: number;
+  onToggle: (i: number, v: boolean) => void;
+  onEdit: (i: number) => void;
+  editingHunk: number | null;
+  editDraft: string;
+  onEditDraft: (v: string) => void;
+  onEditSave: () => void;
+  onEditCancel: () => void;
+}): JSX.Element {
   let ci = -1;
   return (
     <div className="ap-rendered ap-diffview">
@@ -2055,18 +2201,43 @@ function DiffPreview({ segs, accepted, focused, onToggle }: { segs: DiffSegment[
         ci++;
         const idx = ci;
         const on = accepted[idx] ?? true;
+        const editing = editingHunk === idx;
         return (
           <div key={i} data-hunk={idx} className={`ap-ihunk${on ? " accepted" : " rejected"}${focused === idx ? " focused" : ""}`}>
-            <div className="ap-ihunk-bar">
-              <span>change {idx + 1}</span>
-              <span className="ap-spacer" />
-              <Switch checked={on} onChange={(v) => onToggle(idx, v)} ariaLabel={`accept change ${idx + 1}`} />
-            </div>
+            <HunkBar idx={idx} on={on} onToggle={onToggle} onEdit={onEdit} editing={editing} />
             {s.removed && s.removed.length > 0 && (
               <div className="ap-ihunk-del" dangerouslySetInnerHTML={{ __html: renderMarkdown(s.removed.join("\n"), () => false) }} />
             )}
-            {s.added && s.added.length > 0 && (
-              <div className="ap-ihunk-add" dangerouslySetInnerHTML={{ __html: renderMarkdown(s.added.join("\n"), () => false) }} />
+            {editing ? (
+              <div className="ap-ihunk-edit">
+                <textarea
+                  className="ap-ihunk-edit-ta"
+                  value={editDraft}
+                  autoFocus
+                  rows={Math.min(12, Math.max(2, editDraft.split("\n").length))}
+                  aria-label={`edit change ${idx + 1}`}
+                  onChange={(e) => onEditDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      onEditCancel();
+                    } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                      e.preventDefault();
+                      onEditSave();
+                    }
+                  }}
+                />
+                <div className="ap-ihunk-edit-actions">
+                  <button className="ap-link" aria-label={`cancel edit of change ${idx + 1}`} onClick={onEditCancel}>
+                    Cancel
+                  </button>
+                  <button className="ap-primary" aria-label={`save edit of change ${idx + 1}`} onClick={onEditSave}>
+                    Save
+                  </button>
+                </div>
+              </div>
+            ) : (
+              s.added && s.added.length > 0 && <div className="ap-ihunk-add" dangerouslySetInnerHTML={{ __html: renderMarkdown(s.added.join("\n"), () => false) }} />
             )}
           </div>
         );
@@ -2094,9 +2265,7 @@ function DiffSource({ segs, accepted, focused, onToggle }: { segs: DiffSegment[]
         const on = accepted[idx] ?? true;
         return (
           <div key={i} data-hunk={idx} className={`ap-hunk${on ? " accepted" : " rejected"}${focused === idx ? " focused" : ""}`}>
-            <div className="ap-hunk-toggle">
-              <Switch label={`change ${idx + 1}`} checked={on} onChange={(v) => onToggle(idx, v)} />
-            </div>
+            <HunkBar idx={idx} on={on} onToggle={onToggle} />
             <HunkLines removed={s.removed ?? []} added={s.added ?? []} />
           </div>
         );

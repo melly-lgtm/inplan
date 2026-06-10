@@ -80,3 +80,10 @@ export const IconRevealArchive = (): JSX.Element => (
     <line x1="5" y1="16" x2="19" y2="16" />
   </Glyph>
 );
+
+export const IconPencil = (): JSX.Element => (
+  <Glyph>
+    <path d="M12 20h9" />
+    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+  </Glyph>
+);

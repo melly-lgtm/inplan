@@ -122,6 +122,82 @@ describe("App review diff controls (memory-backed)", () => {
     expect(await (window as unknown as Win).api.getProposal()).toBeNull();
   });
 
+  it("shows a per-hunk 'will be accepted/rejected' label and a tri-state that goes mixed", async () => {
+    await renderAndPropose();
+    expect(document.body.textContent).toContain("will be accepted"); // default: all accepted
+    expect(document.querySelector(".ap-tri--accept")).toBeTruthy();
+    // Reject one hunk → its label flips and the tri-state goes to mixed.
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("switch", { name: /accept change 1/ })[0]!);
+    });
+    expect(document.body.textContent).toContain("will be rejected");
+    expect(document.querySelector(".ap-tri--mixed")).toBeTruthy();
+  });
+
+  it("the pencil edits a hunk's proposed text and Apply uses the edited text", async () => {
+    await renderAndPropose();
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: /edit change 1/ })[0]!);
+    });
+    const ta = screen.getByRole("textbox", { name: /edit change 1/ }) as HTMLTextAreaElement;
+    expect(ta.value).toContain("Alpha CHANGED."); // seeded with the agent's proposed text
+    await act(async () => {
+      fireEvent.change(ta, { target: { value: "Alpha EDITED." } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /save edit/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Apply$/ }));
+    });
+    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"));
+    expect(document.body.textContent).toContain("Alpha EDITED."); // the human's edit, not the agent's
+    expect(document.body.textContent).not.toContain("Alpha CHANGED.");
+  });
+
+  it("Cancel discards an inline edit", async () => {
+    await renderAndPropose();
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: /edit change 1/ })[0]!);
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByRole("textbox", { name: /edit change 1/ }), { target: { value: "Alpha EDITED." } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /cancel edit/i }));
+    });
+    expect(screen.queryByRole("textbox", { name: /edit change 1/ })).toBeNull(); // editor closed
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Apply$/ }));
+    });
+    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"));
+    expect(document.body.textContent).toContain("Alpha CHANGED."); // unchanged proposal applied
+    expect(document.body.textContent).not.toContain("Alpha EDITED.");
+  });
+
+  it("⌘Z undoes a saved hunk edit while reviewing", async () => {
+    await renderAndPropose();
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: /edit change 1/ })[0]!);
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByRole("textbox", { name: /edit change 1/ }), { target: { value: "Alpha EDITED." } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /save edit/i }));
+    });
+    // Undo the edit through the review timeline (no field focused → routes to reviewUndo).
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "z", metaKey: true });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Apply$/ }));
+    });
+    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"));
+    expect(document.body.textContent).toContain("Alpha CHANGED."); // edit undone → original proposal
+    expect(document.body.textContent).not.toContain("Alpha EDITED.");
+  });
+
   it("'later' parks the proposal behind a banner with a Review button that re-shows it", async () => {
     await renderAndPropose();
 

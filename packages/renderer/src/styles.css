@@ -389,12 +389,39 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 /* Review "next" top-aligns the focused hunk (block:"start"); keep a little gap from the pane top. */
 .ap-ihunk, .ap-hunk { scroll-margin-top: 12px; }
 .ap-ihunk { border: 1px solid var(--line); border-radius: 9px; margin: 12px 0; overflow: hidden; }
-.ap-ihunk-bar { display: flex; align-items: center; gap: 6px; padding: 4px 10px; background: #f3eee1; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
-.ap-ihunk-bar button { font: inherit; border: 1px solid var(--line-strong); background: var(--bg); border-radius: 6px; padding: 2px 10px; cursor: pointer; }
-.ap-ihunk-bar button.on { background: var(--accent); color: #fbfaf6; border-color: var(--accent); }
+/* Shared per-hunk control bar (both panes): change label · spacer · pencil · "will be …" · switch. */
+.ap-hunk-bar { display: flex; align-items: center; gap: 8px; font-family: var(--sans); font-size: 12px; color: var(--muted); }
+.ap-ihunk .ap-hunk-bar { padding: 4px 10px; background: #f3eee1; border-bottom: 1px solid var(--line); } /* preview: tinted header strip */
+.ap-hunk .ap-hunk-bar { margin-bottom: 4px; } /* source: plain row */
+.ap-hunk-n { font-weight: 500; }
+.ap-willbe { font-size: 11px; }
+.ap-ihunk.accepted .ap-willbe, .ap-hunk.accepted .ap-willbe { color: #2e7d4f; }
+.ap-ihunk.rejected .ap-willbe, .ap-hunk.rejected .ap-willbe { color: var(--danger); }
+.ap-hunk-edit { display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line-strong); background: var(--bg); border-radius: 6px; padding: 2px; cursor: pointer; color: var(--muted); }
+.ap-hunk-edit:hover, .ap-hunk-edit.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.ap-hunk-edit svg { width: 13px; height: 13px; display: block; }
+/* Tri-state accept/reject-all switch: two end buttons + a thumb that sits L/centre/R. */
+.ap-tri { display: inline-flex; align-items: center; gap: 6px; }
+.ap-tri-end { font: inherit; font-size: 12px; border: 1px solid var(--line-strong); background: var(--bg); border-radius: 6px; padding: 3px 9px; cursor: pointer; color: var(--muted); }
+.ap-tri-end:disabled { opacity: 0.5; cursor: default; }
+.ap-tri-accept[aria-pressed="true"] { background: #2e9e5b; border-color: #2e9e5b; color: #fbfaf6; }
+.ap-tri-reject[aria-pressed="true"] { background: var(--danger); border-color: var(--danger); color: #fbfaf6; }
+.ap-tri-track { position: relative; width: 34px; height: 18px; border-radius: 999px; background: var(--line-strong); flex: 0 0 auto; }
+.ap-tri-thumb { position: absolute; top: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.25); transition: left 0.15s ease; }
+.ap-tri--accept .ap-tri-track { background: #2e9e5b; }
+.ap-tri--reject .ap-tri-track { background: var(--danger); }
+.ap-tri--accept .ap-tri-thumb { left: 2px; }
+.ap-tri--mixed  .ap-tri-thumb { left: 10px; }
+.ap-tri--reject .ap-tri-thumb { left: 18px; }
+.ap-tri.disabled { opacity: 0.5; }
 .ap-ihunk-del { background: #fbeae6; padding: 3px 12px; }
 .ap-ihunk-del :where(p, h1, h2, h3, h4, li, blockquote) { text-decoration: line-through; }
 .ap-ihunk-add { background: #e9f3ec; padding: 3px 12px; }
+/* Inline edit of a hunk's proposed text (the pencil). */
+.ap-ihunk-edit { background: #e9f3ec; padding: 6px 12px; display: flex; flex-direction: column; gap: 6px; }
+.ap-ihunk-edit-ta { width: 100%; resize: vertical; font-family: var(--mono); font-size: 12px; line-height: 1.5; border: 1px solid var(--accent); border-radius: 6px; padding: 6px 8px; background: var(--bg); color: var(--fg); }
+.ap-ihunk-edit-ta:focus { outline: none; box-shadow: 0 0 0 2px var(--accent-soft); }
+.ap-ihunk-edit-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .ap-ihunk.rejected .ap-ihunk-add { opacity: 0.4; }
 .ap-ihunk.accepted .ap-ihunk-del { opacity: 0.5; }
 .ap-ihunk.focused { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -410,8 +437,6 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 .ap-hunk { border-left: 3px solid var(--line); margin: 8px 0; padding-left: 8px; }
 .ap-hunk.accepted { border-left-color: #2e9e5b; }
 .ap-hunk.rejected { border-left-color: var(--danger); opacity: 0.7; }
-.ap-hunk-toggle { display: flex; align-items: center; font-family: var(--sans); font-size: 12px; margin-bottom: 4px; }
-.ap-hunk-toggle .ap-switch { gap: 8px; }
 .ap-diff-same { color: var(--muted); margin: 0; white-space: pre-wrap; }
 .ap-diff-del { background: #fbeae6; color: #8a1c10; margin: 0; white-space: pre-wrap; }
 .ap-diff-add { background: #e9f3ec; color: #18643a; margin: 0; white-space: pre-wrap; }
