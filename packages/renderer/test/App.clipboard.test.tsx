@@ -98,9 +98,13 @@ describe("App clipboard carry-comments wiring", () => {
     // in the selection. Reproduce that write here (commentsForCopy → buildClipHtml), then cut.
     await mountApp(); // doc A (has cmt-root1 "why here?" + reply)
     const cutText = "See [the point](#cmt-root1) here.";
+    // Cut the EXACT anchored line so the removed range matches the clipboard payload (a realistic
+    // cut). cutText sits before the comment block, so its body offset == its offset in DOC.
+    const cutStart = DOC.indexOf(cutText);
+    const cutEnd = cutStart + cutText.length;
     const carried = clip.commentsForCopy!(cutText); // [root + reply]
     const clipboardHtml = buildClipHtml(cutText, carried); // what the cut handler puts on the clipboard
-    await act(async () => clip.onCutComments!(cutText, 0, 9999)); // remove from doc A
+    await act(async () => clip.onCutComments!(cutText, cutStart, cutEnd)); // remove that line from doc A
     await waitFor(() => expect(document.body.textContent).not.toContain("why here?")); // gone from A
 
     // Doc B: a *different* document. The paste handler reads text/html and hands the decoded
