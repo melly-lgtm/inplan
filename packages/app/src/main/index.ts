@@ -12,7 +12,7 @@ import { Session } from "./session";
 import { createI18nController } from "./i18nController";
 import { track, type TelemetryProps } from "./telemetry";
 import { registerPluginScheme, handlePluginScheme, pluginInfo, startDesktopPlugin, stopDesktopPlugin } from "./desktopPlugin";
-import { startCloudSignIn } from "./cloudAuth";
+import { startCloudSignIn, type CloudSignIn } from "./cloudAuth";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -72,6 +72,8 @@ const QUIT_CONFIRM_TIMEOUT_MS = 8000;
 /** Back/forward navigation history of opened doc paths (in-window link following). */
 const navHistory: string[] = [];
 let navIdx = -1;
+/** The in-flight cloud sign-in handoff, if any — so a backdrop dismiss (renderer) can cancel it. */
+let activeSignIn: CloudSignIn | null = null;
 
 // --- Cloud profile (the shared <ProfileMenu>) ------------------------------
 // The editor stays free of Supabase: cloud identity + actions are delegated to
@@ -565,6 +567,8 @@ function registerIpc(): void {
     await runCli(["profile", "set", "--name", name, ...(identity.email && identity.email.trim() ? ["--email", identity.email.trim()] : [])]);
     win?.webContents.send("profile:changed");
   });
+  // The renderer's sign-in overlay was dismissed (backdrop click / Esc) → cancel the handoff.
+  ipcMain.handle("cloud:signin-cancel", () => activeSignIn?.cancel());
   ipcMain.handle("profile:action", async (_e, id: string) => {
     if (id === "collaborate") {
       await collaborateOnCloud();
@@ -573,9 +577,16 @@ function registerIpc(): void {
       win?.webContents.send("profile:changed");
       void i18n.bootstrap(); // credentials cleared → re-resolve to English-only (drop the paid perk)
     } else if (id === "signin") {
-      // Browser-based sign-in: capture a refresh token via the loopback handoff, then store it
-      // through the CLI (which owns auth). No-op if the user cancels or it times out.
-      const creds = await startCloudSignIn(win, CLOUD_BASE);
+      // Browser-based sign-in: start the loopback handoff and ask the renderer to show the
+      // /cli-auth page in an in-app modal overlay; await the captured credentials, then store
+      // them through the CLI (which owns auth). No-op if the user dismisses or it times out.
+      activeSignIn?.cancel(); // never run two at once
+      const handoff = await startCloudSignIn(CLOUD_BASE);
+      activeSignIn = handoff;
+      win?.webContents.send("cloud:signin-open", { url: handoff.authUrl });
+      const creds = await handoff.done;
+      if (activeSignIn === handoff) activeSignIn = null;
+      win?.webContents.send("cloud:signin-close"); // tear down the overlay regardless of outcome
       if (creds) {
         const r = await runCli(["login", "--url", creds.url, "--anon", creds.anon, "--refresh", creds.refresh, ...(creds.email ? ["--email", creds.email] : [])]);
         // The user may have closed the editor while OAuth completed in the system browser —

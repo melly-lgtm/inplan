@@ -289,6 +289,10 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 /* Quit-confirmation modal (shared desktop + web). */
 .ap-modal-backdrop { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: rgba(28, 26, 23, 0.28); }
 .ap-modal { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 18px 20px; min-width: 320px; max-width: 440px; }
+/* Cloud sign-in: a dimmed overlay over the whole editor, dismissed by clicking the backdrop. */
+.ap-signin-backdrop { position: fixed; inset: 0; z-index: 70; display: flex; align-items: center; justify-content: center; background: rgba(28, 26, 23, 0.42); }
+.ap-signin-panel { width: 460px; max-width: 92vw; height: 720px; max-height: 88vh; background: var(--bg); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 24px 64px -16px rgba(28, 26, 23, 0.5); overflow: hidden; }
+.ap-signin-frame { width: 100%; height: 100%; border: 0; display: block; }
 .ap-newdoc { min-width: 420px; }
 .ap-newdoc-title { font-weight: 600; font-size: 15px; margin-bottom: 14px; }
 .ap-newdoc-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; font-size: 12px; color: var(--muted); }

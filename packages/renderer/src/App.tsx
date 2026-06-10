@@ -145,6 +145,29 @@ export interface EditorProps {
   onReplayOnboarding?: () => void;
 }
 
+/**
+ * Cloud sign-in modal overlay (desktop). A dimmed backdrop over the editor with the host-supplied
+ * /cli-auth page in an iframe; clicking the backdrop (or pressing Esc) dismisses it. Email/password
+ * completes in the frame; OAuth providers open in the system browser (the page's window.open is
+ * routed there by the host), and the page redirects to the host's loopback when done.
+ */
+function CloudSignInOverlay({ url, onDismiss }: { url: string; onDismiss: () => void }): JSX.Element {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onDismiss();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onDismiss]);
+  return (
+    <div className="ap-signin-backdrop" onMouseDown={onDismiss} role="presentation">
+      <div className="ap-signin-panel" onMouseDown={(e) => e.stopPropagation()}>
+        <iframe className="ap-signin-frame" src={url} title="Sign in to inplan.ai" />
+      </div>
+    </div>
+  );
+}
+
 export function App(props: EditorProps = {}): JSX.Element {
   const t = useT();
   const [loaded, setLoaded] = useState(false);
@@ -172,6 +195,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [reloadReady, setReloadReady] = useState(false); // agent signalled a new build is ready to load
   const [reloadIn, setReloadIn] = useState<number | null>(null); // seconds until auto-close (null = not counting)
   const [update, setUpdate] = useState<{ current: string; latest: string } | null>(null); // newer npm version
+  const [signInUrl, setSignInUrl] = useState<string | null>(null); // cloud sign-in overlay target (desktop)
   // The human's resolved identity authors their comments ("Name <email>"); falls back
   // to "You" until a profile resolves (cloud/git/manual). A ref keeps callbacks fresh.
   const profile = useProfile();
@@ -335,6 +359,9 @@ export function App(props: EditorProps = {}): JSX.Element {
       hostApi().onNavState?.((s) => setNavState(s)),
       // Desktop only: a newer npm version is available.
       hostApi().onUpdateAvailable?.((info) => setUpdate(info)),
+      // Desktop only: show / tear down the cloud sign-in modal overlay on the host's request.
+      hostApi().cloudSignIn?.onOpen((url) => setSignInUrl(url)),
+      hostApi().cloudSignIn?.onClose(() => setSignInUrl(null)),
       // Comment store (plugin): adopt the external store's comments whenever it (or this editor)
       // changes them. Body stays driven by the editor/binding; only `comments` is synced.
       commentStore?.observe(() => setDoc((d) => ({ ...d, comments: commentStore.list() }))),
@@ -1507,6 +1534,16 @@ export function App(props: EditorProps = {}): JSX.Element {
 
       {props.onboarding && props.onFinishOnboarding && (
         <Onboarding signals={onboardingSignals} onFinish={props.onFinishOnboarding} onActiveStep={(id) => setForceSettingsOpen(id === "settings")} />
+      )}
+
+      {signInUrl && (
+        <CloudSignInOverlay
+          url={signInUrl}
+          onDismiss={() => {
+            setSignInUrl(null);
+            hostApi().cloudSignIn?.cancel();
+          }}
+        />
       )}
 
       {ctxMenu && (

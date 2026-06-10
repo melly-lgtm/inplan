@@ -160,6 +160,22 @@ const api: Api = {
   },
   applyUpdate: () => ipcRenderer.invoke("app:apply-update"),
   restartApp: () => ipcRenderer.invoke("app:restart"),
+  // Cloud sign-in overlay: main asks the renderer to show the /cli-auth page in an in-app modal
+  // (onOpen), tears it down when the handoff settles (onClose), and `cancel` lets a backdrop
+  // dismiss abort the handoff.
+  cloudSignIn: {
+    onOpen: (cb: (url: string) => void) => {
+      const h = (_e: unknown, p: { url: string }): void => cb(p.url);
+      ipcRenderer.on("cloud:signin-open", h);
+      return () => ipcRenderer.removeListener("cloud:signin-open", h);
+    },
+    onClose: (cb: () => void) => {
+      const h = (): void => cb();
+      ipcRenderer.on("cloud:signin-close", h);
+      return () => ipcRenderer.removeListener("cloud:signin-close", h);
+    },
+    cancel: () => void ipcRenderer.invoke("cloud:signin-cancel"),
+  },
   // First-run tour: durable flag from ~/.inplan (read synchronously so the very first
   // render decides without a flash); `setOnboarded` persists it on finish/skip.
   onboarded: ipcRenderer.sendSync("onboarding:get") as boolean,

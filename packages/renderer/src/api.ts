@@ -320,6 +320,15 @@ export interface Api {
   onboarded?: boolean;
   /** Persist that the tour has been shown (completed or skipped). */
   setOnboarded?(): Promise<void> | void;
+  /** Desktop only: cloud sign-in handoff. The host asks the renderer to show a sign-in page in an
+   *  in-app modal overlay (`onOpen` with the URL to frame), tears it down when the handoff settles
+   *  (`onClose`), and `cancel` aborts it when the overlay is dismissed. Absent on the web host,
+   *  which has its own auth UI. */
+  cloudSignIn?: {
+    onOpen(cb: (url: string) => void): () => void;
+    onClose(cb: () => void): () => void;
+    cancel(): void;
+  };
 }
 
 declare global {
