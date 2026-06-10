@@ -23,6 +23,7 @@ import {
   type Thread,
 } from "./docOps";
 import { reconcileComments } from "./commentStore";
+import { anchorIdsIn, remapComments, rewriteAnchors, threadsFor, type ClipboardPayload } from "./clipboard";
 import { moveDocTitle, slugifyFilename } from "./newDoc";
 import { NewDocModal } from "./NewDocModal";
 import { renderMarkdown } from "./markdown";
@@ -577,6 +578,34 @@ export function App(props: EditorProps = {}): JSX.Element {
       }
     },
     [cadence, syncExternalDoc],
+  );
+
+  // --- clipboard: carry span-comment threads through copy/cut/paste (see clipboard.ts) ---
+  // The source editor's selection offsets are body offsets (CodeMirror's content is the bare
+  // body — file-backed, or the unified-***REMOVED*** binding's ***REMOVED***), so all three route through the
+  // same apply() the span-comment flow uses: body change → binding/file, comments → store.
+  const commentsForCopy = useCallback((text: string): Comment[] => {
+    const ids = anchorIdsIn(text);
+    return ids.length ? threadsFor(ids, docRef.current.comments) : [];
+  }, []);
+  const onCutComments = useCallback(
+    (_text: string, from: number, to: number) => {
+      const cur = docRef.current;
+      const carried = new Set(threadsFor(anchorIdsIn(cur.body.slice(from, to)), cur.comments).map((c) => c.id));
+      const body = cur.body.slice(0, from) + cur.body.slice(to);
+      apply({ body, comments: cur.comments.filter((c) => !carried.has(c.id)) }, { type: "comment_deleted", payload: { count: carried.size } });
+    },
+    [apply],
+  );
+  const onPasteComments = useCallback(
+    (text: string, payload: ClipboardPayload, from: number, to: number) => {
+      const cur = docRef.current;
+      const taken = new Set(cur.comments.map((c) => c.id));
+      const { comments: pasted, idMap } = remapComments(payload.comments, taken);
+      const body = cur.body.slice(0, from) + rewriteAnchors(text, idMap) + cur.body.slice(to);
+      apply({ body, comments: [...cur.comments, ...pasted] }, { type: "comment_created", payload: { count: pasted.length } });
+    },
+    [apply],
   );
 
   // Auto-resolve: when the setting is on, resolve threads the agent suggested (its `may_resolve`
@@ -1600,6 +1629,9 @@ export function App(props: EditorProps = {}): JSX.Element {
                 onCursorLine={(line) => setActivePreviewLine(line)}
                 onFind={() => setFindOpen(true)}
                 find={findOpen && findOpts.inEditor && findOpts.query ? { query: findOpts.query, ci: findOpts.ci } : null}
+                commentsForCopy={commentsForCopy}
+                onCutComments={editingLocked ? undefined : onCutComments}
+                onPasteComments={editingLocked ? undefined : onPasteComments}
               />
             )}
           </section>
