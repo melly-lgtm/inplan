@@ -62,13 +62,14 @@ describe("AgentIndicator", () => {
     fireEvent.click(screen.getByRole("button", { name: /agent connection/i }));
     expect(document.body.textContent).not.toContain(cmd); // hidden under "auto"
     rerender(<AgentIndicator location={null} policy="local" onSetPolicy={vi.fn()} localCommand={cmd} />);
-    expect(document.body.textContent).toContain(cmd); // the command appears inside the instruction
     expect(document.body.textContent).toMatch(/coding agent/i); // framed as an agent hand-off, not a human command
+    expect(document.body.textContent).toContain("…"); // long instruction shown middle-elided in the box
     fireEvent.click(screen.getByRole("button", { name: /^copy$/i }));
-    // Copies the full instruction (which embeds the command), not the bare command.
+    // Copies the FULL bootstrap instruction (install check + install + login + the connect command).
     const copied = writeText.mock.calls[0][0] as string;
-    expect(copied).toContain(cmd);
-    expect(copied.length).toBeGreaterThan(cmd.length);
+    expect(copied).toContain(cmd); // the connect command, in full
+    expect(copied).toContain("npm i -g inplan"); // how to install if missing
+    expect(copied).toContain("inplan login"); // how to sign in
   });
 
   it("omits the local-agent command when the host supplies none (desktop)", () => {

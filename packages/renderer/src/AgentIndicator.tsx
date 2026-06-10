@@ -46,8 +46,10 @@ export function AgentIndicator({
   const [copied, setCopied] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   // What the human pastes to their coding agent: an instruction (with the connect command inlined),
-  // not a command for the human to run themselves.
+  // not a command for the human to run themselves. Copy carries the FULL text; the box shows a
+  // middle-elided preview (the full bootstrap — check/install/login/connect — is long).
   const agentMessage = localCommand ? t("agent.localCmdBody", { cmd: localCommand }) : "";
+  const preview = agentMessage.length > 84 ? `${agentMessage.slice(0, 52)} … ${agentMessage.slice(-26)}` : agentMessage;
   const copy = (): void => {
     if (!agentMessage) return;
     // `navigator.clipboard?.writeText(...)` is undefined when the Clipboard API is unavailable;
@@ -131,7 +133,7 @@ export function AgentIndicator({
             <div className="ap-agent-localcmd">
               <div className="ap-agent-localcmd-hint">{t("agent.localCmdHint")}</div>
               <div className="ap-agent-localcmd-row">
-                <div className="ap-agent-localcmd-msg">{agentMessage}</div>
+                <div className="ap-agent-localcmd-msg" title={agentMessage}>{preview}</div>
                 <button className="ap-agent-localcmd-copy" onClick={copy} aria-label={t("agent.copy")}>
                   {copied ? t("agent.copied") : t("agent.copy")}
                 </button>
