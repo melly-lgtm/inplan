@@ -1481,11 +1481,14 @@ export function App(props: EditorProps = {}): JSX.Element {
                   // binding → ytext → CodeMirror, racing the comment the same action just added; the
                   // stale-ref form dropped that comment from the rail until the next store re-read.)
                   setDoc((d) => ({ ...d, body }));
-                  // Dirty tracks the file-backed editor's unsaved state against savedRef. In collab the
-                  // shared doc owns persistence and savedRef isn't advanced, so computing dirty here
-                  // would re-flag "unsaved" on every binding→CodeMirror round-trip (right after
-                  // syncExternalDoc cleared it). Only the file-backed editor tracks dirty.
-                  if (!hostApi().commentStore && !hostApi().binding) setDirty(serialize({ ...docRef.current, body }) !== savedRef.current);
+                  // Dirty tracks the file-backed editor's unsaved state against savedRef. Skip it ONLY
+                  // when the BODY is externally owned — i.e. a binding with setText persists it (then
+                  // savedRef isn't advanced, so recomputing here would re-flag "unsaved" on every
+                  // binding→CodeMirror round-trip right after syncExternalDoc cleared it). A
+                  // commentStore-only host (no setText) still persists typed body edits via the
+                  // file-backed save path, so it MUST keep tracking dirty — gating on commentStore here
+                  // would silently drop those edits.
+                  if (!hostApi().binding?.setText) setDirty(serialize({ ...docRef.current, body }) !== savedRef.current);
                 }}
                 onCursorLine={(line) => setActivePreviewLine(line)}
                 onFind={() => setFindOpen(true)}
