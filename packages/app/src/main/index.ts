@@ -12,6 +12,7 @@ import { Session } from "./session";
 import { createI18nController } from "./i18nController";
 import { track, type TelemetryProps } from "./telemetry";
 import { registerPluginScheme, handlePluginScheme, pluginInfo, startDesktopPlugin, stopDesktopPlugin } from "./desktopPlugin";
+import { startCloudSignIn } from "./cloudAuth";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -177,20 +178,24 @@ async function readProfile(): Promise<ProfileSnapshot> {
   // isn't a host action. Cloud chrome below is gated by the kill switch.
   const actions: ActionDescriptor[] = [];
 
-  // 2) Cloud chrome, gated by the kill switch: add sign-in/out + collaborate only
-  //    when the link is enabled (reachable AND turned on).
+  // 2) Cloud chrome, gated by the kill switch. Resolve the cloud session regardless of the
+  //    flag: when the link is on we offer sign-in / collaborate / sign-out as usual; when it
+  //    is off we advertise nothing cloud-related — except, if the user still holds a cloud
+  //    session, we keep "Sign out" so they can disconnect (we never funnel them back in).
+  let who: { signedIn?: boolean } = {};
+  try {
+    who = JSON.parse((await runCli(["whoami"])).stdout.trim() || "{}");
+  } catch {
+    /* treat unparseable as signed out */
+  }
   if (cloudLinkEnabled) {
-    let who: { signedIn?: boolean } = {};
-    try {
-      who = JSON.parse((await runCli(["whoami"])).stdout.trim() || "{}");
-    } catch {
-      /* treat unparseable as signed out */
-    }
     if (who.signedIn) {
       actions.push({ id: "collaborate", label: "Collaborate on Cloud", primary: true }, { id: "signout", label: "Sign out", danger: true });
     } else {
       actions.push({ id: "signin", label: "Sign in…" });
     }
+  } else if (who.signedIn) {
+    actions.push({ id: "signout", label: "Sign out", danger: true });
   }
 
   return { user, agentLocation: null, actions, identitySource: id.source ?? null };
@@ -568,13 +573,17 @@ function registerIpc(): void {
       win?.webContents.send("profile:changed");
       void i18n.bootstrap(); // credentials cleared → re-resolve to English-only (drop the paid perk)
     } else if (id === "signin") {
-      dialog.showMessageBoxSync(win!, {
-        type: "info",
-        message: "Sign in to inplan.ai",
-        detail: "Run `inplan login` in your terminal to connect this app to your inplan.ai account, then reopen this menu.",
-      });
-      win?.webContents.send("profile:changed"); // refresh in case they just signed in
-      void i18n.bootstrap(); // pick up the new session's locales/entitlement if they just logged in
+      // Browser-based sign-in: capture a refresh token via the loopback handoff, then store it
+      // through the CLI (which owns auth). No-op if the user cancels or it times out.
+      const creds = await startCloudSignIn(win, CLOUD_BASE);
+      if (creds) {
+        const r = await runCli(["login", "--url", creds.url, "--anon", creds.anon, "--refresh", creds.refresh, ...(creds.email ? ["--email", creds.email] : [])]);
+        if (r.code !== 0) {
+          dialog.showMessageBoxSync(win!, { type: "error", message: "Couldn't complete sign-in.", detail: r.stderr.trim() || "Please try again." });
+        }
+        win?.webContents.send("profile:changed"); // refresh the menu (now signed in)
+        void i18n.bootstrap(); // pick up the new session's locales/entitlement
+      }
     }
   });
 

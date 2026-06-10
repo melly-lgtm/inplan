@@ -102,7 +102,9 @@ export function ProfileMenu({
     setOpen(false);
   };
 
-  const accountLabel = user ? user.name : t("profile.notSignedIn");
+  // The account label is the local author identity, not cloud auth. When no identity is
+  // resolved yet we show the "set up your profile" affordance below — never login-language
+  // like "Not signed in" (cloud sign-in/out is a host-injected action, gated by the link).
   const note = sourceNote(identitySource);
   return (
     <div className="ap-profile" ref={ref}>
@@ -110,7 +112,7 @@ export function ProfileMenu({
         className="ap-avatar"
         data-onboard="settings"
         title={user ? `${user.name}${user.email ? ` <${user.email}>` : ""}` : t("profile.account")}
-        aria-label={`${t("profile.account")} — ${accountLabel}`}
+        aria-label={user ? `${t("profile.account")} — ${user.name}` : t("profile.account")}
         aria-haspopup="menu"
         aria-expanded={isOpen}
         onClick={() => setOpen((v) => !v)}
@@ -119,11 +121,13 @@ export function ProfileMenu({
       </button>
       {isOpen && (
         <div className="ap-profile-menu" role="menu">
-          <div className="ap-profile-id">
-            <div className="ap-profile-name">{accountLabel}</div>
-            {user?.email && <div className="ap-profile-email">{user.email}</div>}
-            {note && <div className="ap-profile-source">{note}</div>}
-          </div>
+          {user && (
+            <div className="ap-profile-id">
+              <div className="ap-profile-name">{user.name}</div>
+              {user.email && <div className="ap-profile-email">{user.email}</div>}
+              {note && <div className="ap-profile-source">{note}</div>}
+            </div>
+          )}
 
           {editing ? (
             <form

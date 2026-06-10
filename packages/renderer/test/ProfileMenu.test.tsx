@@ -24,10 +24,12 @@ describe("ProfileMenu", () => {
 
   it("shows a signed-out affordance when there is no user", () => {
     render(<ProfileMenu user={null} actions={[{ label: "Sign in", onSelect: () => {} }]} />);
-    const avatar = screen.getByRole("button", { name: /not signed in/i });
+    // No local identity → the avatar is the generic "Account menu" (never login-language like
+    // "Not signed in"); the only sign-in affordance is the host-injected action.
+    const avatar = screen.getByRole("button", { name: /account menu/i });
     expect(avatar.textContent).toContain("?");
     fireEvent.click(avatar);
-    expect(document.body.textContent).toContain("Not signed in");
+    expect(document.body.textContent).not.toContain("Not signed in");
     expect(screen.getByRole("menuitem", { name: "Sign in" })).toBeTruthy();
   });
 
@@ -123,7 +125,7 @@ describe("ProfileMenu", () => {
 
   it("offers 'Set up your profile' when signed out and cancels back to the action list", () => {
     render(<ProfileMenu user={null} actions={[]} onEditProfile={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: /not signed in/i }));
+    fireEvent.click(screen.getByRole("button", { name: /account menu/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: /set up your profile/i }));
     expect(screen.getByPlaceholderText("Name")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
