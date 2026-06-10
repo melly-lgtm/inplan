@@ -578,8 +578,10 @@ function registerIpc(): void {
       const creds = await startCloudSignIn(win, CLOUD_BASE);
       if (creds) {
         const r = await runCli(["login", "--url", creds.url, "--anon", creds.anon, "--refresh", creds.refresh, ...(creds.email ? ["--email", creds.email] : [])]);
-        if (r.code !== 0) {
-          dialog.showMessageBoxSync(win!, { type: "error", message: "Couldn't complete sign-in.", detail: r.stderr.trim() || "Please try again." });
+        // The user may have closed the editor while OAuth completed in the system browser —
+        // only touch `win` when it's still alive.
+        if (r.code !== 0 && win && !win.isDestroyed()) {
+          dialog.showMessageBoxSync(win, { type: "error", message: "Couldn't complete sign-in.", detail: r.stderr.trim() || "Please try again." });
         }
         win?.webContents.send("profile:changed"); // refresh the menu (now signed in)
         void i18n.bootstrap(); // pick up the new session's locales/entitlement

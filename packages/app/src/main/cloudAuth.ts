@@ -90,6 +90,9 @@ export function startCloudSignIn(parent: BrowserWindow | null, cloudBase: string
         width: 460,
         height: 720,
         parent: parent ?? undefined,
+        modal: !!parent, // a sheet attached to (and blocking) the editor window, not a free window
+        resizable: false,
+        minimizable: false,
         title: "Sign in to inplan.ai",
         autoHideMenuBar: true,
         webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
