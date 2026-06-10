@@ -47,7 +47,11 @@ export function AgentIndicator({
   const ref = useRef<HTMLDivElement>(null);
   const copy = (): void => {
     if (!localCommand) return;
-    void navigator.clipboard?.writeText(localCommand).then(
+    // `navigator.clipboard?.writeText(...)` is undefined when the Clipboard API is unavailable;
+    // `.then` would throw on it (?. guards only the call, not the chained .then). Guard the result.
+    const write = navigator.clipboard?.writeText(localCommand);
+    if (!write) return;
+    void write.then(
       () => {
         setCopied(true);
         setTimeout(() => setCopied(false), 1500);
