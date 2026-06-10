@@ -25,6 +25,7 @@ describe("app shell layout invariant", () => {
     expect(app).not.toBe("");
     expect(app).toMatch(/height:\s*100dvh/); // self-clamping regardless of the mount parent
     expect(app).toMatch(/height:\s*100vh/); // fallback for engines without dvh
+    expect(app).not.toMatch(/height:\s*100%/); // the exact regression: parent-dependent height
   });
 
   it("hides shell-level overflow so only the inner panes scroll", () => {
