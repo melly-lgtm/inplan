@@ -198,6 +198,43 @@ describe("App review diff controls (memory-backed)", () => {
     expect(document.body.textContent).not.toContain("Alpha EDITED.");
   });
 
+  it("⌘/Ctrl+Z while the inline edit textarea is focused does NOT route to review undo", async () => {
+    await renderAndPropose();
+    // Save an inline edit, so there IS a review action that review-undo could revert.
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: /edit change 1/ })[0]!);
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByRole("textbox", { name: /edit change 1/ }), { target: { value: "Alpha EDITED." } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /save edit/i }));
+    });
+    // Re-open the editor and press ⌘Z / Ctrl+Z WITH the textarea focused. The guard
+    // (active element inside .ap-ihunk-edit-ta) must let CodeMirror/native undo own it and
+    // skip review-undo — so the saved edit is left intact.
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: /edit change 1/ })[0]!);
+    });
+    const ta = screen.getByRole("textbox", { name: /edit change 1/ }) as HTMLTextAreaElement;
+    ta.focus();
+    await act(async () => {
+      fireEvent.keyDown(ta, { key: "z", metaKey: true });
+      fireEvent.keyDown(ta, { key: "z", ctrlKey: true }); // Windows/Linux variant — same bypass
+    });
+    // Cancel the re-opened editor (a no-op) and apply. Had ⌘Z wrongly routed to review-undo,
+    // the saved edit would have reverted to the agent's original ("Alpha CHANGED.").
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /cancel edit/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Apply$/ }));
+    });
+    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"));
+    expect(document.body.textContent).toContain("Alpha EDITED."); // bypass held → edit survived
+    expect(document.body.textContent).not.toContain("Alpha CHANGED.");
+  });
+
   it("'later' parks the proposal behind a banner with a Review button that re-shows it", async () => {
     await renderAndPropose();
 
