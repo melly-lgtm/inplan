@@ -362,18 +362,27 @@ export function App(props: EditorProps = {}): JSX.Element {
 
   // Push a doc state to the collaborative owners — comments → the store, body → the binding (a
   // shared ***REMOVED***) — so undo/redo (and programmatic edits) reach the shared doc, not just React
-  // state the binding would overwrite. `prevComments` is the comment set being replaced (the delta
-  // base). No-op for the file-backed editor (no store/binding); there React + save() own the doc.
-  const syncExternalDoc = useCallback((d: ParsedDocument, prevComments: Comment[]) => {
+  // state the binding would overwrite. `prevComments`/`prevBody` are what's being replaced (the
+  // delta base). Returns true ONLY when the change was fully handed off to an external owner; the
+  // caller then clears dirty + skips save(). If the BODY changed but no binding can write it
+  // (no `setText`), we return false so the caller falls back to the file-backed save/dirty path —
+  // never silently dropping the edit. No-op + false for the file-backed editor (no store/binding).
+  const syncExternalDoc = useCallback((d: ParsedDocument, prevComments: Comment[], prevBody: string) => {
     const store = hostApi().commentStore;
     const binding = hostApi().binding;
+    if (!store && !binding) return false;
+    const bodyChanged = d.body !== prevBody;
     if (store) {
-      reconcileComments(store, prevComments, d.comments);
-      binding?.setText?.(d.body);
-    } else {
-      binding?.setText?.(serialize(d)); // legacy collab: the binding owns the whole serialized doc
+      reconcileComments(store, prevComments, d.comments); // unified: comments owned by the store
+      if (!bodyChanged) return true;
+      if (!binding?.setText) return false; // body changed but no writer → caller handles it
+      binding.setText(d.body); // unified: the binding owns the bare body
+      return true;
     }
-    return !!(store || binding);
+    // Legacy collab: the binding owns the whole serialized doc (body + comment block).
+    if (!binding?.setText) return false;
+    binding.setText(serialize(d));
+    return true;
   }, []);
   const undo = useCallback(() => {
     const prev = history.current.pop();
@@ -384,7 +393,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     const cur = docRef.current;
     future.current.push(cur);
     setDoc(prev);
-    if (syncExternalDoc(prev, cur.comments)) setDirty(false);
+    if (syncExternalDoc(prev, cur.comments, cur.body)) setDirty(false);
     else setDirty(serialize(prev) !== savedRef.current);
     setStatus(t("msg.undid"));
   }, [syncExternalDoc]);
@@ -397,7 +406,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     const cur = docRef.current;
     history.current.push(cur);
     setDoc(next);
-    if (syncExternalDoc(next, cur.comments)) setDirty(false);
+    if (syncExternalDoc(next, cur.comments, cur.body)) setDirty(false);
     else setDirty(serialize(next) !== savedRef.current);
     setStatus(t("msg.redid"));
   }, [syncExternalDoc]);
@@ -531,15 +540,16 @@ export function App(props: EditorProps = {}): JSX.Element {
       history.current.push(docRef.current); // snapshot for undo
       if (history.current.length > 200) history.current.shift();
       future.current = [];
-      const commentOnly = next.body === docRef.current.body; // body unchanged ⇒ a comment-thread change
-      const prevComments = docRef.current.comments;
+      const prevDoc = docRef.current;
+      const commentOnly = next.body === prevDoc.body; // body unchanged ⇒ a comment-thread change
+      const prevComments = prevDoc.comments;
       setDoc(next);
       if (action) void hostApi().logAction(action.type, action.payload);
       // Collaborative: push to the external owners — comments → store, body → binding. A SPAN
       // comment changes the body (its `[text](#cmt-id)` anchor link) AND the comments, so it must
       // hit both owners; the controlled editor value is ignored once a binding owns the body
       // (SourceEditor), and persistence is the shared doc's (no save() second-writer — #71).
-      if (syncExternalDoc(next, prevComments)) {
+      if (syncExternalDoc(next, prevComments, prevDoc.body)) {
         setDirty(false);
       } else if (commentOnly) {
         // File-backed single-writer. Comment-thread changes are "always applied" — persist them
@@ -1471,7 +1481,11 @@ export function App(props: EditorProps = {}): JSX.Element {
                   // binding → ytext → CodeMirror, racing the comment the same action just added; the
                   // stale-ref form dropped that comment from the rail until the next store re-read.)
                   setDoc((d) => ({ ...d, body }));
-                  setDirty(serialize({ ...docRef.current, body }) !== savedRef.current);
+                  // Dirty tracks the file-backed editor's unsaved state against savedRef. In collab the
+                  // shared doc owns persistence and savedRef isn't advanced, so computing dirty here
+                  // would re-flag "unsaved" on every binding→CodeMirror round-trip (right after
+                  // syncExternalDoc cleared it). Only the file-backed editor tracks dirty.
+                  if (!hostApi().commentStore && !hostApi().binding) setDirty(serialize({ ...docRef.current, body }) !== savedRef.current);
                 }}
                 onCursorLine={(line) => setActivePreviewLine(line)}
                 onFind={() => setFindOpen(true)}
