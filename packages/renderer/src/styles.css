@@ -449,11 +449,13 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 .ap-status-msg, .ap-thinking { color: var(--fg); font-weight: 500; }
 /* Relayed agent messages: latest as a clickable chip; popup is a scrollable history. */
 .ap-agentmsg { position: relative; min-width: 0; }
-.ap-agentmsg-latest { max-width: 42ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; font: inherit; color: var(--accent); background: var(--accent-soft); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; cursor: pointer; }
-.ap-agentmsg-latest:hover { border-color: var(--accent); }
-.ap-agentmsg-pop { position: absolute; bottom: 28px; left: 0; z-index: 50; width: 680px; max-width: 92vw; max-height: 320px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow); }
+.ap-agentmsg-latest { max-width: 42ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; font: inherit; color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 6px; padding: 2px 8px; cursor: pointer; box-shadow: var(--shadow-sm); }
+.ap-agentmsg-latest:hover { background: var(--bg); border-color: var(--accent-press); }
+/* The history window: a stronger drop shadow + a faint accent ring so it reads as a raised
+   panel above the status bar (the plain --shadow let it blend into the page). */
+.ap-agentmsg-pop { position: absolute; bottom: 28px; left: 0; z-index: 50; width: 680px; max-width: 92vw; max-height: 320px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--accent); border-radius: 10px; box-shadow: 0 18px 48px -12px rgba(28, 26, 23, 0.5), 0 0 0 4px var(--accent-soft); }
 .ap-agentmsg-pop--right { left: auto; right: 0; } /* history chip sits on the right of the bar */
-.ap-agentmsg-head { font-weight: 600; padding: 9px 12px; border-bottom: 1px solid var(--line); color: var(--fg); }
+.ap-agentmsg-head { font-weight: 600; padding: 9px 12px; border-bottom: 1px solid var(--line); color: var(--accent); background: var(--accent-soft); border-radius: 10px 10px 0 0; }
 .ap-agentmsg-list { overflow-y: auto; padding: 6px; }
 .ap-agentmsg-item { padding: 7px 8px; border-radius: 7px; }
 .ap-agentmsg-item + .ap-agentmsg-item { border-top: 1px solid var(--line); }

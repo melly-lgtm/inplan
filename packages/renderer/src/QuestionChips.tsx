@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Question } from "@inplan/core";
 import { useT } from "./i18n";
 
@@ -19,11 +19,16 @@ export function QuestionChips({
   disabled,
   answered = null,
   onAnswer,
+  onPending,
 }: {
   question: Question;
   disabled: boolean;
   answered?: string[] | null;
   onAnswer: (selected: string[], text: string) => void;
+  /** Reports whether the picker holds an UNSAVED answer (a selection/Other text not yet
+   *  submitted via "Answer", and different from the saved one). The host uses it to nudge
+   *  the human before they end their turn. */
+  onPending?: (pending: boolean) => void;
 }): JSX.Element {
   const t = useT();
   // An answer exists once `answered` is non-null — including an Other-only answer
@@ -37,6 +42,17 @@ export function QuestionChips({
   const picking = !isAnswered || editing; // interactive picker vs. settled result
   const settled = answered ?? [];
   const hiddenCount = picking ? 0 : question.choices.filter((c) => !settled.includes(c.label)).length;
+
+  // Surface "unsaved answer" state: the picker is open with a selection or Other text that differs
+  // from the saved answer. Reported through a ref so the effect needn't depend on the callback.
+  const sameAsSaved = selected.length === settled.length && selected.every((x) => settled.includes(x)) && !other.trim();
+  const dirty = picking && (selected.length > 0 || other.trim().length > 0) && !sameAsSaved;
+  const onPendingRef = useRef(onPending);
+  onPendingRef.current = onPending;
+  useEffect(() => {
+    onPendingRef.current?.(dirty);
+  }, [dirty]);
+  useEffect(() => () => onPendingRef.current?.(false), []); // clear when the thread unmounts
 
   const toggle = (label: string) => {
     if (question.multiSelect) {

@@ -644,7 +644,30 @@ export function App(props: EditorProps = {}): JSX.Element {
   }, [cadence, mode]);
   saveNowRef.current = saveNow; // keep the ⌘/Ctrl+S handler pointed at the current saveNow
 
+  // Question threads whose picker holds an UNSAVED answer (reported by QuestionChips), and which of
+  // those we've already nudged this turn — so the Send guard interrupts at most once per question.
+  const pendingAnswersRef = useRef<Set<string>>(new Set());
+  const nudgedAnswersRef = useRef<Set<string>>(new Set());
+  const setQuestionPending = useCallback((id: string, pending: boolean) => {
+    if (pending) pendingAnswersRef.current.add(id);
+    else pendingAnswersRef.current.delete(id);
+  }, []);
+
   const finishTurn = useCallback(() => {
+    // Before sending: if a question still has an unsaved answer, focus it and ask the human to click
+    // "Answer" — once per question. Each Send nudges the next un-nudged one and stops; once all are
+    // nudged, Send goes through (the human chose to leave them). Cleared on a successful send.
+    const next = [...pendingAnswersRef.current].find((id) => !nudgedAnswersRef.current.has(id));
+    if (next) {
+      nudgedAnswersRef.current.add(next);
+      const card = railRef.current?.querySelector(`[data-cmt-card="${next}"]`) as HTMLElement | null;
+      card?.scrollIntoView({ block: "center" });
+      (card?.querySelector(".ap-chip input, .ap-other") as HTMLElement | null)?.focus();
+      setFocused(next);
+      setStatus(t("msg.unsavedAnswer"));
+      return;
+    }
+    nudgedAnswersRef.current.clear();
     const content = serialize(docRef.current);
     // Canonical save → advance both baselines (savedRef and the any-store checkpoint).
     void hostApi().save(content, { kind: "canonical", cadence: "turn" }).then(() => setCheckpoint(content));
@@ -653,7 +676,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     setAgentThinking(true);
     hostApi().telemetry?.("turn_finished"); // activation funnel (opt-in, gated by the host)
     setStatus(t("msg.turnFinished"));
-  }, []);
+  }, [setQuestionPending]);
 
   const [quitOpen, setQuitOpen] = useState(false);
   const [forceSettingsOpen, setForceSettingsOpen] = useState(false); // onboarding opens the ⚙ menu on its settings step
@@ -1632,6 +1655,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                   onFocus={() => focusComment(o.thread.root.id, false, true)}
                   onReply={(text) => apply(addReply(docRef.current, o.thread.root.id, text, userAuthorRef.current).doc, { type: "comment_created", payload: { parentId: o.thread.root.id } })}
                   onAnswer={(selected, text) => apply(setAnswer(docRef.current, o.thread.root.id, selected, text, userAuthorRef.current).doc, { type: "comment_answered", payload: { parentId: o.thread.root.id, selected } })}
+                  onAnswerPending={(p) => setQuestionPending(o.thread.root.id, p)}
                   onResolve={(r) => apply(setResolved(docRef.current, o.thread.root.id, r), { type: "comment_resolved", payload: { id: o.thread.root.id, resolved: r } })}
                   onEdit={(id, text) => apply(editCommentText(docRef.current, id, text), { type: "comment_modified", payload: { id } })}
                   onDelete={(id) => apply(deleteComment(docRef.current, id), { type: "comment_deleted", payload: { id } })}
@@ -2325,6 +2349,7 @@ function ThreadCard(props: {
   onFocus: () => void;
   onReply: (text: string) => void;
   onAnswer: (selected: string[], text: string) => void;
+  onAnswerPending?: (pending: boolean) => void;
   onResolve: (resolved: boolean) => void;
   onEdit: (id: string, text: string) => void;
   onDelete: (id: string) => void;
@@ -2466,7 +2491,7 @@ function ThreadCard(props: {
       {quote && <div className="ap-thread-quote">{quote}</div>}
       {props.suggested && <div className="ap-suggested-badge">✓ {t("rail.agentSuggestedResolve")}</div>}
       {renderComment(root, false)}
-      {root.question && <QuestionChips question={root.question} disabled={disabled} answered={answeredSelection} onAnswer={props.onAnswer} />}
+      {root.question && <QuestionChips question={root.question} disabled={disabled} answered={answeredSelection} onAnswer={props.onAnswer} onPending={props.onAnswerPending} />}
       {thread.replies.map((r) => renderComment(r, true))}
 
       {/* Resolve moved to the meta line (icon, top-right). Reply opens a box with Comment / Cancel. */}

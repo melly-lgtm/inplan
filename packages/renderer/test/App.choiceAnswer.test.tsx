@@ -115,6 +115,32 @@ describe("App choice answer flow (memory-backed)", () => {
     expect(document.body.textContent).not.toContain("▶ Postgres");
   });
 
+  it("Finish turn nudges once to save an unsaved answer, then lets the turn through", async () => {
+    mount(SINGLE_DOC);
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("Which database for v1?"));
+
+    // Pick a choice but DON'T click Answer → an unsaved answer.
+    await act(async () => {
+      fireEvent.click(document.querySelectorAll('.ap-question input[type="radio"]')[0]!);
+    });
+    const send = screen.getByRole("button", { name: /^finish turn$/i });
+
+    // First Finish turn: nudged to save it; the turn does NOT go to the agent.
+    await act(async () => {
+      send.click();
+    });
+    await waitFor(() => expect(document.body.textContent).toMatch(/unsaved answer/i));
+    expect(document.body.textContent).not.toContain("Agent is thinking");
+
+    // Second Finish turn: this question was already nudged → the turn proceeds.
+    await act(async () => {
+      send.click();
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("Agent is thinking"));
+  });
+
   it("multi-select: pick two checkboxes and Answer posts both labels", async () => {
     mount(MULTI_DOC);
     const { App } = await import("../src/App");

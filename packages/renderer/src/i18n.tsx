@@ -122,6 +122,7 @@ export const EN: Catalog = {
   "msg.autosaving": "auto-saving…",
   "msg.autosaved": "autosaved (backup)",
   "msg.turnFinished": "turn finished — waiting for agent",
+  "msg.unsavedAnswer": "You have an unsaved answer — click “Answer” to save it, or Send again to skip.",
   "msg.cantAnchor": "Comments can't be anchored to this selection",
   // status bar
   "status.ready": "ready",
