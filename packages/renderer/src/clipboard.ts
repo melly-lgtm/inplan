@@ -16,6 +16,8 @@ import { genId, type Comment } from "@inplan/core";
 
 /** Attribute on the wrapper element of our `text/html` payload, holding base64(JSON). */
 const CLIP_ATTR = "data-inplan-clip";
+/** Pre-compiled extractor for the payload attribute (avoids rebuilding the regex per paste). */
+const CLIP_ATTR_RE = new RegExp(`${CLIP_ATTR}="([^"]*)"`);
 
 /** A full anchor link `[label](#cmt-id)` — the id is only carried when its WHOLE anchor is
  *  inside the copied fragment, so a paste never produces a dangling `](#cmt-id)`. */
@@ -109,7 +111,7 @@ export function buildClipHtml(text: string, comments: Comment[]): string {
 /** Extract the inplan comment payload embedded in a `text/html` clipboard string, or null when
  *  the HTML carries no inplan marker (a foreign paste). */
 export function readClipHtml(html: string): ClipboardPayload | null {
-  const m = new RegExp(`${CLIP_ATTR}="([^"]*)"`).exec(html);
+  const m = CLIP_ATTR_RE.exec(html);
   if (!m) return null;
   try {
     const payload = JSON.parse(fromBase64(m[1]!)) as unknown;

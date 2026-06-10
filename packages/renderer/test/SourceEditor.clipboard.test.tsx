@@ -12,7 +12,7 @@ import { createRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Comment } from "@inplan/core";
 import { SourceEditor, type SourceEditorHandle } from "../src/SourceEditor";
-import { buildClipHtml, readClipHtml } from "../src/clipboard";
+import { buildClipHtml, readClipHtml, type ClipboardPayload } from "../src/clipboard";
 
 const DOC = "Look at [this point](#cmt-root1) now";
 const THREAD: Comment[] = [{ id: "cmt-root1", author: "H <h@x>", date: "2026-06-08T00:00:00Z", resolved: false, text: "why here?" }];
@@ -21,7 +21,7 @@ function mount(opts: {
   editable?: boolean;
   commentsForCopy?: (t: string) => Comment[];
   onCutComments?: (t: string, f: number, to: number) => void;
-  onPasteComments?: (t: string, p: ReturnType<typeof readClipHtml> & object, f: number, to: number) => void;
+  onPasteComments?: (t: string, p: ClipboardPayload, f: number, to: number) => void;
 }) {
   const ref = createRef<SourceEditorHandle>();
   const utils = render(
@@ -32,7 +32,7 @@ function mount(opts: {
       onChange={() => {}}
       commentsForCopy={opts.commentsForCopy}
       onCutComments={opts.onCutComments}
-      onPasteComments={opts.onPasteComments as never}
+      onPasteComments={opts.onPasteComments}
     />,
   );
   const content = utils.container.querySelector(".cm-content") as HTMLElement;
