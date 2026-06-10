@@ -89,14 +89,20 @@ export function startCloudSignIn(parent: BrowserWindow | null, cloudBase: string
       authWin = new BrowserWindow({
         width: 460,
         height: 720,
-        parent: parent ?? undefined,
-        modal: !!parent, // a sheet attached to (and blocking) the editor window, not a free window
+        parent: parent ?? undefined, // child of the editor: stays on top + centered over it
+        center: true,
         resizable: false,
         minimizable: false,
         title: "Sign in to inplan.ai",
         autoHideMenuBar: true,
         webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
       });
+      // Dismiss on click-away: once the window has been focused, losing focus (e.g. the user
+      // clicks the editor behind it) closes it. That cancels the handoff — UNLESS OAuth has
+      // already moved to the system browser (oauthInFlight), where losing focus is expected and
+      // the listener must stay alive for the browser to finish. (A blocking modal can't do this:
+      // it disables the parent, so an outside click never lands.)
+      authWin.once("focus", () => authWin?.on("blur", () => authWin?.close()));
       // OAuth providers block embedded webviews, so the page opens them with window.open —
       // route that to the system browser (it returns to /cb over the same loopback + state).
       authWin.webContents.setWindowOpenHandler(({ url }) => {
