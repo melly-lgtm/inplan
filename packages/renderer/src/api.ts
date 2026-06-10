@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { Extension } from "@codemirror/state";
+import type { ReactNode } from "react";
 import type { Comment } from "@inplan/core";
 import type { CommentStore } from "./commentStore";
 import type { ModeDescriptor, ModePolicy } from "./mode";
@@ -23,6 +24,37 @@ export interface EditorBinding {
    *  (CodeMirror) isn't mounted. Optional: a binding without it simply can't accept programmatic
    *  body edits (open-core's file-backed editor has no binding and uses the controlled value). */
   setText?: (text: string) => void;
+}
+
+/** Context the renderer hands a {@link SidePanelSpec} on every render: the live document and
+ *  the imperative levers a panel needs (scroll the editor + preview to a line; close itself). */
+export interface SidePanelContext {
+  /** The current document body (Markdown). */
+  body: string;
+  /** The source line (0-based) the panes are currently centered on, or null — for highlighting
+   *  the panel's active entry. */
+  activeLine: number | null;
+  /** Scroll BOTH the preview and the source editor to a 0-based source line. */
+  scrollToLine: (line: number) => void;
+  /** Close the panel (clears its menu-bar toggle). */
+  close: () => void;
+}
+
+/** A host-injected side panel: a menu-bar toggle that slides a panel into the left of the editor
+ *  layout. Open-core ships none — a host (the web app, or the entitled desktop plugin) provides
+ *  them via {@link Api.sidePanels}, e.g. a table of contents. Deliberately feature-agnostic: the
+ *  renderer owns the toggle button, the slide-in slot, and cross-pane scrolling; the host owns the
+ *  panel's content + label + glyph. The panel renders in the host's React tree (it returns a node),
+ *  so a plugin bundle must share the renderer's React runtime (treat react/react-dom as externals). */
+export interface SidePanelSpec {
+  /** Stable id — the React key, the menu-bar toggle's identity, and the persisted "open panel". */
+  id: string;
+  /** Localized label for the toggle (tooltip + aria-label). The host owns its own strings. */
+  title: string;
+  /** Toggle glyph (host-provided node). Falls back to the title's first character when absent. */
+  icon?: ReactNode;
+  /** Render the panel body; called on each render with fresh {@link SidePanelContext}. */
+  render: (ctx: SidePanelContext) => ReactNode;
 }
 
 /** Collaboration cadence — a mode id (see ModeDescriptor). Open-core's only built-in is "turn";
@@ -253,6 +285,11 @@ export interface Api {
    *  serialized body via save()). Absent ⇒ the editor owns comments in its parsed document and
    *  serializes them on save (the base single-writer path / tests). */
   commentStore?: CommentStore | null;
+  /** Host-injected side panels (a menu-bar toggle + a left slide-in slot), e.g. a table of
+   *  contents. Open-core ships none; a host provides them — the web app for everyone, the
+   *  entitled desktop plugin for paid users — so the feature is gated simply by whether the
+   *  host injects it. Absent/empty ⇒ no panel toggles (the base path / tests). */
+  sidePanels?: SidePanelSpec[] | null;
   /** Identity + presence for the shared `<ProfileMenu>`, when the host wires one
    *  (web/cloud, and the signed-in desktop app). Absent on tests / single-writer. */
   profile?: ProfileController | null;

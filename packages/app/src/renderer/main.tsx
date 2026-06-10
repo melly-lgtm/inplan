@@ -17,7 +17,7 @@ interface PluginWindow {
   api?: Api;
 }
 interface PluginRendererModule {
-  activate: (session: string) => { binding?: Api["binding"]; commentStore?: Api["commentStore"]; extraModes?: Api["extraModes"]; dispose: () => void } | null;
+  activate: (session: string) => { binding?: Api["binding"]; commentStore?: Api["commentStore"]; extraModes?: Api["extraModes"]; sidePanels?: Api["sidePanels"]; dispose: () => void } | null;
 }
 
 async function bootstrap(): Promise<void> {
@@ -28,7 +28,7 @@ async function bootstrap(): Promise<void> {
       const mod = (await import(/* @vite-ignore */ info.rendererUrl)) as PluginRendererModule;
       const ext = mod.activate(info.session);
       if (ext && w.api) {
-        setHostApi({ ...w.api, binding: ext.binding, commentStore: ext.commentStore, extraModes: ext.extraModes });
+        setHostApi({ ...w.api, binding: ext.binding, commentStore: ext.commentStore, extraModes: ext.extraModes, sidePanels: ext.sidePanels });
         window.addEventListener("beforeunload", () => {
           try {
             ext.dispose();

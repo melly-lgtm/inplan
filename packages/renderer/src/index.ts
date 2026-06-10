@@ -26,6 +26,8 @@ export type {
   Settings,
   DocPayload,
   EditorBinding,
+  SidePanelSpec,
+  SidePanelContext,
   AgentLocation,
   AgentPolicy,
   ProfileMenuItem,

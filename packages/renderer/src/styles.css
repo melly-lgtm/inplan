@@ -154,6 +154,9 @@ body {
 .ap-iconbtn { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 1px solid var(--line-strong); background: var(--bg); border-radius: 7px; color: var(--fg); cursor: pointer; transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease; }
 .ap-iconbtn:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .ap-iconbtn:disabled { opacity: 0.4; cursor: default; }
+/* A toggle icon button that's currently "on" (e.g. an open side panel). */
+.ap-iconbtn.active { background: var(--accent); border-color: var(--accent); color: #fbfaf6; }
+.ap-iconbtn-fallback { font-size: 13px; font-weight: 600; line-height: 1; }
 .ap-iconbtn .ap-dirty { position: absolute; top: 2px; right: 2px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); border: 1.5px solid var(--bg); }
 .ap-iconbtn--primary { width: auto; gap: 6px; font-weight: 500; }
 /* Scoped to beat the more-specific `.ap-topbar > button` rule above (the primary is a
@@ -173,6 +176,11 @@ body {
 
 /* main layout */
 .ap-main { flex: 1; display: flex; min-height: 0; }
+/* Host-injected side panel (e.g. the cloud table of contents): a left sidebar that pushes the
+   content over and slides in from the left. The host renders its content; we own the frame. */
+.ap-sidepanel { flex: 0 0 248px; min-width: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; border-right: 1px solid var(--line); background: var(--paper); animation: ap-sidepanel-in 0.18s ease; }
+@keyframes ap-sidepanel-in { from { flex-basis: 0; opacity: 0; } to { flex-basis: 248px; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .ap-sidepanel { animation: none; } }
 .ap-preview { flex: 1; min-width: 0; overflow: auto; padding: 28px 36px; border-right: 1px solid var(--line); background: var(--bg); }
 .ap-rendered { max-width: 760px; }
 .ap-rendered h1, .ap-rendered h2, .ap-rendered h3 { font-family: var(--serif); font-weight: 500; letter-spacing: -0.01em; line-height: 1.15; }

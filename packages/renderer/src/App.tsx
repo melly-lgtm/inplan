@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { isDocComment, isSpanComment, LogEventType, parse, serialize, type Comment, type ParsedDocument, type Question } from "@inplan/core";
-import { Fragment, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hostApi, realHostApi, setApiOverride, type Acceptance, type Api, type Cadence, type ProfileState } from "./api";
 import { TURN_MODE, resolveMode, type ModeDescriptor } from "./mode";
 import {
@@ -191,6 +191,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [reviewOpen, setReviewOpen] = useState(false); // is the review panel visible (vs. parked behind a banner)
   const [findOpen, setFindOpen] = useState(false);
   const [findOpts, setFindOpts] = useState<{ query: string; ci: boolean; inPreview: boolean; inEditor: boolean; inComments: boolean }>({ query: "", ci: false, inPreview: true, inEditor: false, inComments: false });
+  const [openPanel, setOpenPanel] = useState<string | null>(null); // id of the open host-injected side panel (e.g. the cloud TOC), or null
 
   const docRef = useRef(doc);
   docRef.current = doc;
@@ -1296,9 +1297,16 @@ export function App(props: EditorProps = {}): JSX.Element {
     if (ni >= 0 && ni < visible.length) focusComment(visible[ni]!.thread.root.id);
   };
 
+  // Host-injected side panels (e.g. the cloud table of contents); none on the base path.
+  const sidePanels = hostApi().sidePanels ?? [];
+  const activePanel = sidePanels.find((p) => p.id === openPanel) ?? null;
+
   return (
     <div className="ap-app">
       <TopBar
+        sidePanels={sidePanels.map((p) => ({ id: p.id, title: p.title, icon: p.icon }))}
+        openPanel={openPanel}
+        onTogglePanel={(id) => setOpenPanel((cur) => (cur === id ? null : id))}
         cadence={cadence}
         modes={modes}
         acceptance={acceptance}
@@ -1543,6 +1551,11 @@ export function App(props: EditorProps = {}): JSX.Element {
       )}
 
       <div className="ap-main" style={{ zoom }}>
+        {activePanel && (
+          <aside className="ap-sidepanel" data-panel={activePanel.id}>
+            {activePanel.render({ body: doc.body, activeLine: activePreviewLine, scrollToLine: syncToLine, close: () => setOpenPanel(null) })}
+          </aside>
+        )}
         <section
           className="ap-preview"
           ref={previewRef}
@@ -1862,6 +1875,10 @@ function TopBar(props: {
   onZoom: (dir: -1 | 0 | 1) => void;
   onAddComment: () => void;
   onToggleFind: () => void;
+  /** Host-injected side panels (label + glyph only; the renderer owns the toggle + the slot). */
+  sidePanels: { id: string; title: string; icon?: ReactNode }[];
+  openPanel: string | null;
+  onTogglePanel: (id: string) => void;
   dirty: boolean;
   onSave: () => void;
   onFinishTurn: () => void;
@@ -1927,6 +1944,24 @@ function TopBar(props: {
           <IconZoomIn />
         </button>
       </div>
+      {/* Host-injected side-panel toggles (e.g. the cloud table of contents). Left-aligned with
+          the panes/zoom controls since the panels slide in from the left. */}
+      {props.sidePanels.length > 0 && (
+        <div className="ap-iconrow" role="group" aria-label="panels">
+          {props.sidePanels.map((p) => (
+            <button
+              key={p.id}
+              className={`ap-iconbtn${props.openPanel === p.id ? " active" : ""}`}
+              onClick={() => props.onTogglePanel(p.id)}
+              title={p.title}
+              aria-label={p.title}
+              aria-pressed={props.openPanel === p.id}
+            >
+              {p.icon ?? <span className="ap-iconbtn-fallback">{p.title.slice(0, 1)}</span>}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="ap-spacer" />
       {/* Cross-document back/forward (following in-doc links). Rarely used, so it only
           appears once a link history exists, sits centered, and disables at the ends. */}
