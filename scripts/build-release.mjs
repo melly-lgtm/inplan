@@ -30,7 +30,7 @@ if (!existsSync(`${appOut}/main/index.js`)) throw new Error("app build (out/main
 
 // The CLI bundle externalizes these (its @inplan/* deps are bundled in); the published
 // package must declare them + electron so a global install resolves them.
-const RUNTIME = ["***REMOVED***", "@supabase/supabase-js", "ws", ***REMOVED***];
+const RUNTIME = ["@supabase/supabase-js", "ws"];
 const dependencies = { electron: appPkg.devDependencies.electron };
 for (const d of RUNTIME) dependencies[d] = cli.dependencies[d];
 
