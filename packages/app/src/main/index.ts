@@ -107,7 +107,7 @@ function runCli(args: string[], extraEnv?: Record<string, string>): Promise<{ co
     execFile(
       process.execPath,
       [cli, ...args],
-      { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", ...extraEnv } },
+      { env: { ...process.env, ...extraEnv, ELECTRON_RUN_AS_NODE: "1" } }, // RUN_AS_NODE last: never overridable
       (err, stdout, stderr) => {
         const code = err && typeof (err as NodeJS.ErrnoException & { code?: number }).code === "number" ? Number((err as { code: number }).code) : err ? 1 : 0;
         res({ code, stdout, stderr });
