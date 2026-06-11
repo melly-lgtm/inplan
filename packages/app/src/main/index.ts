@@ -94,8 +94,10 @@ interface ProfileSnapshot {
   identitySource?: "cloud" | "git" | "manual" | null;
 }
 
-/** Run an `inplan` subcommand under Electron's bundled Node, returning stdout JSON. */
-function runCli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+/** Run an `inplan` subcommand under Electron's bundled Node, returning stdout JSON. `extraEnv`
+ *  passes values that must NOT appear in argv (e.g. auth tokens, which `ps`/process listings would
+ *  otherwise expose) — the CLI reads them from the environment. */
+function runCli(args: string[], extraEnv?: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((res) => {
     const cli = process.env.INPLAN_CLI;
     if (!cli) {
@@ -105,7 +107,7 @@ function runCli(args: string[]): Promise<{ code: number; stdout: string; stderr:
     execFile(
       process.execPath,
       [cli, ...args],
-      { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } },
+      { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", ...extraEnv } },
       (err, stdout, stderr) => {
         const code = err && typeof (err as NodeJS.ErrnoException & { code?: number }).code === "number" ? Number((err as { code: number }).code) : err ? 1 : 0;
         res({ code, stdout, stderr });
@@ -594,10 +596,19 @@ function registerIpc(): void {
       activeSignIn = handoff;
       win?.webContents.send("cloud:signin-open", { url: handoff.authUrl });
       const creds = await handoff.done;
-      if (activeSignIn === handoff) activeSignIn = null;
+      // If a newer sign-in superseded this one (activeSignIn changed), don't tear down its overlay
+      // or store this stale handoff's credentials — just step down.
+      if (activeSignIn !== handoff) return;
+      activeSignIn = null;
       win?.webContents.send("cloud:signin-close"); // tear down the overlay regardless of outcome
       if (creds) {
-        const r = await runCli(["login", "--url", creds.url, "--anon", creds.anon, "--refresh", creds.refresh, ...(creds.email ? ["--email", creds.email] : [])]);
+        // Pass the Supabase url/anon + refresh token via ENV (not argv), so they never appear in a
+        // process listing; `inplan login` reads them from the environment.
+        const r = await runCli(["login", ...(creds.email ? ["--email", creds.email] : [])], {
+          INPLAN_SUPABASE_URL: creds.url,
+          INPLAN_SUPABASE_ANON_KEY: creds.anon,
+          INPLAN_REFRESH_TOKEN: creds.refresh,
+        });
         // The user may have closed the editor while OAuth completed in the system browser —
         // only touch `win` when it's still alive.
         if (r.code !== 0 && win && !win.isDestroyed()) {

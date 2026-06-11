@@ -369,7 +369,9 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
 async function doLogin(args: string[]): Promise<void> {
   const url = getFlag(args, "url") ?? process.env.INPLAN_SUPABASE_URL;
   const anonKey = getFlag(args, "anon") ?? process.env.INPLAN_SUPABASE_ANON_KEY;
-  const refreshToken = getFlag(args, "refresh");
+  // The refresh token is sensitive, so callers (e.g. the desktop app) can pass it via the
+  // environment instead of argv (where `ps` would expose it). Flag still works for manual use.
+  const refreshToken = getFlag(args, "refresh") ?? process.env.INPLAN_REFRESH_TOKEN;
   if (!url || !anonKey || !refreshToken) {
     process.stderr.write("usage: inplan login --url <url> --anon <anon-key> --refresh <refresh-token> [--email <e>]\n");
     process.exit(64);
