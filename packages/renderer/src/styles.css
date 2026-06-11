@@ -93,7 +93,11 @@ body {
 .ap-profile-section .ap-settings-row { padding: 6px 10px; }
 .ap-profile-section .ap-settings-hint { padding: 0 10px 2px; }
 /* Toggle switch (shared: profile settings + review-diff hunks). */
-.ap-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+/* position:relative CONTAINS the visually-hidden absolute input (below) within the switch.
+   Without it the input's containing block is the document, so deep in a tall pane (e.g. a long
+   review diff) clicking a toggle focuses an input resolved far down the page → the browser scrolls
+   the whole webview to it (off the fixed-height app shell, into white). */
+.ap-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; position: relative; }
 .ap-switch.disabled { opacity: 0.5; cursor: default; }
 .ap-switch-row { display: flex; justify-content: space-between; width: 100%; }
 .ap-profile-section .ap-switch-row { padding: 6px 10px; font-size: 13px; }
