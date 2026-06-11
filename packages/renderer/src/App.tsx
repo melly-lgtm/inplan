@@ -394,7 +394,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   }, [reloadIn]);
 
   // Push a doc state to the collaborative owners — comments → the store, body → the binding (a
-  // shared ***REMOVED***) — so undo/redo (and programmatic edits) reach the shared doc, not just React
+  // shared text buffer) — so undo/redo (and programmatic edits) reach the shared doc, not just React
   // state the binding would overwrite. `prevComments`/`prevBody` are what's being replaced (the
   // delta base). Returns true ONLY when the change was fully handed off to an external owner; the
   // caller then clears dirty + skips save(). If the BODY changed but no binding can write it
@@ -614,7 +614,7 @@ export function App(props: EditorProps = {}): JSX.Element {
 
   // --- clipboard: carry span-comment threads through copy/cut/paste (see clipboard.ts) ---
   // The source editor's selection offsets are body offsets (CodeMirror's content is the bare
-  // body — file-backed, or the unified-***REMOVED*** binding's ***REMOVED***), so all three route through the
+  // body — file-backed, or the collaboration binding's shared text), so all three route through the
   // same apply() the span-comment flow uses: body change → binding/file, comments → store.
   const commentsForCopy = useCallback((text: string): Comment[] => {
     const ids = anchorIdsIn(text);

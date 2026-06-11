@@ -12,7 +12,7 @@ type DocColumn = "body" | "canonical" | "proposed";
  * `doc_versions`. The desktop edition reads/writes sidecar files; this reads and
  * writes Postgres columns.
  *
- * In M4.3 the live `body` is materialized from the ***REMOVED*** ***REMOVED***; until then it is the
+ * In M4.3 the live `body` is materialized from the live collaboration store; until then it is the
  * single source of truth and this store is sufficient for the M4.2 (single active
  * editor) path.
  */

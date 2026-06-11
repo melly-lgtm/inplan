@@ -102,7 +102,7 @@ export function serialize(doc: ParsedDocument): string {
 /**
  * Canonical comment order for the serialized projection (the `.md` / `documents.body`).
  *
- * In the unified-***REMOVED*** model comments live in an unordered ***REMOVED*** array, so the serializer must
+ * In the unified collaboration model comments live in an unordered shared array, so the serializer must
  * impose a deterministic order or the projection churns. This is a stable depth-first walk:
  * roots ordered by (date, then id); each comment's replies follow it, also by (date, id). The
  * result is identical for any input order — so two peers serialize byte-identically — and is
@@ -134,7 +134,7 @@ export function orderComments(comments: Comment[]): Comment[] {
   return out;
 }
 
-/** Canonical field order for a serialized comment. A round-trip through a ***REMOVED*** (***REMOVED***) loses
+/** Canonical field order for a serialized comment. A round-trip through a shared map loses
  *  the original key order, so the canonical projection must re-impose one or the JSON bytes
  *  differ between peers. Matches the Comment interface declaration order. */
 const COMMENT_KEY_ORDER: (keyof Comment)[] = ["id", "parentId", "anchor", "text", "author", "date", "resolved", "may_resolve", "question", "selected"];
@@ -149,7 +149,7 @@ function canonicalizeComment(c: Comment): Comment {
 }
 
 /** Like {@link serialize}, but emits comments in the canonical {@link orderComments} order and
- *  with a canonical field order, so the output is byte-deterministic regardless of ***REMOVED***
+ *  with a canonical field order, so the output is byte-deterministic regardless of store
  *  insertion/key order. Used at the projection boundary (collab server -> documents.body; the
  *  local .md write). */
 export function serializeCanonical(doc: ParsedDocument): string {

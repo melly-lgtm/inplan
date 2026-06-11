@@ -4,7 +4,7 @@
 // through a single CommentStore, decoupling the editor's comment code from transport. Open-core
 // ships the memory-backed store (createMemoryCommentStore): single-writer local editing, where
 // the .md file is the canonical artifact and comments live in the parsed document. A collaborative
-// (***REMOVED***) store can be injected by a host that provides one (the cloud edition). `orderComments`
+// store can be injected by a host that provides one (the cloud edition). `orderComments`
 // imposes the canonical order used when projecting to the serialized .md, so round-trip is
 // deterministic regardless of insertion order.
 
@@ -28,16 +28,16 @@ export interface CommentStore {
   observe(cb: () => void): () => void;
 }
 
-// The ***REMOVED*** store round-trips EVERY field a comment carries — known schema fields plus any
+// The host store round-trips EVERY field a comment carries — known schema fields plus any
 // unknown/forward-compat ones — so it preserves exactly what @inplan/core's serializeCanonical
 // preserves. Scalars round-trip directly; structured fields (question/selected and any nested
 // values) are stored as opaque JSON, replaced atomically — never sub-edited concurrently.
 
 /**
  * Apply the delta between two comment lists to a store — add new, patch changed (including
- * field removals), remove gone. Unlike replaceAll this preserves concurrent ***REMOVED*** ops from
+ * field removals), remove gone. Unlike replaceAll this preserves concurrent edits from
  * other peers (it only touches the comments that actually changed), so it's safe to drive a
- * ***REMOVED*** store from the editor's optimistic ParsedDocument state.
+ * host store from the editor's optimistic ParsedDocument state.
  */
 export function reconcileComments(store: CommentStore, prev: Comment[], next: Comment[]): void {
   const prevById = new Map(prev.map((c) => [c.id, c]));

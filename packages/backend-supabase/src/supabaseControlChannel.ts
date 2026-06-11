@@ -110,7 +110,7 @@ export class SupabaseControlChannel implements ControlChannel {
   }
 
   async presence(): Promise<boolean> {
-    // TODO(M4.3): derive from ***REMOVED***/Realtime presence on the doc's collaboration room.
+    // TODO(M4.3): derive from live/Realtime presence on the doc's collaboration room.
     // Interim: an editor heartbeat row fresher than PRESENCE_TTL_MS.
     const { data, error } = await this.db
       .from("editor_presence")

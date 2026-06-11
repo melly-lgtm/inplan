@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// App-level tests for the unified-***REMOVED*** comment seam: when the host provides a CommentStore
+// App-level tests for the unified collaboration comment seam: when the host provides a CommentStore
 // (web/cloud), the editor sources comments from it, routes comment CRUD through it (NOT a
 // documents.body save — the dual-write that caused #71), and re-renders on remote store
 // changes. Mounts the real <App/> with a memory-backed window.api augmented with a
