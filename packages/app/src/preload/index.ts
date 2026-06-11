@@ -192,3 +192,11 @@ contextBridge.exposeInMainWorld("api", api);
 // Runtime-plugin info ({ session, rendererUrl } | null) for the renderer to decide whether to load
 // the (verified) plugin bundle. Null on the base / no-plugin / logged-out path.
 contextBridge.exposeInMainWorld("__inplanPlugin", () => ipcRenderer.invoke("plugin:info") as Promise<{ session: string; rendererUrl: string } | null>);
+// Desktop navigation re-bind: main fires `plugin:reactivate` after swapping the doc + restarting
+// the per-doc hub, so the renderer re-activates the plugin in place (no full reload). Returns an
+// unsubscribe.
+contextBridge.exposeInMainWorld("__inplanOnReactivate", (cb: () => void) => {
+  const h = (): void => cb();
+  ipcRenderer.on("plugin:reactivate", h);
+  return () => ipcRenderer.removeListener("plugin:reactivate", h);
+});

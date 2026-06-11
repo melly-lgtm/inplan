@@ -292,23 +292,16 @@ function navigateTo(file: string): boolean {
   return true;
 }
 
-/** After a doc swap: restart the plugin for the new file. If a plugin is active, reload the renderer
- *  so it re-bootstraps against the new session (the binding is bound at editor init); else take the
- *  light file-backed path (send the new doc to the existing renderer). */
+/** After a doc swap: restart the plugin's per-doc hub for the new file, then re-bind in place. The
+ *  plugin binds its CodeMirror at editor init, so the renderer re-activates the plugin (against the
+ *  new hub) and re-mounts just the editor — far cheaper than a full `webContents.reload()`. With no
+ *  plugin, take the light file-backed path (send the new doc to the existing renderer). */
 async function refreshPluginAndView(file: string): Promise<void> {
   await stopDesktopPlugin();
   await startDesktopPlugin(file, pluginToken);
   if (!win || !session) return;
-  if (pluginInfo()) {
-    // The plugin binds at editor init, so re-bootstrap the renderer. The reload resets the
-    // renderer's nav state (its onNavState subscription is fresh + main's first-load handler is
-    // a one-shot), so re-send it once the reloaded renderer is listening — otherwise the
-    // back/forward buttons we just set vanish after navigating.
-    win.webContents.once("did-finish-load", () => sendNavState());
-    win.webContents.reload();
-  } else {
-    win.webContents.send("doc:navigated", session.load());
-  }
+  if (pluginInfo()) win.webContents.send("plugin:reactivate"); // renderer re-binds + re-mounts the editor
+  else win.webContents.send("doc:navigated", session.load());
 }
 
 /** Record the close reason once and exit, bypassing the confirm-quit dialog.
