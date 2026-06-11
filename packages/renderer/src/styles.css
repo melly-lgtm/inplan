@@ -315,7 +315,7 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 /* Editor error-boundary fallback — keeps a pane's crash from blanking the whole app. */
 .ap-editor-error { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; padding: 24px; height: 100%; overflow: auto; }
 .ap-editor-error-title { font-weight: 600; font-size: 14px; margin: 0; color: var(--ink, #1c1a17); }
-.ap-editor-error-msg { font-family: var(--mono, ui-monospace, monospace); font-size: 12px; margin: 0; color: var(--danger, #a3331f); white-space: pre-wrap; word-break: break-word; }
+.ap-editor-error-msg { font-family: var(--mono, ui-monospace, monospace); font-size: 12px; margin: 0; color: var(--danger, #a3331f); white-space: pre-wrap; overflow-wrap: anywhere; }
 .ap-editor-error-retry { font: inherit; font-size: 13px; padding: 5px 14px; border: 1px solid var(--line, #e6dfce); border-radius: 7px; background: var(--bg, #fff); cursor: pointer; }
 .ap-newdoc { min-width: 420px; }
 .ap-newdoc-title { font-weight: 600; font-size: 15px; margin-bottom: 14px; }
