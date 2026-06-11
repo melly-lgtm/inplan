@@ -8,7 +8,8 @@ import { Component, type ErrorInfo, type ReactNode } from "react";
  * blank the window AND, on desktop, leave the renderer unable to answer the quit-confirm IPC
  * (an unclosable blank app). A runtime plugin's `binding` is the most likely culprit (e.g. a
  * CodeMirror extension built against a different `@codemirror/state` instance), so the fallback
- * offers to **reload without the plugin** by re-launching with the plugin suppressed.
+ * offers a **Try again** that clears the boundary's error state and re-renders the children
+ * (after the underlying cause is resolved, e.g. a fresh build/navigation).
  */
 interface Props {
   children: ReactNode;

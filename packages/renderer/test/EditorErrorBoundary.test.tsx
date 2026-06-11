@@ -5,7 +5,10 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorErrorBoundary } from "../src/EditorErrorBoundary";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks(); // restore console.error even if a test throws before its own restore
+});
 
 function Boom({ throwNow }: { throwNow: boolean }): JSX.Element {
   if (throwNow) throw new Error("multiple instances of @codemirror/state");
@@ -23,7 +26,7 @@ describe("EditorErrorBoundary", () => {
   });
 
   it("contains a child crash and shows the labelled message + error text", () => {
-    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {}); // restored in afterEach
     render(
       <EditorErrorBoundary label="The source editor">
         <Boom throwNow={true} />
@@ -34,11 +37,10 @@ describe("EditorErrorBoundary", () => {
     expect(document.body.textContent).toContain("multiple instances of @codemirror/state");
     // Recovery affordance is present.
     expect(screen.getByRole("button", { name: /try again/i })).toBeTruthy();
-    spy.mockRestore();
   });
 
   it("retries (clears the error) when 'Try again' is clicked", () => {
-    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {}); // restored in afterEach
     // A child that throws on first render, then succeeds (its prop flips before the retry re-render).
     let shouldThrow = true;
     function Flaky(): JSX.Element {
@@ -54,6 +56,5 @@ describe("EditorErrorBoundary", () => {
     shouldThrow = false;
     fireEvent.click(screen.getByRole("button", { name: /try again/i }));
     expect(screen.getByText("recovered")).toBeTruthy();
-    spy.mockRestore();
   });
 });

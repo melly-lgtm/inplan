@@ -142,12 +142,21 @@ const api: Api = {
   },
   navigate: (dir: "back" | "forward") => ipcRenderer.invoke("nav:go", dir),
   onNavState: (cb: (s: { canBack: boolean; canForward: boolean }) => void) => {
+    let active = true;
     const h = (_e: unknown, s: { canBack: boolean; canForward: boolean }): void => cb(s);
     ipcRenderer.on("nav:state", h);
     // Pull the current state immediately: after a navigation reload the main-side push can land
     // before the renderer has mounted + subscribed, so fetch it on subscribe (survives the reload).
-    void (ipcRenderer.invoke("nav:get") as Promise<{ canBack: boolean; canForward: boolean }>).then((s) => s && cb(s));
-    return () => ipcRenderer.removeListener("nav:state", h);
+    // Guard against an unsubscribe before it resolves, and swallow a reject (no handler / teardown).
+    void (ipcRenderer.invoke("nav:get") as Promise<{ canBack: boolean; canForward: boolean }>)
+      .then((s) => {
+        if (active && s) cb(s);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+      ipcRenderer.removeListener("nav:state", h);
+    };
   },
   onNavigated: (cb: (payload: DocPayload) => void) => {
     const h = (_e: unknown, payload: DocPayload): void => cb(payload);
