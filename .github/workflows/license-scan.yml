@@ -74,7 +74,20 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install ScanCode Toolkit
-        run: pip install --upgrade "scancode-toolkit==32.*"
+        # PyPI serves each project's simple-index page through a Varnish/Fastly CDN, which
+        # occasionally returns a transient 503 (cache MISS) for one project page. When pip's
+        # resolver hits that while enumerating a transitive dep (observed for `pygmars`), it
+        # sees zero versions for that package and fails the whole resolve with a misleading
+        # `ResolutionImpossible` — even though the dependency graph is fine. Retry a few times
+        # so a momentary CDN blip doesn't redden the build (a clean retry hits a healthy edge).
+        run: |
+          for attempt in 1 2 3; do
+            if pip install --upgrade "scancode-toolkit==32.*"; then exit 0; fi
+            echo "::warning::pip install failed (attempt ${attempt}/3) — likely a transient PyPI index error; retrying in 20s"
+            sleep 20
+          done
+          echo "::error::pip install failed after 3 attempts"
+          exit 1
       - name: Scan source for license & copyright clues
         run: |
           scancode --license --copyright --strip-root --json-pp scancode.json \
