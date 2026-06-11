@@ -83,8 +83,10 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             if pip install --upgrade "scancode-toolkit==32.*"; then exit 0; fi
-            echo "::warning::pip install failed (attempt ${attempt}/3) — likely a transient PyPI index error; retrying in 20s"
-            sleep 20
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::pip install failed (attempt ${attempt}/3) — likely a transient PyPI index error; retrying in 20s"
+              sleep 20
+            fi
           done
           echo "::error::pip install failed after 3 attempts"
           exit 1
