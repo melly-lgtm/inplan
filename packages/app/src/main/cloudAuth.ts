@@ -20,15 +20,6 @@ export interface CloudSignIn {
   cancel(): void;
 }
 
-/** The page the loopback serves once the handoff completes — shown in the in-app overlay's
- *  iframe (and in the system-browser tab for the OAuth path) just before it's dismissed. */
-const DONE_HTML = `<!doctype html><meta charset="utf-8"><title>inplan</title>
-<style>html{font:16px/1.5 -apple-system,system-ui,sans-serif;color:#1c2b27;background:#f4f1ea}
-body{display:grid;place-items:center;height:100vh;margin:0}
-.card{text-align:center;padding:2rem 2.5rem}
-h1{font-size:1.25rem;margin:0 0 .35rem}p{margin:0;color:#5a6b65}</style>
-<div class="card"><h1>You're signed in.</h1><p>Returning to inplan…</p></div>`;
-
 /**
  * Browser-based cloud sign-in for the desktop app (RFC 8252 "native app" pattern, loopback
  * variant). The editor itself never speaks to Supabase — this only captures a refresh token
@@ -39,13 +30,17 @@ h1{font-size:1.25rem;margin:0 0 .35rem}p{margin:0;color:#5a6b65}</style>
  * URL in an in-app modal overlay (an <iframe>); email/password completes inline, while OAuth
  * providers (which reject embedded frames) are popped to the system browser by the page's
  * `window.open` (routed to the OS browser by the main window's window-open handler). Whichever
- * surface finishes redirects to `/cb`; the refresh token only ever crosses localhost and the
- * echoed `state` is verified, so a stray local page can't complete the handoff.
+ * surface finishes **POSTs** the credentials to `/cb` (the page reads them back, so the token
+ * never rides in a URL/history — `127.0.0.1` is a Chromium "secure" origin, so an https page
+ * can fetch it without a mixed-content block); the echoed `state` is verified, so a stray/forged
+ * request can't complete the handoff. Resolves `null` if the loopback can't even bind (so the
+ * caller never hangs).
  */
-export function startCloudSignIn(cloudBase: string, timeoutMs = 5 * 60_000): Promise<CloudSignIn> {
+export function startCloudSignIn(cloudBase: string, timeoutMs = 5 * 60_000): Promise<CloudSignIn | null> {
   return new Promise((resolveStart) => {
     const state = randomBytes(16).toString("hex");
     let settled = false;
+    let listening = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let resolveDone!: (result: CloudCredentials | null) => void;
     const done = new Promise<CloudCredentials | null>((res) => {
@@ -64,6 +59,9 @@ export function startCloudSignIn(cloudBase: string, timeoutMs = 5 * 60_000): Pro
       resolveDone(result);
     };
 
+    // The page POSTs cross-origin (inplan.ai → 127.0.0.1), which is a CORS-preflighted request.
+    const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type" };
+
     const server = createServer((req, res) => {
       const reqUrl = new URL(req.url ?? "/", "http://127.0.0.1");
       if (reqUrl.pathname !== "/cb") {
@@ -71,22 +69,47 @@ export function startCloudSignIn(cloudBase: string, timeoutMs = 5 * 60_000): Pro
         res.end();
         return;
       }
-      const q = reqUrl.searchParams;
-      const url = q.get("url");
-      const anon = q.get("anon");
-      const refresh = q.get("refresh");
-      if (q.get("state") !== state || !url || !anon || !refresh) {
-        res.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
-        res.end("Invalid sign-in callback.");
-        return; // a stray/forged request must not end a live handoff
+      if (req.method === "OPTIONS") {
+        res.writeHead(204, CORS);
+        res.end();
+        return;
       }
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      res.end(DONE_HTML);
-      finish({ url, anon, refresh, email: q.get("email") ?? undefined });
+      if (req.method !== "POST") {
+        res.writeHead(405, CORS);
+        res.end();
+        return;
+      }
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk;
+        if (body.length > 1_000_000) req.destroy(); // bound the read; a real payload is tiny
+      });
+      req.on("end", () => {
+        let creds: Partial<CloudCredentials> & { state?: string } = {};
+        try {
+          creds = JSON.parse(body || "{}");
+        } catch {
+          /* malformed → treated as invalid below */
+        }
+        const { state: echoed, url, anon, refresh, email } = creds;
+        if (echoed !== state || !url || !anon || !refresh) {
+          res.writeHead(400, { ...CORS, "content-type": "application/json" });
+          res.end('{"ok":false}');
+          return; // a stray/forged request must not end a live handoff
+        }
+        res.writeHead(200, { ...CORS, "content-type": "application/json" });
+        res.end('{"ok":true}');
+        finish({ url, anon, refresh, email: email ?? undefined });
+      });
     });
-    server.on("error", () => finish(null));
+    // Settle the OUTER promise too on a pre-listen bind failure, or the caller awaits forever.
+    server.on("error", () => {
+      finish(null);
+      if (!listening) resolveStart(null);
+    });
 
     server.listen(0, "127.0.0.1", () => {
+      listening = true;
       const port = (server.address() as AddressInfo).port;
       const authUrl = `${cloudBase}/cli-auth?port=${port}&state=${encodeURIComponent(state)}`;
       timer = setTimeout(() => finish(null), timeoutMs);

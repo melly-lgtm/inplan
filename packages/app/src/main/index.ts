@@ -582,6 +582,11 @@ function registerIpc(): void {
       // them through the CLI (which owns auth). No-op if the user dismisses or it times out.
       activeSignIn?.cancel(); // never run two at once
       const handoff = await startCloudSignIn(CLOUD_BASE);
+      if (!handoff) {
+        // The loopback listener couldn't bind — surface it rather than silently doing nothing.
+        if (win && !win.isDestroyed()) dialog.showMessageBoxSync(win, { type: "error", message: "Couldn't start sign-in.", detail: "Please try again." });
+        return;
+      }
       activeSignIn = handoff;
       win?.webContents.send("cloud:signin-open", { url: handoff.authUrl });
       const creds = await handoff.done;
