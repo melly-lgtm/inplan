@@ -175,12 +175,27 @@ body {
 .ap-banner-reload { background: #f6ecdd; }
 
 /* main layout */
-.ap-main { flex: 1; display: flex; min-height: 0; }
+.ap-main { flex: 1; display: flex; min-height: 0; position: relative; }
+/* "Bump" handle on the preview's top-left that reveals a host side panel (e.g. the TOC). */
+.ap-sidepanel-bump {
+  position: absolute; top: 12px; left: 0; z-index: 20;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 38px; padding: 0;
+  border: 1px solid var(--line-strong); border-left: 0; border-radius: 0 9px 9px 0;
+  background: var(--bg); color: var(--fg); cursor: pointer; opacity: 0.55;
+  box-shadow: 0 2px 8px -4px rgba(28, 26, 23, 0.4);
+  transition: opacity 0.14s ease, color 0.14s ease, background 0.14s ease, width 0.14s ease;
+}
+.ap-sidepanel-bump:hover { opacity: 1; width: 24px; background: var(--accent-soft); color: var(--accent); }
+.ap-sidepanel-bump svg { width: 15px; height: 15px; }
 /* Host-injected side panel (e.g. the cloud table of contents): a left sidebar that pushes the
    content over and slides in from the left. The host renders its content; we own the frame. */
-.ap-sidepanel { flex: 0 0 248px; min-width: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; border-right: 1px solid var(--line); background: var(--paper); animation: ap-sidepanel-in 0.18s ease; }
+.ap-sidepanel { flex: 0 0 248px; min-width: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; border-right: 1px solid var(--line); background: var(--paper); animation: ap-sidepanel-in 0.54s ease; }
 @keyframes ap-sidepanel-in { from { flex-basis: 0; opacity: 0; } to { flex-basis: 248px; opacity: 1; } }
-@media (prefers-reduced-motion: reduce) { .ap-sidepanel { animation: none; } }
+/* Fold-out: mirror the open animation's duration so closing matches unfolding (kept mounted ~540ms). */
+.ap-sidepanel.ap-sidepanel--closing { animation: ap-sidepanel-out 0.54s ease forwards; pointer-events: none; }
+@keyframes ap-sidepanel-out { from { flex-basis: 248px; opacity: 1; } to { flex-basis: 0; opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .ap-sidepanel, .ap-sidepanel.ap-sidepanel--closing { animation: none; } }
 .ap-preview { flex: 1; min-width: 0; overflow: auto; padding: 28px 36px; border-right: 1px solid var(--line); background: var(--bg); }
 .ap-rendered { max-width: 760px; }
 .ap-rendered h1, .ap-rendered h2, .ap-rendered h3 { font-family: var(--serif); font-weight: 500; letter-spacing: -0.01em; line-height: 1.15; }
@@ -293,6 +308,11 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 .ap-signin-backdrop { position: fixed; inset: 0; z-index: 70; display: flex; align-items: center; justify-content: center; background: rgba(28, 26, 23, 0.42); }
 .ap-signin-panel { width: 460px; max-width: 92vw; height: 720px; max-height: 88vh; background: var(--bg); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 24px 64px -16px rgba(28, 26, 23, 0.5); overflow: hidden; }
 .ap-signin-frame { width: 100%; height: 100%; border: 0; display: block; }
+/* Editor error-boundary fallback — keeps a pane's crash from blanking the whole app. */
+.ap-editor-error { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; padding: 24px; height: 100%; overflow: auto; }
+.ap-editor-error-title { font-weight: 600; font-size: 14px; margin: 0; color: var(--ink, #1c1a17); }
+.ap-editor-error-msg { font-family: var(--mono, ui-monospace, monospace); font-size: 12px; margin: 0; color: var(--danger, #a3331f); white-space: pre-wrap; word-break: break-word; }
+.ap-editor-error-retry { font: inherit; font-size: 13px; padding: 5px 14px; border: 1px solid var(--line, #e6dfce); border-radius: 7px; background: var(--bg, #fff); cursor: pointer; }
 .ap-newdoc { min-width: 420px; }
 .ap-newdoc-title { font-weight: 600; font-size: 15px; margin-bottom: 14px; }
 .ap-newdoc-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; font-size: 12px; color: var(--muted); }

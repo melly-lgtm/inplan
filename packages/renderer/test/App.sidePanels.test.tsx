@@ -58,24 +58,45 @@ async function mountApp() {
 }
 
 describe("Api.sidePanels (host-injected side-panel seam)", () => {
-  it("shows no toggle when the host injects no panels", async () => {
+  it("shows no bump when the host injects no panels", async () => {
     mount(null);
     await mountApp();
     expect(screen.queryByRole("button", { name: "Demo Panel" })).toBeNull();
   });
 
-  it("toggles the panel open and closed from the menu-bar button", async () => {
+  it("is folded by default, opens from the preview bump, then auto-hides ~0.5s after the cursor leaves", async () => {
     mount([demoPanel]);
     await mountApp();
-    const toggle = screen.getByRole("button", { name: "Demo Panel" });
-    expect(screen.queryByTestId("demo-body")).toBeNull(); // closed initially
+    const bump = screen.getByRole("button", { name: "Demo Panel" }); // the preview-edge handle
+    expect(screen.queryByTestId("demo-body")).toBeNull(); // folded by default
 
-    await act(async () => fireEvent.click(toggle));
-    expect(screen.getByTestId("demo-body")).toBeTruthy(); // slid in
-    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    await act(async () => fireEvent.click(bump));
+    const panel = screen.getByTestId("demo-body").closest("aside")!;
+    expect(panel).toBeTruthy(); // slid in
 
-    await act(async () => fireEvent.click(toggle));
-    expect(screen.queryByTestId("demo-body")).toBeNull(); // toggled shut
+    // Leaving the panel starts a ~0.5s hide timer; then the panel folds out over ~0.54s (kept
+    // mounted for the exit animation) before it's dropped.
+    vi.useFakeTimers();
+    fireEvent.mouseLeave(panel);
+    act(() => vi.advanceTimersByTime(500)); // hide delay elapses → begins folding out
+    act(() => vi.advanceTimersByTime(560)); // fold-out animation finishes → unmounted
+    vi.useRealTimers();
+    expect(screen.queryByTestId("demo-body")).toBeNull();
+  });
+
+  it("re-entering the panel cancels the pending auto-hide", async () => {
+    mount([demoPanel]);
+    await mountApp();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Demo Panel" })));
+    const panel = screen.getByTestId("demo-body").closest("aside")!;
+
+    vi.useFakeTimers();
+    fireEvent.mouseLeave(panel); // arm the timer
+    act(() => vi.advanceTimersByTime(250));
+    fireEvent.mouseEnter(panel); // cancel it
+    act(() => vi.advanceTimersByTime(1000));
+    vi.useRealTimers();
+    expect(screen.getByTestId("demo-body")).toBeTruthy(); // still open
   });
 
   it("hands the panel live context: scrollToLine drives the source + updates the active line", async () => {
@@ -90,11 +111,14 @@ describe("Api.sidePanels (host-injected side-panel seam)", () => {
     await waitFor(() => expect(screen.getByText("active:3")).toBeTruthy()); // and the preview's active line
   });
 
-  it("the panel can close itself via ctx.close", async () => {
+  it("the panel can close itself via ctx.close (then folds out)", async () => {
     mount([demoPanel]);
     await mountApp();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Demo Panel" })));
+    vi.useFakeTimers();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "close panel" })));
+    act(() => vi.advanceTimersByTime(560)); // fold-out animation finishes → unmounted
+    vi.useRealTimers();
     expect(screen.queryByTestId("demo-body")).toBeNull();
   });
 });

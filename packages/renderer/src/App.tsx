@@ -2,7 +2,7 @@
 
 import { isDocComment, isSpanComment, LogEventType, parse, serialize, type Comment, type ParsedDocument, type Question } from "@inplan/core";
 import { Fragment, type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { hostApi, realHostApi, setApiOverride, type Acceptance, type Api, type Cadence, type ProfileState } from "./api";
+import { hostApi, realHostApi, setApiOverride, type Acceptance, type Api, type Cadence, type ProfileState, type SidePanelSpec } from "./api";
 import { TURN_MODE, resolveMode, type ModeDescriptor } from "./mode";
 import {
   setAnswer,
@@ -41,6 +41,7 @@ import { IconBack, IconForward, IconUp, IconDown, IconZoomOut, IconZoomIn, IconF
 import { RelativeTime } from "./RelativeTime";
 import { AuthorChip } from "./Avatar";
 import { QuitDialog } from "./QuitDialog";
+import { EditorErrorBoundary } from "./EditorErrorBoundary";
 import { Onboarding, type OnboardingSignals } from "./Onboarding";
 import { ONBOARDING_SAMPLE } from "./onboardingSample";
 import { createMemoryApi } from "./memoryApi";
@@ -216,6 +217,9 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [findOpen, setFindOpen] = useState(false);
   const [findOpts, setFindOpts] = useState<{ query: string; ci: boolean; inPreview: boolean; inEditor: boolean; inComments: boolean }>({ query: "", ci: false, inPreview: true, inEditor: false, inComments: false });
   const [openPanel, setOpenPanel] = useState<string | null>(null); // id of the open host-injected side panel (e.g. the cloud TOC), or null
+  const panelHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null); // auto-hide the side panel shortly after the cursor leaves it
+  const [closingPanel, setClosingPanel] = useState<SidePanelSpec | null>(null); // the panel mid fold-out (kept mounted for the exit animation)
+  const lastOpenPanelRef = useRef<SidePanelSpec | null>(null);
 
   const docRef = useRef(doc);
   docRef.current = doc;
@@ -989,6 +993,32 @@ export function App(props: EditorProps = {}): JSX.Element {
     editorRef.current?.scrollToLine(line);
   }, []);
 
+  // Scroll BOTH panes to a 0-based source line. Unlike syncToLine (a preview click, which leaves the
+  // preview put), this is for triggers that originate in neither pane — host side panels like the
+  // TOC — so the preview scrolls (as if clicked from the source) AND the source scrolls (as if
+  // clicked from the preview). This is the `scrollToLine` the SidePanelContext documents.
+  const scrollBothToLine = useCallback((line: number) => {
+    skipPreviewScroll.current = false; // let the activePreviewLine effect re-center the preview
+    setActivePreviewLine(line);
+    editorRef.current?.scrollToLine(line);
+  }, []);
+
+  // Keep a side panel mounted through its fold-out animation: when it closes (openPanel → null),
+  // render the last panel briefly with the exit animation, then drop it — so closing matches the
+  // open animation's duration instead of snapping shut.
+  useEffect(() => {
+    if (openPanel) {
+      lastOpenPanelRef.current = (hostApi().sidePanels ?? []).find((p) => p.id === openPanel) ?? null;
+      setClosingPanel(null); // (re)opened — cancel any in-flight close
+      return;
+    }
+    if (!lastOpenPanelRef.current) return;
+    setClosingPanel(lastOpenPanelRef.current);
+    lastOpenPanelRef.current = null;
+    const t = setTimeout(() => setClosingPanel(null), 540);
+    return () => clearTimeout(t);
+  }, [openPanel]);
+
   const focusComment = useCallback(
     (id: string, fromPreview = false, fromRail = false) => {
       setFocused(id);
@@ -1335,9 +1365,6 @@ export function App(props: EditorProps = {}): JSX.Element {
   return (
     <div className="ap-app">
       <TopBar
-        sidePanels={sidePanels.map((p) => ({ id: p.id, title: p.title, icon: p.icon }))}
-        openPanel={openPanel}
-        onTogglePanel={(id) => setOpenPanel((cur) => (cur === id ? null : id))}
         cadence={cadence}
         modes={modes}
         acceptance={acceptance}
@@ -1593,9 +1620,43 @@ export function App(props: EditorProps = {}): JSX.Element {
       )}
 
       <div className="ap-main" style={{ zoom }}>
-        {activePanel && (
-          <aside className="ap-sidepanel" data-panel={activePanel.id}>
-            {activePanel.render({ body: doc.body, activeLine: activePreviewLine, scrollToLine: syncToLine, close: () => setOpenPanel(null) })}
+        {/* Host-injected side panels (e.g. the cloud TOC): folded by default — a small "bump" handle
+            on the preview's top-left reveals the panel; it auto-hides ~0.5s after the cursor leaves
+            it (re-entering cancels the timer). Only the first panel is surfaced (today: the TOC). */}
+        {sidePanels.length > 0 && !activePanel && !closingPanel && (
+          <button
+            className="ap-sidepanel-bump"
+            title={sidePanels[0]!.title}
+            aria-label={sidePanels[0]!.title}
+            onClick={() => setOpenPanel(sidePanels[0]!.id)}
+          >
+            {sidePanels[0]!.icon ?? <span className="ap-iconbtn-fallback">{sidePanels[0]!.title.slice(0, 1)}</span>}
+          </button>
+        )}
+        {(activePanel || closingPanel) && (
+          <aside
+            className={`ap-sidepanel${!activePanel && closingPanel ? " ap-sidepanel--closing" : ""}`}
+            data-panel={(activePanel ?? closingPanel)!.id}
+            onMouseEnter={
+              activePanel
+                ? () => {
+                    if (panelHideTimer.current) {
+                      clearTimeout(panelHideTimer.current);
+                      panelHideTimer.current = null;
+                    }
+                  }
+                : undefined
+            }
+            onMouseLeave={
+              activePanel
+                ? () => {
+                    if (panelHideTimer.current) clearTimeout(panelHideTimer.current);
+                    panelHideTimer.current = setTimeout(() => setOpenPanel(null), 500);
+                  }
+                : undefined
+            }
+          >
+            {(activePanel ?? closingPanel)!.render({ body: doc.body, activeLine: activePreviewLine, scrollToLine: scrollBothToLine, close: () => setOpenPanel(null) })}
           </aside>
         )}
         <section
@@ -1659,6 +1720,7 @@ export function App(props: EditorProps = {}): JSX.Element {
             {proposal && reviewOpen ? (
               <DiffSource segs={editedSegs} accepted={accepted} focused={reviewCursor} onToggle={toggleHunk} />
             ) : (
+              <EditorErrorBoundary label="The source editor">
               <SourceEditor
                 ref={editorRef}
                 binding={hostApi().binding ?? null}
@@ -1688,6 +1750,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                 onCutComments={editingLocked ? undefined : onCutComments}
                 onPasteComments={editingLocked ? undefined : onPasteComments}
               />
+              </EditorErrorBoundary>
             )}
           </section>
           </>
@@ -1917,10 +1980,6 @@ function TopBar(props: {
   onZoom: (dir: -1 | 0 | 1) => void;
   onAddComment: () => void;
   onToggleFind: () => void;
-  /** Host-injected side panels (label + glyph only; the renderer owns the toggle + the slot). */
-  sidePanels: { id: string; title: string; icon?: ReactNode }[];
-  openPanel: string | null;
-  onTogglePanel: (id: string) => void;
   dirty: boolean;
   onSave: () => void;
   onFinishTurn: () => void;
@@ -1986,24 +2045,8 @@ function TopBar(props: {
           <IconZoomIn />
         </button>
       </div>
-      {/* Host-injected side-panel toggles (e.g. the cloud table of contents). Left-aligned with
-          the panes/zoom controls since the panels slide in from the left. */}
-      {props.sidePanels.length > 0 && (
-        <div className="ap-iconrow" role="group" aria-label="panels">
-          {props.sidePanels.map((p) => (
-            <button
-              key={p.id}
-              className={`ap-iconbtn${props.openPanel === p.id ? " active" : ""}`}
-              onClick={() => props.onTogglePanel(p.id)}
-              title={p.title}
-              aria-label={p.title}
-              aria-pressed={props.openPanel === p.id}
-            >
-              {p.icon ?? <span className="ap-iconbtn-fallback">{p.title.slice(0, 1)}</span>}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* Host-injected side panels (e.g. the cloud table of contents) aren't toggled from the top
+          bar — a "bump" handle on the preview's top-left reveals them (see ap-sidepanel-bump). */}
       <div className="ap-spacer" />
       {/* Cross-document back/forward (following in-doc links). Rarely used, so it only
           appears once a link history exists, sits centered, and disables at the ends. */}

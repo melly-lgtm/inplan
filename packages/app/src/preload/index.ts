@@ -144,6 +144,9 @@ const api: Api = {
   onNavState: (cb: (s: { canBack: boolean; canForward: boolean }) => void) => {
     const h = (_e: unknown, s: { canBack: boolean; canForward: boolean }): void => cb(s);
     ipcRenderer.on("nav:state", h);
+    // Pull the current state immediately: after a navigation reload the main-side push can land
+    // before the renderer has mounted + subscribed, so fetch it on subscribe (survives the reload).
+    void (ipcRenderer.invoke("nav:get") as Promise<{ canBack: boolean; canForward: boolean }>).then((s) => s && cb(s));
     return () => ipcRenderer.removeListener("nav:state", h);
   },
   onNavigated: (cb: (payload: DocPayload) => void) => {

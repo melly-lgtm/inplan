@@ -4,6 +4,18 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { AppRoot, setHostApi, type Api } from "@inplan/renderer";
 import "@inplan/renderer/styles.css";
+import * as cmState from "@codemirror/state";
+import * as cmView from "@codemirror/view";
+
+// A runtime plugin's editor binding ships CodeMirror extensions that the host's <SourceEditor>
+// installs — but those must be built against the SAME @codemirror/state / @codemirror/view
+// instances the host uses, or CodeMirror's instanceof checks reject them ("Unrecognized extension
+// value … multiple instances of @codemirror/state"). The signed bundle can't be deduped at the
+// host's build time (it's fetched + imported at runtime), so we publish the host's instances on a
+// global the bundle's CodeMirror imports resolve to (see collab-client's build shims). Set this
+// BEFORE importing the plugin. (renderer/dist externalizes @codemirror/*, so these ARE the very
+// instances <SourceEditor> uses.)
+(globalThis as unknown as { __inplanCM?: unknown }).__inplanCM = { state: cmState, view: cmView };
 
 // The preload exposes the file-backed editor API on `window.api`. When a runtime plugin is entitled,
 // the main process has verified it and exposes its info via `__inplanPlugin`. If present, we import

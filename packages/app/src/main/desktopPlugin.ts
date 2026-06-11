@@ -38,6 +38,11 @@ interface PluginState {
   stop: () => Promise<void>;
 }
 let state: PluginState | null = null;
+// The verified bundle is the SAME across docs (it's the user's entitlement, not per-doc), and the
+// signed-bundle resolve is expensive (network entitlement check + re-download + signature verify).
+// Resolve it ONCE per process and reuse it on every navigation — only the per-doc hub (`mod.start`)
+// restarts. Cleared only on an explicit reset (re-login/relaunch handles a changed entitlement).
+let resolvedBundle: { mod: MainEntry; rendererPath: string } | null = null;
 
 /** Publish/clear the plugin session on the doc's status sidecar so the CLI (a separate process) can
  *  hand it back to the plugin and gate the agent through it. Merge so we never drop the doc's other
@@ -81,14 +86,18 @@ export function pluginInfo(): { session: string; rendererUrl: string } | null {
 export async function startDesktopPlugin(file: string, getToken: () => Promise<string | null>): Promise<void> {
   await stopDesktopPlugin();
   try {
-    const token = await getToken();
-    const bundle = await resolveDesktopPlugin({ apiBase: PLUGIN_HTTP, token, cacheDir: cacheDir(), publicKey: PUBLIC_KEY });
-    const mainName = bundle?.entries.main;
-    const rendererName = bundle?.entries.renderer;
-    if (!bundle || !mainName || !rendererName || !bundle.files[mainName] || !bundle.files[rendererName]) return; // not entitled / unverified
-    const mod = (await import(pathToFileURL(bundle.files[mainName]).href)) as MainEntry;
-    const started = await mod.start(file);
-    state = { file, session: started.session, rendererPath: bundle.files[rendererName], stop: () => started.stop() };
+    // Resolve + verify the bundle once; reuse it for later navigations (only the hub restarts).
+    if (!resolvedBundle) {
+      const token = await getToken();
+      const bundle = await resolveDesktopPlugin({ apiBase: PLUGIN_HTTP, token, cacheDir: cacheDir(), publicKey: PUBLIC_KEY });
+      const mainName = bundle?.entries.main;
+      const rendererName = bundle?.entries.renderer;
+      if (!bundle || !mainName || !rendererName || !bundle.files[mainName] || !bundle.files[rendererName]) return; // not entitled / unverified
+      const mod = (await import(pathToFileURL(bundle.files[mainName]).href)) as MainEntry;
+      resolvedBundle = { mod, rendererPath: bundle.files[rendererName] };
+    }
+    const started = await resolvedBundle.mod.start(file);
+    state = { file, session: started.session, rendererPath: resolvedBundle.rendererPath, stop: () => started.stop() };
     setStatusSession(file, started.session); // let the CLI gate through the plugin
     process.stderr.write(`[inplan] desktop plugin active for ${file}\n`);
   } catch (e) {

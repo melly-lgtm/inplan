@@ -299,8 +299,16 @@ async function refreshPluginAndView(file: string): Promise<void> {
   await stopDesktopPlugin();
   await startDesktopPlugin(file, pluginToken);
   if (!win || !session) return;
-  if (pluginInfo()) win.webContents.reload();
-  else win.webContents.send("doc:navigated", session.load());
+  if (pluginInfo()) {
+    // The plugin binds at editor init, so re-bootstrap the renderer. The reload resets the
+    // renderer's nav state (its onNavState subscription is fresh + main's first-load handler is
+    // a one-shot), so re-send it once the reloaded renderer is listening — otherwise the
+    // back/forward buttons we just set vanish after navigating.
+    win.webContents.once("did-finish-load", () => sendNavState());
+    win.webContents.reload();
+  } else {
+    win.webContents.send("doc:navigated", session.load());
+  }
 }
 
 /** Record the close reason once and exit, bypassing the confirm-quit dialog.
@@ -517,6 +525,9 @@ function registerIpc(): void {
       sendNavState();
     }
   });
+  // Current nav state, PULLED by the renderer when it (re)subscribes — a push on did-finish-load
+  // races React's mount/subscribe after a navigation reload, so the renderer fetches it directly.
+  ipcMain.handle("nav:get", () => ({ canBack: navIdx > 0, canForward: navIdx < navHistory.length - 1 }));
   ipcMain.handle("nav:go", (_e, dir: "back" | "forward") => {
     const target = dir === "back" ? navIdx - 1 : navIdx + 1;
     if (target < 0 || target >= navHistory.length) return;
