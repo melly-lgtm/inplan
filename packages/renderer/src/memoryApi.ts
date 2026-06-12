@@ -28,8 +28,9 @@ export interface MemoryAgent {
   suggestReload(): void;
   /** The agent relayed a human-facing note (fires onAgentMessage). */
   message(text: string): void;
-  /** Desktop-style in-window navigation to another doc (fires onNavigated). */
-  navigate(content: string, path?: string): void;
+  /** Desktop-style in-window navigation to another doc (fires onNavigated). Carries the
+   *  destination's read-only state (defaults to the session's, so a read-only session stays so). */
+  navigate(content: string, path?: string, readOnly?: boolean): void;
   /** The full control log so far (for assertions). */
   log(): Promise<LogEntry[]>;
 }
@@ -43,9 +44,13 @@ export interface MemorySession {
   isClosed(): boolean;
 }
 
-export function createMemoryApi(opts: { content: string; settings?: Settings; backButton?: boolean }): MemorySession {
+export function createMemoryApi(opts: { content: string; settings?: Settings; backButton?: boolean; readOnly?: boolean }): MemorySession {
   const store = new MemoryDocumentStore(opts.content);
   const channel = new MemoryControlChannel();
+  // Current doc identity — navigate() updates these so a later load() (e.g. on remount) reflects
+  // the navigated destination, not the original, staying consistent with the onNavigated payload.
+  let currentPath = "memory://doc";
+  let currentReadOnly = opts.readOnly === true;
   let settings: Settings = opts.settings ?? { autoResolve: true };
   let closed = false;
   const telemetryEvents: MemorySession["telemetryEvents"] = [];
@@ -69,7 +74,7 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
   const api: Api = {
     async load(): Promise<DocPayload> {
       if ((await store.getCanonical()) === null) await store.setCanonical(opts.content);
-      return { path: "memory://doc", content: await store.loadDoc() };
+      return { path: currentPath, content: await store.loadDoc(), ...(currentReadOnly ? { readOnly: true } : {}) };
     },
     async save(content: string, options: SaveOptions): Promise<void> {
       if (options.kind === "backup") {
@@ -167,10 +172,12 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
       void channel.append({ actor: "agent", type: LogEventType.AgentMessage, payload: { text }, ts });
       for (const cb of messages) cb({ text, ts });
     },
-    navigate(content: string, path = "memory://doc2") {
+    navigate(content: string, path = "memory://doc2", readOnly = opts.readOnly === true) {
       void store.saveDoc(content);
       void store.setCanonical(content);
-      for (const cb of navigated) cb({ path, content });
+      currentPath = path;
+      currentReadOnly = readOnly;
+      for (const cb of navigated) cb({ path, content, ...(readOnly ? { readOnly: true } : {}) });
     },
     async log(): Promise<LogEntry[]> {
       return (await channel.readSince(0)).entries;

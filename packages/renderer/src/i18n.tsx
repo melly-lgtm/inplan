@@ -219,6 +219,7 @@ export const EN: Catalog = {
   "banner.apply": "Apply",
   "banner.laterLower": "later",
   "banner.locked": "— locked while the agent works; finish handing back to act",
+  "banner.readOnly": "This document is archived — view and download only. Reactivate it to edit.",
   // find / replace bar
   "find.toggleReplace": "toggle replace",
   "find.replace": "Replace",

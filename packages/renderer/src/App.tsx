@@ -173,6 +173,10 @@ export function App(props: EditorProps = {}): JSX.Element {
   const t = useT();
   const [loaded, setLoaded] = useState(false);
   const [doc, setDoc] = useState<ParsedDocument>(EMPTY);
+  // Host-declared read-only doc (e.g. the cloud archived it over the active-doc cap): editing +
+  // turn handoff are blocked; the doc stays viewable + downloadable. Set from the load/navigate
+  // payload (per-doc, so it follows in-window navigation).
+  const [readOnly, setReadOnly] = useState(false);
   const [cadence, setCadence] = useState<Cadence>("turn");
   // Available modes: the built-in TURN plus any a plugin advertises via extraModes. The active
   // mode's descriptor drives lock/autosave/apply/Finish-turn behaviour.
@@ -295,8 +299,9 @@ export function App(props: EditorProps = {}): JSX.Element {
 
     hostApi()
       .load()
-      .then(({ content, path }) => {
+      .then(({ content, path, readOnly: ro }) => {
         docPathRef.current = path;
+        setReadOnly(!!ro);
         const parsed = parse(content);
         // With an external comment store (plugin) comments are owned by the store, not the
         // serialized body — source them from the store; its observer keeps them in sync.
@@ -349,12 +354,13 @@ export function App(props: EditorProps = {}): JSX.Element {
       hostApi().onAgentMessage?.((msg) => setAgentMessages((prev) => [...prev, msg])),
       // Desktop only: the window followed a link to another doc — reset to it (a fresh
       // load), clearing any in-flight proposal/turn state, then re-show a parked proposal.
-      hostApi().onNavigated?.(({ content, path }) => {
+      hostApi().onNavigated?.(({ content, path, readOnly: ro }) => {
         // Undo/redo is per-doc: stash the leaving doc's stacks so returning restores them, and load
         // the destination's own (empty on first visit). Per-doc still holds — an undo can never pull
         // another doc's content — but the history now survives navigation instead of being dropped.
         if (docPathRef.current) historyByDoc.current.set(docPathRef.current, { undo: history.current, redo: future.current });
         docPathRef.current = path;
+        setReadOnly(!!ro); // the destination doc may have its own read-only state
         const parsed = parse(content);
         const d = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
         setDoc(d);
@@ -507,7 +513,12 @@ export function App(props: EditorProps = {}): JSX.Element {
     return () => document.removeEventListener("keydown", onKey);
   }, [composer, findOpen, proposal, reviewOpen, undo, redo]);
 
-  const editingLocked = mode.locksEditor && agentThinking;
+  // The agent holds the turn (Turn mode, thinking) — this is the lock that offers "take back control".
+  const agentLocked = mode.locksEditor && agentThinking;
+  // Any reason editing is blocked: the agent's turn, OR a host-declared read-only doc. Used to gate
+  // all mutation (body edits, comments, accept/apply, finish turn). Read-only is NOT agent-turn, so
+  // it must not surface the take-back affordance (see canTakeBack below).
+  const editingLocked = agentLocked || readOnly;
 
   // Stuck-lock escape: while the editor is locked (the agent holds the turn), the
   // status bar reveals a "take back control" button on hover over "Agent is
@@ -1513,6 +1524,12 @@ export function App(props: EditorProps = {}): JSX.Element {
         </div>
       )}
 
+      {readOnly && (
+        <div className="ap-banner ap-banner--readonly" role="status">
+          {t("banner.readOnly")}
+        </div>
+      )}
+
       {proposal && !reviewOpen && (
         <div className="ap-banner">
           {t("banner.proposalPending")}{" "}
@@ -1852,7 +1869,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         dirty={dirty && serialize(doc) !== checkpoint}
         agentThinking={agentThinking}
         messages={agentMessages}
-        canTakeBack={editingLocked}
+        canTakeBack={agentLocked}
         onTakeBack={takeBackControl}
       />
     </div>
