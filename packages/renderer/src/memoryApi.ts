@@ -43,7 +43,7 @@ export interface MemorySession {
   isClosed(): boolean;
 }
 
-export function createMemoryApi(opts: { content: string; settings?: Settings; backButton?: boolean }): MemorySession {
+export function createMemoryApi(opts: { content: string; settings?: Settings; backButton?: boolean; readOnly?: boolean }): MemorySession {
   const store = new MemoryDocumentStore(opts.content);
   const channel = new MemoryControlChannel();
   let settings: Settings = opts.settings ?? { autoResolve: true };
@@ -69,7 +69,7 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
   const api: Api = {
     async load(): Promise<DocPayload> {
       if ((await store.getCanonical()) === null) await store.setCanonical(opts.content);
-      return { path: "memory://doc", content: await store.loadDoc() };
+      return { path: "memory://doc", content: await store.loadDoc(), ...(opts.readOnly ? { readOnly: true } : {}) };
     },
     async save(content: string, options: SaveOptions): Promise<void> {
       if (options.kind === "backup") {

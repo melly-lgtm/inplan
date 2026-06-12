@@ -193,6 +193,8 @@ body {
 /* banner */
 .ap-banner { background: var(--accent-soft); border-bottom: 1px solid var(--line); padding: 9px 14px; display: flex; gap: 10px; align-items: center; }
 .ap-banner-reload { background: #f6ecdd; }
+/* Archived/read-only doc notice — muted amber, no action (view + download only). */
+.ap-banner--readonly { background: #f6ecdd; color: var(--amber); font-size: 13px; }
 
 /* main layout */
 .ap-main { flex: 1; display: flex; min-height: 0; position: relative; }

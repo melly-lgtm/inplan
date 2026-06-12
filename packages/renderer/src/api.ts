@@ -66,6 +66,10 @@ export type Acceptance = "auto" | "review";
 export interface DocPayload {
   path: string;
   content: string;
+  /** When true, the editor opens read-only: the body + comments can't be edited and the turn
+   *  can't be handed off — the doc is viewable + downloadable only. Used by hosts that archive
+   *  a doc (e.g. the cloud deactivates a doc over the plan's active-doc cap). Absent = editable. */
+  readOnly?: boolean;
 }
 
 export interface SaveOptions {
