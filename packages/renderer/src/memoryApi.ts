@@ -28,8 +28,9 @@ export interface MemoryAgent {
   suggestReload(): void;
   /** The agent relayed a human-facing note (fires onAgentMessage). */
   message(text: string): void;
-  /** Desktop-style in-window navigation to another doc (fires onNavigated). */
-  navigate(content: string, path?: string): void;
+  /** Desktop-style in-window navigation to another doc (fires onNavigated). Carries the
+   *  destination's read-only state (defaults to the session's, so a read-only session stays so). */
+  navigate(content: string, path?: string, readOnly?: boolean): void;
   /** The full control log so far (for assertions). */
   log(): Promise<LogEntry[]>;
 }
@@ -167,10 +168,10 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
       void channel.append({ actor: "agent", type: LogEventType.AgentMessage, payload: { text }, ts });
       for (const cb of messages) cb({ text, ts });
     },
-    navigate(content: string, path = "memory://doc2") {
+    navigate(content: string, path = "memory://doc2", readOnly = opts.readOnly === true) {
       void store.saveDoc(content);
       void store.setCanonical(content);
-      for (const cb of navigated) cb({ path, content });
+      for (const cb of navigated) cb({ path, content, ...(readOnly ? { readOnly: true } : {}) });
     },
     async log(): Promise<LogEntry[]> {
       return (await channel.readSince(0)).entries;
