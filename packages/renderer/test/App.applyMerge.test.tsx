@@ -73,11 +73,7 @@ describe("App applyProposal comment merge (memory-backed)", () => {
     // The new comment shows up in the rail immediately, before applying.
     await waitFor(() => expect(document.body.textContent).toContain(REVIEW_NOTE));
 
-    // Accept all hunks, then Apply.
-    const acceptAll = screen.getByRole("button", { name: /accept all/i });
-    await act(async () => {
-      acceptAll.click();
-    });
+    // Default is all-accepted (the tri-state toggle reads "accept"); Apply accepts every hunk.
     const apply = screen.getByRole("button", { name: /^apply$/i });
     await act(async () => {
       apply.click();

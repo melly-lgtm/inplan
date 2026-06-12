@@ -49,7 +49,7 @@ describe("App applyProposal (collab binding path)", () => {
     });
     await waitFor(() => expect(document.body.textContent).toContain("Agent proposed changes"));
 
-    await act(async () => screen.getByRole("button", { name: /accept all/i }).click());
+    // Default is all-accepted (tri-state reads "accept"); Apply accepts every hunk.
     await act(async () => screen.getByRole("button", { name: /^apply$/i }).click());
 
     await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"));

@@ -23,6 +23,14 @@ describe("AgentIndicator", () => {
     expect(document.body.textContent).toContain("Plan 42%");
   });
 
+  it("draws the quota gauge as a green centre (connected) with the usage on the outer ring", () => {
+    render(<AgentIndicator location="cloud" model="Opus" quota={{ usedPct: 0.42, overage: false }} />);
+    const pie = screen.getByRole("button").querySelector(".ap-agent-pie") as HTMLElement;
+    // Usage lives on the conic ring; a green core child is the connected indicator.
+    expect(pie.style.background).toContain("conic-gradient");
+    expect(pie.querySelector(".ap-agent-pie-core")).toBeTruthy();
+  });
+
   it("opens the connection-policy picker and reports a change", () => {
     const onSetPolicy = vi.fn();
     render(<AgentIndicator location="cloud" model="Opus" policy="auto" onSetPolicy={onSetPolicy} />);

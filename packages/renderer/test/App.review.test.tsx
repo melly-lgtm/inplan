@@ -48,13 +48,10 @@ describe("App review flow (memory-backed)", () => {
 
     // The review bar surfaces (no adopt-race in this path).
     await waitFor(() => expect(document.body.textContent).toContain("Agent proposed changes"));
-    const acceptAll = screen.getByRole("button", { name: /accept all/i });
+    // The proposal defaults to all-accepted (the tri-state toggle reads "accept"), so Apply
+    // accepts every hunk.
+    expect(document.querySelector(".ap-tri--accept")).toBeTruthy();
     const apply = screen.getByRole("button", { name: /^apply$/i });
-
-    // Accept all hunks, then Apply.
-    await act(async () => {
-      acceptAll.click();
-    });
     await act(async () => {
       apply.click();
     });

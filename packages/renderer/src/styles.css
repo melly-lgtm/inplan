@@ -109,6 +109,17 @@ body {
 .ap-switch-input:checked ~ .ap-switch-track .ap-switch-thumb { transform: translateX(14px); }
 .ap-switch-input:focus-visible ~ .ap-switch-track { outline: 2px solid var(--accent); outline-offset: 2px; }
 .ap-switch.disabled .ap-switch-track { cursor: default; }
+/* Accept/reject variant (the per-hunk review switch + the tri-state all-control): on = green/✓
+   (accepted), off = red/✗ (rejected). The ✓/✗ glyphs sit on the track and show on the side
+   opposite the thumb (✓ left = accept side, ✗ right = reject side). */
+.ap-switch--accept .ap-switch-input:not(:checked) ~ .ap-switch-track { background: var(--danger); }
+.ap-sw-yes, .ap-sw-no { position: absolute; top: 0; height: 100%; display: flex; align-items: center; font-size: 10px; line-height: 1; color: #fbfaf6; pointer-events: none; transition: opacity 0.15s ease; }
+.ap-sw-yes { left: 5px; }
+.ap-sw-no { right: 5px; }
+.ap-switch--accept .ap-sw-yes { opacity: 0; }
+.ap-switch--accept .ap-sw-no { opacity: 1; }
+.ap-switch--accept .ap-switch-input:checked ~ .ap-switch-track .ap-sw-yes { opacity: 1; }
+.ap-switch--accept .ap-switch-input:checked ~ .ap-switch-track .ap-sw-no { opacity: 0; }
 .ap-profile-edit { gap: 6px; padding: 8px 10px 4px; }
 .ap-profile-input { font: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--bg); color: var(--fg); }
 .ap-profile-input:focus { outline: none; border-color: var(--accent); }
@@ -123,7 +134,9 @@ body {
 .ap-agent-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
 .ap-agent-local { background: #2bb673; }   /* agent on your machine */
 .ap-agent-off { background: var(--danger); } /* no agent connected */
-.ap-agent-pie { width: 13px; height: 13px; border-radius: 50%; flex: 0 0 auto; }
+.ap-agent-pie { position: relative; width: 14px; height: 14px; border-radius: 50%; flex: 0 0 auto; }
+/* Green "connected" core; only the thin outer band of .ap-agent-pie shows the usage conic. */
+.ap-agent-pie-core { position: absolute; inset: 16%; border-radius: 50%; background: var(--accent); }
 /* Anchor to the trigger's RIGHT edge (it sits on the right of the topbar) so the 220px menu opens
    leftward and stays on-screen — left:0 made it overflow off the right of the viewport, clipping the
    item labels. Mirrors .ap-profile-menu. */
@@ -446,20 +459,23 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 .ap-hunk-edit { display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line-strong); background: var(--bg); border-radius: 6px; padding: 2px; cursor: pointer; color: var(--muted); }
 .ap-hunk-edit:hover, .ap-hunk-edit.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
 .ap-hunk-edit svg { width: 13px; height: 13px; display: block; }
-/* Tri-state accept/reject-all switch: two end buttons + a thumb that sits L/centre/R. */
-.ap-tri { display: inline-flex; align-items: center; gap: 6px; }
-.ap-tri-end { font: inherit; font-size: 12px; border: 1px solid var(--line-strong); background: var(--bg); border-radius: 6px; padding: 3px 9px; cursor: pointer; color: var(--muted); }
-.ap-tri-end:disabled { opacity: 0.5; cursor: default; }
-.ap-tri-accept[aria-pressed="true"] { background: #2e9e5b; border-color: #2e9e5b; color: #fbfaf6; }
-.ap-tri-reject[aria-pressed="true"] { background: var(--danger); border-color: var(--danger); color: #fbfaf6; }
-.ap-tri-track { position: relative; width: 34px; height: 18px; border-radius: 999px; background: var(--line-strong); flex: 0 0 auto; }
-.ap-tri-thumb { position: absolute; top: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.25); transition: left 0.15s ease; }
-.ap-tri--accept .ap-tri-track { background: #2e9e5b; }
-.ap-tri--reject .ap-tri-track { background: var(--danger); }
-.ap-tri--accept .ap-tri-thumb { left: 2px; }
-.ap-tri--mixed  .ap-tri-thumb { left: 10px; }
-.ap-tri--reject .ap-tri-thumb { left: 18px; }
-.ap-tri.disabled { opacity: 0.5; }
+/* Tri-state accept/reject-all toggle — a single click-to-cycle control reusing the per-hunk
+   switch's track/thumb/glyphs (accept = thumb-right/green/✓, reject = thumb-left/red/✗,
+   mixed = centre/neutral with no glyph), so it matches the per-hunk switch exactly. */
+.ap-tri { display: inline-flex; align-items: center; border: none; background: none; padding: 0; margin: 0; cursor: pointer; }
+.ap-tri:disabled, .ap-tri.disabled { opacity: 0.5; cursor: default; }
+.ap-tri:focus-visible .ap-switch-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ap-tri--accept .ap-switch-track { background: var(--accent); }
+.ap-tri--reject .ap-switch-track { background: var(--danger); }
+.ap-tri--mixed .ap-switch-track { background: var(--line-strong); }
+.ap-tri--accept .ap-switch-thumb { transform: translateX(14px); }
+.ap-tri--reject .ap-switch-thumb { transform: translateX(0); }
+.ap-tri--mixed .ap-switch-thumb { transform: translateX(7px); }
+.ap-tri--accept .ap-sw-yes { opacity: 1; }
+.ap-tri--accept .ap-sw-no { opacity: 0; }
+.ap-tri--reject .ap-sw-yes { opacity: 0; }
+.ap-tri--reject .ap-sw-no { opacity: 1; }
+.ap-tri--mixed .ap-sw-yes, .ap-tri--mixed .ap-sw-no { opacity: 0; }
 .ap-ihunk-del { background: #fbeae6; padding: 3px 12px; }
 .ap-ihunk-del :where(p, h1, h2, h3, h4, li, blockquote) { text-decoration: line-through; }
 .ap-ihunk-add { background: #e9f3ec; padding: 3px 12px; }

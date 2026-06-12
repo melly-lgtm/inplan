@@ -14,6 +14,7 @@ export function Switch({
   disabled,
   className,
   ariaLabel,
+  intent,
 }: {
   checked: boolean;
   onChange: (value: boolean) => void;
@@ -24,9 +25,13 @@ export function Switch({
   className?: string;
   /** Falls back to `label` when it's a string. */
   ariaLabel?: string;
+  /** `"accept"` = an accept/reject toggle (the per-hunk review switch): on = green/✓
+   *  (accepted), off = red/✗ (rejected). Omit for a plain on/off settings switch. */
+  intent?: "accept";
 }): JSX.Element {
+  const accept = intent === "accept";
   return (
-    <label className={`ap-switch${disabled ? " disabled" : ""}${className ? ` ${className}` : ""}`}>
+    <label className={`ap-switch${accept ? " ap-switch--accept" : ""}${disabled ? " disabled" : ""}${className ? ` ${className}` : ""}`}>
       {label != null && <span className="ap-switch-label">{label}</span>}
       <input
         type="checkbox"
@@ -38,6 +43,8 @@ export function Switch({
         onChange={(e) => onChange(e.target.checked)}
       />
       <span className="ap-switch-track" aria-hidden="true">
+        {accept && <span className="ap-sw-yes">✓</span>}
+        {accept && <span className="ap-sw-no">✗</span>}
         <span className="ap-switch-thumb" />
       </span>
     </label>
