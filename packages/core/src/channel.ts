@@ -42,6 +42,17 @@ export interface ControlChannel {
  * proposal, autosave backups). The fs implementation reads/writes sidecar files;
  * a web implementation reads/writes rows or Storage objects.
  */
+/** Provenance for a backup checkpoint (who/why), so a history view can label it. All optional —
+ *  a store may ignore it (the file backend does) and callers may omit it. */
+export interface VersionMeta {
+  /** Who produced the snapshotted state. */
+  actor?: "user" | "agent";
+  /** Why the snapshot was taken — e.g. "turn" (agent turn end), "manual" (human save), "restore". */
+  kind?: string;
+  /** Display author of the snapshotted state (e.g. the human's email or the agent's model id). */
+  author?: string;
+}
+
 export interface DocumentStore {
   /** Read the working document. */
   loadDoc(): Promise<string>;
@@ -54,6 +65,8 @@ export interface DocumentStore {
   getProposed(): Promise<string | null>;
   setProposed(content: string): Promise<void>;
   clearProposed(): Promise<void>;
-  /** Write an autosave backup checkpoint. */
-  backup(content: string): Promise<void>;
+  /** Write an autosave backup checkpoint. `meta` (optional) records its provenance for a history
+   *  view; an implementation that keeps history should de-duplicate (skip a no-op snapshot whose
+   *  body matches the most recent one). */
+  backup(content: string, meta?: VersionMeta): Promise<void>;
 }
