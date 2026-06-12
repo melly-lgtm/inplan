@@ -7,7 +7,7 @@ import { Onboarding, type OnboardingSignals } from "../src/Onboarding";
 
 afterEach(cleanup);
 
-const NONE: OnboardingSignals = { inline: 0, doc: 0, answered: 0 };
+const NONE: OnboardingSignals = { inline: 0, doc: 0, answered: 0, panes: 1, sourceEdits: 0 };
 const nextBtn = () => screen.getByRole("button", { name: /^next$/i }) as HTMLButtonElement;
 const next = () => fireEvent.click(nextBtn());
 
@@ -61,7 +61,7 @@ describe("Onboarding", () => {
 
   it("reaches the finish step by satisfying each gate, then Open my plan finishes", () => {
     const onFinish = vi.fn();
-    let sig: OnboardingSignals = { inline: 0, doc: 0, answered: 0 };
+    let sig: OnboardingSignals = { inline: 0, doc: 0, answered: 0, panes: 1, sourceEdits: 0 };
     const { rerender } = render(<Onboarding signals={sig} onFinish={onFinish} />);
     // Reassign a FRESH object each bump — the step's baseline holds the object captured
     // on entry, so mutating in place would move the baseline with it.
@@ -77,6 +77,20 @@ describe("Onboarding", () => {
     bump("doc");
     next(); // → answer (gated)
     bump("answered");
+    next(); // → layout (gated on a pane change)
+    expect(screen.getByText(/arrange the panes/i)).toBeTruthy();
+    expect(nextBtn().disabled).toBe(true);
+    bump("panes"); // 1 → 2 satisfies the "panes changed" gate
+    expect(nextBtn().disabled).toBe(false);
+    next(); // → source (gated on a source edit)
+    expect(screen.getByText(/edit the markdown source/i)).toBeTruthy();
+    expect(nextBtn().disabled).toBe(true);
+    bump("sourceEdits");
+    expect(nextBtn().disabled).toBe(false);
+    next(); // → movedoc (no gate)
+    expect(screen.getByText(/split off a new document/i)).toBeTruthy();
+    next(); // → finishturn (no gate)
+    expect(screen.getByText(/hand the turn back/i)).toBeTruthy();
     next(); // → finish (no gate)
     fireEvent.click(screen.getByRole("button", { name: /open my plan/i }));
     expect(onFinish).toHaveBeenCalledOnce();

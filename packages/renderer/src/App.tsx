@@ -183,6 +183,9 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [agentMode, setAgentMode] = useState<"planning" | "implementation">("planning"); // default: planning loop
   const [telemetry, setTelemetry] = useState(false); // opt-in anonymous usage analytics — default OFF
   const [panes, setPanes] = useState<1 | 2 | 3>(2);
+  // Counts source-pane edits during the first-run tour (gates its "edit the source" step). Only
+  // bumped while `props.onboarding` is set, so normal editing pays nothing for it.
+  const [onboardSourceEdits, setOnboardSourceEdits] = useState(0);
   const [rightTab, setRightTab] = useState<"comments" | "source">("comments");
   const [srcW, setSrcW] = useState(380); // source pane width (px) — drag-resizable
   const [cmtW, setCmtW] = useState(380); // comments pane width (px) — drag-resizable
@@ -1330,8 +1333,10 @@ export function App(props: EditorProps = {}): JSX.Element {
       inline: doc.comments.filter(isSpanComment).length,
       doc: doc.comments.filter(isDocComment).length,
       answered: doc.comments.filter((c) => c.selected !== undefined).length,
+      panes,
+      sourceEdits: onboardSourceEdits,
     }),
-    [doc.comments],
+    [doc.comments, panes, onboardSourceEdits],
   );
 
   if (!loaded) return <div className="ap-loading">{t("app.loading")}</div>;
@@ -1568,7 +1573,14 @@ export function App(props: EditorProps = {}): JSX.Element {
       )}
 
       {props.onboarding && props.onFinishOnboarding && (
-        <Onboarding signals={onboardingSignals} onFinish={props.onFinishOnboarding} onActiveStep={(id) => setForceSettingsOpen(id === "settings")} />
+        <Onboarding
+          signals={onboardingSignals}
+          onFinish={props.onFinishOnboarding}
+          onActiveStep={(id) => {
+            setForceSettingsOpen(id === "settings");
+            if (id === "source") setPanes(3); // reveal the source pane so the user can edit it
+          }}
+        />
       )}
 
       {signInUrl && (
@@ -1722,7 +1734,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         {showSource && (
           <>
             <VSplitter width={srcW} setWidth={setSrcW} />
-          <section className="ap-pane" style={{ width: srcW }}>
+          <section className="ap-pane" style={{ width: srcW }} data-onboard="source">
             {panes === 2 && <PaneTabs tab={rightTab} onTab={setRightTab} />}
             {proposal && reviewOpen ? (
               <DiffSource segs={editedSegs} accepted={accepted} focused={reviewCursor} onToggle={toggleHunk} />
@@ -1741,6 +1753,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                   // binding → ytext → CodeMirror, racing the comment the same action just added; the
                   // stale-ref form dropped that comment from the rail until the next store re-read.)
                   setDoc((d) => ({ ...d, body }));
+                  if (props.onboarding) setOnboardSourceEdits((n) => n + 1); // satisfies the tour's "edit the source" step
                   // Dirty tracks the file-backed editor's unsaved state against savedRef. Skip it ONLY
                   // when the BODY is externally owned — i.e. a binding with setText persists it (then
                   // savedRef isn't advanced, so recomputing here would re-flag "unsaved" on every
@@ -1867,6 +1880,11 @@ export function AppRoot(): JSX.Element {
     // Surface the host's extra modes (e.g. the cloud's instant mode) during the tour too, so the
     // mode switch the user will see in the real editor isn't mysteriously absent in the tutorial.
     sample.extraModes = real?.extraModes;
+    // Show the user's REAL login status (+ live agent presence) in the tour's profile menu — the
+    // sample only overrides the *document* api, so identity should still come from the installed
+    // host. The web host merges its profile controller via setHostApi, so read it through
+    // realHostApi() (which prefers the installed base) rather than window.api.
+    sample.profile = realHostApi().profile;
     setApiOverride(sample);
   }, []);
 
@@ -2029,7 +2047,7 @@ function TopBar(props: {
           ))}
         </div>
       )}
-      <div className="ap-seg" role="group" aria-label="panes">
+      <div className="ap-seg" role="group" aria-label="panes" data-onboard="panes">
         {([1, 2, 3] as const).map((n) => (
           <button
             key={n}
@@ -2096,6 +2114,7 @@ function TopBar(props: {
         {resolveMode(cadence, props.modes).showFinishTurn && (
           <button
             className="ap-iconbtn"
+            data-onboard="finishturn"
             onClick={props.onFinishTurn}
             disabled={props.locked || noAgent}
             title={noAgentTitle ?? t("topbar.finishTurnTitle")}

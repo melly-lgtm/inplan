@@ -15,6 +15,8 @@ export interface OnboardingSignals {
   inline: number; // span (line) comments on the doc
   doc: number; // document-level comments
   answered: number; // comments carrying the human's `selected` answer
+  panes: number; // current pane count (changing it satisfies the layout step)
+  sourceEdits: number; // edits typed into the source pane
 }
 
 type Gate = (now: OnboardingSignals, base: OnboardingSignals) => boolean;
@@ -33,6 +35,13 @@ const STEPS: Step[] = [
   { id: "inline", target: '[data-onboard="preview"]', gate: (n, b) => n.inline > b.inline },
   { id: "doc", target: '[data-onboard="preview"]', gate: (n, b) => n.doc > b.doc },
   { id: "answer", target: '[data-onboard="comments"]', gate: (n, b) => n.answered > b.answered },
+  { id: "layout", target: '[data-onboard="panes"]', gate: (n, b) => n.panes !== b.panes },
+  { id: "source", target: '[data-onboard="source"]', gate: (n, b) => n.sourceEdits > b.sourceEdits },
+  // The last two are informational (no gate): triggering them for real would navigate the tour
+  // off the throwaway sample (Move to New Doc) or hand the turn to an agent that isn't there
+  // (Finish turn), so we spotlight + explain them rather than force the action.
+  { id: "movedoc", target: '[data-onboard="preview"]', gate: null },
+  { id: "finishturn", target: '[data-onboard="finishturn"]', gate: null },
   { id: "finish", target: null, gate: null },
 ];
 
