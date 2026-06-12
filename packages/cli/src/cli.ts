@@ -73,20 +73,53 @@ type BundledApp =
   | { appMain: null } // no bundled app (running from source/dev)
   | { appMain: string; error: string }; // app present, but its Electron runtime is unavailable
 
+/** Electron's binary path relative to its package's `dist/` — matches electron's own index.js
+ *  (`join(pkgDir, "dist", <name>)`). win32: electron.exe; darwin: the .app's MacOS binary. */
+function electronDistRel(platform: NodeJS.Platform): string {
+  if (platform === "win32") return "electron.exe";
+  if (platform === "darwin") return join("Electron.app", "Contents", "MacOS", "Electron");
+  return "electron";
+}
+
+/** Locate electron's binary on disk even when `path.txt` is absent. `require("electron")` reads
+ *  path.txt (written by electron's postinstall) and THROWS if it's missing — but the binary can be
+ *  present anyway (a proxy/AV blocked the download so postinstall never finished, and the user
+ *  extracted the zip by hand — a common Windows case). Probe `dist/<bin>` directly, and self-heal
+ *  by writing path.txt so the normal require works from then on. Null when there's truly no binary. */
+function electronBinaryFromDisk(reqUrl: string): string | null {
+  try {
+    const pkgDir = dirname(createRequire(reqUrl).resolve("electron/package.json"));
+    const rel = electronDistRel(process.platform);
+    const bin = join(pkgDir, "dist", rel);
+    if (!existsSync(bin)) return null;
+    try {
+      const pathFile = join(pkgDir, "path.txt");
+      if (!existsSync(pathFile)) writeFileSync(pathFile, rel); // self-heal for next time
+    } catch {
+      /* best-effort — we already have the path to return */
+    }
+    return bin;
+  } catch {
+    return null; // electron not installed at all
+  }
+}
+
 function resolveBundledApp(): BundledApp {
   const here = dirname(fileURLToPath(import.meta.url));
   const appMain = join(here, "..", "app", "main", "index.js");
   if (!existsSync(appMain)) return { appMain: null }; // source/dev — no sibling app/
+  // require("electron") returns the binary path, but THROWS ("Electron failed to install
+  // correctly") whenever path.txt is missing — even if the binary is actually on disk. So treat
+  // any failure (or a stale/nonexistent path) as inconclusive and fall back to a direct disk probe.
   try {
-    // require("electron") outside Electron returns the path to its binary — but throws
-    // ("Electron failed to install correctly") if the binary never downloaded (a blocked
-    // proxy/AV download is the usual culprit on a fresh global install).
     const electron = createRequire(import.meta.url)("electron") as unknown;
-    if (typeof electron === "string" && electron) return { electron, appMain };
-    return { appMain, error: "the electron dependency did not resolve to a runtime path" };
-  } catch (e) {
-    return { appMain, error: e instanceof Error ? e.message : String(e) };
+    if (typeof electron === "string" && electron && existsSync(electron)) return { electron, appMain };
+  } catch {
+    /* fall through to the disk probe */
   }
+  const onDisk = electronBinaryFromDisk(import.meta.url);
+  if (onDisk) return { electron: onDisk, appMain };
+  return { appMain, error: "Electron's binary isn't installed — its download was likely blocked (proxy/AV), and path.txt is missing" };
 }
 
 function spawnApp(file: string): number | null {
