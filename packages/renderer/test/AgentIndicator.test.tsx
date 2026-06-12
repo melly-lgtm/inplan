@@ -65,9 +65,13 @@ describe("AgentIndicator", () => {
   it("shows no limit warning under 80% or when overage is allowed", () => {
     const { rerender } = render(<AgentIndicator location="cloud" model="Opus" quota={{ usedPct: 0.5, overage: false }} />);
     fireEvent.click(screen.getByRole("button"));
+    expect(document.body.textContent).toContain("Plan 50%"); // menu is open
     expect(document.querySelector(".ap-agent-quota-warn")).toBeNull();
-    // Over the cap but on an overage-allowed plan → never warns/pauses.
+    // Over the cap but on an overage-allowed plan → never warns/pauses. rerender keeps the same
+    // instance (open state preserved), so the menu stays open — assert the visible quota to prove
+    // it, keeping the no-warn check meaningful (re-clicking would toggle the menu shut).
     rerender(<AgentIndicator location="cloud" model="Opus" quota={{ usedPct: 1.2, overage: true }} />);
+    expect(document.body.textContent).toContain("Plan 120%");
     expect(document.querySelector(".ap-agent-quota-warn")).toBeNull();
   });
 
