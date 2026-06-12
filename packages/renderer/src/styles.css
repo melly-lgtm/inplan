@@ -181,8 +181,8 @@ body {
 /* main layout */
 .ap-main { flex: 1; display: flex; min-height: 0; position: relative; }
 /* "Bump" handle on the preview's top-left that reveals a host side panel (e.g. the TOC). */
+.ap-sidepanel-bumps { position: absolute; top: 12px; left: 0; z-index: 20; display: flex; flex-direction: column; gap: 8px; }
 .ap-sidepanel-bump {
-  position: absolute; top: 12px; left: 0; z-index: 20;
   display: inline-flex; align-items: center; justify-content: center;
   width: 20px; height: 38px; padding: 0;
   border: 1px solid var(--line-strong); border-left: 0; border-radius: 0 9px 9px 0;

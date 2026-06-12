@@ -1620,18 +1620,17 @@ export function App(props: EditorProps = {}): JSX.Element {
       )}
 
       <div className="ap-main" style={{ zoom }}>
-        {/* Host-injected side panels (e.g. the cloud TOC): folded by default — a small "bump" handle
-            on the preview's top-left reveals the panel; it auto-hides ~0.5s after the cursor leaves
-            it (re-entering cancels the timer). Only the first panel is surfaced (today: the TOC). */}
+        {/* Host-injected side panels (e.g. the cloud TOC + version History): folded by default — a
+            stack of small "bump" handles on the preview's top-left, one per panel; clicking one
+            reveals that panel. The open panel auto-hides ~0.5s after the cursor leaves it. */}
         {sidePanels.length > 0 && !activePanel && !closingPanel && (
-          <button
-            className="ap-sidepanel-bump"
-            title={sidePanels[0]!.title}
-            aria-label={sidePanels[0]!.title}
-            onClick={() => setOpenPanel(sidePanels[0]!.id)}
-          >
-            {sidePanels[0]!.icon ?? <span className="ap-iconbtn-fallback">{sidePanels[0]!.title.slice(0, 1)}</span>}
-          </button>
+          <div className="ap-sidepanel-bumps">
+            {sidePanels.map((p) => (
+              <button key={p.id} className="ap-sidepanel-bump" title={p.title} aria-label={p.title} onClick={() => setOpenPanel(p.id)}>
+                {p.icon ?? <span className="ap-iconbtn-fallback">{p.title.slice(0, 1)}</span>}
+              </button>
+            ))}
+          </div>
         )}
         {(activePanel || closingPanel) && (
           <aside
