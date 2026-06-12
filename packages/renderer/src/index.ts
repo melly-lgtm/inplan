@@ -14,6 +14,9 @@ export { TURN_MODE, resolveMode } from "./mode";
 export type { ModeDescriptor, ModePolicy } from "./mode";
 export { renderMarkdown } from "./markdown";
 export { isInternalDocLink, resolveDocPath } from "./links";
+// Line-diff utilities — pure (no DOM/state), reused by hosts to render version-vs-current diffs.
+export { lineSegments, isChange } from "./textdiff";
+export type { DiffSegment } from "./textdiff";
 export { ProfileMenu } from "./ProfileMenu";
 export { AgentIndicator } from "./AgentIndicator";
 // The English base catalog — hosts register it (and key their own locales off it).
