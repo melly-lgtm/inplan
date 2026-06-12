@@ -180,6 +180,15 @@ describe("SupabaseControlChannel error + presence paths", () => {
     f.tables.cursors.push({ doc_id: "d", consumer_id: "agent" }); // row exists, no seq
     expect(await new SupabaseControlChannel(f.db, "d", "agent").getCursor()).toBe(0);
   });
+
+  it("append writes user_id only when attributed (omits the column otherwise)", async () => {
+    const f = makeFakeSupabase();
+    const c = new SupabaseControlChannel(f.db, "d", "agent");
+    await c.append({ actor: "user", type: "turn_ended" }, { userId: "u-42" });
+    await c.append({ actor: "agent", type: "agent_message" }); // unattributed (agent-internal)
+    expect(f.tables.events[0]).toMatchObject({ doc_id: "d", actor: "user", type: "turn_ended", user_id: "u-42" });
+    expect(f.tables.events[1]).not.toHaveProperty("user_id");
+  });
 });
 
 describe("SupabaseDocumentStore error paths", () => {

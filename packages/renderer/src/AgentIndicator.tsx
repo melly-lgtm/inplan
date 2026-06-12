@@ -95,6 +95,9 @@ export function AgentIndicator({
 
   const label = labelFor(location, model);
   const quotaText = quota ? ` · ${Math.round(quota.usedPct * 100)}%${quota.overage ? ` ${t("agent.over")}` : ""}` : "";
+  // Capped plans (no overage) warn as they approach the cap and report when turns are paused. The
+  // hard limit itself is enforced server-side — this is just the heads-up in the indicator.
+  const quotaWarn: "at" | "near" | null = quota && !quota.overage ? (quota.usedPct >= 1 ? "at" : quota.usedPct >= 0.8 ? "near" : null) : null;
   return (
     <div className="ap-agent" ref={ref}>
       <button className="ap-agent-btn" title={`${t("agent.title", { label })}${quotaText}`} aria-label={t("agent.connectionLabel", { label })} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
@@ -109,6 +112,11 @@ export function AgentIndicator({
               : t("agent.none")}
             {quota && (
               <div className="ap-agent-quota">{`${t("agent.plan", { pct: Math.round(quota.usedPct * 100) })}${quota.overage ? ` ${t("agent.overIncluded")}` : ""}`}</div>
+            )}
+            {quotaWarn && (
+              <div className={`ap-agent-quota-warn ap-agent-quota-${quotaWarn}`} role="status">
+                {t(quotaWarn === "at" ? "agent.atLimit" : "agent.nearLimit")}
+              </div>
             )}
           </div>
           {policy && onSetPolicy && (
