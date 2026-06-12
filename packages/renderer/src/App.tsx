@@ -2313,21 +2313,19 @@ function FindReplaceBar({
  *  rejected); the position is derived from the hunks. Clicking cycles accept→reject,
  *  reject→accept, and mixed→accept (i.e. any non-accepted state resolves to accept-all). */
 function TriSwitch({ state, onCycle, disabled }: { state: "accept" | "mixed" | "reject"; onCycle: (accepted: boolean) => void; disabled?: boolean }): JSX.Element {
+  const t = useT();
   // accept → reject (false); reject/mixed → accept (true).
   const next = state !== "accept";
-  const title =
-    state === "accept"
-      ? "All changes accepted — click to reject all"
-      : state === "reject"
-        ? "All changes rejected — click to accept all"
-        : "Some changes accepted — click to accept all";
+  const title = state === "accept" ? t("banner.allAccepted") : state === "reject" ? t("banner.allRejected") : t("banner.allMixed");
   return (
     <button
       type="button"
       className={`ap-tri ap-tri--${state}${disabled ? " disabled" : ""}`}
-      role="switch"
+      // A tri-state control (accept / mixed / reject): role="checkbox" is the ARIA role that permits
+      // aria-checked="mixed" — role="switch" is binary and would mis-announce the mixed state.
+      role="checkbox"
       aria-checked={state === "mixed" ? "mixed" : state === "accept"}
-      aria-label="accept or reject all changes"
+      aria-label={t("banner.allChanges")}
       title={title}
       disabled={disabled}
       onClick={() => onCycle(next)}

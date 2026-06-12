@@ -55,7 +55,7 @@ describe("App deep review flow (memory-backed)", () => {
     await mountAndPropose();
 
     // Default is all-accepted; one click on the tri-state toggle flips it to reject-all.
-    const tri = screen.getByRole("switch", { name: /accept or reject all changes/i });
+    const tri = screen.getByRole("checkbox", { name: /accept or reject all changes/i });
     const apply = screen.getByRole("button", { name: /^apply$/i });
 
     await act(async () => {

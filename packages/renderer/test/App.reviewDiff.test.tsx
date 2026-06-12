@@ -109,7 +109,7 @@ describe("App review diff controls (memory-backed)", () => {
 
     // Default is all-accepted; one click on the tri-state toggle flips it to reject-all.
     await act(async () => {
-      fireEvent.click(screen.getByRole("switch", { name: /accept or reject all changes/i }));
+      fireEvent.click(screen.getByRole("checkbox", { name: /accept or reject all changes/i }));
     });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /^Apply$/ }));
@@ -137,7 +137,7 @@ describe("App review diff controls (memory-backed)", () => {
 
   it("the tri-state toggle cycles accept→reject→accept, and mixed→accept", async () => {
     await renderAndPropose();
-    const tri = (): HTMLElement => screen.getByRole("switch", { name: /accept or reject all changes/i });
+    const tri = (): HTMLElement => screen.getByRole("checkbox", { name: /accept or reject all changes/i });
     expect(document.querySelector(".ap-tri--accept")).toBeTruthy(); // default: all accepted
     // accept → reject (one click rejects every hunk).
     await act(async () => fireEvent.click(tri()));
