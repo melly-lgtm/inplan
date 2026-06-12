@@ -60,4 +60,22 @@ describe("App applyProposal (collab binding path)", () => {
     expect(lastWrite).not.toContain("<!--inplan"); // bare body, not the serialized doc
     expect(bound).toContain("Hello CHANGED body.");
   });
+
+  it("an external auto-accept body change is pushed to the binding (source), not just the preview", async () => {
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("Hello world."));
+
+    // The agent auto-accepts a rewrite (fires onExternalChange) — e.g. a cloud turn, or a server-side
+    // restore that emits DocumentEdited. The body must reach the binding-owned source, not just React.
+    await act(async () => {
+      agent.externalChange("# Plan\n\nEXTERNAL CHANGE applied.\n\n<!--inplan v1\n[]\n-->\n");
+    });
+
+    await waitFor(() => expect(setText).toHaveBeenCalled());
+    const lastWrite = setText.mock.calls.at(-1)![0];
+    expect(lastWrite).toContain("EXTERNAL CHANGE applied.");
+    expect(lastWrite).not.toContain("<!--inplan"); // bare body (unified)
+    expect(document.body.textContent).toContain("EXTERNAL CHANGE applied."); // preview too
+  });
 });
