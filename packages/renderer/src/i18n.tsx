@@ -156,6 +156,8 @@ export const EN: Catalog = {
   "agent.plan": "Plan {pct}%",
   "agent.overIncluded": "— over included",
   "agent.over": "(over)",
+  "agent.nearLimit": "Approaching your usage limit",
+  "agent.atLimit": "Usage limit reached — turns are paused until your plan resets or you upgrade",
   "agent.connection": "Agent connection",
   "agent.localCmdHint": "Paste this to your coding agent:",
   "agent.localCmdBody": "Collaborate with me on my inplan plan. Check the CLI with `inplan --version` (if missing, install it: `npm i -g inplan`), sign in with `inplan login`, then run `{cmd}` and work with me through the comments.",

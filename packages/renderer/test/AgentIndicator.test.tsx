@@ -48,6 +48,29 @@ describe("AgentIndicator", () => {
     expect(document.body.textContent).toContain("over included");
   });
 
+  it("warns when a capped plan approaches the limit (≥80%, under cap)", () => {
+    render(<AgentIndicator location="cloud" model="Opus" quota={{ usedPct: 0.85, overage: false }} />);
+    fireEvent.click(screen.getByRole("button"));
+    expect(document.querySelector(".ap-agent-quota-near")?.textContent).toContain("Approaching your usage limit");
+    expect(document.querySelector(".ap-agent-quota-at")).toBeNull();
+  });
+
+  it("reports a paused state when a capped plan is at/over the limit", () => {
+    render(<AgentIndicator location="cloud" model="Opus" quota={{ usedPct: 1, overage: false }} />);
+    fireEvent.click(screen.getByRole("button"));
+    expect(document.querySelector(".ap-agent-quota-at")?.textContent).toContain("Usage limit reached");
+    expect(document.querySelector(".ap-agent-quota-near")).toBeNull();
+  });
+
+  it("shows no limit warning under 80% or when overage is allowed", () => {
+    const { rerender } = render(<AgentIndicator location="cloud" model="Opus" quota={{ usedPct: 0.5, overage: false }} />);
+    fireEvent.click(screen.getByRole("button"));
+    expect(document.querySelector(".ap-agent-quota-warn")).toBeNull();
+    // Over the cap but on an overage-allowed plan → never warns/pauses.
+    rerender(<AgentIndicator location="cloud" model="Opus" quota={{ usedPct: 1.2, overage: true }} />);
+    expect(document.querySelector(".ap-agent-quota-warn")).toBeNull();
+  });
+
   it("uses the BYO-key tint when the user brings their own key", () => {
     render(<AgentIndicator location="cloud" model="Opus" byoKey quota={{ usedPct: 0.2, overage: false }} />);
     const pie = screen.getByRole("button").querySelector(".ap-agent-pie") as HTMLElement;

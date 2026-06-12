@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { ControlChannel, LogEntry, NewLogEntry, WaitToken } from "@inplan/core";
+import type { AppendOptions, ControlChannel, LogEntry, NewLogEntry, WaitToken } from "@inplan/core";
 
 /** How long an editor heartbeat counts as "present" before it is considered stale. */
 const PRESENCE_TTL_MS = 15_000;
@@ -33,10 +33,18 @@ export class SupabaseControlChannel implements ControlChannel {
     private readonly consumerId: string = "default",
   ) {}
 
-  async append(event: NewLogEntry): Promise<LogEntry> {
+  async append(event: NewLogEntry, opts?: AppendOptions): Promise<LogEntry> {
     const { data, error } = await this.db
       .from("events")
-      .insert({ doc_id: this.docId, actor: event.actor, type: event.type, payload: event.payload ?? null })
+      .insert({
+        doc_id: this.docId,
+        actor: event.actor,
+        type: event.type,
+        payload: event.payload ?? null,
+        // Only set user_id when attributed — older deployments may not have the column, and an
+        // unattributed (agent-internal) event leaves it null.
+        ...(opts?.userId ? { user_id: opts.userId } : {}),
+      })
       .select("seq, ts, actor, type, payload")
       .single();
     if (error) throw new Error(`append failed: ${error.message}`);

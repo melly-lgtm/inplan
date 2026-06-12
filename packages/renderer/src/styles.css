@@ -130,6 +130,9 @@ body {
 .ap-agent-menu { position: absolute; top: 34px; right: 0; z-index: 40; width: 220px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 8px; }
 .ap-agent-detail { font-size: 12px; padding: 2px 6px 6px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
 .ap-agent-quota { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.ap-agent-quota-warn { font-size: 11px; margin-top: 4px; line-height: 1.35; }
+.ap-agent-quota-near { color: #b7791f; }
+.ap-agent-quota-at { color: #c0392b; font-weight: 600; }
 .ap-agent-policy { display: flex; flex-direction: column; gap: 2px; }
 .ap-agent-policy-opt { display: flex; align-items: center; gap: 7px; text-align: left; border: 0; background: none; padding: 5px 6px; font: inherit; font-size: 12px; cursor: pointer; border-radius: 6px; color: var(--muted); }
 .ap-agent-policy-opt:hover { background: var(--accent-soft); }

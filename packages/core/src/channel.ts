@@ -13,6 +13,13 @@ import type { LogEntry, NewLogEntry } from "./controlLog";
 /** A unique token identifying one waiter, for the single-waiter lock. */
 export type WaitToken = string;
 
+/** Optional metadata for an {@link ControlChannel.append}. `userId` attributes the event to a
+ *  human (used by metered backends for per-user usage accounting); backends with nowhere to store
+ *  it ignore it. */
+export interface AppendOptions {
+  userId?: string;
+}
+
 /**
  * Wake signal + audit trail + single-waiter lock for one document. The fs
  * implementation wraps the JSONL log, the cursor/lock sidecars, and a file
@@ -20,8 +27,10 @@ export type WaitToken = string;
  * cursor, and a Postgres advisory lock.
  */
 export interface ControlChannel {
-  /** Append one event; resolves to the stored entry (with assigned `seq`/`ts`). */
-  append(event: NewLogEntry): Promise<LogEntry>;
+  /** Append one event; resolves to the stored entry (with assigned `seq`/`ts`). `opts.userId`
+   *  attributes the event to a human (metered backends use it for usage accounting); backends
+   *  without a place to store it ignore the option. */
+  append(event: NewLogEntry, opts?: AppendOptions): Promise<LogEntry>;
   /** Entries appended after `cursor` (a `seq`), plus the new cursor. O(new). */
   readSince(cursor: number): Promise<{ entries: LogEntry[]; cursor: number }>;
   /** Subscribe to change notifications (push). Returns an unsubscribe fn. */
