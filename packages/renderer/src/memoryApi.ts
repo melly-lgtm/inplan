@@ -47,6 +47,10 @@ export interface MemorySession {
 export function createMemoryApi(opts: { content: string; settings?: Settings; backButton?: boolean; readOnly?: boolean }): MemorySession {
   const store = new MemoryDocumentStore(opts.content);
   const channel = new MemoryControlChannel();
+  // Current doc identity — navigate() updates these so a later load() (e.g. on remount) reflects
+  // the navigated destination, not the original, staying consistent with the onNavigated payload.
+  let currentPath = "memory://doc";
+  let currentReadOnly = opts.readOnly === true;
   let settings: Settings = opts.settings ?? { autoResolve: true };
   let closed = false;
   const telemetryEvents: MemorySession["telemetryEvents"] = [];
@@ -70,7 +74,7 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
   const api: Api = {
     async load(): Promise<DocPayload> {
       if ((await store.getCanonical()) === null) await store.setCanonical(opts.content);
-      return { path: "memory://doc", content: await store.loadDoc(), ...(opts.readOnly ? { readOnly: true } : {}) };
+      return { path: currentPath, content: await store.loadDoc(), ...(currentReadOnly ? { readOnly: true } : {}) };
     },
     async save(content: string, options: SaveOptions): Promise<void> {
       if (options.kind === "backup") {
@@ -171,6 +175,8 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
     navigate(content: string, path = "memory://doc2", readOnly = opts.readOnly === true) {
       void store.saveDoc(content);
       void store.setCanonical(content);
+      currentPath = path;
+      currentReadOnly = readOnly;
       for (const cb of navigated) cb({ path, content, ...(readOnly ? { readOnly: true } : {}) });
     },
     async log(): Promise<LogEntry[]> {
