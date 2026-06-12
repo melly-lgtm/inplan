@@ -31,7 +31,7 @@ function makeFakeSupabase() {
     private wantSelect = false;
     private eqs: Array<[string, unknown]> = [];
     private gts: Array<[string, unknown]> = [];
-    private ord?: { col: string; asc: boolean };
+    private ords: Array<{ col: string; asc: boolean }> = [];
     private lim?: number;
     constructor(private table: string) {}
     insert(payload: Row | Row[]) { this.op = "insert"; this.payload = payload; return this; }
@@ -40,7 +40,7 @@ function makeFakeSupabase() {
     select(_cols?: string) { this.wantSelect = true; return this; }
     eq(col: string, val: unknown) { this.eqs.push([col, val]); return this; }
     gt(col: string, val: unknown) { this.gts.push([col, val]); return this; }
-    order(col: string, opts?: { ascending?: boolean }) { this.ord = { col, asc: opts?.ascending !== false }; return this; }
+    order(col: string, opts?: { ascending?: boolean }) { this.ords.push({ col, asc: opts?.ascending !== false }); return this; }
     limit(n: number) { this.lim = n; return this; }
     single() { const r = this.exec(); return Promise.resolve(r.error ? r : { data: (r.data as Row[])?.[0] ?? null, error: null }); }
     maybeSingle() { const r = this.exec(); return Promise.resolve({ data: (r.data as Row[])?.[0] ?? null, error: r.error }); }
@@ -72,10 +72,16 @@ function makeFakeSupabase() {
         return { data: null, error: null };
       }
       let rows = t.filter((r) => this.match(r));
-      if (this.ord) {
-        const { col, asc } = this.ord;
-        // generic compare so created_at (ISO strings) and seq (numbers) both order correctly
-        rows = [...rows].sort((a, b) => (a[col]! < b[col]! ? -1 : a[col]! > b[col]! ? 1 : 0) * (asc ? 1 : -1));
+      if (this.ords.length) {
+        // multi-column sort (priority order); generic compare so created_at (ISO strings) and
+        // numeric ids/seq both order correctly.
+        rows = [...rows].sort((a, b) => {
+          for (const { col, asc } of this.ords) {
+            const c = (a[col]! < b[col]! ? -1 : a[col]! > b[col]! ? 1 : 0) * (asc ? 1 : -1);
+            if (c) return c;
+          }
+          return 0;
+        });
       }
       if (this.lim != null) rows = rows.slice(0, this.lim);
       return { data: rows, error: null };
@@ -113,16 +119,17 @@ describe("SupabaseDocumentStore version history", () => {
     expect(f.tables.doc_versions[0]).toMatchObject({ doc_id: "d1", body: "v1", actor: "agent", kind: "turn", author: "Opus 4.8" });
   });
 
-  it("listVersions returns this doc's checkpoints newest-first, capped by limit", async () => {
+  it("listVersions returns this doc's checkpoints newest-first (id breaks created_at ties), capped by limit", async () => {
     const f = makeFakeSupabase();
     f.tables.doc_versions.push(
       { id: 1, doc_id: "d1", body: "a", created_at: "2026-01-01", actor: "user", kind: "manual", author: "me" },
       { id: 2, doc_id: "d1", body: "b", created_at: "2026-01-02", actor: "agent", kind: "turn", author: "Opus" },
+      { id: 4, doc_id: "d1", body: "b2", created_at: "2026-01-02", actor: "user", kind: "manual", author: "me" }, // same created_at as id 2
       { id: 3, doc_id: "d2", body: "c", created_at: "2026-01-03", actor: "user", kind: "manual", author: "x" },
     );
     const s = new SupabaseDocumentStore(f.db, "d1");
-    expect((await s.listVersions(10)).map((v) => v.id)).toEqual([2, 1]); // d1 only, newest-first
-    expect((await s.listVersions(1)).map((v) => v.id)).toEqual([2]); // limit honored
+    expect((await s.listVersions(10)).map((v) => v.id)).toEqual([4, 2, 1]); // d1 only; created_at desc, then id desc
+    expect((await s.listVersions(1)).map((v) => v.id)).toEqual([4]); // limit honored
   });
 
   it("getVersion returns a version's body scoped to the doc; null when absent or another doc's", async () => {

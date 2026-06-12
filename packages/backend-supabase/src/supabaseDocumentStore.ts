@@ -68,6 +68,7 @@ export class SupabaseDocumentStore implements DocumentStore {
       .select("body")
       .eq("doc_id", this.docId)
       .order("created_at", { ascending: false })
+      .order("id", { ascending: false }) // tie-break: id is monotonic, so "latest" is deterministic
       .limit(1)
       .maybeSingle();
     if ((latest as { body?: string } | null)?.body === content) return;
@@ -87,6 +88,7 @@ export class SupabaseDocumentStore implements DocumentStore {
       .select("id, created_at, actor, kind, author")
       .eq("doc_id", this.docId)
       .order("created_at", { ascending: false })
+      .order("id", { ascending: false }) // deterministic newest-first even when created_at ties
       .limit(limit);
     if (error) throw new Error(`listVersions failed: ${error.message}`);
     return (data ?? []) as VersionSummary[];
