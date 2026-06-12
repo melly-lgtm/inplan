@@ -312,6 +312,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     // can't stack ipcRenderer listeners and double-handle events.
     const subs: Array<(() => void) | void> = [
       hostApi().onExternalChange(({ content }) => {
+        const prevDoc = docRef.current;
         const parsed = parse(content);
         // Store-backed (plugin): comments are owned by the external store, not the rewritten
         // body — keep them from the store so an agent/body refresh can't blank/stale the rail.
@@ -320,6 +321,13 @@ export function App(props: EditorProps = {}): JSX.Element {
         setDoc(next);
         savedRef.current = serialize(next);
         setDirty(false);
+        // Collab: the binding owns the SOURCE pane (the controlled value is ignored once a binding is
+        // present), so an external/agent body change must also be pushed to the binding — otherwise it
+        // updates only the preview and the source stays stale (and a server edit that didn't broadcast,
+        // e.g. a version-history restore, reverts on reload). Idempotent: a no-op when a provider
+        // broadcast already delivered the body (normal auto-accept turns). File-backed editors have no
+        // binding and keep using the controlled value.
+        syncExternalDoc(next, prevDoc.comments, prevDoc.body);
         setStatus(t("msg.agentUpdated"));
       }),
       // Review-mode body changes arrive parked, as a proposal to accept/reject.
