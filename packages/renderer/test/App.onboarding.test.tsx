@@ -57,6 +57,26 @@ describe("AppRoot onboarding gate", () => {
     expect(screen.queryByText(/skip tutorial/i)).toBeNull();
   });
 
+  it("shows the real login status in the tour's profile menu (not a stub)", async () => {
+    // The sample overrides only the *document* api; identity must still come from the real host,
+    // so the tour's avatar reflects who's actually signed in.
+    const api = createMemoryApi({ content: REAL_DOC }).api;
+    const user = { name: "Real User", email: "real@inplan.test" };
+    api.profile = {
+      get: () => ({ user, actions: [], identitySource: "cloud" }),
+      subscribe: () => () => {},
+    } as unknown as typeof api.profile;
+    (window as unknown as { api: unknown }).api = api;
+
+    const { AppRoot } = await import("../src/App");
+    render(<AppRoot />);
+
+    await waitFor(() => expect(document.body.textContent).toContain("Sample Plan")); // the tour, on the sample
+    // The avatar carries the real identity (title = "Name <email>"), proving the host profile
+    // flows through the onboarding override rather than a memory-api stub.
+    expect(screen.getByTitle("Real User <real@inplan.test>")).toBeTruthy();
+  });
+
   it("surfaces the host's extra modes (e.g. the cloud's instant mode) during the tour", async () => {
     // A host that advertises a second mode (the cloud injects instant mode this way). The cadence
     // toggle only renders when more than the built-in TURN mode is available — and it must appear
