@@ -54,12 +54,14 @@ describe("App deep review flow (memory-backed)", () => {
   it('"Reject all" then Apply discards the proposal without changing the body', async () => {
     await mountAndPropose();
 
-    const rejectAll = screen.getByRole("button", { name: /reject all/i });
+    // Default is all-accepted; one click on the tri-state toggle flips it to reject-all.
+    const tri = screen.getByRole("checkbox", { name: /accept or reject all changes/i });
     const apply = screen.getByRole("button", { name: /^apply$/i });
 
     await act(async () => {
-      rejectAll.click();
+      tri.click();
     });
+    expect(document.querySelector(".ap-tri--reject")).toBeTruthy();
     await act(async () => {
       apply.click();
     });

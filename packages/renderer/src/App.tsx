@@ -1526,8 +1526,7 @@ export function App(props: EditorProps = {}): JSX.Element {
           </button>
           <TriSwitch
             state={changeCount > 0 && accepted.slice(0, changeCount).every(Boolean) ? "accept" : changeCount > 0 && accepted.slice(0, changeCount).every((v) => !v) ? "reject" : "mixed"}
-            onAccept={() => setAllAccepted(true)}
-            onReject={() => setAllAccepted(false)}
+            onCycle={(v) => setAllAccepted(v)}
             disabled={editingLocked || !changeCount}
           />
           <button className="ap-primary" disabled={editingLocked} onClick={applyReview}>
@@ -2316,24 +2315,35 @@ function FindReplaceBar({
   );
 }
 
-/** Tri-state accept/reject-all control: the thumb sits left (all accepted), centre
- *  (mixed), or right (all rejected). The two ends are the actionable targets —
- *  clicking "accept" accepts every hunk, "reject" rejects every hunk; the centre is a
- *  display-only state reached when the per-hunk switches are mixed. Bidirectional: the
- *  position is derived from the hunks, and moving it sets them all. */
-function TriSwitch({ state, onAccept, onReject, disabled }: { state: "accept" | "mixed" | "reject"; onAccept: () => void; onReject: () => void; disabled?: boolean }): JSX.Element {
+/** Tri-state accept/reject-all control — a single click-to-cycle toggle that mirrors the
+ *  per-hunk accept switch exactly (same track/thumb, accept = thumb-right/green/✓, reject =
+ *  thumb-left/red/✗). The thumb sits right (all accepted), centre (mixed), or left (all
+ *  rejected); the position is derived from the hunks. Clicking cycles accept→reject,
+ *  reject→accept, and mixed→accept (i.e. any non-accepted state resolves to accept-all). */
+function TriSwitch({ state, onCycle, disabled }: { state: "accept" | "mixed" | "reject"; onCycle: (accepted: boolean) => void; disabled?: boolean }): JSX.Element {
+  const t = useT();
+  // accept → reject (false); reject/mixed → accept (true).
+  const next = state !== "accept";
+  const title = state === "accept" ? t("banner.allAccepted") : state === "reject" ? t("banner.allRejected") : t("banner.allMixed");
   return (
-    <span className={`ap-tri ap-tri--${state}${disabled ? " disabled" : ""}`} role="group" aria-label="accept or reject all changes">
-      <button type="button" className="ap-tri-end ap-tri-accept" aria-pressed={state === "accept"} disabled={disabled} onClick={onAccept}>
-        Accept all
-      </button>
-      <span className="ap-tri-track" aria-hidden="true">
-        <span className="ap-tri-thumb" />
+    <button
+      type="button"
+      className={`ap-tri ap-tri--${state}${disabled ? " disabled" : ""}`}
+      // A tri-state control (accept / mixed / reject): role="checkbox" is the ARIA role that permits
+      // aria-checked="mixed" — role="switch" is binary and would mis-announce the mixed state.
+      role="checkbox"
+      aria-checked={state === "mixed" ? "mixed" : state === "accept"}
+      aria-label={t("banner.allChanges")}
+      title={title}
+      disabled={disabled}
+      onClick={() => onCycle(next)}
+    >
+      <span className="ap-switch-track" aria-hidden="true">
+        <span className="ap-sw-yes">✓</span>
+        <span className="ap-sw-no">✗</span>
+        <span className="ap-switch-thumb" />
       </span>
-      <button type="button" className="ap-tri-end ap-tri-reject" aria-pressed={state === "reject"} disabled={disabled} onClick={onReject}>
-        Reject all
-      </button>
-    </span>
+    </button>
   );
 }
 
@@ -2351,7 +2361,7 @@ function HunkBar({ idx, on, onToggle, onEdit, editing }: { idx: number; on: bool
         </button>
       )}
       <span className="ap-willbe">{on ? "will be accepted" : "will be rejected"}</span>
-      <Switch checked={on} onChange={(v) => onToggle(idx, v)} ariaLabel={`accept change ${idx + 1}`} />
+      <Switch checked={on} onChange={(v) => onToggle(idx, v)} ariaLabel={`accept change ${idx + 1}`} intent="accept" />
     </div>
   );
 }

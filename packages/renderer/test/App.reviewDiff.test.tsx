@@ -107,8 +107,9 @@ describe("App review diff controls (memory-backed)", () => {
   it("'Reject all' then Apply keeps the original body and discards the proposal", async () => {
     await renderAndPropose();
 
+    // Default is all-accepted; one click on the tri-state toggle flips it to reject-all.
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /^Reject all$/ }));
+      fireEvent.click(screen.getByRole("checkbox", { name: /accept or reject all changes/i }));
     });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /^Apply$/ }));
@@ -132,6 +133,24 @@ describe("App review diff controls (memory-backed)", () => {
     });
     expect(document.body.textContent).toContain("will be rejected");
     expect(document.querySelector(".ap-tri--mixed")).toBeTruthy();
+  });
+
+  it("the tri-state toggle cycles accept→reject→accept, and mixed→accept", async () => {
+    await renderAndPropose();
+    const tri = (): HTMLElement => screen.getByRole("checkbox", { name: /accept or reject all changes/i });
+    expect(document.querySelector(".ap-tri--accept")).toBeTruthy(); // default: all accepted
+    // accept → reject (one click rejects every hunk).
+    await act(async () => fireEvent.click(tri()));
+    expect(document.querySelector(".ap-tri--reject")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("will be accepted");
+    // reject → accept.
+    await act(async () => fireEvent.click(tri()));
+    expect(document.querySelector(".ap-tri--accept")).toBeTruthy();
+    // Make it mixed (reject a single hunk), then one click resolves the whole set to accept.
+    await act(async () => fireEvent.click(screen.getAllByRole("switch", { name: /accept change 1/ })[0]!));
+    expect(document.querySelector(".ap-tri--mixed")).toBeTruthy();
+    await act(async () => fireEvent.click(tri()));
+    expect(document.querySelector(".ap-tri--accept")).toBeTruthy();
   });
 
   it("the pencil edits a hunk's proposed text and Apply uses the edited text", async () => {

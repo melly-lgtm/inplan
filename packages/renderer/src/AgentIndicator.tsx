@@ -4,15 +4,18 @@ import { useEffect, useRef, useState } from "react";
 import type { AgentLocation, AgentPolicy } from "./api";
 import { useT } from "./i18n";
 
-/** Quota pie (a conic-gradient donut), like Claude's "Plan 42%". `pct` ∈ [0..1]. */
+/** Quota gauge: a solid green core (the "connected" indicator) with only the outer ring
+ *  pie-charted for usage — `color` fills `pct` of the ring, the rest is `var(--line)`.
+ *  `pct` ∈ [0..1]. The green centre stays green regardless of usage; the ring tints
+ *  orange on overage / dark blue for a BYO key (via `color`). */
 function QuotaPie({ pct, color }: { pct: number; color: string }): JSX.Element {
   const deg = Math.round(Math.max(0, Math.min(1, pct)) * 360);
   return (
-    <span
-      className="ap-agent-pie"
-      style={{ background: `conic-gradient(${color} ${deg}deg, var(--line) 0)` }}
-      aria-hidden="true"
-    />
+    // The conic ring carries usage (`color` fills `pct`, `var(--line)` the rest); the inner
+    // core disc is the green "connected" indicator and stays green regardless of usage.
+    <span className="ap-agent-pie" style={{ background: `conic-gradient(${color} ${deg}deg, var(--line) 0)` }} aria-hidden="true">
+      <span className="ap-agent-pie-core" aria-hidden="true" />
+    </span>
   );
 }
 
