@@ -1088,11 +1088,12 @@ export function App(props: EditorProps = {}): JSX.Element {
     (segs: DiffSegment[], accepted: boolean[]) => {
       if (!proposal || editingLocked) return; // can't apply while the agent holds the turn
       const body = applySegments(segs, accepted);
+      const prevDoc = docRef.current;
       // Merge comments rather than overwrite with the proposal's stale snapshot:
       // keep everything in the live doc (incl. comments the human added during
       // review) and append any agent-proposed comments not already present, so
       // accepting a proposal never discards review-time comments.
-      const live = docRef.current.comments;
+      const live = prevDoc.comments;
       const have = new Set(live.map((c) => c.id));
       const merged = [...live, ...proposal.next.comments.filter((c) => !have.has(c.id))];
       // Safety net: a span comment whose anchor link didn't survive into the
@@ -1107,15 +1108,22 @@ export function App(props: EditorProps = {}): JSX.Element {
       savedRef.current = serialized;
       setDirty(false);
       const acceptedCount = accepted.filter(Boolean).length;
-      // Decision made → persist canonical *silently* (accepting a proposal must
-      // not end your turn) and discard the parked proposal. The apply save advances the
-      // checkpoint too (keeps it in sync with savedRef so the Save dot stays accurate).
-      void hostApi().save(serialized, { kind: "apply", cadence }).then(() => setCheckpoint(serialized));
+      // Decision made → push the accepted doc to the collaborative owners (comments → store, body →
+      // the binding that owns the SOURCE pane + the shared/persisted doc). WITHOUT this, a collab
+      // accept updated only the React preview: the binding-owned source stayed stale and the change
+      // reverted on reload, because save({apply}) is a no-op in the unified-Yjs model (the server is
+      // the sole writer of documents.body, from the binding). File-backed editors have no binding, so
+      // they fall back to a silent canonical save (accepting a proposal must not end the turn).
+      if (syncExternalDoc(finalDoc, prevDoc.comments, prevDoc.body)) {
+        setCheckpoint(serialized);
+      } else {
+        void hostApi().save(serialized, { kind: "apply", cadence }).then(() => setCheckpoint(serialized));
+      }
       void hostApi().clearProposal();
       void hostApi().logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", { accepted: acceptedCount, total: accepted.length });
       setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`);
     },
-    [proposal, cadence, editingLocked],
+    [proposal, cadence, editingLocked, syncExternalDoc],
   );
 
   // --- inline review state (shared by the preview + source panes and the bar) ---
