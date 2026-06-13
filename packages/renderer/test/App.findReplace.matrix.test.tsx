@@ -218,6 +218,7 @@ describe("App find bar — match-count matrix (memory-backed)", () => {
   });
 
   it("agent is wired up by the memory session (sanity)", () => {
+    mount(DOC); // self-contained: don't rely on a prior test having set the shared `agent`
     expect(agent).toBeTruthy();
   });
 });
