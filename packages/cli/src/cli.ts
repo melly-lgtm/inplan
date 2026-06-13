@@ -28,6 +28,7 @@ import {
 import { agentAuthorFor } from "./agentAuthor";
 import { gitProvenance } from "./provenance";
 import { authedSession, clearAuth, currentUser, remoteBackend, saveAuth } from "./cliAuth";
+import { browserLogin } from "./cliLogin";
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
 import { checkForUpdate, selfUpdate, UPDATE_PKG } from "./update";
 import { runningEditorPid } from "./editorProcess";
@@ -394,27 +395,43 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
 }
 
 /**
- * Store cloud credentials for `--remote` commands. Flags win over env so a shell
- * can pre-seed the deployment (`INPLAN_SUPABASE_URL` / `_ANON_KEY`) and only the
- * per-user `--refresh` token need be passed. (The browser handoff — `inplan login`
- * opens `/cli-auth` and receives the token — is a later slice; this is the seam.)
+ * Sign in to the cloud. Two paths:
+ *  - Interactive (default): `inplan login` opens the web app's /cli-auth page in the browser
+ *    and receives the project url/anon + refresh token back over a one-shot 127.0.0.1 listener
+ *    (see cliLogin.ts). This is what a human runs.
+ *  - Non-interactive: when `--url`/`--anon`/`--refresh` (or the matching env vars) are all
+ *    supplied, store them directly — for scripts and the desktop app, which already hold a
+ *    session. Flags win over env so a shell can pre-seed the deployment and pass only `--refresh`.
+ *    The refresh token can come via `INPLAN_REFRESH_TOKEN` to keep it out of argv (where `ps`
+ *    would expose it).
  */
 async function doLogin(args: string[]): Promise<void> {
   const url = getFlag(args, "url") ?? process.env.INPLAN_SUPABASE_URL;
   const anonKey = getFlag(args, "anon") ?? process.env.INPLAN_SUPABASE_ANON_KEY;
-  // The refresh token is sensitive, so callers (e.g. the desktop app) can pass it via the
-  // environment instead of argv (where `ps` would expose it). Flag still works for manual use.
   const refreshToken = getFlag(args, "refresh") ?? process.env.INPLAN_REFRESH_TOKEN;
-  if (!url || !anonKey || !refreshToken) {
-    process.stderr.write("usage: inplan login --url <url> --anon <anon-key> --refresh <refresh-token> [--email <e>]\n");
-    process.exit(64);
-  }
   const email = getFlag(args, "email");
-  saveAuth({ url, anonKey, refreshToken, ...(email ? { email } : {}) });
-  // Capture the cloud account's identity locally so comments are authored as the
-  // signed-in user (overrides any earlier git/manual profile on explicit login).
-  await persistCloudIdentity();
-  output({ status: "logged_in", url, ...(email ? { email } : {}) });
+
+  if (url && anonKey && refreshToken) {
+    // Non-interactive: all credentials supplied → store them as-is.
+    saveAuth({ url, anonKey, refreshToken, ...(email ? { email } : {}) });
+    // Capture the cloud account's identity locally so comments are authored as the
+    // signed-in user (overrides any earlier git/manual profile on explicit login).
+    await persistCloudIdentity();
+    output({ status: "logged_in", url, ...(email ? { email } : {}) });
+    return;
+  }
+
+  // Interactive browser handoff. No partial-credential mode: anything short of the full
+  // non-interactive set above falls through to the browser, which is the intended UX.
+  try {
+    const auth = await browserLogin({ onUrl: (u) => process.stderr.write(`Opening your browser to sign in:\n  ${u}\nIf it didn't open, paste that URL into your browser.\n`) });
+    saveAuth(auth);
+    await persistCloudIdentity();
+    output({ status: "logged_in", url: auth.url, ...(auth.email ? { email: auth.email } : {}) });
+  } catch (e) {
+    process.stderr.write(`inplan login: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.exit(1);
+  }
 }
 
 /** Best-effort: write the signed-in cloud account's name/email to the local profile. */
@@ -1268,7 +1285,7 @@ async function main(): Promise<void> {
         "       inplan upload  <file> [--org <slug>] [--repo <name>] [--path <p>]   (Collaborate on Cloud)\n" +
         "       inplan promote <file> --cloud-doc <docId> [--locator org/repo/path]\n" +
         "       inplan demote  <file>\n" +
-        "       inplan login --url <url> --anon <anon-key> --refresh <refresh-token> [--email <e>]\n" +
+        "       inplan login   (opens the browser to sign in; or --url <url> --anon <key> --refresh <token> for scripts)\n" +
         "       inplan whoami | logout\n",
     );
     process.exit(64);
