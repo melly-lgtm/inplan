@@ -45,7 +45,11 @@ function openInBrowser(url: string): void {
   const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
   const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
   try {
-    spawn(cmd, args, { detached: true, stdio: "ignore" }).unref();
+    const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
+    // A missing opener (headless/CI) surfaces as an async 'error' event, not a sync throw —
+    // swallow it so it can't become an unhandled error and crash before the printed-URL fallback.
+    child.on("error", () => {});
+    child.unref();
   } catch {
     /* opener missing (headless/CI) — the printed URL is the fallback */
   }
@@ -54,7 +58,13 @@ function openInBrowser(url: string): void {
 function isHandoff(v: unknown): v is Handoff {
   if (typeof v !== "object" || v === null) return false;
   const o = v as Record<string, unknown>;
-  return typeof o.state === "string" && typeof o.url === "string" && typeof o.anon === "string" && typeof o.refresh === "string";
+  return (
+    typeof o.state === "string" &&
+    typeof o.url === "string" &&
+    typeof o.anon === "string" &&
+    typeof o.refresh === "string" &&
+    (o.email === undefined || typeof o.email === "string")
+  );
 }
 
 /**

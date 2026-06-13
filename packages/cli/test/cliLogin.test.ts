@@ -82,6 +82,21 @@ describe("browserLogin", () => {
     expect(auth.refreshToken).toBe("ok");
   });
 
+  it("rejects a non-string email (bad type guard) with 403 and keeps waiting", async () => {
+    const auth = await browserLogin({
+      timeoutMs: 5000,
+      open: (url) => {
+        const { port, state } = parse(url);
+        void (async () => {
+          const bad = await postCb(port, { state, url: "u", anon: "a", refresh: "r", email: {} });
+          expect(bad).toBe(403);
+          await postCb(port, { state, url: "u", anon: "a", refresh: "ok" });
+        })();
+      },
+    });
+    expect(auth.refreshToken).toBe("ok");
+  });
+
   it("times out when the browser never responds", async () => {
     await expect(browserLogin({ timeoutMs: 150, open: () => {} })).rejects.toThrow(/timed out/);
   });
