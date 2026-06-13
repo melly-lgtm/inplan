@@ -101,7 +101,7 @@ const api: Api = {
       ipcRenderer.on("app:confirm-quit", handler);
       return () => ipcRenderer.removeListener("app:confirm-quit", handler);
     },
-    quit: (content: string, opts: { save: boolean; startBuild: boolean }) => void ipcRenderer.invoke("app:quit", content, opts),
+    quit: (content: string, opts: { startBuild: boolean }) => void ipcRenderer.invoke("app:quit", content, opts),
   },
   onExternalChange: (cb: (payload: DocPayload) => void) => {
     const h = (_e: unknown, payload: DocPayload): void => cb(payload);

@@ -533,8 +533,8 @@ function registerIpc(): void {
   });
   // The renderer's quit dialog resolved: optionally save the latest body, record
   // whether to notify the agent the plan is ready ("completed") or just close, then exit.
-  ipcMain.handle("app:quit", (_e, content: string, opts: { save: boolean; startBuild: boolean }) => {
-    if (opts.save) session?.complete(content); // write file + canonical
+  ipcMain.handle("app:quit", (_e, content: string, opts: { startBuild: boolean }) => {
+    session?.complete(content); // always write file + canonical on quit (no manual save prompt)
     // "Switch agent to build mode" → persist agentMode so the agent's next read sees it,
     // and close as "completed" so the wait surfaces the hand-off; otherwise just close.
     if (opts.startBuild && session) session.setSettings({ ...session.getSettings(), agentMode: "implementation" });
