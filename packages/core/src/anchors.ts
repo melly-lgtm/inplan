@@ -60,5 +60,6 @@ const ANCHORED_SPAN_RE = /\[([^\]]*)\]\(#(cmt-[0-9a-z]+)\)/gi;
  *  comment AND unwraps its body anchor so no dangling link remains). Ids match case-insensitively. */
 export function unwrapAnchors(body: string, ids: Set<string>): string {
   if (ids.size === 0) return body;
-  return body.replace(ANCHORED_SPAN_RE, (full, text: string, id: string) => (ids.has(id.toLowerCase()) ? text : full));
+  const lower = new Set([...ids].map((id) => id.toLowerCase())); // normalize the input too — matching is case-insensitive
+  return body.replace(ANCHORED_SPAN_RE, (full, text: string, id: string) => (lower.has(id.toLowerCase()) ? text : full));
 }

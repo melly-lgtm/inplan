@@ -164,7 +164,20 @@ export function serializeCanonical(doc: ParsedDocument): string {
 export function docForAgent(doc: ParsedDocument): ParsedDocument {
   const memoIds = new Set(doc.comments.filter((c) => c.agent === false).map((c) => c.id));
   if (memoIds.size === 0) return doc;
-  const comments = doc.comments.filter((c) => !memoIds.has(c.id) && !(c.parentId !== undefined && memoIds.has(c.parentId)));
+  // Exclude the memo roots AND every descendant transitively (reply, reply-of-reply, …) so a deep
+  // thread under a memo can't leak into the agent's context. Iterate to a fixpoint.
+  const excluded = new Set(memoIds);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const c of doc.comments) {
+      if (c.parentId !== undefined && excluded.has(c.parentId) && !excluded.has(c.id)) {
+        excluded.add(c.id);
+        grew = true;
+      }
+    }
+  }
+  const comments = doc.comments.filter((c) => !excluded.has(c.id));
+  // Only memo roots carry a body anchor (replies don't), so unwrap memoIds.
   return { ...doc, body: unwrapAnchors(doc.body, memoIds), comments };
 }
 
