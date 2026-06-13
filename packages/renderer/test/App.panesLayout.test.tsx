@@ -9,7 +9,7 @@
 // (which carries visible text) appearing/disappearing as the layout changes.
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { forwardRef, useImperativeHandle } from "react";
+import { StrictMode, forwardRef, useImperativeHandle } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryApi, type MemoryAgent } from "../src/memoryApi";
 
@@ -109,7 +109,13 @@ describe("App panes / tabs / zoom (memory-backed)", () => {
     // hydrate-then-write effect race (which reverted prefs under StrictMode on web) is gone.
     localStorage.setItem("ap-layout", JSON.stringify({ panes: 3, zoom: 1.2, rightTab: "comments", showResolvedOrphaned: false, cadence: "turn", srcW: 380, cmtW: 380 }));
     const { App } = await import("../src/App");
-    render(<App />);
+    // Render under StrictMode — the bug was a StrictMode double-mount where the persist effect
+    // clobbered the prefs back to defaults before the read could apply. This reproduces that path.
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
     await waitFor(() => expect(document.body.textContent).toContain("Body text here."));
 
     // 3-pane straight away: both source + comments sections, no tab switcher — and never reverted to 2.
@@ -117,6 +123,10 @@ describe("App panes / tabs / zoom (memory-backed)", () => {
     expect(document.querySelector(".ap-rail")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Source" })).toBeNull(); // tabs only render for panes===2
     expect(screen.getByTitle("Reset zoom").textContent).toBe("120%");
+    // And the double-mount must NOT have overwritten the persisted prefs back to the defaults.
+    const persisted = JSON.parse(localStorage.getItem("ap-layout") ?? "{}");
+    expect(persisted.panes).toBe(3);
+    expect(persisted.zoom).toBe(1.2);
   });
 
   it("zoom in / out / reset update the indicator and never crash", async () => {

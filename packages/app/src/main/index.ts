@@ -309,6 +309,10 @@ async function refreshPluginAndView(file: string): Promise<void> {
 /** Record the close reason once and exit, bypassing the confirm-quit dialog.
  *  Used by the confirmed quit (app:quit) and internal close paths (cloud handoff). */
 function quitNow(reason: "completed" | "window_closed"): void {
+  // Always persist the latest reported edits before exiting. The interactive app:quit handler
+  // already saves, but the non-confirmable paths reach here directly (renderer still loading,
+  // crashed, or the quit-confirm timed out) — without this they'd drop the last edits on quit.
+  if (session?.hasUnsaved) session.complete(session.pending);
   if (quitFallbackTimer) {
     clearTimeout(quitFallbackTimer);
     quitFallbackTimer = null;

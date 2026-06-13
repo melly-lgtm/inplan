@@ -175,7 +175,10 @@ function CloudSignInOverlay({ url, onDismiss }: { url: string; onDismiss: () => 
  *  the prefs back to their defaults on reload. Returns {} on any parse/storage error. */
 function readLayout(): { panes?: unknown; rightTab?: unknown; zoom?: unknown; showResolvedOrphaned?: unknown; cadence?: unknown; srcW?: unknown; cmtW?: unknown } {
   try {
-    return JSON.parse(localStorage.getItem("ap-layout") ?? "{}");
+    // localStorage is user-controlled: JSON.parse("null"/"42"/"[]") all succeed but aren't usable
+    // here, and a later `.cadence`/`.panes` access on a non-object would throw on first render.
+    const parsed = JSON.parse(localStorage.getItem("ap-layout") ?? "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
   } catch {
     return {};
   }
