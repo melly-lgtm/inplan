@@ -51,6 +51,15 @@ export const IconComment = (): JSX.Element => (
     <line x1="9" y1="10" x2="15" y2="10" />
   </Glyph>
 );
+/** A lined note/memo page — the "leave a memo" side of the composer's agent toggle. */
+export const IconMemo = (): JSX.Element => (
+  <Glyph>
+    <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
+    <polyline points="14 3 14 9 20 9" />
+    <line x1="8" y1="13" x2="16" y2="13" />
+    <line x1="8" y1="17" x2="13" y2="17" />
+  </Glyph>
+);
 export const IconSave = (): JSX.Element => (
   <Glyph>
     <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />

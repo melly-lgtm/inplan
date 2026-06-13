@@ -39,6 +39,11 @@ export interface Comment {
   question?: Question;
   /** Answer replies: the chosen choice labels (length 1 for multiple choice, 0..n for multiple selection). */
   selected?: string[];
+  /** Whether this comment is addressed to the agent. Absent/true = "talk to the agent" (it feeds the
+   *  agent's context + wakes a turn); `false` = a **memo** ("leave a memo") the agent ignores — excluded
+   *  from what the agent reads ({@link docForAgent}) and never a wake event. Lets a human jot a note for
+   *  teammates (or themselves) without summoning the agent, in instant or turn mode. */
+  agent?: boolean;
 }
 
 /** A parsed document: the Markdown body plus the structured comments. */

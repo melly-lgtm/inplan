@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { Comment, ParsedDocument } from "./types";
+import { unwrapAnchors } from "./anchors";
 
 /** Opening delimiter of the comment data block. */
 export const BLOCK_OPEN = "<!--inplan";
@@ -137,7 +138,7 @@ export function orderComments(comments: Comment[]): Comment[] {
 /** Canonical field order for a serialized comment. A round-trip through a shared map loses
  *  the original key order, so the canonical projection must re-impose one or the JSON bytes
  *  differ between peers. Matches the Comment interface declaration order. */
-const COMMENT_KEY_ORDER: (keyof Comment)[] = ["id", "parentId", "anchor", "text", "author", "date", "resolved", "may_resolve", "question", "selected"];
+const COMMENT_KEY_ORDER: (keyof Comment)[] = ["id", "parentId", "anchor", "text", "author", "date", "resolved", "may_resolve", "question", "selected", "agent"];
 
 function canonicalizeComment(c: Comment): Comment {
   const out: Record<string, unknown> = {};
@@ -154,6 +155,17 @@ function canonicalizeComment(c: Comment): Comment {
  *  local .md write). */
 export function serializeCanonical(doc: ParsedDocument): string {
   return serialize({ ...doc, comments: orderComments(doc.comments).map(canonicalizeComment) });
+}
+
+/** The document as the AGENT should see it: **memo** comments (`agent === false`, "leave a memo") and
+ *  their replies are removed, and any span-memo body anchor is unwrapped so no dangling `[text](#cmt-id)`
+ *  link remains. A memo is thus excluded from the agent's context entirely. Returns `doc` unchanged when
+ *  there are no memos. The stored/human-facing doc is untouched — this is only the agent's projection. */
+export function docForAgent(doc: ParsedDocument): ParsedDocument {
+  const memoIds = new Set(doc.comments.filter((c) => c.agent === false).map((c) => c.id));
+  if (memoIds.size === 0) return doc;
+  const comments = doc.comments.filter((c) => !memoIds.has(c.id) && !(c.parentId !== undefined && memoIds.has(c.parentId)));
+  return { ...doc, body: unwrapAnchors(doc.body, memoIds), comments };
 }
 
 export class ParseError extends Error {

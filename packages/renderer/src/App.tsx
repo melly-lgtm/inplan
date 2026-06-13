@@ -782,7 +782,11 @@ export function App(props: EditorProps = {}): JSX.Element {
 
   // --- comment actions ---
   const addComment = useCallback(
-    (text: string, target: string | null, span?: SourceSpan | null, question?: Question) => {
+    (text: string, target: string | null, span?: SourceSpan | null, question?: Question, talkToAgent = true) => {
+      // `talkToAgent === false` → a memo the agent ignores: the comment carries `agent:false`, and the
+      // control event payload echoes it so the cloud agent can skip the wake (it never reacts to a memo).
+      const agent = talkToAgent ? undefined : false;
+      const memoPayload = talkToAgent ? {} : { agent: false };
       if (target) {
         // Guard against an un-anchorable or OVERLAPPING span (nested links would
         // corrupt the doc) even if the UI's disabled state was bypassed. `span` (the
@@ -792,17 +796,17 @@ export function App(props: EditorProps = {}): JSX.Element {
           setStatus(blocker === "overlap" ? t("topbar.cantOverlap") : t("msg.cantAnchor"));
           return;
         }
-        const res = addSpanComment(docRef.current, target, { text, author: userAuthorRef.current, question }, span ?? undefined);
+        const res = addSpanComment(docRef.current, target, { text, author: userAuthorRef.current, question, agent }, span ?? undefined);
         if (!res) {
           setStatus(t("msg.cantAnchor"));
           return;
         }
-        apply(res.doc, { type: "comment_created", payload: { id: res.id } });
+        apply(res.doc, { type: "comment_created", payload: { id: res.id, ...memoPayload } });
         hostApi().telemetry?.("comment_created", { kind: "span" }); // activation funnel; never the text
         setFocused(res.id);
       } else {
-        const res = addDocComment(docRef.current, { text, author: userAuthorRef.current, question });
-        apply(res.doc, { type: "comment_created", payload: { id: res.id, anchor: "doc" } });
+        const res = addDocComment(docRef.current, { text, author: userAuthorRef.current, question, agent });
+        apply(res.doc, { type: "comment_created", payload: { id: res.id, anchor: "doc", ...memoPayload } });
         hostApi().telemetry?.("comment_created", { kind: "doc" });
         setFocused(res.id);
       }
@@ -1566,8 +1570,8 @@ export function App(props: EditorProps = {}): JSX.Element {
           target={composer.target}
           pos={composer.pos}
           disabled={editingLocked}
-          onSubmit={(text) => {
-            addComment(text, composer.target, composer.span);
+          onSubmit={(text, talkToAgent) => {
+            addComment(text, composer.target, composer.span, undefined, talkToAgent);
             setComposer(null);
           }}
           onClose={() => setComposer(null)}

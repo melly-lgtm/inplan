@@ -257,6 +257,16 @@ body {
 .ap-muted { color: var(--muted); }
 .ap-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
 
+/* Composer audience switch: conversation (talk to the agent) ⇄ memo (the agent ignores it). A small
+   two-icon pill; the active side is filled with the accent, the other is muted. Margin-right pushes
+   the Comment/cancel buttons to the right. */
+.ap-agent-toggle { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface, #fff); margin-right: auto; }
+.ap-agent-opt { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 22px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--ink-faint, #a8a08c); cursor: pointer; transition: background 0.12s ease, color 0.12s ease; }
+.ap-agent-opt svg { width: 14px; height: 14px; }
+.ap-agent-opt:hover:not(:disabled):not(.active) { color: var(--accent); background: var(--accent-soft); }
+.ap-agent-opt.active { background: var(--accent); color: #fbfaf6; }
+.ap-agent-opt:disabled { opacity: 0.5; cursor: default; }
+
 textarea, input[type="text"], input[type="email"], input[type="number"], select {
   font: inherit; color: var(--fg); background: var(--bg);
   border: 1px solid var(--line-strong); border-radius: 7px; padding: 7px 9px;

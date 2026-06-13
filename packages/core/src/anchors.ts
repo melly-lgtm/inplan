@@ -51,3 +51,14 @@ export function anchorLinkCounts(body: string): Map<string, number> {
   }
   return counts;
 }
+
+/** Matches a full anchored span — `[text](#cmt-id)` — capturing the link text + the id. */
+const ANCHORED_SPAN_RE = /\[([^\]]*)\]\(#(cmt-[0-9a-z]+)\)/gi;
+
+/** Unwrap the anchor links for `ids` — `[text](#cmt-id)` → `text` — leaving every other anchor intact.
+ *  Used to hide a removed comment's span from a projection (e.g. {@link docForAgent} excludes a memo's
+ *  comment AND unwraps its body anchor so no dangling link remains). Ids match case-insensitively. */
+export function unwrapAnchors(body: string, ids: Set<string>): string {
+  if (ids.size === 0) return body;
+  return body.replace(ANCHORED_SPAN_RE, (full, text: string, id: string) => (ids.has(id.toLowerCase()) ? text : full));
+}

@@ -25,7 +25,7 @@ describe("ComposerPopover", () => {
     render(<ComposerPopover {...base} onSubmit={onSubmit} />);
     fireEvent.change(textarea(), { target: { value: "  a remark  " } });
     fireEvent.keyDown(textarea(), { key: "Enter", metaKey: true });
-    expect(onSubmit).toHaveBeenCalledWith("a remark");
+    expect(onSubmit).toHaveBeenCalledWith("a remark", true); // default audience = talk to the agent
   });
 
   it("Comment button is disabled until there's text, then submits", () => {
@@ -35,7 +35,21 @@ describe("ComposerPopover", () => {
     fireEvent.change(textarea(), { target: { value: "hi" } });
     expect(commentBtn().disabled).toBe(false);
     fireEvent.click(commentBtn());
-    expect(onSubmit).toHaveBeenCalledWith("hi");
+    expect(onSubmit).toHaveBeenCalledWith("hi", true);
+  });
+
+  it("the audience switch defaults to 'talk to the agent'; choosing 'leave a memo' submits agent=false", () => {
+    const onSubmit = vi.fn();
+    render(<ComposerPopover {...base} onSubmit={onSubmit} />);
+    const memo = screen.getByRole("radio", { name: /leave a memo/i });
+    const talk = screen.getByRole("radio", { name: /talk to the agent/i });
+    expect(talk.getAttribute("aria-checked")).toBe("true"); // conversation is the default
+    expect(memo.getAttribute("aria-checked")).toBe("false");
+    fireEvent.change(textarea(), { target: { value: "note to self" } });
+    fireEvent.click(memo); // switch to memo
+    expect(memo.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(commentBtn());
+    expect(onSubmit).toHaveBeenCalledWith("note to self", false); // memo → the agent ignores it
   });
 
   it("shows the OS-specific modifier in the placeholder, not the dual 'Cmd/Ctrl'", () => {
