@@ -14,6 +14,9 @@ export { TURN_MODE, resolveMode } from "./mode";
 export type { ModeDescriptor, ModePolicy } from "./mode";
 export { renderMarkdown } from "./markdown";
 export { isInternalDocLink, resolveDocPath } from "./links";
+// Host-binding helper: build a highest-precedence keymap with the renderer's own CodeMirror instance
+// (a host can't safely build CM extensions itself — see cmExtensions.ts).
+export { highestPrecKeymap } from "./cmExtensions";
 // Line-diff utilities — pure (no DOM/state), reused by hosts to render version-vs-current diffs.
 export { lineSegments, isChange } from "./textdiff";
 export type { DiffSegment } from "./textdiff";
