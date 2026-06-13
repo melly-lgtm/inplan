@@ -60,6 +60,11 @@ async function flushTurn() {
   await act(async () => {
     screen.getByRole("button", { name: /finish turn/i }).click();
   });
+  // The canonical save is async fire-and-forget — wait for it to land before storedComment() reads
+  // api.load(), so the assertion can't race the persistence in CI.
+  await waitFor(async () => {
+    expect(parse((await api.load()).content).comments.length).toBeGreaterThan(0);
+  });
 }
 
 /** The single comment the host persisted, re-parsed from the saved document. */

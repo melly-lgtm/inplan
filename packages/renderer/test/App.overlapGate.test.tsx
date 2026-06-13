@@ -111,8 +111,10 @@ describe("App-level addComment overlap/anchor gate (protects addSpanComment)", (
     await act(async () => void fireEvent.change(ta, { target: { value: "Anchor it to Postgres." } }));
 
     // The composer stays open across an external (agent) rewrite — submit will read the new body.
+    // Sync on the rewrite-SPECIFIC anchor (cmt-abc123 exists only post-rewrite); "here." is in both
+    // the original and rewritten body, so waiting on it could pass on stale DOM.
     await act(async () => void agent.externalChange(DOC_WITH_ANCHOR));
-    await waitFor(() => expect(document.body.textContent).toContain("here."));
+    await waitFor(() => expect(document.querySelector('[data-cmt="cmt-abc123"]')).toBeTruthy());
 
     await act(async () => void screen.getByRole("button", { name: /^comment$/i }).click());
 
