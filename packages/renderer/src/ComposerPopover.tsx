@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useT } from "./i18n";
 import { MOD_KEY } from "./platform";
+import { IconComment, IconMemo } from "./Icons";
 
 /**
  * Floating comment composer. Multi-line textarea that grows to 8 lines;
@@ -19,11 +20,14 @@ export function ComposerPopover({
   target: string | null;
   pos: { x: number; y: number };
   disabled: boolean;
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, talkToAgent: boolean) => void;
   onClose: () => void;
 }): JSX.Element {
   const t = useT();
   const [text, setText] = useState("");
+  // The comment's audience: talk to the agent (default — feeds + wakes the agent) or leave a memo
+  // (the agent ignores it). A bistate switch: conversation on the left, memo on the right.
+  const [talkToAgent, setTalkToAgent] = useState(true);
   const [p, setP] = useState(pos);
   const box = useRef<HTMLDivElement>(null);
   const ta = useRef<HTMLTextAreaElement>(null);
@@ -62,7 +66,7 @@ export function ComposerPopover({
   };
 
   const submit = () => {
-    if (text.trim()) onSubmit(text.trim());
+    if (text.trim()) onSubmit(text.trim(), talkToAgent);
   };
 
   return (
@@ -89,6 +93,33 @@ export function ComposerPopover({
         }}
       />
       <div className="ap-row">
+        {/* Audience switch: conversation (talk to the agent — default) ⇄ memo (the agent ignores it). */}
+        <span className="ap-agent-toggle" role="radiogroup" aria-label={t("composer.audience")}>
+          <button
+            type="button"
+            className={`ap-agent-opt${talkToAgent ? " active" : ""}`}
+            role="radio"
+            aria-checked={talkToAgent}
+            title={t("composer.talkToAgent")}
+            aria-label={t("composer.talkToAgent")}
+            disabled={disabled}
+            onClick={() => setTalkToAgent(true)}
+          >
+            <IconComment />
+          </button>
+          <button
+            type="button"
+            className={`ap-agent-opt${!talkToAgent ? " active" : ""}`}
+            role="radio"
+            aria-checked={!talkToAgent}
+            title={t("composer.leaveMemo")}
+            aria-label={t("composer.leaveMemo")}
+            disabled={disabled}
+            onClick={() => setTalkToAgent(false)}
+          >
+            <IconMemo />
+          </button>
+        </span>
         <button onClick={submit} disabled={disabled || !text.trim()}>
           {t("composer.comment")}
         </button>

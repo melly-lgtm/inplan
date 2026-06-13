@@ -148,6 +148,9 @@ export const EN: Catalog = {
   "composer.placeholder": "Add a comment…  ({mod}+Enter to submit)",
   "composer.comment": "Comment",
   "composer.cancel": "cancel",
+  "composer.audience": "Comment audience",
+  "composer.talkToAgent": "Talk to the agent",
+  "composer.leaveMemo": "Leave a memo",
   // agent connection indicator
   "agent.connectCloud": "Connect a cloud agent",
   "agent.waitLocal": "Wait for my local agent",
