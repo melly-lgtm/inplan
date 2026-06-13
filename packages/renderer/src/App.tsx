@@ -2041,10 +2041,12 @@ function TopBar(props: {
   const { cadence, acceptance, panes, onMode } = props;
   const profile = useProfile();
   const t = useT();
-  // In a presence-aware host (web/cloud), no attached agent ⇒ Instant + Finish-turn
-  // are disabled (there's nothing to hand the turn to). The desktop's local agent is
-  // implicit, so it isn't presence-aware and these stay enabled.
-  const noAgent = profile?.presenceAware === true && profile.agentLocation == null;
+  // In a presence-aware host (web/cloud), Instant + Finish-turn need an agent to hand the turn to.
+  // The managed cloud agent is event-driven (not a presence peer), so "available" means: the host
+  // flagged `agentAvailable` (entitled + auto policy), OR an agent is connected (`agentLocation`, e.g.
+  // a local CLI). Only when neither holds is there genuinely no agent. The desktop's local agent is
+  // implicit (not presence-aware), so these stay enabled there.
+  const noAgent = profile?.presenceAware === true && profile.agentAvailable !== true && profile.agentLocation == null;
   const noAgentTitle = noAgent ? t("topbar.noAgent") : undefined;
   return (
     <header className="ap-topbar">

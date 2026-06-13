@@ -128,12 +128,20 @@ export interface ProfileState {
   /** Host-injected menu actions, rendered in order. */
   actions: ProfileMenuItem[];
   /**
-   * True when this host derives agent attachment from live presence (the web/cloud):
-   * then a null `agentLocation` means *no agent is connected*, so the editor disables
-   * Instant mode + Finish-turn (nothing to hand the turn to). On the desktop the local
-   * agent is implicit (no presence room), so this is omitted and those stay enabled.
+   * True when this host derives agent attachment from live presence (the web/cloud).
+   * Combined with {@link agentAvailable}, this decides whether Instant mode + Finish-turn
+   * are enabled. On the desktop the local agent is implicit (no presence room), so this
+   * is omitted and those controls stay enabled.
    */
   presenceAware?: boolean;
+  /**
+   * True when an agent is *available* for this doc even if not connected as a presence peer —
+   * i.e. the managed cloud agent is entitled + the doc's policy is `auto`, OR a local agent is
+   * connected. The cloud agent is event-driven (it doesn't sit in the presence room), so a null
+   * `agentLocation` no longer means "no agent": Instant + Finish-turn enable when `agentAvailable`
+   * is true. Hosts that don't set this fall back to the `agentLocation != null` check.
+   */
+  agentAvailable?: boolean;
   /** The doc's current agent-provisioning policy. Present + `onSetAgentPolicy` ⇒ the
    *  menu-bar agent indicator renders the connection picker. */
   agentPolicy?: AgentPolicy;
