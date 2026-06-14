@@ -1132,7 +1132,7 @@ function doLogout(): void {
  * into the cloud (slice 2b). The editor's "Collaborate on Cloud" menu item shells
  * out to this.
  */
-async function doUpload(file: string, args: string[]): Promise<void> {
+export async function doUpload(file: string, args: string[]): Promise<void> {
   const s = await authedSession();
   if (!s) {
     process.stderr.write("inplan: not logged in (or session expired) — run `inplan login`\n");
@@ -1162,19 +1162,49 @@ async function doUpload(file: string, args: string[]): Promise<void> {
   const path = getFlag(args, "path") ?? prov.path;
   const title = firstHeading(body) ?? basename(path);
 
-  const { data: doc, error: de } = await s.db
-    .from("documents")
-    // Stamp the owner (M4.8 doc scope): the uploader owns the doc, so it can later be
-    // made `access=personal` (owner-only) vs the default `org` (shared). Additive —
-    // new docs stay org-shared until the owner narrows them.
-    .insert({ org_id: pick.org_id, owner_id: s.session.user.id, title, repo, path, body })
-    .select("id")
-    .single();
-  if (de || !doc) {
+  // Create through the shared create_document RPC (the single source of truth for the active-doc
+  // cap + LRU eviction) so `inplan upload` behaves identically to the web plan-list and the editor
+  // Create/Move. Without --evict-lru it is a SIDE-EFFECT-FREE probe: at the cap it returns
+  // {status:'limit', ...} and writes nothing, so the desktop can confirm before deactivating the
+  // LRU. With --evict-lru the confirmed call deactivates the LRU then inserts. The RPC stamps the
+  // owner (auth.uid()) so the uploader owns the doc (M4.8 doc scope).
+  const { data: res, error: de } = await s.db.rpc("create_document", {
+    p_org: pick.org_id,
+    p_repo: repo,
+    p_path: path,
+    p_title: title,
+    p_body: body,
+    p_draft_pending: false,
+    p_evict_lru: hasFlag(args, "evict-lru"),
+  });
+  const out0 = res as { status?: string; id?: string; limit?: number; lru_id?: string; lru_title?: string } | null;
+  if (de || !out0) {
     process.stderr.write(`inplan upload: ${de?.message ?? "could not create the cloud document"}\n`);
     process.exit(1);
   }
-  const cloudDocId = (doc as { id: string }).id;
+  // At the cap (and not confirmed): emit the limit + the LRU and stop — NOTHING was created or
+  // deactivated. The desktop parses this to confirm, then re-runs `upload <file> --evict-lru`.
+  if (out0.status === "limit") {
+    output({ status: "limit", limit: out0.limit ?? 0, lru: { id: out0.lru_id ?? "", title: out0.lru_title ?? "" } });
+    return;
+  }
+  // The doc already exists at this locator (a re-upload): adopt the existing row so the upload is
+  // idempotent — point the local status at it instead of failing.
+  let cloudDocId: string;
+  if (out0.status === "exists") {
+    const { data: ex } = await s.db.from("documents").select("id").eq("org_id", pick.org_id).eq("repo", repo).eq("path", path).maybeSingle();
+    const exId = (ex as { id?: string } | null)?.id;
+    if (!exId) {
+      process.stderr.write("inplan upload: a document already exists at this path but could not be resolved\n");
+      process.exit(1);
+    }
+    cloudDocId = exId;
+  } else if (out0.status === "created" && out0.id) {
+    cloudDocId = out0.id;
+  } else {
+    process.stderr.write("inplan upload: could not create the cloud document\n");
+    process.exit(1);
+  }
 
   const status: DocStatus = {
     location: "cloud",
@@ -1282,7 +1312,7 @@ async function main(): Promise<void> {
         '       inplan message <file> "your message"   (relay a note to the editor status bar)\n' +
         "       inplan relay [--hook <kind> | --text <s> [--activity]]   (agent-hook → editor; resolves the active doc)\n" +
         "       inplan status  <file>\n" +
-        "       inplan upload  <file> [--org <slug>] [--repo <name>] [--path <p>]   (Collaborate on Cloud)\n" +
+        "       inplan upload  <file> [--org <slug>] [--repo <name>] [--path <p>] [--evict-lru]   (Collaborate on Cloud)\n" +
         "       inplan promote <file> --cloud-doc <docId> [--locator org/repo/path]\n" +
         "       inplan demote  <file>\n" +
         "       inplan login   (opens the browser to sign in; or --url <url> --anon <key> --refresh <token> for scripts)\n" +
@@ -1423,7 +1453,11 @@ async function main(): Promise<void> {
   await waitCycle(fsBackend(file), explicitCursor, confirmed, model, gate);
 }
 
-main().catch((err) => {
-  process.stderr.write(`inplan: ${(err as Error).message}\n`);
-  process.exit(1);
-});
+// Run the CLI when executed as the entry point. Skip under the test runner, which imports this
+// module to exercise individual command handlers (e.g. doUpload) without dispatching argv.
+if (!process.env.VITEST) {
+  main().catch((err) => {
+    process.stderr.write(`inplan: ${(err as Error).message}\n`);
+    process.exit(1);
+  });
+}
