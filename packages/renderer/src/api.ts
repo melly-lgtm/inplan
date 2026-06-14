@@ -226,11 +226,20 @@ export interface NewDocController {
    *  Absent ⇒ no prompt field (desktop / free / tests). */
   draftOption?: { label: string; placeholder: string } | null;
   /** Create the doc at `path` with `content`. `status: "created"` wrote a new file; `"exists"` means
-   *  the file was already there (nothing written) so the caller can offer to link/append instead.
-   *  `linkTarget` is the relative link to embed (e.g. "./section.md"); null on a hard failure.
+   *  the file was already there (nothing written) so the caller can offer to link/append instead;
+   *  `"limit"` means the host is at its active-document cap and didn't create anything — it carries
+   *  `limit` (the cap) and `lruTitle` (the least-recently-used active doc) so the editor can offer to
+   *  deactivate that doc and retry. `linkTarget` is the relative link to embed (e.g. "./section.md").
+   *  Returns null on a hard failure.
    *  `opts.draftPrompt` (only when {@link draftOption} is offered and the user filled it): the host
-   *  seeds the new doc to be agent-drafted from this prompt instead of just the title. */
-  create(path: string, content: string, opts?: { draftPrompt?: string }): Promise<{ status: "created" | "exists"; linkTarget: string } | null>;
+   *  seeds the new doc to be agent-drafted from this prompt instead of just the title.
+   *  `opts.evictLru`: the caller confirmed the cap prompt — deactivate the LRU active doc to free a
+   *  slot, then create. Hosts without a cap ignore it. */
+  create(
+    path: string,
+    content: string,
+    opts?: { draftPrompt?: string; evictLru?: boolean },
+  ): Promise<{ status: "created" | "exists"; linkTarget: string } | { status: "limit"; limit: number; lruTitle: string } | null>;
   /** Append moved blocks (+ their comment threads) to the EXISTING doc at `path`: merges `body` after
    *  its current body and `comments` into its comment block. Resolves to the relative link target, or
    *  null on failure. Used by "Move Blocks → Append to the existing doc". */

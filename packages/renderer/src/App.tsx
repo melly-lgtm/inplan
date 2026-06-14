@@ -41,6 +41,7 @@ import { IconBack, IconForward, IconUp, IconDown, IconZoomOut, IconZoomIn, IconF
 import { RelativeTime } from "./RelativeTime";
 import { AuthorChip } from "./Avatar";
 import { QuitDialog } from "./QuitDialog";
+import { CapLimitDialog } from "./CapLimitDialog";
 import { EditorErrorBoundary } from "./EditorErrorBoundary";
 import { Onboarding, type OnboardingSignals } from "./Onboarding";
 import { ONBOARDING_SAMPLE } from "./onboardingSample";
@@ -480,6 +481,13 @@ export function App(props: EditorProps = {}): JSX.Element {
   // --- keyboard ergonomics ---
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // A read-only (deactivated) doc can't be edited or commented on — block the mutating shortcuts
+      // (undo/redo, add-comment, save) that would otherwise bypass the disabled buttons. Find (⌘F) and
+      // Escape still work so the doc stays viewable/searchable.
+      if (readOnly && (e.metaKey || e.ctrlKey) && !e.altKey && ["z", "Z", "/", "s", "S"].includes(e.key)) {
+        e.preventDefault();
+        return;
+      }
       if ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z")) {
         // While the source editor OR the inline proposal-edit textarea is focused, let the native
         // field handle typing undo.
@@ -522,7 +530,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [composer, findOpen, proposal, reviewOpen, undo, redo]);
+  }, [composer, findOpen, proposal, reviewOpen, undo, redo, readOnly]);
 
   // The agent holds the turn (Turn mode, thinking) — this is the lock that offers "take back control".
   const agentLocked = mode.locksEditor && agentThinking;
@@ -726,6 +734,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   }, []);
 
   const saveNow = useCallback(() => {
+    if (readOnly) return; // archived (read-only) docs are view/download-only — block every save path
     const content = serialize(docRef.current);
     const kind = mode.autosaveKind;
     // Checkpoint only once the save resolves, so a failed write can't be reported as saved.
@@ -735,7 +744,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       setDirty(false);
     }
     setStatus(kind === "canonical" ? "saved" : "checkpoint saved");
-  }, [cadence, mode]);
+  }, [cadence, mode, readOnly]);
   saveNowRef.current = saveNow; // keep the ⌘/Ctrl+S handler pointed at the current saveNow
 
   // Question threads whose picker holds an UNSAVED answer (reported by QuestionChips), and which of
@@ -773,6 +782,13 @@ export function App(props: EditorProps = {}): JSX.Element {
   }, [setQuestionPending]);
 
   const [quitOpen, setQuitOpen] = useState(false);
+  // At the host's active-doc cap, create() returns {status:"limit"}; we ask the user to deactivate the
+  // least-recently-used doc to make room. A promise-resolving confirm: the dialog's buttons settle it.
+  const [capConfirm, setCapConfirm] = useState<{ limit: number; lruTitle: string; resolve: (ok: boolean) => void } | null>(null);
+  const askEvictLru = useCallback(
+    (limit: number, lruTitle: string) => new Promise<boolean>((resolve) => setCapConfirm({ limit, lruTitle, resolve })),
+    [],
+  );
   const [forceSettingsOpen, setForceSettingsOpen] = useState(false); // onboarding opens the ⚙ menu on its settings step
   // Confirmed quit: the host always saves the latest content, signals the agent (if build mode),
   // then leaves.
@@ -929,11 +945,28 @@ export function App(props: EditorProps = {}): JSX.Element {
         // A draft prompt (create mode, host-offered) asks the host to agent-draft the new doc from
         // the prompt instead of just the title; the selection still links to it. Pass the 3rd arg
         // only when drafting, so the plain create call stays a 2-arg call.
-        const draftOpts = req.mode === "create" && opts.draftPrompt ? { draftPrompt: opts.draftPrompt } : null;
-        const res = draftOpts ? await api.newDoc.create(path, content, draftOpts) : await api.newDoc.create(path, content);
+        const draftOpts = req.mode === "create" && opts.draftPrompt ? { draftPrompt: opts.draftPrompt } : undefined;
+        let res = draftOpts ? await api.newDoc.create(path, content, draftOpts) : await api.newDoc.create(path, content);
+        // At the host's active-doc cap the create is a NO-OP: nothing was created and nothing
+        // deactivated — it only reports the limit + the least-recently-used doc. Ask to deactivate the
+        // LRU to make room. ONLY on confirm do we re-call with evictLru (which deactivates the LRU then
+        // creates); cancelling leaves everything untouched (no deactivation, no creation).
+        if (res && res.status === "limit") {
+          const ok = await askEvictLru(res.limit, res.lruTitle);
+          if (!ok) {
+            setStatus(t("newdoc.limitCancelled"));
+            return;
+          }
+          res = await api.newDoc.create(path, content, { ...(draftOpts ?? {}), evictLru: true });
+        }
         if (!res) {
           setStatus(t("newdoc.failed"));
           return; // keep the modal open so the user can retry / pick another path
+        }
+        if (res.status === "limit") {
+          // Guard: never read linkTarget off a limit result (shouldn't recur after evictLru).
+          setStatus(t("newdoc.failed"));
+          return;
         }
         if (res.status === "exists") {
           // Don't clobber it — surface the link/append options and wait for the user to re-confirm.
@@ -1594,6 +1627,23 @@ export function App(props: EditorProps = {}): JSX.Element {
         <QuitDialog onQuit={confirmQuit} onCancel={() => setQuitOpen(false)} />
       )}
 
+      {/* Active-doc cap reached → ask to deactivate the least-recently-used doc. Either choice settles
+          the create()'s pending promise; cancel/Escape/backdrop resolve false → no eviction, no create. */}
+      {capConfirm && (
+        <CapLimitDialog
+          limit={capConfirm.limit}
+          lruTitle={capConfirm.lruTitle}
+          onConfirm={() => {
+            capConfirm.resolve(true);
+            setCapConfirm(null);
+          }}
+          onCancel={() => {
+            capConfirm.resolve(false);
+            setCapConfirm(null);
+          }}
+        />
+      )}
+
       {newDocReq && (
         <NewDocModal
           mode={newDocReq.mode}
@@ -2144,7 +2194,7 @@ function TopBar(props: {
         </button>
       </div>
       <div className="ap-iconrow" role="group" aria-label="save and turn">
-        <button className="ap-iconbtn" onClick={props.onSave} title={props.dirty ? t("topbar.saveUnsaved") : t("topbar.save")} aria-label={t("topbar.save")}>
+        <button className="ap-iconbtn" onClick={props.onSave} disabled={props.locked} title={props.dirty ? t("topbar.saveUnsaved") : t("topbar.save")} aria-label={t("topbar.save")}>
           <IconSave />
           {props.dirty && <span className="ap-dirty" aria-hidden="true" />}
         </button>
