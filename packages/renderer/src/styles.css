@@ -356,6 +356,7 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 .ap-newdoc-path input { flex: 1; }
 .ap-newdoc-actions { display: flex; justify-content: flex-end; align-items: center; gap: 14px; margin-top: 4px; }
 .ap-quit-title { font-weight: 600; font-size: 15px; margin-bottom: 12px; }
+.ap-quit-body { font-size: 13px; line-height: 1.5; margin: 0 0 14px; color: var(--ink-soft, inherit); }
 .ap-quit-opts { display: flex; flex-direction: column; gap: 9px; margin-bottom: 16px; }
 .ap-quit-opt { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
 .ap-quit-actions { display: flex; justify-content: flex-end; gap: 10px; align-items: center; }

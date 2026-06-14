@@ -5,7 +5,7 @@
 // that can create docs; choosing one opens the modal, the host create() runs, and the selection
 // becomes a link. happy-dom can't make a real selection, so window.getSelection is mocked.
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { forwardRef, useImperativeHandle } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryApi, type MemoryAgent } from "../src/memoryApi";
@@ -70,6 +70,42 @@ describe("new-doc actions", () => {
     await waitFor(() => expect(create).toHaveBeenCalledWith("hello_world.md", expect.stringContaining("# Hello world.")));
     // The selection turned into a link to the new doc.
     await waitFor(() => expect(document.querySelector(".ap-rendered a")).toBeTruthy());
+  });
+
+  it("at the active-doc cap, confirming the prompt re-creates with evictLru and links the new doc", async () => {
+    // First create (no evictLru) reports the cap WITHOUT creating/deactivating anything; the
+    // evictLru retry succeeds.
+    create.mockImplementation(async (_p: string, _c: string, opts?: { evictLru?: boolean }) =>
+      opts?.evictLru ? { status: "created" as const, linkTarget: "hello_world.md" } : { status: "limit" as const, limit: 1, lruTitle: "Old Plan" });
+    await mountApp();
+    mockSelection("Hello world.");
+    await act(async () => void fireEvent.contextMenu(document.querySelector(".ap-rendered")!));
+    await act(async () => void screen.getByRole("menuitem", { name: /create doc/i }).click());
+    await act(async () => void (await screen.findByRole("button", { name: /^create$/i })).click());
+    // The cap prompt appears; the probe call carried no evictLru and created nothing yet.
+    const dialog = await screen.findByRole("dialog", { name: /document limit reached/i });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]![2]).toBeUndefined();
+    // Confirm → re-create with evictLru → link appears.
+    await act(async () => void within(dialog).getByRole("button", { name: /deactivate & create/i }).click());
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    expect(create.mock.calls[1]![2]).toMatchObject({ evictLru: true });
+    await waitFor(() => expect(document.querySelector(".ap-rendered a")).toBeTruthy());
+  });
+
+  it("cancelling the cap prompt creates and deactivates nothing (no evict retry)", async () => {
+    create.mockImplementation(async (_p: string, _c: string, opts?: { evictLru?: boolean }) =>
+      opts?.evictLru ? { status: "created" as const, linkTarget: "hello_world.md" } : { status: "limit" as const, limit: 1, lruTitle: "Old Plan" });
+    await mountApp();
+    mockSelection("Hello world.");
+    await act(async () => void fireEvent.contextMenu(document.querySelector(".ap-rendered")!));
+    await act(async () => void screen.getByRole("menuitem", { name: /create doc/i }).click());
+    await act(async () => void (await screen.findByRole("button", { name: /^create$/i })).click());
+    const dialog = await screen.findByRole("dialog", { name: /document limit reached/i });
+    await act(async () => void within(dialog).getByRole("button", { name: /^cancel$/i }).click());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /document limit reached/i })).toBeNull());
+    expect(create).toHaveBeenCalledTimes(1); // only the side-effect-free probe; never the evict retry
+    expect(document.querySelector(".ap-rendered a")).toBeNull(); // nothing linked/created
   });
 
   it("hides the Browse button when the host has no pickPath (e.g. web)", async () => {
