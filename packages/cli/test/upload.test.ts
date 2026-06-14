@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 let rpcResult: { data: unknown; error: unknown } = { data: { status: "created", id: "doc-new" }, error: null };
 let memberships: { data: unknown; error: unknown } = { data: [{ org_id: "org-1", orgs: { slug: "acme", name: "Acme" } }], error: null };
 let existingDoc: unknown = null;
-const rpc = vi.fn(async () => rpcResult);
+const rpc = vi.fn(async (_name: string, _params: Record<string, unknown>) => rpcResult);
 
 function fakeDb() {
   const q: Record<string, unknown> = {};
