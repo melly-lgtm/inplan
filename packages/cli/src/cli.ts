@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   type ControlChannel,
   CONTROL_LOG_VERSION,
@@ -1453,9 +1453,21 @@ async function main(): Promise<void> {
   await waitCycle(fsBackend(file), explicitCursor, confirmed, model, gate);
 }
 
-// Run the CLI when executed as the entry point. Skip under the test runner, which imports this
-// module to exercise individual command handlers (e.g. doUpload) without dispatching argv.
-if (!process.env.VITEST) {
+// Run the CLI only when this module IS the invoked program — i.e. `node dist/cli.js …` or the
+// `inplan` bin. When a test imports it to exercise a command handler (e.g. doUpload), it's not the
+// entry, so main() must not dispatch argv. We compare import.meta.url to argv[1] (realpath-resolved
+// so the bin symlink matches). NB: a VITEST env check would be wrong — the CLI integration tests
+// spawn the built CLI as a child that inherits VITEST, which would then wrongly suppress main().
+function isProgramEntry(): boolean {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    return import.meta.url === pathToFileURL(argv1).href;
+  }
+}
+if (isProgramEntry()) {
   main().catch((err) => {
     process.stderr.write(`inplan: ${(err as Error).message}\n`);
     process.exit(1);
