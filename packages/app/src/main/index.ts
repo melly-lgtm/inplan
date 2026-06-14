@@ -207,16 +207,51 @@ async function readProfile(): Promise<ProfileSnapshot> {
 
 /** Collaborate on Cloud: persist the latest body, upload+promote via the CLI,
  *  open the cloud URL, and quit so the agent's next `wait` follows it to the cloud. */
+type UploadResult = {
+  status?: string;
+  cloudDocId?: string;
+  locator?: { org: string; repo: string; path: string };
+  limit?: number;
+  lru?: { id: string; title: string };
+};
+
 async function collaborateOnCloud(): Promise<void> {
   if (!session) return;
   if (session.hasUnsaved) session.complete(session.pending); // upload the latest on-disk body
-  const r = await runCli(["upload", session.paths.file]);
-  let out: { status?: string; cloudDocId?: string; locator?: { org: string; repo: string; path: string } } = {};
+  const file = session.paths.file;
+
+  // First attempt is a side-effect-free probe: if the org is at its active-doc cap the CLI returns
+  // {status:'limit', lru} WITHOUT uploading or deactivating anything, so we can confirm first.
+  let r = await runCli(["upload", file]);
+  let out: UploadResult = {};
   try {
     out = JSON.parse(r.stdout.trim() || "{}");
   } catch {
     /* fall through to the error dialog */
   }
+
+  if (out.status === "limit") {
+    // At the cap: ask before deactivating the least-recently-used doc. Cancel is a strict no-op —
+    // nothing was created or deactivated by the probe, so dismissing leaves the cloud untouched.
+    const lruTitle = out.lru?.title?.trim() || "your least-recently-used document";
+    const choice = dialog.showMessageBoxSync(win!, {
+      type: "question",
+      buttons: ["Deactivate & upload", "Cancel"],
+      defaultId: 0,
+      cancelId: 1,
+      message: "Document limit reached",
+      detail: `You’re at your ${out.limit ?? ""}-document limit. Deactivate the least-recently-used “${lruTitle}” to make room?`,
+    });
+    if (choice !== 0) return; // cancelled → no deactivation, no upload
+    // Confirmed: re-run the upload, this time evicting the LRU to free a slot.
+    r = await runCli(["upload", file, "--evict-lru"]);
+    try {
+      out = JSON.parse(r.stdout.trim() || "{}");
+    } catch {
+      out = {};
+    }
+  }
+
   if (out.status !== "uploaded" || !out.cloudDocId) {
     dialog.showMessageBoxSync(win!, { type: "error", message: "Couldn't move this plan to the cloud.", detail: r.stderr.trim() || "Are you signed in? Run `inplan login`." });
     return;
