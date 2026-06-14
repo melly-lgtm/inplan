@@ -39,7 +39,7 @@ export function CapLimitDialog({
     <div className="ap-modal-backdrop" onMouseDown={onCancel}>
       <div className="ap-modal ap-quit" role="dialog" aria-modal="true" aria-label={t("newdoc.limitTitle")} ref={ref} onMouseDown={(e) => e.stopPropagation()}>
         <div className="ap-quit-title">{t("newdoc.limitTitle")}</div>
-        <p className="ap-quit-body">{t("newdoc.limitBody", { limit: String(limit), title: lruTitle })}</p>
+        <p className="ap-quit-body">{t("newdoc.limitBody", { limit, title: lruTitle })}</p>
         <div className="ap-quit-actions">
           <button className="ap-link" onClick={onCancel}>
             {t("quit.cancel")}

@@ -53,5 +53,7 @@ describe("App read-only doc (DocPayload.readOnly)", () => {
     expect(document.querySelector(".ap-banner--readonly")).toBeNull();
     const addComment = screen.getByRole("button", { name: /comment on (text|doc)/i }) as HTMLButtonElement;
     expect(addComment.disabled).toBe(false);
+    const save = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
+    expect(save.disabled).toBe(false); // symmetric to the read-only case: editable ⇒ Save enabled
   });
 });
