@@ -6,7 +6,7 @@
 // is NOT adopted as an external change (so the diff baseline never moves — the fix
 // for the empty-diff race).
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -93,5 +93,17 @@ describe("Session.dispatchLog", () => {
     const h = handlers();
     session.dispatchLog([], h);
     expect(h.onExternalChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("Session.complete clears the unsaved flag", () => {
+  it("writes the content and resets hasUnsaved, so quitNow's flush guard can't re-write stale pending", () => {
+    session.setPending(true, "# Plan\n\nstale pending.\n");
+    expect(session.hasUnsaved).toBe(true);
+    session.complete("# Plan\n\nsaved on quit.\n");
+    // Persisted, and nothing is unsaved → a later `if (hasUnsaved) complete(pending)` won't fire.
+    expect(session.hasUnsaved).toBe(false);
+    expect(session.pending).toBe("# Plan\n\nsaved on quit.\n");
+    expect(readFileSync(join(dir, "PLAN.md"), "utf8")).toBe("# Plan\n\nsaved on quit.\n");
   });
 });

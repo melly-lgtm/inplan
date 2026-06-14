@@ -169,6 +169,21 @@ function CloudSignInOverlay({ url, onDismiss }: { url: string; onDismiss: () => 
   );
 }
 
+/** The persisted layout prefs (localStorage "ap-layout"), parsed fresh. Read synchronously inside the
+ *  layout useState initializers so the values are correct on the FIRST render — which avoids the
+ *  read-then-write effect race that, under React StrictMode's double-mount (the web host), clobbered
+ *  the prefs back to their defaults on reload. Returns {} on any parse/storage error. */
+function readLayout(): { panes?: unknown; rightTab?: unknown; zoom?: unknown; showResolvedOrphaned?: unknown; cadence?: unknown; srcW?: unknown; cmtW?: unknown } {
+  try {
+    // localStorage is user-controlled: JSON.parse("null"/"42"/"[]") all succeed but aren't usable
+    // here, and a later `.cadence`/`.panes` access on a non-object would throw on first render.
+    const parsed = JSON.parse(localStorage.getItem("ap-layout") ?? "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 export function App(props: EditorProps = {}): JSX.Element {
   const t = useT();
   const [loaded, setLoaded] = useState(false);
@@ -177,23 +192,30 @@ export function App(props: EditorProps = {}): JSX.Element {
   // turn handoff are blocked; the doc stays viewable + downloadable. Set from the load/navigate
   // payload (per-doc, so it follows in-window navigation).
   const [readOnly, setReadOnly] = useState(false);
-  const [cadence, setCadence] = useState<Cadence>("turn");
   // Available modes: the built-in TURN plus any a plugin advertises via extraModes. The active
-  // mode's descriptor drives lock/autosave/apply/Finish-turn behaviour.
+  // mode's descriptor drives lock/autosave/apply/Finish-turn behaviour. (Declared before `cadence`
+  // so the persisted-cadence initializer can validate against the modes actually available.)
   const modes = useMemo(() => [TURN_MODE, ...(hostApi().extraModes ?? [])], []);
+  const [cadence, setCadence] = useState<Cadence>(() => {
+    const c = readLayout().cadence;
+    return typeof c === "string" && modes.some((m) => m.id === c) ? (c as Cadence) : "turn";
+  });
   const mode = resolveMode(cadence, modes);
   const [acceptance, setAcceptance] = useState<Acceptance>("review"); // first-run default: agent parks edits for review
   const [autoResolve, setAutoResolve] = useState(false); // first-run default: leave threads for the human to resolve
   const [agentMode, setAgentMode] = useState<"planning" | "implementation">("planning"); // default: planning loop
   const [telemetry, setTelemetry] = useState(false); // opt-in anonymous usage analytics — default OFF
-  const [panes, setPanes] = useState<1 | 2 | 3>(2);
+  const [panes, setPanes] = useState<1 | 2 | 3>(() => {
+    const p = readLayout().panes;
+    return p === 1 || p === 2 || p === 3 ? p : 2;
+  });
   // Counts source-pane edits during the first-run tour (gates its "edit the source" step). Only
   // bumped while `props.onboarding` is set, so normal editing pays nothing for it.
   const [onboardSourceEdits, setOnboardSourceEdits] = useState(0);
-  const [rightTab, setRightTab] = useState<"comments" | "source">("comments");
-  const [srcW, setSrcW] = useState(380); // source pane width (px) — drag-resizable
-  const [cmtW, setCmtW] = useState(380); // comments pane width (px) — drag-resizable
-  const [zoom, setZoom] = useState(1);
+  const [rightTab, setRightTab] = useState<"comments" | "source">(() => (readLayout().rightTab === "source" ? "source" : "comments"));
+  const [srcW, setSrcW] = useState(() => { const w = readLayout().srcW; return typeof w === "number" ? Math.min(900, Math.max(220, w)) : 380; }); // source pane width (px) — drag-resizable
+  const [cmtW, setCmtW] = useState(() => { const w = readLayout().cmtW; return typeof w === "number" ? Math.min(900, Math.max(220, w)) : 380; }); // comments pane width (px) — drag-resizable
+  const [zoom, setZoom] = useState(() => { const z = readLayout().zoom; return typeof z === "number" ? Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z)) : 1; });
   const [dirty, setDirty] = useState(false);
   const [status, setStatus] = useState("");
   const [agentThinking, setAgentThinking] = useState(false);
@@ -211,7 +233,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const userAuthorRef = useRef(userAuthor);
   userAuthorRef.current = userAuthor;
   const [updating, setUpdating] = useState<"idle" | "running" | "done" | "failed">("idle");
-  const [showResolvedOrphaned, setShowResolvedOrphaned] = useState(false);
+  const [showResolvedOrphaned, setShowResolvedOrphaned] = useState(() => readLayout().showResolvedOrphaned === true);
   const [selectionText, setSelectionText] = useState("");
   const [composer, setComposer] = useState<{ target: string | null; pos: { x: number; y: number }; span?: SourceSpan | null } | null>(null);
   const [newDocReq, setNewDocReq] = useState<{ mode: "create" | "move"; selected: string; span: SourceSpan | null; existing?: string } | null>(null);
@@ -254,20 +276,9 @@ export function App(props: EditorProps = {}): JSX.Element {
   const saveNowRef = useRef<() => void>(() => {}); // latest saveNow (the ⌘/Ctrl+S handler calls via this)
 
   // --- persisted layout ---
-  useEffect(() => {
-    try {
-      const s = JSON.parse(localStorage.getItem("ap-layout") ?? "{}");
-      if (s.panes === 1 || s.panes === 2 || s.panes === 3) setPanes(s.panes);
-      if (s.rightTab === "comments" || s.rightTab === "source") setRightTab(s.rightTab);
-      if (typeof s.zoom === "number") setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s.zoom)));
-      if (typeof s.showResolvedOrphaned === "boolean") setShowResolvedOrphaned(s.showResolvedOrphaned);
-      if (typeof s.cadence === "string" && modes.some((m) => m.id === s.cadence)) setCadence(s.cadence);
-      if (typeof s.srcW === "number") setSrcW(Math.min(900, Math.max(220, s.srcW)));
-      if (typeof s.cmtW === "number") setCmtW(Math.min(900, Math.max(220, s.cmtW)));
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  // The values are hydrated from localStorage in their useState initializers above (readLayout),
+  // so there's no read effect to race the write below — the first render already holds the saved
+  // prefs. This effect only persists subsequent changes.
   useEffect(() => {
     localStorage.setItem("ap-layout", JSON.stringify({ panes, rightTab, zoom, showResolvedOrphaned, cadence, srcW, cmtW }));
   }, [panes, rightTab, zoom, showResolvedOrphaned, cadence, srcW, cmtW]);
@@ -763,8 +774,9 @@ export function App(props: EditorProps = {}): JSX.Element {
 
   const [quitOpen, setQuitOpen] = useState(false);
   const [forceSettingsOpen, setForceSettingsOpen] = useState(false); // onboarding opens the ⚙ menu on its settings step
-  // Confirmed quit: the host saves (if asked), signals the agent (if asked), then leaves.
-  const confirmQuit = useCallback((opts: { save: boolean; startBuild: boolean }) => {
+  // Confirmed quit: the host always saves the latest content, signals the agent (if build mode),
+  // then leaves.
+  const confirmQuit = useCallback((opts: { startBuild: boolean }) => {
     realHostApi().exit?.quit(serialize(docRef.current), opts);
     setQuitOpen(false);
   }, []);
@@ -775,7 +787,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   useEffect(() => {
     const real = realHostApi();
     return real?.exit?.onRequest?.(() => {
-      if (props.onboarding) real.exit?.quit("", { save: false, startBuild: false });
+      if (props.onboarding) real.exit?.quit("", { startBuild: false });
       else setQuitOpen(true);
     });
   }, [props.onboarding]);
@@ -1579,12 +1591,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       )}
 
       {quitOpen && (
-        <QuitDialog
-          fileName={docPathRef.current ? docPathRef.current.split(/[\\/]/).pop() || null : null}
-          dirty={dirty}
-          onQuit={confirmQuit}
-          onCancel={() => setQuitOpen(false)}
-        />
+        <QuitDialog onQuit={confirmQuit} onCancel={() => setQuitOpen(false)} />
       )}
 
       {newDocReq && (

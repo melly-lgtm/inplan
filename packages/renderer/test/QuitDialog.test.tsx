@@ -8,46 +8,31 @@ import { QuitDialog } from "../src/QuitDialog";
 afterEach(cleanup);
 
 describe("QuitDialog", () => {
-  it("shows Save (with the filename) only when dirty; the build toggle always", () => {
-    const { rerender } = render(<QuitDialog fileName="plan.plan.md" dirty onQuit={() => {}} onCancel={() => {}} />);
-    expect(screen.getByText(/Save plan\.plan\.md/)).toBeTruthy();
+  it("shows only the build-mode toggle (no Save checkbox — quit always saves)", () => {
+    render(<QuitDialog onQuit={() => {}} onCancel={() => {}} />);
     expect(screen.getByText(/Switch agent to build mode/)).toBeTruthy();
-    rerender(<QuitDialog fileName="plan.plan.md" dirty={false} onQuit={() => {}} onCancel={() => {}} />);
-    expect(screen.queryByText(/Save plan\.plan\.md/)).toBeNull();
+    expect(screen.queryByText(/^Save\b/)).toBeNull(); // the manual Save prompt is gone
+    expect(screen.getAllByRole("checkbox")).toHaveLength(1); // build mode only
   });
 
-  it("falls back to 'this document' when no filename", () => {
-    render(<QuitDialog fileName={null} dirty onQuit={() => {}} onCancel={() => {}} />);
-    expect(screen.getByText(/Save this document/)).toBeTruthy();
-  });
-
-  it("Quit defaults: Save checked when dirty, build mode off", () => {
+  it("Quit defaults: build mode off", () => {
     const onQuit = vi.fn();
-    render(<QuitDialog fileName="p.md" dirty onQuit={onQuit} onCancel={() => {}} />);
+    render(<QuitDialog onQuit={onQuit} onCancel={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /^quit$/i }));
-    expect(onQuit).toHaveBeenCalledWith({ save: true, startBuild: false });
+    expect(onQuit).toHaveBeenCalledWith({ startBuild: false });
   });
 
-  it("respects unchecking Save and opting into build mode", () => {
+  it("opting into build mode reports startBuild=true", () => {
     const onQuit = vi.fn();
-    render(<QuitDialog fileName="p.md" dirty onQuit={onQuit} onCancel={() => {}} />);
-    const [save, build] = screen.getAllByRole("checkbox");
-    fireEvent.click(save!); // → false
-    fireEvent.click(build!); // → true
+    render(<QuitDialog onQuit={onQuit} onCancel={() => {}} />);
+    fireEvent.click(screen.getByRole("checkbox")); // the sole (build) toggle → true
     fireEvent.click(screen.getByRole("button", { name: /^quit$/i }));
-    expect(onQuit).toHaveBeenCalledWith({ save: false, startBuild: true });
-  });
-
-  it("never reports save=true when not dirty (no Save box)", () => {
-    const onQuit = vi.fn();
-    render(<QuitDialog fileName="p.md" dirty={false} onQuit={onQuit} onCancel={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: /^quit$/i }));
-    expect(onQuit).toHaveBeenCalledWith({ save: false, startBuild: false });
+    expect(onQuit).toHaveBeenCalledWith({ startBuild: true });
   });
 
   it("Cancel calls onCancel", () => {
     const onCancel = vi.fn();
-    render(<QuitDialog fileName={null} dirty={false} onQuit={() => {}} onCancel={onCancel} />);
+    render(<QuitDialog onQuit={() => {}} onCancel={onCancel} />);
     fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
     expect(onCancel).toHaveBeenCalledOnce();
   });

@@ -57,19 +57,21 @@ describe("createMemoryApi", () => {
     expect(hit).toEqual({ done: true, active: true, reload: true });
   });
 
-  it("exit.quit saves (when asked), logs session_closed, and marks the session closed", async () => {
+  it("exit.quit always saves the latest content, logs session_closed (completed in build mode), and closes", async () => {
     const session = createMemoryApi({ content: "x" });
-    session.api.exit!.quit("final", { save: true, startBuild: true });
+    session.api.exit!.quit("final", { startBuild: true });
     await Promise.resolve(); // let the fire-and-forget store/log writes settle
     expect(session.isClosed()).toBe(true);
+    expect((await session.api.load()).content).toBe("final"); // saved unconditionally on quit
     const closed = (await session.agent.log()).find((e) => e.type === LogEventType.SessionClosed);
     expect((closed?.payload as { reason?: string } | undefined)?.reason).toBe("completed");
   });
 
-  it("exit.quit with startBuild=false logs window_closed instead", async () => {
+  it("exit.quit without build mode logs window_closed (and still saves)", async () => {
     const session = createMemoryApi({ content: "x" });
-    session.api.exit!.quit("x", { save: false, startBuild: false });
+    session.api.exit!.quit("kept", { startBuild: false });
     await Promise.resolve();
+    expect((await session.api.load()).content).toBe("kept");
     const closed = (await session.agent.log()).find((e) => e.type === LogEventType.SessionClosed);
     expect((closed?.payload as { reason?: string } | undefined)?.reason).toBe("window_closed");
   });

@@ -207,9 +207,9 @@ export interface ExitController {
    *  renderer can show the confirmation dialog. Absent on web (the Back button drives it).
    *  Returns a disposer to remove the listener (so it doesn't stack across remounts). */
   onRequest?(cb: () => void): (() => void) | void;
-  /** Confirmed quit: optionally save the latest content, optionally signal the agent the
-   *  plan is ready, then leave (desktop: close the window; web: return to the plan list). */
-  quit(content: string, opts: { save: boolean; startBuild: boolean }): void;
+  /** Confirmed quit: always save the latest content, optionally signal the agent the plan is
+   *  ready (build mode), then leave (desktop: close the window; web: return to the plan list). */
+  quit(content: string, opts: { startBuild: boolean }): void;
 }
 
 /** Host-specific new-doc creation for the Create Doc / Move Text to New Doc actions. The renderer

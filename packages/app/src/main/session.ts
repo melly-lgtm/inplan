@@ -124,6 +124,12 @@ export class Session {
   complete(content: string): void {
     writeFileSync(this.paths.file, content);
     writeFileSync(this.paths.canonicalPath, content);
+    // The content is now fully persisted, so nothing is unsaved. Clearing this keeps quitNow's
+    // "flush pending on exit" guard (and the close prompt) from re-writing stale pending content
+    // after a save — e.g. the interactive app:quit path saves `content`, then quitNow would
+    // otherwise see hasUnsaved still true and overwrite it with `pending`.
+    this.pendingDirty = false;
+    this.pendingContent = content;
   }
 
   /** The parked Review-mode proposal, if one is pending (the file exists ⇔ undecided). */

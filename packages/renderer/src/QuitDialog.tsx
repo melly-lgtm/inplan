@@ -4,24 +4,19 @@ import { useEffect, useRef, useState } from "react";
 import { useT } from "./i18n";
 
 /**
- * "Do you want to quit?" — shown on desktop window-close and on web "Back". Offers an
- * optional Save (only when there are unsaved changes, default-checked) and an opt-in
- * "switch agent to build mode" toggle (default off). Confirming calls back with the
- * chosen flags; the host does the work.
+ * "Do you want to quit?" — shown on desktop window-close and on web "Back". The latest content is
+ * always saved on quit (no manual save prompt), so the only choice offered is the opt-in "switch
+ * agent to build mode" toggle (default off). Confirming calls back with that flag; the host saves
+ * the latest content and leaves.
  */
 export function QuitDialog({
-  fileName,
-  dirty,
   onQuit,
   onCancel,
 }: {
-  fileName: string | null;
-  dirty: boolean;
-  onQuit: (opts: { save: boolean; startBuild: boolean }) => void;
+  onQuit: (opts: { startBuild: boolean }) => void;
   onCancel: () => void;
 }): JSX.Element {
   const t = useT();
-  const [save, setSave] = useState(true); // default checked (only rendered when dirty)
   const [build, setBuild] = useState(false); // default off — explicit hand-off to implementation
   const ref = useRef<HTMLDivElement>(null);
 
@@ -40,12 +35,6 @@ export function QuitDialog({
       <div className="ap-modal ap-quit" role="dialog" aria-modal="true" aria-label={t("quit.title")} ref={ref} onMouseDown={(e) => e.stopPropagation()}>
         <div className="ap-quit-title">{t("quit.title")}</div>
         <div className="ap-quit-opts">
-          {dirty && (
-            <label className="ap-quit-opt">
-              <input type="checkbox" checked={save} onChange={(e) => setSave(e.target.checked)} />
-              {t("quit.save", { file: fileName ?? t("quit.thisDoc") })}
-            </label>
-          )}
           <label className="ap-quit-opt">
             <input type="checkbox" checked={build} onChange={(e) => setBuild(e.target.checked)} />
             {t("quit.startBuild")}
@@ -55,7 +44,7 @@ export function QuitDialog({
           <button className="ap-link" onClick={onCancel}>
             {t("quit.cancel")}
           </button>
-          <button className="ap-primary" onClick={() => onQuit({ save: dirty && save, startBuild: build })}>
+          <button className="ap-primary" onClick={() => onQuit({ startBuild: build })}>
             {t("quit.quit")}
           </button>
         </div>

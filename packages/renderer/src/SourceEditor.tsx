@@ -172,7 +172,9 @@ export const SourceEditor = forwardRef<
               return true;
             },
           }),
-          // Plugin-injected binding extensions (e.g. remote cursors).
+          // Plugin-injected binding extensions (e.g. yCollab: live text sync, remote cursors, and —
+          // wrapped at highest precedence by the binding via highestPrecKeymap — the collaborative
+          // Yjs undo/redo keymap, so Mod-z beats basicSetup's native history).
           ...(binding ? binding.extensions : []),
         ],
       }),
