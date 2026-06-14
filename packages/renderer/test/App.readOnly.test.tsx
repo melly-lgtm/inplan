@@ -38,6 +38,10 @@ describe("App read-only doc (DocPayload.readOnly)", () => {
     // …and mutation is blocked: "Comment on Doc/Text" is disabled (the shared editingLocked gate).
     const addComment = screen.getByRole("button", { name: /comment on (text|doc)/i }) as HTMLButtonElement;
     expect(addComment.disabled).toBe(true);
+    // The Save button is disabled too — an archived doc is view/download-only, so no UI path
+    // (button or ⌘/Ctrl+S, both routed through the readOnly-guarded saveNow) can write it.
+    const save = screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
   });
 
   it("an editable doc (no readOnly) shows no archived banner and allows commenting", async () => {

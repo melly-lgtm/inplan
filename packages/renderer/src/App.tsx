@@ -41,6 +41,7 @@ import { IconBack, IconForward, IconUp, IconDown, IconZoomOut, IconZoomIn, IconF
 import { RelativeTime } from "./RelativeTime";
 import { AuthorChip } from "./Avatar";
 import { QuitDialog } from "./QuitDialog";
+import { CapLimitDialog } from "./CapLimitDialog";
 import { EditorErrorBoundary } from "./EditorErrorBoundary";
 import { Onboarding, type OnboardingSignals } from "./Onboarding";
 import { ONBOARDING_SAMPLE } from "./onboardingSample";
@@ -733,6 +734,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   }, []);
 
   const saveNow = useCallback(() => {
+    if (readOnly) return; // archived (read-only) docs are view/download-only — block every save path
     const content = serialize(docRef.current);
     const kind = mode.autosaveKind;
     // Checkpoint only once the save resolves, so a failed write can't be reported as saved.
@@ -742,7 +744,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       setDirty(false);
     }
     setStatus(kind === "canonical" ? "saved" : "checkpoint saved");
-  }, [cadence, mode]);
+  }, [cadence, mode, readOnly]);
   saveNowRef.current = saveNow; // keep the ⌘/Ctrl+S handler pointed at the current saveNow
 
   // Question threads whose picker holds an UNSAVED answer (reported by QuestionChips), and which of
@@ -1625,41 +1627,21 @@ export function App(props: EditorProps = {}): JSX.Element {
         <QuitDialog onQuit={confirmQuit} onCancel={() => setQuitOpen(false)} />
       )}
 
-      {/* Active-doc cap reached → ask to deactivate the least-recently-used doc. Either button settles
-          the create()'s pending promise; the backdrop cancels (resolve false → no eviction, no create). */}
+      {/* Active-doc cap reached → ask to deactivate the least-recently-used doc. Either choice settles
+          the create()'s pending promise; cancel/Escape/backdrop resolve false → no eviction, no create. */}
       {capConfirm && (
-        <div
-          className="ap-modal-backdrop"
-          onMouseDown={() => {
+        <CapLimitDialog
+          limit={capConfirm.limit}
+          lruTitle={capConfirm.lruTitle}
+          onConfirm={() => {
+            capConfirm.resolve(true);
+            setCapConfirm(null);
+          }}
+          onCancel={() => {
             capConfirm.resolve(false);
             setCapConfirm(null);
           }}
-        >
-          <div className="ap-modal ap-quit" role="dialog" aria-modal="true" aria-label={t("newdoc.limitTitle")} onMouseDown={(e) => e.stopPropagation()}>
-            <div className="ap-quit-title">{t("newdoc.limitTitle")}</div>
-            <p className="ap-quit-body">{t("newdoc.limitBody", { limit: String(capConfirm.limit), title: capConfirm.lruTitle })}</p>
-            <div className="ap-quit-actions">
-              <button
-                className="ap-link"
-                onClick={() => {
-                  capConfirm.resolve(false);
-                  setCapConfirm(null);
-                }}
-              >
-                {t("quit.cancel")}
-              </button>
-              <button
-                className="ap-primary"
-                onClick={() => {
-                  capConfirm.resolve(true);
-                  setCapConfirm(null);
-                }}
-              >
-                {t("newdoc.deactivateAndCreate")}
-              </button>
-            </div>
-          </div>
-        </div>
+        />
       )}
 
       {newDocReq && (
@@ -2212,7 +2194,7 @@ function TopBar(props: {
         </button>
       </div>
       <div className="ap-iconrow" role="group" aria-label="save and turn">
-        <button className="ap-iconbtn" onClick={props.onSave} title={props.dirty ? t("topbar.saveUnsaved") : t("topbar.save")} aria-label={t("topbar.save")}>
+        <button className="ap-iconbtn" onClick={props.onSave} disabled={props.locked} title={props.dirty ? t("topbar.saveUnsaved") : t("topbar.save")} aria-label={t("topbar.save")}>
           <IconSave />
           {props.dirty && <span className="ap-dirty" aria-hidden="true" />}
         </button>
