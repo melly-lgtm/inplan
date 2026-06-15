@@ -16,7 +16,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   changed:
@@ -43,6 +42,9 @@ jobs:
     needs: changed
     if: needs.changed.outputs.run == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write # only this job opens the failure issue (least privilege)
     # NOTE: no ELECTRON_SKIP_BINARY_DOWNLOAD — unlike `ci`, this job DOES launch Electron, so it
     # needs the real binary downloaded during `npm ci`.
     steps:
@@ -67,7 +69,7 @@ jobs:
 
       - name: Upload Playwright artifacts on failure
         if: failure()
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: playwright-results
           path: test-results
