@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Nightly Electron end-to-end (Playwright) run. e2e is kept OUT of the per-PR `ci` gate (it
+# launches the real Electron app, which needs a display + the ~100MB Electron binary), so this
+# scheduled job is where it runs: once a day, but ONLY when main changed in the last 24h, plus a
+# manual `workflow_dispatch`. The app runs headless under Xvfb (a virtual framebuffer). On failure
+# it opens (or refreshes) a tracking issue; GitHub also emails watchers by default. No secrets
+# needed — the desktop suite is fully local (seeded plan files, no cloud/Supabase).
+
+name: e2e-nightly
+
+on:
+  schedule:
+    - cron: "30 7 * * *" # 07:30 UTC daily (offset from the cloud nightly)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  changed:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: gate
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "manual dispatch → run"; echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -n "$(git log --since='24 hours ago' --oneline)" ]; then
+            echo "commits in the last 24h → run"; echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no commits in the last 24h → skip"; echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  e2e:
+    needs: changed
+    if: needs.changed.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write # only this job opens the failure issue (least privilege)
+    # NOTE: no ELECTRON_SKIP_BINARY_DOWNLOAD — unlike `ci`, this job DOES launch Electron, so it
+    # needs the real binary downloaded during `npm ci`.
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run build # builds the renderer dist + the CLI (INPLAN_CLI target) + the app
+      # System libraries Electron/Chromium need on a headless runner, plus Xvfb for the display.
+      - name: Install Electron/Chromium system deps + Xvfb
+        run: |
+          npx playwright install-deps chromium
+          sudo apt-get update && sudo apt-get install -y xvfb
+      - name: Run the Electron e2e suite under Xvfb
+        env:
+          INPLAN_CLI: ${{ github.workspace }}/packages/cli/dist/cli.js
+        run: xvfb-run -a npm run test:e2e
+
+      - name: Upload Playwright artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-results
+          path: test-results
+          retention-days: 7
+
+      - name: Open / refresh the failure issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --label e2e-nightly --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Nightly Electron e2e failed again — $URL ($(date -u +%F))"
+          else
+            gh label create e2e-nightly --repo "${{ github.repository }}" --color B60205 --description "Nightly e2e failures" 2>/dev/null || true
+            gh issue create --repo "${{ github.repository }}" --title "Nightly e2e (Electron) failed" --label e2e-nightly --body "The scheduled Electron e2e run failed: $URL"$'\n\n'"See the uploaded \`playwright-results\` artifact (test-results/) for the failing specs."
+          fi
