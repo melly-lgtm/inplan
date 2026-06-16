@@ -26,8 +26,6 @@ Check for the CLI and install it if missing:
 
     inplan --version || npm install -g inplan
 
-(If the unscoped name is unavailable, install `@cis/inplan`.)
-
 **If `open` runs headless** (it prints "the bundled editor's Electron runtime is
 unavailable"): the npm package installed but Electron's **binary** didn't download — a
 proxy/firewall/AV blocked it, or `ignore-scripts` is set. Do **not** `npm install -g
