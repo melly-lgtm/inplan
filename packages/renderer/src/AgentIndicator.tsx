@@ -6,8 +6,8 @@ import { useT } from "./i18n";
 
 /** Quota gauge: a solid green core (the "connected" indicator) with only the outer ring
  *  pie-charted for usage — `color` fills `pct` of the ring, the rest is `var(--line)`.
- *  `pct` ∈ [0..1]. The green centre stays green regardless of usage; the ring tints
- *  orange on overage / dark blue for a BYO key (via `color`). */
+ *  `pct` ∈ [0..1]. The green centre stays green regardless of usage; the ring tint comes
+ *  from `color` (light green → amber → red as usage climbs; dark blue for a BYO key). */
 function QuotaPie({ pct, color }: { pct: number; color: string }): JSX.Element {
   const deg = Math.round(Math.max(0, Math.min(1, pct)) * 360);
   return (
@@ -22,7 +22,7 @@ function QuotaPie({ pct, color }: { pct: number; color: string }): JSX.Element {
 /**
  * Menu-bar agent connection indicator (the cloud/quota indicator, moved out of the
  * profile menu). Shows where the agent runs + its model, a quota pie when a managed
- * agent is metered (blue, orange on overage; dark blue for BYO key), a green dot for
+ * agent is metered (light green → amber → red by usage; dark blue for BYO key), a green dot for
  * a local agent and a red dot when none is connected. Clicking opens the connection
  * preference picker. Purely presentational — the host supplies the state.
  */
@@ -88,7 +88,17 @@ export function AgentIndicator({
 
   let icon: JSX.Element;
   if (location === "cloud") {
-    const color = byoKey ? "var(--agent-byo, #1e3a8a)" : quota?.overage ? "#e67e22" : "var(--accent)";
+    // Usage-ring tint: light green < 75%, amber 75–95%, red at/over 95% (or overage). BYO keys are
+    // unmetered → dark blue; no quota (uncapped plan) → the plain green accent.
+    const color = byoKey
+      ? "var(--agent-byo, #1e3a8a)"
+      : quota
+        ? quota.overage || quota.usedPct >= 0.95
+          ? "#c0392b" // red (matches .ap-agent-quota-at)
+          : quota.usedPct >= 0.75
+            ? "#e0a23b" // amber/yellow
+            : "#3fa46a" // light green
+        : "var(--accent)";
     icon = quota ? <QuotaPie pct={quota.usedPct} color={color} /> : <span className="ap-agent-dot" style={{ background: color }} aria-hidden="true" />;
   } else if (location === "local") {
     icon = <span className="ap-agent-dot ap-agent-local" aria-hidden="true" />;

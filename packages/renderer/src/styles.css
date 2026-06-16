@@ -135,8 +135,11 @@ body {
 .ap-agent-local { background: #2bb673; }   /* agent on your machine */
 .ap-agent-off { background: var(--danger); } /* no agent connected */
 .ap-agent-pie { position: relative; width: 14px; height: 14px; border-radius: 50%; flex: 0 0 auto; }
-/* Green "connected" core; only the thin outer band of .ap-agent-pie shows the usage conic. */
-.ap-agent-pie-core { position: absolute; inset: 16%; border-radius: 50%; background: var(--accent); }
+/* Green "connected" core; only the thin outer band of .ap-agent-pie shows the usage conic. The
+   1px box-shadow ring is the button's background colour, leaving a 1px gap between the core and the
+   usage band — so it must track the button's hover bg (below) to stay invisible in every state. */
+.ap-agent-pie-core { position: absolute; inset: 16%; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1px var(--bg); }
+.ap-agent-btn:hover .ap-agent-pie-core { box-shadow: 0 0 0 1px var(--accent-soft); }
 /* Anchor to the trigger's RIGHT edge (it sits on the right of the topbar) so the 220px menu opens
    leftward and stays on-screen — left:0 made it overflow off the right of the viewport, clipping the
    item labels. Mirrors .ap-profile-menu. */

@@ -46,14 +46,26 @@ describe("AgentIndicator", () => {
     expect(screen.queryByRole("radiogroup")).toBeNull();
   });
 
-  it("tints the pie for overage and shows the over-included note", () => {
+  it("tints the pie red for overage and shows the over-included note", () => {
     render(<AgentIndicator location="cloud" model="Opus" quota={{ usedPct: 1.1, overage: true }} />);
     const btn = screen.getByRole("button");
     expect(btn.getAttribute("title")).toContain("(over)");
     const pie = btn.querySelector(".ap-agent-pie") as HTMLElement;
-    expect(pie.style.background).toContain("#e67e22"); // orange on overage
+    expect(pie.style.background).toContain("#c0392b"); // red on overage
     fireEvent.click(btn);
     expect(document.body.textContent).toContain("over included");
+  });
+
+  it("tints the usage ring by threshold: light green <75%, amber 75–95%, red ≥95%", () => {
+    const ring = (usedPct: number): string => {
+      const { unmount } = render(<AgentIndicator location="cloud" model="Opus" quota={{ usedPct, overage: false }} />);
+      const bg = (screen.getByRole("button").querySelector(".ap-agent-pie") as HTMLElement).style.background;
+      unmount();
+      return bg;
+    };
+    expect(ring(0.5)).toContain("#3fa46a"); // light green
+    expect(ring(0.8)).toContain("#e0a23b"); // amber
+    expect(ring(0.97)).toContain("#c0392b"); // red
   });
 
   it("warns when a capped plan approaches the limit (≥80%, under cap)", () => {
