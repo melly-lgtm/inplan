@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -105,6 +105,36 @@ function electronBinaryFromDisk(reqUrl: string): string | null {
   }
 }
 
+/** The Electron download mirror to retry with when the binary is missing: an explicit
+ *  ELECTRON_MIRROR wins; otherwise default to npmmirror, which serves the binaries when the
+ *  default GitHub host is blocked by a proxy/firewall/AV (the common corp-network case). */
+export function electronMirror(env: Record<string, string | undefined>): string {
+  return env.ELECTRON_MIRROR?.trim() || "https://npmmirror.com/mirrors/electron/";
+}
+
+/** When electron's binary is missing — its postinstall download from GitHub was blocked, so
+ *  `dist/electron(.exe)` + path.txt never got written — re-run electron's OWN installer
+ *  (`install.js`) with ELECTRON_MIRROR set, so it downloads + extracts + writes path.txt exactly
+ *  as a normal install would, just from a reachable host. This automates the manual "set a mirror
+ *  + rebuild" fix. Best-effort: returns true only if the binary is present afterward; any failure
+ *  (mirror also blocked, install error) returns false so the caller falls back to headless.
+ *  Skipped when INPLAN_NO_ELECTRON_DOWNLOAD=1 (air-gapped/CI — the attempt would just be slow). */
+function autoInstallElectron(reqUrl: string): boolean {
+  if (process.env.INPLAN_NO_ELECTRON_DOWNLOAD === "1") return false;
+  try {
+    const pkgDir = dirname(createRequire(reqUrl).resolve("electron/package.json"));
+    const installJs = join(pkgDir, "install.js");
+    if (!existsSync(installJs)) return false;
+    const mirror = electronMirror(process.env);
+    process.stderr.write(`[inplan] editor runtime missing — downloading Electron via ${mirror} …\n`);
+    // The original GitHub download already failed, so go straight to the mirror (don't retry it).
+    execFileSync(process.execPath, [installJs], { cwd: pkgDir, stdio: "inherit", env: { ...process.env, ELECTRON_MIRROR: mirror } });
+    return electronBinaryFromDisk(reqUrl) !== null;
+  } catch {
+    return false;
+  }
+}
+
 function resolveBundledApp(): BundledApp {
   const here = dirname(fileURLToPath(import.meta.url));
   const appMain = join(here, "..", "app", "main", "index.js");
@@ -140,6 +170,17 @@ function spawnApp(file: string): number | null {
     const child = spawn(bundled.electron, [bundled.appMain, file], { detached: true, stdio: "ignore", env });
     child.unref();
     return child.pid ?? null;
+  }
+  // App present but its Electron runtime is missing (the download was blocked). Try electron's own
+  // installer once via a mirror, then re-resolve — turning the manual "set ELECTRON_MIRROR + rebuild"
+  // fix into an automatic one. Any failure falls through to the headless guidance below.
+  if (bundled.appMain !== null && "error" in bundled && autoInstallElectron(import.meta.url)) {
+    const retry = resolveBundledApp();
+    if ("electron" in retry) {
+      const child = spawn(retry.electron, [retry.appMain, file], { detached: true, stdio: "ignore", env });
+      child.unref();
+      return child.pid ?? null;
+    }
   }
   // No editor — surface WHY (not just "no editor"), so the failure is actionable. Also report it
   // (opt-in, anonymous): the app never starts here, so this is the only place the launch failure
