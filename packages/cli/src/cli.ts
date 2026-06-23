@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -65,7 +65,7 @@ const debounceMs = Number(process.env.INPLAN_DEBOUNCE_MS ?? 3000);
 const pollMs = Number(process.env.INPLAN_POLL_MS ?? 200);
 /**
  * Result of locating the Electron editor bundled alongside this CLI in the published
- * `inplan` package (layout: `bin/cli.js` + `app/main/index.js`, with `electron` as a
+ * `inplan` package (layout: `bin/cli.js` + `app/main/index.cjs`, with `electron` as a
  * dependency): ready-to-launch, no-bundled-app (source/dev), or app-present-but-no-runtime
  * (e.g. electron's binary never downloaded). spawnApp turns each into the right action/message.
  */
@@ -112,6 +112,51 @@ export function electronMirror(env: Record<string, string | undefined>): string 
   return env.ELECTRON_MIRROR?.trim() || "https://npmmirror.com/mirrors/electron/";
 }
 
+/** @electron/get's default download cache dir (env-paths' "electron" app cache — verified against
+ *  this dependency's actual behavior, not guessed). Keyed by a content-hash subdirectory, not the
+ *  version, so the zip has to be searched for by filename rather than addressed directly. */
+function electronCacheDir(): string {
+  if (process.platform === "win32") return join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "electron", "Cache");
+  if (process.platform === "darwin") return join(homedir(), "Library", "Caches", "electron");
+  return join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "electron");
+}
+
+/** The most-recently-modified cached zip matching this version/platform/arch, if any. install.js
+ *  already downloaded + checksum-verified it via `@electron/get` even on a run where extraction
+ *  ultimately left no binary behind — so re-extracting it costs no network round-trip. */
+function cachedElectronZip(version: string, platform: NodeJS.Platform, arch: string): string | null {
+  const root = electronCacheDir();
+  const want = `electron-v${version}-${platform}-${arch}.zip`;
+  try {
+    let best: { file: string; mtime: number } | null = null;
+    for (const sub of readdirSync(root)) {
+      const f = join(root, sub, want);
+      if (!existsSync(f)) continue;
+      const mtime = statSync(f).mtimeMs;
+      if (!best || mtime > best.mtime) best = { file: f, mtime };
+    }
+    return best?.file ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Windows-only fallback extraction: PowerShell's `Expand-Archive` instead of electron's own
+ *  extract-zip. Observed on a real machine: extract-zip's streamed per-entry writes reliably left
+ *  every file in the zip on disk EXCEPT electron.exe (the one actual executable — every DLL,
+ *  locale, and data file extracted fine), while Expand-Archive (a different, .NET-based extraction
+ *  path) left it intact every time. The exact interceptor was never confirmed (Defender's own
+ *  detection log had no record of it on that machine), but the extractor swap is independently
+ *  reproducible, so it's used as a fallback rather than a replacement. */
+function expandArchiveWindows(zipPath: string, destDir: string): boolean {
+  const r = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${destDir}' -Force`],
+    { stdio: "ignore" },
+  );
+  return r.status === 0;
+}
+
 /** When electron's binary is missing — its postinstall download from GitHub was blocked, so
  *  `dist/electron(.exe)` + path.txt never got written — re-run electron's OWN installer
  *  (`install.js`) with ELECTRON_MIRROR set, so it downloads + extracts + writes path.txt exactly
@@ -129,6 +174,16 @@ function autoInstallElectron(reqUrl: string): boolean {
     process.stderr.write(`[inplan] editor runtime missing — downloading Electron via ${mirror} …\n`);
     // The original GitHub download already failed, so go straight to the mirror (don't retry it).
     execFileSync(process.execPath, [installJs], { cwd: pkgDir, stdio: "inherit", env: { ...process.env, ELECTRON_MIRROR: mirror } });
+    if (electronBinaryFromDisk(reqUrl) !== null) return true;
+    // The download succeeded (electron's own checksum check would have thrown otherwise) but its
+    // extractor left no binary behind — re-extract the same already-verified zip a different way.
+    if (process.platform === "win32") {
+      const { version } = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8")) as { version: string };
+      const zip = cachedElectronZip(version, "win32", process.env.npm_config_arch || process.arch);
+      if (zip && expandArchiveWindows(zip, join(pkgDir, "dist"))) {
+        writeFileSync(join(pkgDir, "path.txt"), "electron.exe");
+      }
+    }
     return electronBinaryFromDisk(reqUrl) !== null;
   } catch {
     return false;
@@ -137,7 +192,7 @@ function autoInstallElectron(reqUrl: string): boolean {
 
 function resolveBundledApp(): BundledApp {
   const here = dirname(fileURLToPath(import.meta.url));
-  const appMain = join(here, "..", "app", "main", "index.js");
+  const appMain = join(here, "..", "app", "main", "index.cjs");
   if (!existsSync(appMain)) return { appMain: null }; // source/dev — no sibling app/
   // require("electron") returns the binary path, but THROWS ("Electron failed to install
   // correctly") whenever path.txt is missing — even if the binary is actually on disk. So treat
