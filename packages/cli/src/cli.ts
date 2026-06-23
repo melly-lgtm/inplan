@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -65,7 +65,7 @@ const debounceMs = Number(process.env.INPLAN_DEBOUNCE_MS ?? 3000);
 const pollMs = Number(process.env.INPLAN_POLL_MS ?? 200);
 /**
  * Result of locating the Electron editor bundled alongside this CLI in the published
- * `inplan` package (layout: `bin/cli.js` + `app/main/index.js`, with `electron` as a
+ * `inplan` package (layout: `bin/cli.js` + `app/main/index.cjs`, with `electron` as a
  * dependency): ready-to-launch, no-bundled-app (source/dev), or app-present-but-no-runtime
  * (e.g. electron's binary never downloaded). spawnApp turns each into the right action/message.
  */
@@ -105,9 +105,97 @@ function electronBinaryFromDisk(reqUrl: string): string | null {
   }
 }
 
+/** @electron/get's default download cache dir (env-paths' "electron" app cache — verified against
+ *  this dependency's actual behavior, not guessed). Keyed by a content-hash subdirectory, not the
+ *  version, so the zip has to be searched for by filename rather than addressed directly. */
+function electronCacheDir(): string {
+  if (process.platform === "win32") return join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "electron", "Cache");
+  if (process.platform === "darwin") return join(homedir(), "Library", "Caches", "electron");
+  return join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "electron");
+}
+
+/** The most-recently-modified cached zip matching this version/platform/arch, if any. install.js
+ *  already downloaded + checksum-verified it via `@electron/get` even on a run where extraction
+ *  ultimately left no binary behind — so re-extracting it costs no network round-trip. */
+function cachedElectronZip(version: string, platform: NodeJS.Platform, arch: string): string | null {
+  const root = electronCacheDir();
+  const want = `electron-v${version}-${platform}-${arch}.zip`;
+  try {
+    let best: { file: string; mtime: number } | null = null;
+    for (const sub of readdirSync(root)) {
+      const f = join(root, sub, want);
+      if (!existsSync(f)) continue;
+      const mtime = statSync(f).mtimeMs;
+      if (!best || mtime > best.mtime) best = { file: f, mtime };
+    }
+    return best?.file ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Windows-only fallback extraction: PowerShell's `Expand-Archive` instead of electron's own
+ *  extract-zip. Observed on a real machine: extract-zip's streamed per-entry writes reliably left
+ *  every file in the zip on disk EXCEPT electron.exe (the one actual executable — every DLL,
+ *  locale, and data file extracted fine), while Expand-Archive (a different, .NET-based extraction
+ *  path) left it intact every time. The exact interceptor was never confirmed (Defender's own
+ *  detection log had no record of it on that machine), but the extractor swap is independently
+ *  reproducible, so it's used as a fallback rather than a replacement.
+ *  Paths are passed via env vars, not interpolated into the -Command string, so a literal
+ *  apostrophe in a path (e.g. `C:\Users\O'Neil\...`) can't break it. (PowerShell's `$args` isn't
+ *  an option here: unlike `-File script.ps1 arg1 arg2`, trailing argv after an inline `-Command
+ *  "..."` doesn't bind to `$args` — confirmed by a direct repro, not assumed.) */
+function expandArchiveWindows(zipPath: string, destDir: string): boolean {
+  const r = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", "Expand-Archive -LiteralPath $env:INPLAN_ZIP_PATH -DestinationPath $env:INPLAN_DEST_DIR -Force"],
+    { stdio: "ignore", env: { ...process.env, INPLAN_ZIP_PATH: zipPath, INPLAN_DEST_DIR: destDir } },
+  );
+  return r.status === 0;
+}
+
+/** When electron's binary is missing — its postinstall download was interrupted somehow, so
+ *  `dist/electron(.exe)` + path.txt never got written — re-run electron's OWN installer
+ *  (`install.js`) to retry the download, then (Windows only) re-extract it a different way if the
+ *  binary still didn't land. This automates the manual "rebuild electron" fix.
+ *
+ *  Deliberately does NOT default to a third-party mirror: an explicit `ELECTRON_MIRROR` (the user's
+ *  own choice) is honored via the inherited env, but nothing here silently substitutes one. A real
+ *  Windows repro confirmed the actual failure isn't GitHub being unreachable — the download
+ *  completes and passes electron's own checksum check either way — so retrying the SAME (default)
+ *  host plus the extractor swap below is enough on its own; a mirror would only help the separate,
+ *  unconfirmed case of GitHub genuinely being blocked, which isn't worth the implicit trust shift.
+ *
+ *  Best-effort: returns true only if the binary is present afterward; any failure returns false so
+ *  the caller falls back to headless. Skipped when INPLAN_NO_ELECTRON_DOWNLOAD=1 (air-gapped/CI —
+ *  the attempt would just be slow). */
+function autoInstallElectron(reqUrl: string): boolean {
+  if (process.env.INPLAN_NO_ELECTRON_DOWNLOAD === "1") return false;
+  try {
+    const pkgDir = dirname(createRequire(reqUrl).resolve("electron/package.json"));
+    const installJs = join(pkgDir, "install.js");
+    if (!existsSync(installJs)) return false;
+    process.stderr.write("[inplan] editor runtime missing — retrying the download …\n");
+    execFileSync(process.execPath, [installJs], { cwd: pkgDir, stdio: "inherit", env: process.env });
+    if (electronBinaryFromDisk(reqUrl) !== null) return true;
+    // The download succeeded (electron's own checksum check would have thrown otherwise) but its
+    // extractor left no binary behind — re-extract the same already-verified zip a different way.
+    if (process.platform === "win32") {
+      const { version } = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8")) as { version: string };
+      const zip = cachedElectronZip(version, "win32", process.env.npm_config_arch || process.arch);
+      if (zip && expandArchiveWindows(zip, join(pkgDir, "dist"))) {
+        writeFileSync(join(pkgDir, "path.txt"), "electron.exe");
+      }
+    }
+    return electronBinaryFromDisk(reqUrl) !== null;
+  } catch {
+    return false;
+  }
+}
+
 function resolveBundledApp(): BundledApp {
   const here = dirname(fileURLToPath(import.meta.url));
-  const appMain = join(here, "..", "app", "main", "index.js");
+  const appMain = join(here, "..", "app", "main", "index.cjs");
   if (!existsSync(appMain)) return { appMain: null }; // source/dev — no sibling app/
   // require("electron") returns the binary path, but THROWS ("Electron failed to install
   // correctly") whenever path.txt is missing — even if the binary is actually on disk. So treat
@@ -140,6 +228,17 @@ function spawnApp(file: string): number | null {
     const child = spawn(bundled.electron, [bundled.appMain, file], { detached: true, stdio: "ignore", env });
     child.unref();
     return child.pid ?? null;
+  }
+  // App present but its Electron runtime is missing (the download was blocked). Try electron's own
+  // installer once via a mirror, then re-resolve — turning the manual "set ELECTRON_MIRROR + rebuild"
+  // fix into an automatic one. Any failure falls through to the headless guidance below.
+  if (bundled.appMain !== null && "error" in bundled && autoInstallElectron(import.meta.url)) {
+    const retry = resolveBundledApp();
+    if ("electron" in retry) {
+      const child = spawn(retry.electron, [retry.appMain, file], { detached: true, stdio: "ignore", env });
+      child.unref();
+      return child.pid ?? null;
+    }
   }
   // No editor — surface WHY (not just "no editor"), so the failure is actionable. Also report it
   // (opt-in, anonymous): the app never starts here, so this is the only place the launch failure

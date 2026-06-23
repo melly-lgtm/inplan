@@ -19,14 +19,17 @@ const p = (rel) => fileURLToPath(new URL(`../${rel}`, import.meta.url));
 const readPkg = (rel) => JSON.parse(readFileSync(p(rel), "utf8"));
 
 console.log("• Building all workspaces …");
-execFileSync("npm", ["run", "build"], { cwd: root, stdio: "inherit" });
+// shell: true — on Windows, npm is npm.cmd, and Node refuses to spawn .cmd/.bat files without a
+// shell (EINVAL) regardless of PATH; a bare "npm" also fails (ENOENT — CreateProcess doesn't try
+// PATHEXT extensions). Safe here: the argv is a fixed literal, nothing user-controlled is escaped.
+execFileSync("npm", ["run", "build"], { cwd: root, stdio: "inherit", shell: true });
 
 const cli = readPkg("packages/cli/package.json");
 const appPkg = readPkg("packages/app/package.json");
 const cliBundle = p("packages/cli/dist/cli.js");
 const appOut = p("packages/app/out");
 if (!existsSync(cliBundle)) throw new Error("cli bundle missing — did the cli build run?");
-if (!existsSync(`${appOut}/main/index.js`)) throw new Error("app build (out/main/index.js) missing");
+if (!existsSync(`${appOut}/main/index.cjs`)) throw new Error("app build (out/main/index.cjs) missing");
 
 // The CLI bundle externalizes these (its @inplan/* deps are bundled in); the published
 // package must declare them + electron so a global install resolves them.

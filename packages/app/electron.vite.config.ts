@@ -30,6 +30,11 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: resolve(__dirname, "src/main/index.ts"),
+        // Force CJS: with the workspace's "type": "module", electron-vite's default output is
+        // ESM, but `import ... from "electron"` in an ESM main script crashes this Electron
+        // version (Node's ESM→CJS interop can't resolve electron's built-in module — confirmed
+        // with a minimal repro; require("electron") works fine). CJS sidesteps it entirely.
+        output: { format: "cjs" },
       },
     },
   },
