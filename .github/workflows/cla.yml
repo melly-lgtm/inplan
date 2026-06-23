@@ -40,7 +40,12 @@ jobs:
         with:
           path-to-signatures: 'signatures/cla.json'
           path-to-document: 'https://github.com/melly-lgtm/inplan/blob/main/CLA.md'
-          branch: 'main'
+          # Store signatures on a DEDICATED, unprotected branch — NOT main. The action commits the
+          # signature file directly (it has no PR flow), but main now has a ruleset requiring PRs, so
+          # writing to main was rejected ("Changes must be made through a pull request") and external
+          # contributors' signatures never recorded → the CLA check stayed red. cla-signatures is
+          # outside that ruleset, so the bot can persist signatures again.
+          branch: 'cla-signatures'
           # The company's own maintainer account is the licensor, not a third-party
           # contributor — it doesn't sign its own CLA. External contributors still must.
           allowlist: 'melly-lgtm,dependabot[bot]'
