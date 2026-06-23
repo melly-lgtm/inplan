@@ -26,6 +26,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: CLA Assistant
+        id: cla
+        # continue-on-error: the action calls setFailed when unsigned, which would turn this job's
+        # check RED — looking like a broken build on a brand-new PR. We don't gate on the job; the
+        # next step reports a friendly `CLA` commit status instead (pending, not failure). The job
+        # itself stays green. outcome (success/failure) is still readable below to drive that status.
+        continue-on-error: true
         if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
         # SHA-pinned (not a mutable tag): this action has contents/PR write + a PAT,
         # and the upstream repo is archived, so a force-pushed tag must not be able
@@ -50,4 +56,36 @@ jobs:
           # contributor — it doesn't sign its own CLA. External contributors still must.
           allowlist: 'melly-lgtm,dependabot[bot]'
           custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
-          custom-notsigned-prcomment: 'Thanks for your PR! Before we can merge it, please sign our [Contributor License Agreement](https://github.com/melly-lgtm/inplan/blob/main/CLA.md) by commenting below:'
+          custom-notsigned-prcomment: |
+            👋 Thanks for the contribution! This isn't a build failure — before we can merge, we just need a **one-time** sign-off on our [Contributor License Agreement](https://github.com/melly-lgtm/inplan/blob/main/CLA.md).
+
+            To sign, reply to this PR with a new comment containing exactly:
+
+            ```
+            I have read the CLA Document and I hereby sign the CLA
+            ```
+
+            The **CLA** check turns green automatically right after you comment — no need to re-push or reopen.
+
+      # Report the result as a friendly `CLA` commit status on the PR's head commit — `pending`
+      # (yellow "action needed", NOT a red failure) when unsigned, `success` (green) when signed.
+      # Set on BOTH pull_request_target AND the sign/recheck comment, always targeting the PR head
+      # SHA, so signing flips it green WITHOUT a reopen (an issue_comment run can't refresh the
+      # job's own check, but it can set a commit status). Uses gh + GITHUB_TOKEN (statuses: write) —
+      # no third-party action to pin. Skipped when the CLA step didn't run (e.g. an unrelated comment).
+      - name: Report CLA status on the PR head
+        if: steps.cla.conclusion != 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SIGNED: ${{ steps.cla.outcome }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
+          ISSUE_NUM: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "pull_request_target" ]; then SHA="$PR_SHA"; else SHA="$(gh api "repos/$REPO/pulls/$ISSUE_NUM" --jq .head.sha)"; fi
+          if [ "$SIGNED" = "success" ]; then STATE=success; DESC="CLA signed — thank you!"; else STATE=pending; DESC="Please sign the CLA — comment to sign (see the bot comment above)."; fi
+          gh api -X POST "repos/$REPO/statuses/$SHA" \
+            -f state="$STATE" -f context="CLA" -f description="$DESC" \
+            -f target_url="https://github.com/melly-lgtm/inplan/blob/main/CLA.md"
