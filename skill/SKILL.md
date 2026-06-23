@@ -27,21 +27,25 @@ Check for the CLI and install it if missing:
     inplan --version || npm install -g inplan
 
 **If `open` runs headless** (it prints "the bundled editor's Electron runtime is
-unavailable"): the npm package installed but Electron's **binary** didn't download — a
-proxy/firewall/AV blocked it, or `ignore-scripts` is set. `open` now **auto-recovers** first:
-when the binary is missing it re-runs Electron's own installer via a mirror
-(`ELECTRON_MIRROR`, default `https://npmmirror.com/mirrors/electron/`) and launches the GUI if
-that succeeds. You only see the headless message when the mirror is **also** unreachable. Then:
+unavailable"): the npm package installed but Electron's **binary** didn't download or extract
+correctly — a proxy/firewall/AV interfered, or `ignore-scripts` is set. `open` now
+**auto-recovers** first: when the binary is missing it re-runs Electron's own installer to retry
+the download, then (Windows only) re-extracts the already-downloaded zip a different way if the
+binary still isn't there, and launches the GUI if that succeeds. It does **not** substitute a
+third-party mirror on its own — only an explicit `ELECTRON_MIRROR` you set yourself is honored.
+You only see the headless message when recovery still fails, or when
+`INPLAN_NO_ELECTRON_DOWNLOAD=1` is set (see below). Then:
 
-- Point it at a reachable mirror and retry: `ELECTRON_MIRROR=<url> inplan open …`
-  (`set ELECTRON_MIRROR=<url>` on Windows cmd).
+- If a proxy/firewall blocks the default host outright, point it at a mirror you trust and
+  retry: `ELECTRON_MIRROR=<url> inplan open …` (`set ELECTRON_MIRROR=<url>` on Windows cmd).
 - Or re-download inplan's own copy (do **not** `npm install -g electron` separately — inplan
   won't use it), using the path the message prints:
 
       npm rebuild electron --prefix "$(npm root -g)/inplan"               # macOS/Linux
       npm rebuild electron --prefix "%APPDATA%\npm\node_modules\inplan"   # Windows (cmd)
 
-Set `INPLAN_NO_ELECTRON_DOWNLOAD=1` to skip the auto-download (air-gapped/CI). The loop still
+Set `INPLAN_NO_ELECTRON_DOWNLOAD=1` to skip the auto-download (air-gapped/CI) — this also
+produces the headless message above, immediately, without attempting recovery. The loop still
 works headless until a binary is present, but the human can't review in the GUI — surface the
 fix to them and proceed.
 

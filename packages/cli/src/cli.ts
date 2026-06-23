@@ -105,13 +105,6 @@ function electronBinaryFromDisk(reqUrl: string): string | null {
   }
 }
 
-/** The Electron download mirror to retry with when the binary is missing: an explicit
- *  ELECTRON_MIRROR wins; otherwise default to npmmirror, which serves the binaries when the
- *  default GitHub host is blocked by a proxy/firewall/AV (the common corp-network case). */
-export function electronMirror(env: Record<string, string | undefined>): string {
-  return env.ELECTRON_MIRROR?.trim() || "https://npmmirror.com/mirrors/electron/";
-}
-
 /** @electron/get's default download cache dir (env-paths' "electron" app cache — verified against
  *  this dependency's actual behavior, not guessed). Keyed by a content-hash subdirectory, not the
  *  version, so the zip has to be searched for by filename rather than addressed directly. */
@@ -147,33 +140,43 @@ function cachedElectronZip(version: string, platform: NodeJS.Platform, arch: str
  *  locale, and data file extracted fine), while Expand-Archive (a different, .NET-based extraction
  *  path) left it intact every time. The exact interceptor was never confirmed (Defender's own
  *  detection log had no record of it on that machine), but the extractor swap is independently
- *  reproducible, so it's used as a fallback rather than a replacement. */
+ *  reproducible, so it's used as a fallback rather than a replacement.
+ *  Paths are passed via env vars, not interpolated into the -Command string, so a literal
+ *  apostrophe in a path (e.g. `C:\Users\O'Neil\...`) can't break it. (PowerShell's `$args` isn't
+ *  an option here: unlike `-File script.ps1 arg1 arg2`, trailing argv after an inline `-Command
+ *  "..."` doesn't bind to `$args` — confirmed by a direct repro, not assumed.) */
 function expandArchiveWindows(zipPath: string, destDir: string): boolean {
   const r = spawnSync(
     "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${destDir}' -Force`],
-    { stdio: "ignore" },
+    ["-NoProfile", "-NonInteractive", "-Command", "Expand-Archive -LiteralPath $env:INPLAN_ZIP_PATH -DestinationPath $env:INPLAN_DEST_DIR -Force"],
+    { stdio: "ignore", env: { ...process.env, INPLAN_ZIP_PATH: zipPath, INPLAN_DEST_DIR: destDir } },
   );
   return r.status === 0;
 }
 
-/** When electron's binary is missing — its postinstall download from GitHub was blocked, so
+/** When electron's binary is missing — its postinstall download was interrupted somehow, so
  *  `dist/electron(.exe)` + path.txt never got written — re-run electron's OWN installer
- *  (`install.js`) with ELECTRON_MIRROR set, so it downloads + extracts + writes path.txt exactly
- *  as a normal install would, just from a reachable host. This automates the manual "set a mirror
- *  + rebuild" fix. Best-effort: returns true only if the binary is present afterward; any failure
- *  (mirror also blocked, install error) returns false so the caller falls back to headless.
- *  Skipped when INPLAN_NO_ELECTRON_DOWNLOAD=1 (air-gapped/CI — the attempt would just be slow). */
+ *  (`install.js`) to retry the download, then (Windows only) re-extract it a different way if the
+ *  binary still didn't land. This automates the manual "rebuild electron" fix.
+ *
+ *  Deliberately does NOT default to a third-party mirror: an explicit `ELECTRON_MIRROR` (the user's
+ *  own choice) is honored via the inherited env, but nothing here silently substitutes one. A real
+ *  Windows repro confirmed the actual failure isn't GitHub being unreachable — the download
+ *  completes and passes electron's own checksum check either way — so retrying the SAME (default)
+ *  host plus the extractor swap below is enough on its own; a mirror would only help the separate,
+ *  unconfirmed case of GitHub genuinely being blocked, which isn't worth the implicit trust shift.
+ *
+ *  Best-effort: returns true only if the binary is present afterward; any failure returns false so
+ *  the caller falls back to headless. Skipped when INPLAN_NO_ELECTRON_DOWNLOAD=1 (air-gapped/CI —
+ *  the attempt would just be slow). */
 function autoInstallElectron(reqUrl: string): boolean {
   if (process.env.INPLAN_NO_ELECTRON_DOWNLOAD === "1") return false;
   try {
     const pkgDir = dirname(createRequire(reqUrl).resolve("electron/package.json"));
     const installJs = join(pkgDir, "install.js");
     if (!existsSync(installJs)) return false;
-    const mirror = electronMirror(process.env);
-    process.stderr.write(`[inplan] editor runtime missing — downloading Electron via ${mirror} …\n`);
-    // The original GitHub download already failed, so go straight to the mirror (don't retry it).
-    execFileSync(process.execPath, [installJs], { cwd: pkgDir, stdio: "inherit", env: { ...process.env, ELECTRON_MIRROR: mirror } });
+    process.stderr.write("[inplan] editor runtime missing — retrying the download …\n");
+    execFileSync(process.execPath, [installJs], { cwd: pkgDir, stdio: "inherit", env: process.env });
     if (electronBinaryFromDisk(reqUrl) !== null) return true;
     // The download succeeded (electron's own checksum check would have thrown otherwise) but its
     // extractor left no binary behind — re-extract the same already-verified zip a different way.
