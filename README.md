@@ -20,6 +20,14 @@ process that remains adaptable without sacrificing correctness.
 > edition lives at **[inplan.ai](https://inplan.ai)**; this repository is the open
 > core you can run yourself.
 
+## Demo
+
+[![inplan — plan with your coding agent](https://github.com/melly-lgtm/inplan/releases/download/v0.1.18/inplan-demo.gif)](https://github.com/melly-lgtm/inplan/releases/download/v0.1.18/inplan-demo.mp4)
+
+Comment on a specific sentence and discuss it with the agent in a thread; when it
+revises the plan, review the diff and apply it like a PR.
+▶ **[Watch with narration](https://github.com/melly-lgtm/inplan/releases/download/v0.1.18/inplan-demo.mp4)**
+
 ## How it works
 
 You and the agent edit one Markdown plan, like two people in a shared document:
