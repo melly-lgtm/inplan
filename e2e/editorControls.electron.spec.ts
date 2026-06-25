@@ -44,7 +44,7 @@ registerEditorControlSpecs(harness, { test, expect });
 // ---- Desktop-only controls (not in the shared module) ----------------------------------------
 test.describe("desktop-only controls", () => {
   test("ProfileMenu exposes the telemetry, keep-planning, and replay-tutorial controls", async () => {
-    await win.locator(".ap-avatar").click();
+    await win.locator("button.ap-avatar").click();
     await expect(win.getByText("Share anonymous data")).toBeVisible();
     await expect(win.getByText("Keep agent in planning")).toBeVisible();
     await expect(win.getByText("Replay tutorial")).toBeVisible();
@@ -52,7 +52,7 @@ test.describe("desktop-only controls", () => {
   });
 
   test("telemetry + keep-planning toggles flip and revert (self-clean)", async () => {
-    await win.locator(".ap-avatar").click();
+    await win.locator("button.ap-avatar").click();
     const tel = win.getByText("Share anonymous data");
     await tel.click();
     await tel.click();
