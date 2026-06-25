@@ -5,7 +5,7 @@
   "description": "inplan Electron editor for human/agent collaboration on planning documents.",
   "license": "AGPL-3.0-or-later",
   "type": "module",
-  "main": "./out/main/index.js",
+  "main": "./out/main/index.cjs",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
