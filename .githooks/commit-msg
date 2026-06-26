@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Local mirror of the CI authorship gate (.github/workflows/authorship.yml). Rejects a commit
+# whose author/committer is a known AI/bot identity, or whose message carries an AI-authorship
+# marker (a "Generated with …" line, the 🤖 trailer, or `Co-authored-by: <bot>`) — catching at
+# commit time what the PR check would otherwise only catch later. Runs as `commit-msg` (not
+# `pre-commit`) because the commit MESSAGE — where the markers live — only exists at this stage.
+# Shares the rule set with CI via authorship_lib.sh, so the two can never drift.
+#
+# Enabled via core.hooksPath (set by the root `prepare` script on `npm install`).
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+# shellcheck source=.github/scripts/authorship_lib.sh
+. "$root/.github/scripts/authorship_lib.sh"
+
+# The pending commit's identities (strip the trailing "<unix-ts> <tz>" git appends to the ident).
+author=$(git var GIT_AUTHOR_IDENT | sed -E 's/ [0-9]+ [-+][0-9]+$//')
+committer=$(git var GIT_COMMITTER_IDENT | sed -E 's/ [0-9]+ [-+][0-9]+$//')
+body=$(cat "$1")
+
+fail=0
+if printf '%s\n%s\n' "$author" "$committer" | grep -qiE "$AUTHORSHIP_BOT_RE"; then
+  echo "[commit-msg] ✗ AI/bot author or committer — author: ${author}, committer: ${committer}"
+  fail=1
+fi
+if printf '%s\n' "$body" | grep -qiE "$AUTHORSHIP_MARK_RE"; then
+  echo "[commit-msg] ✗ AI-authorship marker in the message (Co-authored-by / 'Generated with' / 🤖)"
+  fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo "[commit-msg] commits must be human-authored under your own identity, with no AI/bot author, committer, or co-author marker (see CONTRIBUTING.md)."
+  exit 1
+fi

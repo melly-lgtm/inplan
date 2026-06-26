@@ -15,17 +15,13 @@ set -euo pipefail
 BASE="${1:?usage: check_authorship.sh <base-sha> <head-sha>}"
 HEAD="${2:?usage: check_authorship.sh <base-sha> <head-sha>}"
 
-# AI/bot identity clues, matched case-insensitively against author/committer
-# "name <email>". `[bot]` catches GitHub App bot accounts (cursor[bot], etc.).
-BOT_RE='\[bot\]|cursoragent|bugbot|devin|copilot|claude|anthropic|chatgpt|openai|gpt-[0-9]|codeium|tabnine|amazon[- ]?q|gemini-'
-# Machine-authorship markers in the commit body. BOTH the "generated with …" and
-# the Co-authored-by branches reuse BOT_RE so they screen against the same identity
-# set as the author/committer (no drift — adding a tool to BOT_RE covers all three).
-# The Co-authored-by branch is anchored to line start (^) so it matches a real git
-# trailer, not prose that merely mentions "Co-authored-by:" (e.g. this script's own
-# commit messages). `codex`/`gpt` are marker-only extras: too generic to match a
-# human's name/email, but unambiguous after the literal "generated with ".
-MARK_RE="generated with .*(${BOT_RE}|codex|gpt)|🤖 generated|^ *co-authored-by:.*(${BOT_RE})"
+# Identity clues (BOT_RE) + body markers (MARK_RE) are defined in a shared lib so the local
+# commit-msg hook (.githooks/commit-msg) enforces the EXACT same rule set as this PR check —
+# adding a tool in one place covers both.
+# shellcheck source=.github/scripts/authorship_lib.sh
+. "$(dirname "$0")/authorship_lib.sh"
+BOT_RE="$AUTHORSHIP_BOT_RE"
+MARK_RE="$AUTHORSHIP_MARK_RE"
 
 fail=0
 # Fail closed: if rev-list errors (bad/missing refs, shallow clone), don't let the
