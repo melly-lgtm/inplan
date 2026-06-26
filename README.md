@@ -22,11 +22,11 @@ process that remains adaptable without sacrificing correctness.
 
 ## Demo
 
-[![inplan — plan with your coding agent](https://github.com/melly-lgtm/inplan/releases/download/v0.1.19/inplan-demo.gif)](https://github.com/melly-lgtm/inplan/releases/download/v0.1.19/inplan-demo.mp4)
+[![inplan — plan with your coding agent](https://github.com/melly-lgtm/inplan/releases/latest/download/inplan-demo.gif)](https://github.com/melly-lgtm/inplan/releases/latest/download/inplan-demo.mp4)
 
 Comment on a specific sentence and discuss it with the agent in a thread; when it
 revises the plan, review the diff and apply it like a PR.
-▶ **[Watch with narration](https://github.com/melly-lgtm/inplan/releases/download/v0.1.19/inplan-demo.mp4)**
+▶ **[Watch with narration](https://github.com/melly-lgtm/inplan/releases/latest/download/inplan-demo.mp4)**
 
 ## How it works
 
