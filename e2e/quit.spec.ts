@@ -39,19 +39,19 @@ test("closing with no unsaved changes raises the dialog WITHOUT a Save box; plai
   await requestClose();
   await expect(win.locator(".ap-quit")).toBeVisible({ timeout: 5_000 });
   // No edits → no Save checkbox; only the build-mode toggle is offered.
-  await expect(win.getByText(/^Save /)).toHaveCount(0);
+  await expect(win.locator(".ap-quit").getByText(/^Save /)).toHaveCount(0);
   await win.getByRole("button", { name: /^quit$/i }).click();
   const ev = await waitForEvent(ctx, "session_closed");
   expect((ev.payload as { reason?: string }).reason).toBe("window_closed");
 });
 
-test("closing with unsaved changes offers a Save box; 'build mode' closes as completed", async () => {
+test("closing with unsaved changes still shows no Save box (auto-save); 'build mode' closes as completed", async () => {
   await makeDirty();
   await requestClose();
   await expect(win.locator(".ap-quit")).toBeVisible({ timeout: 5_000 });
-  // The Save box appears (dirty) and is checked by default.
-  const saveBox = win.locator(".ap-quit-opt", { hasText: /^Save / }).locator("input[type=checkbox]");
-  await expect(saveBox).toBeChecked();
+  // Quit always auto-saves the latest content now (the manual Save checkbox was removed), so even a
+  // dirty doc offers no Save box — only the build-mode toggle.
+  await expect(win.locator(".ap-quit").getByText(/^Save /)).toHaveCount(0);
   // Tick "Switch agent to build mode" → the session closes as the completed hand-off.
   await win.getByText(/switch agent to build mode/i).click();
   await win.getByRole("button", { name: /^quit$/i }).click();

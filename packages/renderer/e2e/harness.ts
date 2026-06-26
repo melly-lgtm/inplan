@@ -22,8 +22,9 @@ export interface EditorCaps {
   telemetry: boolean;
   agentMode: boolean;
   replayTutorial: boolean;
-  /** A connected agent is present, so finish-turn / cadence controls are enabled (vs the no-agent
-   *  desktop default where they're disabled). */
+  /** A connected agent is present. On presence-aware hosts (web/cloud, `agentIndicator: true`) this
+   *  gates whether finish-turn / cadence controls are enabled; the desktop's local agent is implicit
+   *  (not presence-aware), so those controls stay enabled there regardless of this flag. */
   agentConnected: boolean;
 }
 
