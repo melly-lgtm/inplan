@@ -152,6 +152,23 @@ The plan should [use Postgres](#cmt-abfdb1) for storage.
 Because the format is plain Markdown plus one HTML comment, a plan renders fine in any
 Markdown viewer and diffs cleanly in code review.
 
+## Works with
+
+inplan plugs into your coding agent through a bundled **skill** plus relay hooks: on
+install it detects the agents present on your machine and drops the skill in for each
+(`inplan install-skill` does this manually). The agent then drives the loop through the
+CLI — `inplan open` / `wait` / `signal` — while you review in the editor.
+
+| Agent | Detected at | Support |
+| --- | --- | --- |
+| **Claude Code** | `~/.claude` | Primary — actively developed and tested. |
+| **Codex** | `~/.codex` | Wired (skill + hooks installed); lightly exercised. |
+| **Pi** | `~/.pi/agent` | Wired (skill + hooks installed); lightly exercised. |
+
+If your agent isn't detected automatically, point it at the bundled skill
+(`skill/SKILL.md`) and ask it to plan. Any agent that can read a skill and run the
+`inplan` CLI can participate.
+
 ## Project status
 
 inplan **aims** to support every combination of:
