@@ -76,6 +76,10 @@ Packages: `@inplan/core` (pure, embeddable editor + plan-format logic),
 `@inplan/cli` (the `inplan` command — the agent's side of the loop), and
 `@inplan/app` (the Electron editor — the human's side).
 
+Most users never need to configure anything, but for restricted networks,
+air-gapped/CI, or source checkouts see the
+[environment variables reference](./docs/environment.md).
+
 ## Quick start
 
 You don't run `inplan` yourself — your **coding agent** does. There are two steps:
