@@ -18,7 +18,7 @@ source checkout.
 
 | Variable | What it does | Default |
 | --- | --- | --- |
-| `INPLAN_APP_CMD` | Command the CLI runs for `inplan open` instead of the bundled desktop editor. Needed when running from a source checkout, where no editor is bundled — otherwise the CLI falls back to headless. | *(unset — use bundled editor)* |
+| `INPLAN_APP_CMD` | Command the CLI runs for `inplan open` instead of the bundled desktop editor. | *(unset — bundled editor when installed; headless from source checkouts)* |
 
 ## Electron download (restricted networks)
 
