@@ -3,7 +3,7 @@
 **Plan with your coding agent — before it writes the code.**
 
 [![npm version](https://img.shields.io/npm/v/inplan?label=inplan&color=1f5c4d)](https://www.npmjs.com/package/inplan)
-[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-1f5c4d)](./LICENSE)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-1f5c4d)](./LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/melly-lgtm/inplan?color=e0a23b)](https://github.com/melly-lgtm/inplan/stargazers)
 [![inplan.ai](https://img.shields.io/badge/site-inplan.ai-1f5c4d)](https://inplan.ai)
 
