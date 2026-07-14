@@ -13,7 +13,12 @@ export type GitRunner = (args: string[], cwd: string) => string | null;
 
 const defaultRun: GitRunner = (args, cwd) => {
   try {
-    return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    // Discovery must be based purely on `cwd`. Strip any inherited git environment —
+    // notably GIT_DIR, which git hooks export — otherwise `rev-parse` would treat an
+    // unrelated directory as "inside a work tree" and leak the ambient repo's identity.
+    const env = { ...process.env };
+    for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_CONFIG_PARAMETERS"]) delete env[k];
+    return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env }).trim();
   } catch {
     return null;
   }
