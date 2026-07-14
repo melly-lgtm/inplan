@@ -1,5 +1,19 @@
 # inplan
 
+**Plan with your coding agent — before it writes the code.**
+
+[![npm version](https://img.shields.io/npm/v/inplan?label=inplan&color=1f5c4d)](https://www.npmjs.com/package/inplan)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-1f5c4d)](./LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/melly-lgtm/inplan?color=e0a23b)](https://github.com/melly-lgtm/inplan/stargazers)
+[![inplan.ai](https://img.shields.io/badge/site-inplan.ai-1f5c4d)](https://inplan.ai)
+
+A Markdown workspace where you and your AI coding agent turn a vague ask into a real
+spec: the agent drafts, raises the open questions inline, you answer them in place, it
+revises, and you apply the diff like a PR. Think of it as **vibe coding with a plan** —
+the agent builds against a versioned spec instead of guessing from a fading chat. The
+hosted edition lives at **[inplan.ai](https://inplan.ai)**; this repo is the open core
+you can run yourself.
+
 **InPlan (Interactive Planning Editor)** brings structure and accountability to
 AI-assisted software development. While AI coding agents are excellent at generating
 code quickly, they struggle when requirements evolve, context grows, and decisions
@@ -15,10 +29,6 @@ from bug fixes, and maintain a reliable source of truth that neither humans nor 
 agents can consistently hold in memory. The result is less implementation drift,
 safer refactoring, better alignment between intent and code, and a development
 process that remains adaptable without sacrificing correctness.
-
-> A Markdown workspace where you and your coding agent plan together. The hosted
-> edition lives at **[inplan.ai](https://inplan.ai)**; this repository is the open
-> core you can run yourself.
 
 ## Demo
 
@@ -166,6 +176,15 @@ rough edges there.
 
 **Contributions are very welcome** — especially anything that broadens and hardens support for
 the OSes, modes, and agents above. See [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
+## Further reading
+
+Notes from building inplan, on the [blog](https://inplan.ai/blog.html):
+
+- [**A one-liner builds the minimum. A plan builds the app**](https://inplan.ai/blog/build-off-with-a-plan.html) — we re-ran a 12-model coding build-off and measured how much of the app you actually *get*: 11–67% from a one-liner vs. 63–91% from a plan, graded with executable tests.
+- [**Your coding agent doesn't need a better model. It needs a better plan**](https://inplan.ai/blog/planning-in-agentic-coding.html) — why shared understanding, not the model, is the bottleneck.
+- [**All you need is more thorough planning**](https://inplan.ai/blog/does-planning-make-your-agent-faster.html) — a checkout pricing engine, first-pass correctness 4/8 → 8/8.
+- [**One document, three jobs**](https://inplan.ai/blog/how-teams-use-inplan.html) — how a developer, a PM, and an architect work the same plan.
 
 ## License
 

@@ -55,3 +55,11 @@ The codebase is a TypeScript monorepo:
 - `packages/cli` — the `inplan` CLI (`open` / `wait` / `signal`)
 - `packages/app` — the Electron editor
 - `skill/` — the agent skill
+
+## Good first issues
+
+New here? Start with an issue labelled
+[**good first issue**](https://github.com/melly-lgtm/inplan/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) —
+these are small, self-contained, and a friendly way in. Comment on one to claim it, then
+open a PR (sign off with `git commit -s`, and sign the CLA on your first PR). Broadening
+OS / cadence / agent support (see the README's Project status) is especially welcome.
