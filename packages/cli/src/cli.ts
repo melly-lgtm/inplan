@@ -36,6 +36,7 @@ import { applyGatedEdit } from "./applyEdit";
 import { evaluateAgentEdit } from "./gate";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, type PluginGate } from "./pluginGate";
+import { announcePresence } from "./presence";
 import { wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
 import { toolActivityText } from "./relayActivity";
@@ -607,18 +608,25 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       }
     : undefined;
 
-  await waitCycle(
-    {
-      channel: backend.channel,
-      store: backend.store,
-      history: async () => (await backend.channel.readSince(0)).entries,
-      logExit: () => {}, // no local sidecar for a cloud doc
-      ...(onSaveLocally ? { onSaveLocally } : {}),
-    },
-    explicitCursor,
-    confirmed,
-    model,
-  );
+  // While we hold the turn on a cloud doc, announce the local agent in the doc's
+  // presence room so the web badge shows "agent · your machine"; clear it on exit.
+  const presence = announcePresence(docId, backend.token, model);
+  try {
+    await waitCycle(
+      {
+        channel: backend.channel,
+        store: backend.store,
+        history: async () => (await backend.channel.readSince(0)).entries,
+        logExit: () => {}, // no local sidecar for a cloud doc
+        ...(onSaveLocally ? { onSaveLocally } : {}),
+      },
+      explicitCursor,
+      confirmed,
+      model,
+    );
+  } finally {
+    presence.destroy();
+  }
 }
 
 /** Print where a document currently lives (local vs cloud) and its cloud pointer. */
