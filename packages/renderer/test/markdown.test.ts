@@ -58,3 +58,35 @@ describe("renderMarkdown comment anchors", () => {
     expect(html).toContain("https://x.test");
   });
 });
+
+describe("renderMarkdown HTML comments", () => {
+  it("hides an inline HTML comment from the rendered preview", () => {
+    const html = renderMarkdown("before <!-- private note --> after");
+    expect(html).toContain("before");
+    expect(html).toContain("after");
+    expect(html).not.toContain("private note");
+    expect(html).not.toContain("&lt;!--"); // not even as escaped literal text
+  });
+
+  it("hides a multi-line HTML comment while keeping later line numbers aligned with the source", () => {
+    const body = "# Title\n\n<!--\nhidden note\nspanning lines\n-->\n\nAfter.\n";
+    const html = renderMarkdown(body);
+    expect(html).not.toContain("hidden note");
+    // "After." is on source line 7 (0-based) — must still be, since only the comment's
+    // own newlines were preserved, not deleted along with its content.
+    expect(html).toMatch(/data-line="7"[^>]*>\s*After\./);
+  });
+
+  it("does NOT strip a `<!-- -->` shown as a syntax example inside a fenced code block", () => {
+    const html = renderMarkdown("```html\n<!-- example comment -->\n```\n");
+    expect(html).toContain("example comment");
+  });
+
+  it("leaves the raw source (SourceEditor's doc.body) untouched — only the rendered preview hides comments", () => {
+    // renderMarkdown never mutates its input; the caller's doc.body (fed to SourceEditor) is
+    // whatever was passed in, unaffected by what the preview renders.
+    const body = "before <!-- note --> after";
+    renderMarkdown(body);
+    expect(body).toBe("before <!-- note --> after");
+  });
+});

@@ -64,6 +64,45 @@ for (const name of ["fence", "code_block"]) {
   };
 }
 
+// Byte ranges of the input covered by a fenced code block (``` or ~~~), so a `<!-- -->` shown
+// as a syntax EXAMPLE inside a fence isn't mistaken for a real author note. Mirrors the
+// fence-tracking in core's findBlockOpen (the inplan comment-data-block scanner).
+function fencedRanges(text: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  let inFence = false;
+  let fenceStart = 0;
+  let offset = 0;
+  for (const line of text.split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      if (!inFence) {
+        inFence = true;
+        fenceStart = offset;
+      } else {
+        inFence = false;
+        ranges.push([fenceStart, offset + line.length]);
+      }
+    }
+    offset += line.length + 1; // account for the split-out "\n"
+  }
+  return ranges;
+}
+
+// `html: false` (below) makes markdown-it escape raw HTML as visible literal text rather than
+// passing it through — a deliberate XSS guard (a collaborative doc's body isn't trusted input,
+// and this HTML is fed straight into dangerouslySetInnerHTML). That guard also makes a
+// `<!-- author note -->` render as visible text instead of vanishing like a real HTML comment
+// would. Strip comments before the guard sees them — narrowly, so nothing else about `html:
+// false` changes — but preserve their internal newlines (not the surrounding text) so `data-line`
+// stays aligned with the *source* editor for cross-pane sync. Never touch the raw source itself
+// (doc.body / SourceEditor) — only this rendered preview.
+function stripHtmlComments(body: string): string {
+  const fences = fencedRanges(body);
+  return body.replace(/<!--[\s\S]*?-->/g, (m, offset: number) => {
+    if (fences.some(([s, e]) => offset >= s && offset < e)) return m; // syntax example inside a fence — leave it
+    return "\n".repeat((m.match(/\n/g) ?? []).length);
+  });
+}
+
 /**
  * Render Markdown body to HTML, with comment anchors tagged for the UI and
  * block elements tagged with their source line (`data-line`).
@@ -72,5 +111,5 @@ for (const name of ["fence", "code_block"]) {
  * off). When omitted, all anchors render as links.
  */
 export function renderMarkdown(body: string, showAnchor?: (id: string) => boolean): string {
-  return md.render(body, { showAnchor });
+  return md.render(stripHtmlComments(body), { showAnchor });
 }
