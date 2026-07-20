@@ -52,9 +52,10 @@ jobs:
           # contributors' signatures never recorded → the CLA check stayed red. cla-signatures is
           # outside that ruleset, so the bot can persist signatures again.
           branch: 'cla-signatures'
-          # The company's own maintainer account is the licensor, not a third-party
-          # contributor — it doesn't sign its own CLA. External contributors still must.
-          allowlist: 'melly-lgtm,dependabot[bot]'
+          # The company's own accounts are the licensor, not third-party contributors — their work is
+          # already owned via employment IP assignment, so they don't sign their own CLA. External
+          # contributors still must. (melly-lgtm = maintainer; jaden-cis = staff.)
+          allowlist: 'melly-lgtm,jaden-cis,dependabot[bot]'
           custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
           custom-notsigned-prcomment: |
             👋 Thanks for the contribution! This isn't a build failure — before we can merge, we just need a **one-time** sign-off on our [Contributor License Agreement](https://github.com/melly-lgtm/inplan/blob/main/CLA.md).
