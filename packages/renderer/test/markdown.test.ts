@@ -58,3 +58,97 @@ describe("renderMarkdown comment anchors", () => {
     expect(html).toContain("https://x.test");
   });
 });
+
+describe("renderMarkdown HTML comments", () => {
+  it("hides an inline HTML comment from the rendered preview", () => {
+    const html = renderMarkdown("before <!-- private note --> after");
+    expect(html).toContain("before");
+    expect(html).toContain("after");
+    expect(html).not.toContain("private note");
+    expect(html).not.toContain("&lt;!--"); // not even as escaped literal text
+  });
+
+  it("hides a multi-line HTML comment while keeping later line numbers aligned with the source", () => {
+    const body = "# Title\n\n<!--\nhidden note\nspanning lines\n-->\n\nAfter.\n";
+    const html = renderMarkdown(body);
+    expect(html).not.toContain("hidden note");
+    // "After." is on source line 7 (0-based) — must still be, since only the comment's
+    // own newlines were preserved, not deleted along with its content.
+    expect(html).toMatch(/data-line="7"[^>]*>\s*After\./);
+  });
+
+  it("does NOT strip a `<!-- -->` shown as a syntax example inside a fenced code block", () => {
+    const html = renderMarkdown("```html\n<!-- example comment -->\n```\n");
+    expect(html).toContain("example comment");
+  });
+
+  it("leaves the raw source (SourceEditor's doc.body) untouched — only the rendered preview hides comments", () => {
+    // renderMarkdown never mutates its input; the caller's doc.body (fed to SourceEditor) is
+    // whatever was passed in, unaffected by what the preview renders.
+    const body = "before <!-- note --> after";
+    renderMarkdown(body);
+    expect(body).toBe("before <!-- note --> after");
+  });
+
+  it("does not eat a paragraph sitting between two inline code spans that each contain comment delimiters", () => {
+    // A naive `<!--[\s\S]*?-->` regex over raw text would span from the `<!--` inside the first
+    // code span to the `-->` inside the second, deleting everything between — including this
+    // paragraph. markdown-it's own backtick rule consumes each code span before html_inline ever
+    // sees the characters inside it, so this can't happen here.
+    const body = "Use `<!--` to start.\n\nThis paragraph must survive.\n\nUse `-->` to end.\n";
+    const html = renderMarkdown(body);
+    expect(html).toContain("This paragraph must survive.");
+    expect(html).toContain("<code>&lt;!--</code>");
+    expect(html).toContain("<code>--&gt;</code>");
+  });
+
+  it("does not strip a `<!-- -->` example inside an UNCLOSED fenced code block", () => {
+    const html = renderMarkdown("```html\n<!-- unclosed fence, no closing marker -->\n");
+    expect(html).toContain("unclosed fence, no closing marker");
+  });
+
+  it("requires the closing fence to match the opening fence's character and length (~~~ isn't closed by ```)", () => {
+    // A stray ``` inside a ~~~ block must not be treated as closing it — the `<!-- -->` inside
+    // stays a syntax example either way, but for the RIGHT reason (still inside the fence).
+    const body = "~~~html\n<!-- inside a tilde fence -->\n```\nstill inside\n~~~\n";
+    const html = renderMarkdown(body);
+    expect(html).toContain("inside a tilde fence");
+  });
+
+  it("still escapes non-comment raw HTML as visible literal text (XSS guard unchanged)", () => {
+    const html = renderMarkdown('before <script>alert(1)</script> after');
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
+  });
+
+  it("hides a block HTML comment indented up to 3 spaces (CommonMark still treats it as an HTML block)", () => {
+    for (const indent of ["", " ", "  ", "   "]) {
+      const html = renderMarkdown(`# Title\n\n${indent}<!-- indented note -->\n\nAfter.\n`);
+      expect(html).not.toContain("indented note");
+      expect(html).not.toContain("&lt;!--");
+    }
+  });
+
+  it("escapes block-level raw HTML, not just inline — the XSS guard covers html_block too", () => {
+    // The inline `<script>` case above exercises the html_inline path; a `<script>` on its own
+    // line parses as an html_block. Both must escape (never emit raw HTML into the preview, which
+    // is fed to dangerouslySetInnerHTML). This locks the more dangerous, block-level path.
+    const html = renderMarkdown("<script>alert(1)</script>\n");
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
+
+    const div = renderMarkdown('<div onclick="alert(1)">x</div>\n');
+    expect(div).not.toContain("<div");
+    expect(div).toContain("&lt;div");
+  });
+
+  it("hides the trailing <!--inplan …--> comment block (the app's own comment store)", () => {
+    // doc.body carries the plan's trailing inplan comment block; under `html: false` it used to
+    // render as visible escaped JSON at the bottom of every preview. It must now be hidden.
+    const body = '# Title\n\nSome text.\n\n<!--inplan\n[ { "id": "cmt-abc123", "text": "note" } ]\n-->\n';
+    const html = renderMarkdown(body);
+    expect(html).toContain("Some text.");
+    expect(html).not.toContain("cmt-abc123");
+    expect(html).not.toContain("&lt;!--inplan");
+  });
+});

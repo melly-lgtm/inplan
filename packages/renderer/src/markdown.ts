@@ -2,7 +2,29 @@
 
 import MarkdownIt from "markdown-it";
 
-const md = new MarkdownIt({ html: false, linkify: true });
+// `html: true` lets markdown-it's OWN parser recognize raw HTML (as `html_block` /
+// `html_inline` tokens) with full awareness of code spans and fences — a backtick span or
+// fenced block is consumed by markdown-it's own higher-priority rules before html_inline/
+// html_block ever sees those characters, so `<!--`/`-->` shown as a syntax example inside
+// code is untouched, with no hand-rolled fence/code-span tracker to keep in sync with
+// CommonMark's actual rules (unclosed fences, backtick-vs-tilde + length matching, etc.).
+// The renderer overrides below make an `html_block`/`html_inline` token that IS a comment
+// render as nothing (hidden from the preview), and anything else render HTML-escaped —
+// i.e. exactly the visible-literal-text behavior `html: false` used to give for ALL raw
+// HTML — so a stray `<script>`/`<div>` typed into a collaborative doc is still inert; only
+// genuine comments are now hidden instead of shown as escaped text.
+const md = new MarkdownIt({ html: true, linkify: true });
+
+// CommonMark allows an HTML block (a comment included) to be indented up to 3 spaces —
+// markdown-it keeps that leading whitespace in the token's content, so the match must allow it
+// too, or an indented `<!-- note -->` falls through to the escaped-text branch below.
+const isHtmlComment = (html: string): boolean => /^\s*<!--[\s\S]*-->\s*$/.test(html);
+const renderHtmlToken = (tokens: Parameters<MarkdownIt["renderer"]["renderToken"]>[0], idx: number): string => {
+  const html = tokens[idx]!.content;
+  return isHtmlComment(html) ? "" : md.utils.escapeHtml(html);
+};
+md.renderer.rules.html_block = (tokens, idx) => renderHtmlToken(tokens, idx);
+md.renderer.rules.html_inline = (tokens, idx) => renderHtmlToken(tokens, idx);
 
 // Tag comment-anchor links (`#cmt-...`) so the preview can highlight them and
 // wire up click-to-focus behavior. When `showAnchor(id)` is false (e.g. a resolved
