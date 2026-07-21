@@ -128,4 +128,27 @@ describe("renderMarkdown HTML comments", () => {
       expect(html).not.toContain("&lt;!--");
     }
   });
+
+  it("escapes block-level raw HTML, not just inline — the XSS guard covers html_block too", () => {
+    // The inline `<script>` case above exercises the html_inline path; a `<script>` on its own
+    // line parses as an html_block. Both must escape (never emit raw HTML into the preview, which
+    // is fed to dangerouslySetInnerHTML). This locks the more dangerous, block-level path.
+    const html = renderMarkdown("<script>alert(1)</script>\n");
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
+
+    const div = renderMarkdown('<div onclick="alert(1)">x</div>\n');
+    expect(div).not.toContain("<div");
+    expect(div).toContain("&lt;div");
+  });
+
+  it("hides the trailing <!--inplan …--> comment block (the app's own comment store)", () => {
+    // doc.body carries the plan's trailing inplan comment block; under `html: false` it used to
+    // render as visible escaped JSON at the bottom of every preview. It must now be hidden.
+    const body = '# Title\n\nSome text.\n\n<!--inplan\n[ { "id": "cmt-abc123", "text": "note" } ]\n-->\n';
+    const html = renderMarkdown(body);
+    expect(html).toContain("Some text.");
+    expect(html).not.toContain("cmt-abc123");
+    expect(html).not.toContain("&lt;!--inplan");
+  });
 });
