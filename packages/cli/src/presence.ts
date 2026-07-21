@@ -24,6 +24,14 @@ export function announcePresence(docId: string, token: string, model?: string): 
     // Node has no DOM WebSocket; hand the socket the `ws` polyfill.
     const socket = new HocuspocusProviderWebsocket({ url: COLLAB_URL, WebSocketPolyfill: WebSocket });
     const provider = new HocuspocusProvider({ websocketProvider: socket, name: docId, document: ydoc, token });
+    // CROSS-REPO CONTRACT: this exact shape — {kind:"agent", agentLocation:"local", model?} — is
+    // read verbatim by two places in the proprietary `inplan-cloud` repo: the web's
+    // computeAgent() in packages/web/src/supabaseApi.ts (drives the connected-agent badge +
+    // Finish-turn availability) and the collab server's noteAwareness() in
+    // packages/collab/src/agentTrigger.ts (makes the managed cloud agent stand down while a local
+    // CLI holds the turn). There is no shared type across the AGPL/cloud boundary, so a field
+    // rename on either side breaks the OTHER side silently — this whole call is best-effort and
+    // swallows failures by design. If you change this shape, grep both consumers first.
     provider.awareness?.setLocalStateField("inplanPresence", { kind: "agent", agentLocation: "local", ...(model ? { model } : {}) });
     return {
       destroy: () => {
