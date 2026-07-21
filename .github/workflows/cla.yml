@@ -32,7 +32,11 @@ jobs:
         # next step reports a friendly `CLA` commit status instead (pending, not failure). The job
         # itself stays green. outcome (success/failure) is still readable below to drive that status.
         continue-on-error: true
-        if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
+        # Match with contains(), NOT ==: GitHub's comment box appends a trailing CRLF ("\r\n") to the
+        # body, so an exact `== 'the phrase'` skips a correctly-worded sign comment and the CLA status
+        # never flips green (hit on #43/#44 — the contributor signed, but the run skipped on the stray
+        # newline). contains() tolerates that trailing whitespace.
+        if: (contains(github.event.comment.body, 'recheck') || contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA')) || github.event_name == 'pull_request_target'
         # SHA-pinned (not a mutable tag): this action has contents/PR write + a PAT,
         # and the upstream repo is archived, so a force-pushed tag must not be able
         # to swap in malicious code. ca4a40a = v2.6.1 — the LAST release (the repo is
@@ -52,9 +56,10 @@ jobs:
           # contributors' signatures never recorded → the CLA check stayed red. cla-signatures is
           # outside that ruleset, so the bot can persist signatures again.
           branch: 'cla-signatures'
-          # The company's own maintainer account is the licensor, not a third-party
-          # contributor — it doesn't sign its own CLA. External contributors still must.
-          allowlist: 'melly-lgtm,dependabot[bot]'
+          # The company's own accounts are the licensor, not third-party contributors — their work is
+          # already owned via employment IP assignment, so they don't sign their own CLA. External
+          # contributors still must. (melly-lgtm = maintainer; jaden-cis = staff.)
+          allowlist: 'melly-lgtm,jaden-cis,dependabot[bot]'
           custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
           custom-notsigned-prcomment: |
             👋 Thanks for the contribution! This isn't a build failure — before we can merge, we just need a **one-time** sign-off on our [Contributor License Agreement](https://github.com/melly-lgtm/inplan/blob/main/CLA.md).

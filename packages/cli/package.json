@@ -12,10 +12,12 @@
     "dist"
   ],
   "dependencies": {
+    "@hocuspocus/provider": "^2.15.3",
     "@inplan/backend-supabase": "0.0.0",
     "@inplan/core": "0.0.0",
     "@supabase/supabase-js": "^2.45.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "yjs": "^13.6.31"
   },
   "devDependencies": {
     "@types/ws": "^8.5.10"
