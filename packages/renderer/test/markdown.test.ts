@@ -120,4 +120,12 @@ describe("renderMarkdown HTML comments", () => {
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;");
   });
+
+  it("hides a block HTML comment indented up to 3 spaces (CommonMark still treats it as an HTML block)", () => {
+    for (const indent of ["", " ", "  ", "   "]) {
+      const html = renderMarkdown(`# Title\n\n${indent}<!-- indented note -->\n\nAfter.\n`);
+      expect(html).not.toContain("indented note");
+      expect(html).not.toContain("&lt;!--");
+    }
+  });
 });

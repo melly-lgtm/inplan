@@ -15,7 +15,10 @@ import MarkdownIt from "markdown-it";
 // genuine comments are now hidden instead of shown as escaped text.
 const md = new MarkdownIt({ html: true, linkify: true });
 
-const isHtmlComment = (html: string): boolean => /^<!--[\s\S]*-->\s*$/.test(html);
+// CommonMark allows an HTML block (a comment included) to be indented up to 3 spaces —
+// markdown-it keeps that leading whitespace in the token's content, so the match must allow it
+// too, or an indented `<!-- note -->` falls through to the escaped-text branch below.
+const isHtmlComment = (html: string): boolean => /^\s*<!--[\s\S]*-->\s*$/.test(html);
 const renderHtmlToken = (tokens: Parameters<MarkdownIt["renderer"]["renderToken"]>[0], idx: number): string => {
   const html = tokens[idx]!.content;
   return isHtmlComment(html) ? "" : md.utils.escapeHtml(html);
