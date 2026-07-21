@@ -32,7 +32,11 @@ jobs:
         # next step reports a friendly `CLA` commit status instead (pending, not failure). The job
         # itself stays green. outcome (success/failure) is still readable below to drive that status.
         continue-on-error: true
-        if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
+        # Match with contains(), NOT ==: GitHub's comment box appends a trailing CRLF ("\r\n") to the
+        # body, so an exact `== 'the phrase'` skips a correctly-worded sign comment and the CLA status
+        # never flips green (hit on #43/#44 — the contributor signed, but the run skipped on the stray
+        # newline). contains() tolerates that trailing whitespace.
+        if: (contains(github.event.comment.body, 'recheck') || contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA')) || github.event_name == 'pull_request_target'
         # SHA-pinned (not a mutable tag): this action has contents/PR write + a PAT,
         # and the upstream repo is archived, so a force-pushed tag must not be able
         # to swap in malicious code. ca4a40a = v2.6.1 — the LAST release (the repo is
