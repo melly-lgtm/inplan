@@ -90,10 +90,17 @@ const tracingOn = Boolean(process.env.CI) || process.env.PWTRACE === "1" || proc
 /** Force-exit past the quit-confirmation dialog (a graceful close() would hang on the dialog). */
 export async function quit(app?: ElectronApplication): Promise<void> {
   // Save the trace before exiting (one zip per spec file, under test-results/ which CI uploads).
-  // If the app already crashed/closed, stopping the trace will reject — swallow it.
+  // Whole block is try/catch'd so it's strictly best-effort: a synchronous mkdirSync throw (bad
+  // perms, or a file named test-results) OR an async tracing.stop reject (app already crashed/closed)
+  // must never fail the run. A random suffix avoids any same-millisecond filename collision.
   if (app && tracingOn) {
-    mkdirSync("test-results", { recursive: true });
-    await app.context().tracing.stop({ path: join("test-results", `electron-trace-${Date.now()}.zip`) }).catch(() => {});
+    try {
+      mkdirSync("test-results", { recursive: true });
+      const uniq = Math.random().toString(36).slice(2, 8);
+      await app.context().tracing.stop({ path: join("test-results", `electron-trace-${Date.now()}-${uniq}.zip`) });
+    } catch {
+      /* best-effort — tracing never breaks the run */
+    }
   }
   await app?.evaluate(({ app: a }) => a.exit(0)).catch(() => {});
   await app?.close().catch(() => {});
