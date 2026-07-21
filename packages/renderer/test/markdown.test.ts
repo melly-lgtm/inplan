@@ -89,4 +89,35 @@ describe("renderMarkdown HTML comments", () => {
     renderMarkdown(body);
     expect(body).toBe("before <!-- note --> after");
   });
+
+  it("does not eat a paragraph sitting between two inline code spans that each contain comment delimiters", () => {
+    // A naive `<!--[\s\S]*?-->` regex over raw text would span from the `<!--` inside the first
+    // code span to the `-->` inside the second, deleting everything between — including this
+    // paragraph. markdown-it's own backtick rule consumes each code span before html_inline ever
+    // sees the characters inside it, so this can't happen here.
+    const body = "Use `<!--` to start.\n\nThis paragraph must survive.\n\nUse `-->` to end.\n";
+    const html = renderMarkdown(body);
+    expect(html).toContain("This paragraph must survive.");
+    expect(html).toContain("<code>&lt;!--</code>");
+    expect(html).toContain("<code>--&gt;</code>");
+  });
+
+  it("does not strip a `<!-- -->` example inside an UNCLOSED fenced code block", () => {
+    const html = renderMarkdown("```html\n<!-- unclosed fence, no closing marker -->\n");
+    expect(html).toContain("unclosed fence, no closing marker");
+  });
+
+  it("requires the closing fence to match the opening fence's character and length (~~~ isn't closed by ```)", () => {
+    // A stray ``` inside a ~~~ block must not be treated as closing it — the `<!-- -->` inside
+    // stays a syntax example either way, but for the RIGHT reason (still inside the fence).
+    const body = "~~~html\n<!-- inside a tilde fence -->\n```\nstill inside\n~~~\n";
+    const html = renderMarkdown(body);
+    expect(html).toContain("inside a tilde fence");
+  });
+
+  it("still escapes non-comment raw HTML as visible literal text (XSS guard unchanged)", () => {
+    const html = renderMarkdown('before <script>alert(1)</script> after');
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
+  });
 });
