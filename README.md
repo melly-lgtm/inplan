@@ -166,6 +166,9 @@ The plan should [use Postgres](#cmt-abfdb1) for storage.
 Because the format is plain Markdown plus one HTML comment, a plan renders fine in any
 Markdown viewer and diffs cleanly in code review.
 
+The editor has a handful of keyboard shortcuts (find, undo/redo, save, add comment) —
+see the [keyboard shortcuts reference](./docs/shortcuts.md).
+
 ## Project status
 
 inplan **aims** to support every combination of:
