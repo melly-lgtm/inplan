@@ -83,8 +83,9 @@ export async function launch(opts: LaunchOpts = {}): Promise<Ctx> {
   return { app, win, dir, home, docPath, sidecarDir };
 }
 
-/** Whether to record a Playwright trace (on in CI; opt in locally with PWTRACE=1). */
-const tracingOn = Boolean(process.env.CI || process.env.PWTRACE);
+/** Whether to record a Playwright trace (on in CI; opt in locally with PWTRACE=1). env values are
+ *  strings, so match PWTRACE explicitly — otherwise PWTRACE=0/false would still be truthy. */
+const tracingOn = Boolean(process.env.CI) || process.env.PWTRACE === "1" || process.env.PWTRACE === "true";
 
 /** Force-exit past the quit-confirmation dialog (a graceful close() would hang on the dialog). */
 export async function quit(app?: ElectronApplication): Promise<void> {
