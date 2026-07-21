@@ -75,12 +75,33 @@ export async function launch(opts: LaunchOpts = {}): Promise<Ctx> {
     env: { ...process.env, INPLAN_HOME: home, INPLAN_SIDECAR_DIR: sidecarDir, ...opts.env },
   });
   const win = await app.firstWindow();
+  // Trace the whole app context so a headless-CI failure is diagnosable (config `use.trace` can't
+  // reach a hand-launched Electron app). Opt-in via CI or PWTRACE=1 locally; the trace is saved in
+  // quit(). Best-effort — tracing must never break the run.
+  if (tracingOn) await app.context().tracing.start({ screenshots: true, snapshots: true, sources: true }).catch(() => {});
   if (!opts.showOnboarding) await expect(win.locator("body")).toContainText(opts.expectText ?? "alpha", { timeout: 15_000 });
   return { app, win, dir, home, docPath, sidecarDir };
 }
 
+/** Whether to record a Playwright trace (on in CI; opt in locally with PWTRACE=1). env values are
+ *  strings, so match PWTRACE explicitly — otherwise PWTRACE=0/false would still be truthy. */
+const tracingOn = Boolean(process.env.CI) || process.env.PWTRACE === "1" || process.env.PWTRACE === "true";
+
 /** Force-exit past the quit-confirmation dialog (a graceful close() would hang on the dialog). */
 export async function quit(app?: ElectronApplication): Promise<void> {
+  // Save the trace before exiting (one zip per spec file, under test-results/ which CI uploads).
+  // Whole block is try/catch'd so it's strictly best-effort: a synchronous mkdirSync throw (bad
+  // perms, or a file named test-results) OR an async tracing.stop reject (app already crashed/closed)
+  // must never fail the run. A random suffix avoids any same-millisecond filename collision.
+  if (app && tracingOn) {
+    try {
+      mkdirSync("test-results", { recursive: true });
+      const uniq = Math.random().toString(36).slice(2, 8);
+      await app.context().tracing.stop({ path: join("test-results", `electron-trace-${Date.now()}-${uniq}.zip`) });
+    } catch {
+      /* best-effort — tracing never breaks the run */
+    }
+  }
   await app?.evaluate(({ app: a }) => a.exit(0)).catch(() => {});
   await app?.close().catch(() => {});
 }
