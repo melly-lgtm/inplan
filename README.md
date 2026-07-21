@@ -169,6 +169,23 @@ Markdown viewer and diffs cleanly in code review.
 The editor has a handful of keyboard shortcuts (find, undo/redo, save, add comment) —
 see the [keyboard shortcuts reference](./docs/shortcuts.md).
 
+## Works with
+
+inplan plugs into your coding agent through a bundled **skill** plus relay hooks: on
+install it detects the agents present on your machine and drops the skill in for each
+(`inplan install-skill` does this manually). The agent then drives the loop through the
+CLI — `inplan open` / `wait` / `signal` — while you review in the editor.
+
+| Agent | Detected at | Support |
+| --- | --- | --- |
+| **Claude Code** | `~/.claude` | Primary — actively developed and tested. |
+| **Codex** | `~/.codex` | Wired (skill + hooks installed); lightly exercised. |
+| **Pi** | `~/.pi/agent` | Wired (skill + hooks installed); lightly exercised. |
+
+If your agent isn't detected automatically, point it at the bundled skill
+(`skill/SKILL.md`) and ask it to plan. Any agent that can read a skill and run the
+`inplan` CLI can participate.
+
 ## Project status
 
 inplan **aims** to support every combination of:
