@@ -157,7 +157,14 @@ export function registerEditorControlSpecs(h: EditorHarness, pw: PlaywrightApi):
       await revealed.getByTitle("More").first().click();
       await page.getByRole("button", { name: "Delete" }).click();
       await expect(page.locator("article", { hasText: probe })).toHaveCount(0);
-      await page.locator(".ap-reveal").click().catch(() => {}); // un-reveal the (now-empty) resolved view
+      // Un-reveal only if the toggle is still there. Deleting the last resolved/orphaned thread
+      // unmounts `.ap-reveal` (it renders only while resolvedCount || orphanedCount > 0), so a bare
+      // `.click()` would auto-wait the FULL test timeout for a gone element — the `.catch` can't
+      // save it because the test-level timeout fires first. This was the composer spec's flaky 30s
+      // hang on the Electron nightly (#45). Guard on visibility instead.
+      if (await page.locator(".ap-reveal").isVisible().catch(() => false)) {
+        await page.locator(".ap-reveal").click().catch(() => {});
+      }
     });
 
     test("the composer audience switch offers talk-to-agent vs leave-a-memo", async () => {
