@@ -1,0 +1,140 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Weekly check for a newer Electron release. Deliberately does NOT open a PR — this repo's
+# authorship gate (authorship.yml) rejects any commit with a bot author/committer (`\[bot\]`
+# in authorship_lib.sh), so a Dependabot-style auto-PR would never pass. Instead this builds +
+# type-checks + tests against the latest Electron ephemerally (nothing committed or pushed),
+# and — on a real macOS runner — checks Gatekeeper (`spctl`) accepts the downloaded binary, the
+# same check that caught Electron 31.7.7's revoked notarization. Result goes to a tracking
+# issue so a human does the actual version-bump commit with full signal in hand.
+
+name: electron-update-check
+
+on:
+  schedule:
+    - cron: "0 8 * * 1" # Monday 08:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      stale: ${{ steps.diff.outputs.stale }}
+      current: ${{ steps.diff.outputs.current }}
+      latest: ${{ steps.diff.outputs.latest }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - id: diff
+        run: |
+          current=$(node -p "require('./packages/app/package.json').devDependencies.electron.replace(/^\^/, '')")
+          latest=$(npm view electron version)
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          if [ "$current" != "$latest" ]; then
+            echo "pinned ($current) != latest ($latest)"; echo "stale=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already on latest ($current)"; echo "stale=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-test:
+    needs: check-version
+    if: needs.check-version.outputs.stale == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      result: ${{ steps.run.outputs.result }}
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1" # same as ci.yml — no Electron launch here, just build/typecheck/test
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm install
+      # Ephemeral bump: not committed, only affects this runner's checkout.
+      - run: npm pkg set "devDependencies.electron=^${{ needs.check-version.outputs.latest }}" -w @inplan/app
+      - run: npm install
+      - id: run
+        run: |
+          if npm run build && npm run typecheck && npm test; then
+            echo "result=pass" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+          fi
+
+  gatekeeper-macos:
+    needs: check-version
+    if: needs.check-version.outputs.stale == 'true'
+    runs-on: macos-latest
+    outputs:
+      result: ${{ steps.spctl.outputs.result }}
+      detail: ${{ steps.spctl.outputs.detail }}
+    steps:
+      - name: Download the candidate Electron build
+        run: |
+          mkdir -p /tmp/gk-check && cd /tmp/gk-check
+          npm init -y >/dev/null
+          npm install --no-save "electron@${{ needs.check-version.outputs.latest }}"
+      - id: spctl
+        run: |
+          app="/tmp/gk-check/node_modules/electron/dist/Electron.app"
+          out=$(spctl -a -vvv --type execute "$app" 2>&1) || true
+          echo "$out"
+          detail=$(echo "$out" | tail -1 | sed 's/"/\\"/g')
+          echo "detail=$detail" >> "$GITHUB_OUTPUT"
+          if echo "$out" | grep -qi "revoked\|rejected\|malware"; then
+            echo "result=blocked" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=ok" >> "$GITHUB_OUTPUT"
+          fi
+
+  report:
+    needs: [check-version, build-test, gatekeeper-macos]
+    if: always() && needs.check-version.outputs.stale == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - run: |
+          CURRENT="${{ needs.check-version.outputs.current }}"
+          LATEST="${{ needs.check-version.outputs.latest }}"
+          BUILD="${{ needs.build-test.outputs.result }}"
+          GATEKEEPER="${{ needs.gatekeeper-macos.outputs.result }}"
+          DETAIL="${{ needs.gatekeeper-macos.outputs.detail }}"
+          URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          verdict="Safe to bump."
+          if [ "$BUILD" != "pass" ]; then verdict="Build/typecheck/test FAILED against $LATEST — needs a fix before bumping."; fi
+          if [ "$GATEKEEPER" = "blocked" ]; then verdict="Gatekeeper flagged this build (${DETAIL}) — do NOT bump yet, wait for the next release."; fi
+
+          body="Pinned: \`$CURRENT\` → npm latest: \`$LATEST\`
+
+          - build/typecheck/test: **$BUILD**
+          - macOS Gatekeeper (\`spctl\`): **$GATEKEEPER** — \`$DETAIL\`
+
+          $verdict
+
+          To bump by hand: \`npm pkg set devDependencies.electron=\"^$LATEST\" -w @inplan/app && npm install\`, then commit + open a PR as usual (this check never commits — see authorship.yml).
+
+          Run: $URL"
+
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --label electron-update --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "$body"
+          else
+            gh label create electron-update --repo "${{ github.repository }}" --color 0E8A16 --description "A newer Electron release is available" 2>/dev/null || true
+            gh issue create --repo "${{ github.repository }}" --title "Electron $LATEST available (pinned: $CURRENT)" --label electron-update --body "$body"
+          fi
