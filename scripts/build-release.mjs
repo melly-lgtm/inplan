@@ -69,8 +69,15 @@ const installedVersion = (spec) => {
   const pj = p(`node_modules/${spec}/package.json`);
   return existsSync(pj) ? JSON.parse(readFileSync(pj, "utf8")).version : null;
 };
-// electron is never imported by the bundle (the CLI spawns its binary), so add it explicitly.
-const dependencies = { electron: appPkg.devDependencies.electron };
+// electron is never imported by the bundle (the CLI spawns its binary), so add it explicitly —
+// guarded like the derived externals, since a missing/renamed key would become `undefined` and
+// JSON.stringify would silently drop it, shipping a package without electron (the very failure
+// mode this script prevents).
+const electronVersion = appPkg.devDependencies?.electron;
+if (!electronVersion) {
+  throw new Error("packages/app/package.json is missing devDependencies.electron — cannot pin the published electron dependency.");
+}
+const dependencies = { electron: electronVersion };
 const unresolved = [];
 for (const spec of [...externals].sort()) {
   const range = declaredRange(spec) ?? (installedVersion(spec) ? `^${installedVersion(spec)}` : null);
