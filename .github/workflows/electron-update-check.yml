@@ -1,0 +1,189 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Weekly check for a newer Electron release. Deliberately does NOT open a PR — this repo's
+# authorship gate (authorship.yml) rejects any commit with a bot author/committer (`\[bot\]`
+# in authorship_lib.sh), so a Dependabot-style auto-PR would never pass. Instead this builds +
+# type-checks + tests against the latest Electron ephemerally (nothing committed or pushed),
+# and — on a real macOS runner — checks Gatekeeper (`spctl`) accepts the downloaded binary, the
+# same check that caught Electron 31.7.7's revoked notarization. Result goes to a tracking
+# issue so a human does the actual version-bump commit with full signal in hand.
+
+name: electron-update-check
+
+on:
+  schedule:
+    - cron: "0 8 * * 1" # Monday 08:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# A manual dispatch overlapping the Monday cron would race the tracking-issue dedup in `report`
+# (both runs list open issues, both see none, both create one). Queue instead of running both.
+concurrency:
+  group: electron-update-check
+  cancel-in-progress: false
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      stale: ${{ steps.diff.outputs.stale }}
+      current: ${{ steps.diff.outputs.current }}
+      latest: ${{ steps.diff.outputs.latest }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - id: diff
+        run: |
+          current=$(node -p "require('./packages/app/package.json').devDependencies.electron.replace(/^\^/, '')")
+          latest=$(npm view electron version)
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          # Direction-aware (latest > current), not a plain !=: a plain string mismatch would
+          # also fire — and suggest a downgrade — if we were ever pinned ahead of npm's latest tag.
+          cmp=$(node -e "
+            const [a, b] = process.argv.slice(1).map(v => v.split('.').map(Number));
+            console.log(a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+          " "$latest" "$current")
+          if [ "$cmp" -gt 0 ]; then
+            echo "pinned ($current) is behind latest ($latest)"; echo "stale=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pinned ($current) is already current or ahead of latest ($latest)"; echo "stale=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-test:
+    needs: check-version
+    if: needs.check-version.outputs.stale == 'true'
+    runs-on: ubuntu-latest
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1" # same as ci.yml — no Electron launch here, just build/typecheck/test
+      LATEST: ${{ needs.check-version.outputs.latest }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm install
+      # Ephemeral bump: not committed, only affects this runner's checkout.
+      - run: npm pkg set "devDependencies.electron=^${LATEST}" -w @inplan/app
+      - run: npm install
+      # No pass/fail swallowing: let these fail for real, so the job (and therefore this whole
+      # workflow run) shows red in the Actions UI on a genuine break — not just in the issue body.
+      # `report` still runs afterward via `if: always()` and reads the job's real `result`.
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm test
+
+  gatekeeper-macos:
+    needs: check-version
+    if: needs.check-version.outputs.stale == 'true'
+    runs-on: macos-latest
+    outputs:
+      result: ${{ steps.spctl.outputs.result }}
+      detail: ${{ steps.spctl.outputs.detail }}
+    steps:
+      - name: Download the candidate Electron build
+        env:
+          LATEST: ${{ needs.check-version.outputs.latest }}
+        run: |
+          mkdir -p /tmp/gk-check && cd /tmp/gk-check
+          npm init -y >/dev/null
+          npm install --no-save "electron@${LATEST}"
+      - id: spctl
+        # Fail CLOSED: only the two patterns confirmed by hand (a clean accept, and the
+        # ad-hoc-signed dev binary's harmless "no resources" quirk — both 31.7.7 and 43.2.0
+        # hit the latter with a non-zero exit, so exit code alone can't separate ok/blocked)
+        # count as "ok". Anything else — including a failed download, a missing app bundle, or
+        # spctl output we don't recognize — is "error", never silently "ok". A non-"ok" result
+        # also fails this step for real, so it's visible on the job, not just in the issue body.
+        run: |
+          app="/tmp/gk-check/node_modules/electron/dist/Electron.app"
+          if [ ! -d "$app" ]; then
+            echo "result=error" >> "$GITHUB_OUTPUT"
+            echo "detail=Electron.app not found — the download step likely failed" >> "$GITHUB_OUTPUT"
+            echo "::error::Electron.app not found — the download step likely failed"
+            exit 1
+          fi
+
+          set +e
+          out=$(spctl -a -vvv --type execute "$app" 2>&1)
+          spctl_exit=$?
+          set -e
+          echo "$out"
+
+          detail=$(printf '%s' "$out" | tail -1 | sed 's/"/\\"/g')
+          echo "detail=$detail" >> "$GITHUB_OUTPUT"
+
+          if printf '%s' "$out" | grep -qi "revoked\|rejected\|malware"; then
+            result=blocked
+          elif [ "$spctl_exit" -eq 0 ]; then
+            result=ok
+          elif printf '%s' "$out" | grep -qi "no resources but signature indicates they must be present"; then
+            result=ok
+          else
+            result=error
+          fi
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+          if [ "$result" != "ok" ]; then
+            echo "::error::Gatekeeper check did not pass cleanly (result=$result): $detail"
+            exit 1
+          fi
+
+  report:
+    needs: [check-version, build-test, gatekeeper-macos]
+    if: always() && needs.check-version.outputs.stale == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURRENT: ${{ needs.check-version.outputs.current }}
+          LATEST: ${{ needs.check-version.outputs.latest }}
+          BUILD: ${{ needs.build-test.result }}
+          GATEKEEPER: ${{ needs.gatekeeper-macos.outputs.result }}
+          DETAIL: ${{ needs.gatekeeper-macos.outputs.detail }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Fail CLOSED: "Safe to bump" only when BOTH signals explicitly say so. Anything
+          # missing/unrecognized (a skipped or crashed job, an empty output) reports as
+          # inconclusive rather than defaulting to safe. BUILD is the real `build-test` job
+          # result ("success"/"failure"/"cancelled"/"skipped"), not a hand-rolled string.
+          if [ "$BUILD" = "success" ] && [ "$GATEKEEPER" = "ok" ]; then
+            verdict="Safe to bump."
+          elif [ "$GATEKEEPER" = "blocked" ]; then
+            verdict="Gatekeeper flagged this build (${DETAIL:-no detail}) — do NOT bump."
+          elif [ "$BUILD" != "success" ]; then
+            verdict="Build/typecheck/test against $LATEST did not succeed (job result: ${BUILD:-missing}) — needs a fix before bumping."
+          else
+            verdict="Gatekeeper check was inconclusive (result: ${GATEKEEPER:-missing}, detail: ${DETAIL:-none}) — investigate before bumping."
+          fi
+
+          body="Pinned: \`$CURRENT\` → npm latest: \`$LATEST\`
+
+          - build/typecheck/test job: **$BUILD**
+          - macOS Gatekeeper (\`spctl\`): **$GATEKEEPER** — \`$DETAIL\`
+
+          $verdict
+
+          To bump by hand: \`npm pkg set devDependencies.electron=\"^$LATEST\" -w @inplan/app && npm install\`, then commit + open a PR as usual (this check never commits — see authorship.yml).
+
+          Run: $RUN_URL"
+
+          existing=$(gh issue list --repo "$REPO" --state open --label electron-update --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body "$body"
+          else
+            gh label create electron-update --repo "$REPO" --color 0E8A16 --description "A newer Electron release is available" 2>/dev/null || true
+            gh issue create --repo "$REPO" --title "Electron $LATEST available (pinned: $CURRENT)" --label electron-update --body "$body"
+          fi

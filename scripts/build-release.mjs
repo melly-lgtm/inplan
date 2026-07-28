@@ -32,6 +32,12 @@ const appOut = p("packages/app/out");
 if (!existsSync(cliBundle)) throw new Error("cli bundle missing — did the cli build run?");
 if (!existsSync(`${appOut}/main/index.cjs`)) throw new Error("app build (out/main/index.cjs) missing");
 
+// The published package can never run on a Node older than what its bundled Electron itself
+// requires, so read that floor from the installed binary rather than hand-maintaining a
+// separate number here (Electron's own minimum has crept up across majors: 22 -> 22.12.0).
+const electronEngineNode = readPkg("node_modules/electron/package.json").engines?.node;
+if (!electronEngineNode) throw new Error("node_modules/electron/package.json has no engines.node — did npm install run?");
+
 // Derive the third-party runtime deps the published package must declare DIRECTLY from the CLI
 // bundle. tsup bundles the internal @inplan/* packages but leaves every third-party import
 // external (see packages/cli/tsup.config.ts); each such import must appear in `dependencies` or a
@@ -125,7 +131,7 @@ writeFileSync(
       type: "module",
       bin: { inplan: "bin/cli.js" },
       files: ["bin", "app", "skill", "LICENSE"],
-      engines: { node: ">=22" },
+      engines: { node: electronEngineNode },
       // npm→skill bootstrap: offer the skill to AI agents already on the machine. Guard-
       // railed in `install-skill` (opt-out, idempotent, agent-must-exist) and `|| true` so a
       // global install never fails over it. Skipped under `npm install --ignore-scripts`
