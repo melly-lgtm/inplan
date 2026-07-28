@@ -12,6 +12,7 @@
 
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync } from "node:fs";
+import { builtinModules } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -31,11 +32,67 @@ const appOut = p("packages/app/out");
 if (!existsSync(cliBundle)) throw new Error("cli bundle missing — did the cli build run?");
 if (!existsSync(`${appOut}/main/index.cjs`)) throw new Error("app build (out/main/index.cjs) missing");
 
-// The CLI bundle externalizes these (its @inplan/* deps are bundled in); the published
-// package must declare them + electron so a global install resolves them.
-const RUNTIME = ["@supabase/supabase-js", "ws"];
-const dependencies = { electron: appPkg.devDependencies.electron };
-for (const d of RUNTIME) dependencies[d] = cli.dependencies[d];
+// Derive the third-party runtime deps the published package must declare DIRECTLY from the CLI
+// bundle. tsup bundles the internal @inplan/* packages but leaves every third-party import
+// external (see packages/cli/tsup.config.ts); each such import must appear in `dependencies` or a
+// global install crashes at first run with ERR_MODULE_NOT_FOUND. Deriving — never hand-listing —
+// keeps the manifest in lockstep with what the bundle actually imports: a hand-maintained
+// allowlist silently dropped `yjs` + `@hocuspocus/provider` in 0.1.20 and broke `npm i -g inplan`.
+const BUILTIN = new Set([...builtinModules, ...builtinModules.map((m) => `node:${m}`)]);
+// Leading [^.\w$] rejects member access (`supabase.from("documents")`) and identifiers that merely
+// end in from/import/require — only true ESM/require specifier forms are captured.
+const IMPORT_FORMS = [
+  /(?:^|[^.\w$])from\s*["']([^"']+)["']/g, //         import/export … from "x"
+  /(?:^|[^.\w$])import\s*["']([^"']+)["']/g, //       side-effect  import "x"
+  /(?:^|[^.\w$])import\s*\(\s*["']([^"']+)["']/g, //  dynamic      import("x")
+  /(?:^|[^.\w$])require\s*\(\s*["']([^"']+)["']/g, // require      require("x")
+];
+const bundleSrc = readFileSync(cliBundle, "utf8");
+const externals = new Set();
+for (const re of IMPORT_FORMS) {
+  let m;
+  while ((m = re.exec(bundleSrc))) {
+    let spec = m[1];
+    if (spec.startsWith(".") || spec.startsWith("/") || BUILTIN.has(spec)) continue; // relative / builtin
+    // Reduce a subpath import to its installable package root: `@scope/pkg` or `pkg`.
+    spec = spec.startsWith("@") ? spec.split("/").slice(0, 2).join("/") : spec.split("/")[0];
+    externals.add(spec);
+  }
+}
+
+// Resolve each external to a concrete version. Prefer a range a workspace already declares
+// (preserves intent for @supabase/supabase-js, ws); otherwise pin the installed version — which
+// is exactly what got bundled and tested. Read node_modules/<pkg>/package.json directly so it
+// works even when a package's `exports` map hides ./package.json (e.g. @hocuspocus/provider).
+const declaredRange = (spec) => cli.dependencies?.[spec] ?? appPkg.dependencies?.[spec];
+const installedVersion = (spec) => {
+  const pj = p(`node_modules/${spec}/package.json`);
+  return existsSync(pj) ? JSON.parse(readFileSync(pj, "utf8")).version : null;
+};
+// electron is never imported by the bundle (the CLI spawns its binary), so add it explicitly —
+// guarded like the derived externals, since a missing/renamed key would become `undefined` and
+// JSON.stringify would silently drop it, shipping a package without electron (the very failure
+// mode this script prevents).
+const electronVersion = appPkg.devDependencies?.electron;
+if (!electronVersion) {
+  throw new Error("packages/app/package.json is missing devDependencies.electron — cannot pin the published electron dependency.");
+}
+const dependencies = { electron: electronVersion };
+const unresolved = [];
+for (const spec of [...externals].sort()) {
+  const range = declaredRange(spec) ?? (installedVersion(spec) ? `^${installedVersion(spec)}` : null);
+  if (range) dependencies[spec] = range;
+  else unresolved.push(spec);
+}
+if (unresolved.length) {
+  throw new Error(
+    `Unresolvable CLI-bundle import(s): ${unresolved.join(", ")}. They are external in the bundle ` +
+      `but neither declared by a workspace nor installed under node_modules, so the published ` +
+      `package would crash with ERR_MODULE_NOT_FOUND. Declare each on the owning @inplan/* package ` +
+      `(or packages/cli) and reinstall before releasing.`,
+  );
+}
+console.log(`• Runtime deps derived from bundle: ${Object.keys(dependencies).sort().join(", ")}`);
 
 console.log("• Assembling release/ …");
 const rel = p("release");
