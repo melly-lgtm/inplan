@@ -18,6 +18,12 @@ on:
 permissions:
   contents: read
 
+# A manual dispatch overlapping the Monday cron would race the tracking-issue dedup in `report`
+# (both runs list open issues, both see none, both create one). Queue instead of running both.
+concurrency:
+  group: electron-update-check
+  cancel-in-progress: false
+
 jobs:
   check-version:
     runs-on: ubuntu-latest
@@ -35,20 +41,25 @@ jobs:
           latest=$(npm view electron version)
           echo "current=$current" >> "$GITHUB_OUTPUT"
           echo "latest=$latest" >> "$GITHUB_OUTPUT"
-          if [ "$current" != "$latest" ]; then
-            echo "pinned ($current) != latest ($latest)"; echo "stale=true" >> "$GITHUB_OUTPUT"
+          # Direction-aware (latest > current), not a plain !=: a plain string mismatch would
+          # also fire — and suggest a downgrade — if we were ever pinned ahead of npm's latest tag.
+          cmp=$(node -e "
+            const [a, b] = process.argv.slice(1).map(v => v.split('.').map(Number));
+            console.log(a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+          " "$latest" "$current")
+          if [ "$cmp" -gt 0 ]; then
+            echo "pinned ($current) is behind latest ($latest)"; echo "stale=true" >> "$GITHUB_OUTPUT"
           else
-            echo "already on latest ($current)"; echo "stale=false" >> "$GITHUB_OUTPUT"
+            echo "pinned ($current) is already current or ahead of latest ($latest)"; echo "stale=false" >> "$GITHUB_OUTPUT"
           fi
 
   build-test:
     needs: check-version
     if: needs.check-version.outputs.stale == 'true'
     runs-on: ubuntu-latest
-    outputs:
-      result: ${{ steps.run.outputs.result }}
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1" # same as ci.yml — no Electron launch here, just build/typecheck/test
+      LATEST: ${{ needs.check-version.outputs.latest }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -59,15 +70,14 @@ jobs:
           cache: npm
       - run: npm install
       # Ephemeral bump: not committed, only affects this runner's checkout.
-      - run: npm pkg set "devDependencies.electron=^${{ needs.check-version.outputs.latest }}" -w @inplan/app
+      - run: npm pkg set "devDependencies.electron=^${LATEST}" -w @inplan/app
       - run: npm install
-      - id: run
-        run: |
-          if npm run build && npm run typecheck && npm test; then
-            echo "result=pass" >> "$GITHUB_OUTPUT"
-          else
-            echo "result=fail" >> "$GITHUB_OUTPUT"
-          fi
+      # No pass/fail swallowing: let these fail for real, so the job (and therefore this whole
+      # workflow run) shows red in the Actions UI on a genuine break — not just in the issue body.
+      # `report` still runs afterward via `if: always()` and reads the job's real `result`.
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm test
 
   gatekeeper-macos:
     needs: check-version
@@ -78,22 +88,26 @@ jobs:
       detail: ${{ steps.spctl.outputs.detail }}
     steps:
       - name: Download the candidate Electron build
+        env:
+          LATEST: ${{ needs.check-version.outputs.latest }}
         run: |
           mkdir -p /tmp/gk-check && cd /tmp/gk-check
           npm init -y >/dev/null
-          npm install --no-save "electron@${{ needs.check-version.outputs.latest }}"
+          npm install --no-save "electron@${LATEST}"
       - id: spctl
         # Fail CLOSED: only the two patterns confirmed by hand (a clean accept, and the
         # ad-hoc-signed dev binary's harmless "no resources" quirk — both 31.7.7 and 43.2.0
         # hit the latter with a non-zero exit, so exit code alone can't separate ok/blocked)
         # count as "ok". Anything else — including a failed download, a missing app bundle, or
-        # spctl output we don't recognize — is "error", never silently "ok".
+        # spctl output we don't recognize — is "error", never silently "ok". A non-"ok" result
+        # also fails this step for real, so it's visible on the job, not just in the issue body.
         run: |
           app="/tmp/gk-check/node_modules/electron/dist/Electron.app"
           if [ ! -d "$app" ]; then
             echo "result=error" >> "$GITHUB_OUTPUT"
             echo "detail=Electron.app not found — the download step likely failed" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "::error::Electron.app not found — the download step likely failed"
+            exit 1
           fi
 
           set +e
@@ -115,6 +129,10 @@ jobs:
             result=error
           fi
           echo "result=$result" >> "$GITHUB_OUTPUT"
+          if [ "$result" != "ok" ]; then
+            echo "::error::Gatekeeper check did not pass cleanly (result=$result): $detail"
+            exit 1
+          fi
 
   report:
     needs: [check-version, build-test, gatekeeper-macos]
@@ -123,48 +141,49 @@ jobs:
     permissions:
       contents: read
       issues: write
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
-      - run: |
-          CURRENT="${{ needs.check-version.outputs.current }}"
-          LATEST="${{ needs.check-version.outputs.latest }}"
-          BUILD="${{ needs.build-test.outputs.result }}"
-          GATEKEEPER="${{ needs.gatekeeper-macos.outputs.result }}"
-          DETAIL="${{ needs.gatekeeper-macos.outputs.detail }}"
-          URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURRENT: ${{ needs.check-version.outputs.current }}
+          LATEST: ${{ needs.check-version.outputs.latest }}
+          BUILD: ${{ needs.build-test.result }}
+          GATEKEEPER: ${{ needs.gatekeeper-macos.outputs.result }}
+          DETAIL: ${{ needs.gatekeeper-macos.outputs.detail }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
           # Fail CLOSED: "Safe to bump" only when BOTH signals explicitly say so. Anything
           # missing/unrecognized (a skipped or crashed job, an empty output) reports as
-          # inconclusive rather than defaulting to safe.
-          if [ "$BUILD" = "pass" ] && [ "$GATEKEEPER" = "ok" ]; then
+          # inconclusive rather than defaulting to safe. BUILD is the real `build-test` job
+          # result ("success"/"failure"/"cancelled"/"skipped"), not a hand-rolled string.
+          if [ "$BUILD" = "success" ] && [ "$GATEKEEPER" = "ok" ]; then
             verdict="Safe to bump."
           elif [ "$GATEKEEPER" = "blocked" ]; then
             verdict="Gatekeeper flagged this build (${DETAIL:-no detail}) — do NOT bump."
-          elif [ "$BUILD" != "pass" ]; then
-            verdict="Build/typecheck/test FAILED against $LATEST — needs a fix before bumping."
+          elif [ "$BUILD" != "success" ]; then
+            verdict="Build/typecheck/test against $LATEST did not succeed (job result: ${BUILD:-missing}) — needs a fix before bumping."
           else
             verdict="Gatekeeper check was inconclusive (result: ${GATEKEEPER:-missing}, detail: ${DETAIL:-none}) — investigate before bumping."
           fi
 
           body="Pinned: \`$CURRENT\` → npm latest: \`$LATEST\`
 
-          - build/typecheck/test: **$BUILD**
+          - build/typecheck/test job: **$BUILD**
           - macOS Gatekeeper (\`spctl\`): **$GATEKEEPER** — \`$DETAIL\`
 
           $verdict
 
           To bump by hand: \`npm pkg set devDependencies.electron=\"^$LATEST\" -w @inplan/app && npm install\`, then commit + open a PR as usual (this check never commits — see authorship.yml).
 
-          Run: $URL"
+          Run: $RUN_URL"
 
-          existing=$(gh issue list --repo "${{ github.repository }}" --state open --label electron-update --json number --jq '.[0].number' 2>/dev/null || true)
+          existing=$(gh issue list --repo "$REPO" --state open --label electron-update --json number --jq '.[0].number' 2>/dev/null || true)
           if [ -n "$existing" ]; then
-            gh issue comment "$existing" --repo "${{ github.repository }}" --body "$body"
+            gh issue comment "$existing" --repo "$REPO" --body "$body"
           else
-            gh label create electron-update --repo "${{ github.repository }}" --color 0E8A16 --description "A newer Electron release is available" 2>/dev/null || true
-            gh issue create --repo "${{ github.repository }}" --title "Electron $LATEST available (pinned: $CURRENT)" --label electron-update --body "$body"
+            gh label create electron-update --repo "$REPO" --color 0E8A16 --description "A newer Electron release is available" 2>/dev/null || true
+            gh issue create --repo "$REPO" --title "Electron $LATEST available (pinned: $CURRENT)" --label electron-update --body "$body"
           fi
