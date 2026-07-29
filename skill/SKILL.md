@@ -87,6 +87,13 @@ anchored comment is an inline Markdown link whose href is the comment id:
 - **Span comment**: exactly one in-body `[text](#cmt-id)` link; no `parentId`/`anchor`.
 - **Reply / answer**: `parentId` set, no link. An answer carries `selected: [labels]`.
 - **Document-level**: `anchor: "doc"`, no link.
+- **Incorporating an answer**: when you fold a question's answer into the body, keep the
+  anchor link — rewrite the linked text from the open question to the resulting statement,
+  don't delete the link. Anchoring is id-based, not text-based, so the link survives the
+  rewrite (`[Team size is fixed at 3.](#cmt-m4n5o6)` is fine). Signal that the thread is done
+  with `may_resolve` (below), not by removing its anchor. Only actually orphan a span
+  comment (drop its link) when its topic is genuinely gone, not merely answered — and then
+  follow the `confirm_required` protocol (see § Turn-taking).
 - **Question**: `question.multiSelect` false = pick one (radio), true = pick many
   (checkbox); the human may also answer with free text.
 - Generate ids as `cmt-` + 6 base36 characters.
@@ -158,7 +165,15 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
      listening. `humanLocked: false`.
    - `confirm_required` — your edit removed an anchored comment (`lost`). If
      intentional, re-run with `--confirmed-comment-deletion=<ids>`; otherwise
-     restore the anchor link and try again.
+     restore the anchor link and try again. Deleting a comment that has replies
+     orphans those replies too — `lost` only lists the comment itself, never its
+     descendants, so include every reply/reply-of-reply id in
+     `--confirmed-comment-deletion` as well, or you'll hit `missing_parent` on
+     the next `wait`. **These two options are the only remedies.** Never change a
+     comment's `anchor` or `parentId` field to dodge this gate — e.g. relabeling
+     an orphaned span comment as `anchor: "doc"` to make the missing-link check
+     stop applying to it. That's not a documented recovery path; it silently
+     miscategorizes the comment and routes around the confirm gate entirely.
    - `integrity_error` — the document violates the comment grammar (`errors`).
      Fix it and wait again.
    - `closed` — the planning session is over; stop the loop. `reason` says what to do next:
