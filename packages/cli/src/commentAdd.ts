@@ -12,7 +12,7 @@
 // agent's very next `wait` call evaluates and applies whatever is on disk exactly as it would an
 // agent hand-edit, so this only needs to produce a correctly-shaped, integrity-clean document.
 
-import { checkIntegrity, genId, parse, serialize, type Comment, type ParsedDocument, type Question } from "@inplan/core";
+import { checkIntegrity, genId, parse, serialize, type Choice, type Comment, type ParsedDocument, type Question } from "@inplan/core";
 
 export class AddCommentError extends Error {}
 
@@ -23,7 +23,11 @@ export interface AddCommentInput {
   parentId?: string;
   /** Document-level root comment (`anchor: "doc"`). Mutually exclusive with `parentId`. */
   doc?: boolean;
-  question?: Question;
+  /** Untyped because the caller (the CLI) only has `JSON.parse` output — validated below rather
+   *  than trusted via a type assertion, so a syntactically-valid but wrong-shaped `--question`
+   *  (`{}`, `"foo"`, a `choices` missing `label`) is rejected instead of getting written into the
+   *  document as a comment the editor can't render. */
+  question?: unknown;
   /** Sets `may_resolve: true` — the documented way to flag a thread as incorporated,
    *  without setting `resolved` (which stays the human's/app's call). */
   mayResolve?: boolean;
@@ -31,9 +35,23 @@ export interface AddCommentInput {
   now?: () => Date;
 }
 
+function isChoice(v: unknown): v is Choice {
+  if (typeof v !== "object" || v === null) return false;
+  const c = v as Record<string, unknown>;
+  return typeof c.label === "string" && (c.description === undefined || typeof c.description === "string");
+}
+
+/** Runtime shape check for a `--question` payload — `JSON.parse` only guarantees valid JSON, not
+ *  a valid {@link Question} (e.g. `{}` or `"foo"` parse fine but aren't one). */
+function isQuestion(v: unknown): v is Question {
+  if (typeof v !== "object" || v === null) return false;
+  const q = v as Record<string, unknown>;
+  return typeof q.multiSelect === "boolean" && Array.isArray(q.choices) && q.choices.every(isChoice);
+}
+
 /** Build the updated document text with the new comment appended. Throws {@link AddCommentError}
- *  on a usage mistake (bad parent, span-comment attempt, or a resulting integrity violation —
- *  the last one is defensive; the construction below shouldn't be able to trigger it). */
+ *  on a usage mistake (bad parent, span-comment attempt, a malformed `question`, or a resulting
+ *  integrity violation — the last one is defensive; the construction below shouldn't trigger it). */
 export function addComment(currentText: string, input: AddCommentInput): { text: string; comment: Comment } {
   if (input.parentId && input.doc) {
     throw new AddCommentError("comment: --parent-id and --doc are mutually exclusive");
@@ -43,6 +61,9 @@ export function addComment(currentText: string, input: AddCommentInput): { text:
       "comment: pass --parent-id <id> (reply) or --doc (document-level). Span comments need an in-body " +
         "[text](#cmt-id) link — edit the body directly instead, then `wait`.",
     );
+  }
+  if (input.question !== undefined && !isQuestion(input.question)) {
+    throw new AddCommentError('comment: --question must be shaped like { "multiSelect": boolean, "choices": [{ "label": string }, ...] }');
   }
 
   const doc = parse(currentText);

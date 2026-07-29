@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { parse, serialize } from "@inplan/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { addComment, AddCommentError } from "../src/commentAdd";
 
 const parentComment = { id: "cmt-abc123", author: "Someone <a@b.c>", date: "2020-01-01T00:00:00.000Z", resolved: false, text: "Confirm the datastore?" };
@@ -50,6 +50,19 @@ describe("addComment", () => {
     expect(comment.question).toEqual(question);
   });
 
+  it.each([
+    ["not an object", "just a string"],
+    ["missing multiSelect", { choices: [{ label: "x" }] }],
+    ["missing choices", { multiSelect: false }],
+    ["multiSelect not a boolean", { multiSelect: "false", choices: [] }],
+    ["choices not an array", { multiSelect: false, choices: "x" }],
+    ["a choice missing label", { multiSelect: false, choices: [{ description: "no label" }] }],
+    ["a null choice", { multiSelect: false, choices: [null] }],
+    ["a choice with a non-string description", { multiSelect: false, choices: [{ label: "x", description: 1 }] }],
+  ])("rejects a --question payload that's syntactically valid JSON but not shaped like a Question (%s)", (_case, question) => {
+    expect(() => addComment(baseText, { text: "x", author: "a", doc: true, question, now: () => REAL_DATE })).toThrow(/must be shaped like/);
+  });
+
   it("sets may_resolve when asked, and omits it otherwise", () => {
     const withFlag = addComment(baseText, { text: "done", author: "a", parentId: "cmt-abc123", mayResolve: true, now: () => REAL_DATE });
     expect(withFlag.comment.may_resolve).toBe(true);
@@ -75,9 +88,10 @@ describe("addComment", () => {
     expect(() => addComment(danglingText, { text: "x", author: "a", doc: true, now: () => REAL_DATE })).toThrow(/failed integrity check/);
   });
 
-  it("never collides with an existing comment id", () => {
-    // Force genId's random space down to make a collision likely, then confirm every id
-    // that comes out is still unique against what was already in the document.
+  it("produces a distinct id on each of several sequential calls", () => {
+    // genId's random space (36^6) makes a natural collision here astronomically unlikely, so this
+    // is only a basic sanity check (ids come out distinct in normal repeated use) — it can't tell
+    // a broken exclusion-set path from a working one. See the next test for that.
     let text = baseText;
     const seen = new Set(["cmt-abc123"]);
     for (let i = 0; i < 20; i++) {
@@ -87,5 +101,29 @@ describe("addComment", () => {
       text = next;
     }
     expect(parse(text).comments).toHaveLength(21);
+  });
+
+  it("retries when the random candidate collides with an existing comment id", () => {
+    const collidingId = "cmt-000000"; // what an all-zero byte fill decodes to (0 % 36 = "0", ×6)
+    const withCollisionTarget = serialize({
+      body: "Use [Postgres](#cmt-abc123).",
+      comments: [parentComment, { id: collidingId, parentId: "cmt-abc123", author: "a", date: "d", resolved: false, text: "existing" }],
+    });
+    const spy = vi.spyOn(globalThis.crypto, "getRandomValues");
+    let call = 0;
+    // @ts-expect-error — narrow test double, not the full getRandomValues overload set
+    spy.mockImplementation((arr: Uint8Array) => {
+      call++;
+      arr.fill(call === 1 ? 0 : 1); // 1st candidate: all-zero bytes -> "cmt-000000" (collides, forces a retry); 2nd: all-one -> "cmt-111111"
+      return arr;
+    });
+    try {
+      const { comment } = addComment(withCollisionTarget, { text: "x", author: "a", parentId: "cmt-abc123", now: () => REAL_DATE });
+      expect(comment.id).toBe("cmt-111111");
+      expect(comment.id).not.toBe(collidingId);
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

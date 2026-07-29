@@ -12,6 +12,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse } from "@inplan/core";
+import { docPaths, writeStatus } from "@inplan/core/node";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.js");
@@ -86,6 +87,27 @@ describe("inplan comment", () => {
     const r = run("comment", file, "--parent-id", "cmt-zzzzzz", "--text", "x");
     expect(r.code).toBe(64);
     expect(r.err).toMatch(/no such parent id/);
+  });
+
+  it("rejects malformed --question JSON", () => {
+    const r = run("comment", file, "--doc", "--text", "x", "--question", "not json");
+    expect(r.code).toBe(64);
+    expect(r.err).toMatch(/must be valid JSON/);
+  });
+
+  it("rejects a --question that's valid JSON but not shaped like a Question", () => {
+    const r = run("comment", file, "--doc", "--text", "x", "--question", "{}");
+    expect(r.code).toBe(64);
+    expect(r.err).toMatch(/must be shaped like/);
+  });
+
+  it("rejects a promoted cloud doc instead of silently falling through to wait", () => {
+    // Promote the doc's status to "cloud" the same way `inplan promote` would, without needing a
+    // real Supabase backend — routeFor only reads status.json.
+    writeStatus(docPaths(file).statusPath, { location: "cloud", cloudDocId: "doc-123", originalPath: file });
+    const r = run("comment", file, "--doc", "--text", "x");
+    expect(r.code).toBe(64);
+    expect(r.err).toMatch(/cloud docs aren't supported/);
   });
 
   it("errors cleanly on a nonexistent file", () => {

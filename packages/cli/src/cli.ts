@@ -19,7 +19,6 @@ import {
   type LogEntry,
   LogEventType,
   parse,
-  type Question,
   readGlobalSettings,
   readLog,
   readStatus,
@@ -1326,6 +1325,16 @@ export async function doUpload(file: string, args: string[]): Promise<void> {
   output({ status: "uploaded", cloudDocId, ...(org?.slug ? { locator: { org: org.slug, repo, path } } : {}) });
 }
 
+/** `comment` (see ./commentAdd.ts) only knows how to rewrite a local file — reject it before
+ *  either cloud path (`--remote DOC_ID`, or a promoted local doc that `routeFor` sends to the
+ *  Supabase backend) reaches `runRemote`, which has no "comment" case and would otherwise fall
+ *  through into `waitCycle` and silently do the wrong thing. */
+function rejectCommentOnCloud(cmd: string): void {
+  if (cmd !== "comment") return;
+  process.stderr.write("inplan comment: cloud docs aren't supported yet — edit the file directly and `wait`.\n");
+  process.exit(64);
+}
+
 /** Where an `open`/`wait`/`signal` on a local path should run, per the doc's status. */
 type Route = { kind: "local" } | { kind: "cloud"; docId: string } | { kind: "reconcile"; docId: string };
 
@@ -1442,10 +1451,7 @@ async function main(): Promise<void> {
   // resolving a local file/sidecar.
   const remoteDocId = getFlag(args, "remote");
   if (remoteDocId) {
-    if (cmd === "comment") {
-      process.stderr.write("inplan comment: cloud docs (--remote) aren't supported yet — edit the file directly and `wait`.\n");
-      process.exit(64);
-    }
+    rejectCommentOnCloud(cmd);
     await runRemote(cmd, remoteDocId, explicitCursor, confirmed, args, undefined, model);
     return;
   }
@@ -1490,6 +1496,7 @@ async function main(): Promise<void> {
     return;
   }
   if (route.kind === "cloud") {
+    rejectCommentOnCloud(cmd);
     // `file` is this promoted local doc — pass it so a Save-locally request can
     // bring the body back to disk here.
     await runRemote(cmd, route.docId, explicitCursor, confirmed, args, file, model);
@@ -1550,10 +1557,10 @@ async function main(): Promise<void> {
     }
     const parentId = getFlag(args, "parent-id");
     const questionRaw = getFlag(args, "question");
-    let question: Question | undefined;
+    let question: unknown;
     if (questionRaw !== undefined) {
       try {
-        question = JSON.parse(questionRaw) as Question;
+        question = JSON.parse(questionRaw);
       } catch {
         process.stderr.write("inplan comment: --question must be valid JSON\n");
         process.exit(64);
