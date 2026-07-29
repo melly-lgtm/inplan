@@ -39,3 +39,42 @@ describe("evaluateAgentEdit", () => {
     expect(ev.integrityErrors.map((e) => e.code)).toContain("dangling_link");
   });
 });
+
+describe("evaluateAgentEdit — descendant confirmation", () => {
+  const reply = { id: "cmt-rep111", parentId: "cmt-abc123", author: "a", date: "d", resolved: false, text: "reply" };
+  const grandchild = { id: "cmt-rep222", parentId: "cmt-rep111", author: "a", date: "d", resolved: false, text: "reply-of-reply" };
+  const canonicalWithReply = serialize({ body: "Use [Postgres](#cmt-abc123).", comments: [comment, reply] });
+  const lostWithReply = serialize({ body: "Use SQLite now.", comments: [comment, reply] });
+  const canonicalWithGrandchild = serialize({ body: "Use [Postgres](#cmt-abc123).", comments: [comment, reply, grandchild] });
+  const lostWithGrandchild = serialize({ body: "Use SQLite now.", comments: [comment, reply, grandchild] });
+
+  it("leaves an unconfirmed reply behind as a missing_parent error, rather than silently dropping it", () => {
+    const ev = evaluateAgentEdit(canonicalWithReply, lostWithReply, new Set(["cmt-abc123"]));
+    expect(ev.removedIds).toEqual(["cmt-abc123"]);
+    expect(parse(ev.acceptedText).comments.map((c) => c.id)).toEqual(["cmt-rep111"]);
+    expect(ev.integrityOk).toBe(false);
+    expect(ev.integrityErrors.map((e) => e.code)).toContain("missing_parent");
+  });
+
+  it("removes a confirmed reply along with its confirmed orphaned parent", () => {
+    const ev = evaluateAgentEdit(canonicalWithReply, lostWithReply, new Set(["cmt-abc123", "cmt-rep111"]));
+    expect(new Set(ev.removedIds)).toEqual(new Set(["cmt-abc123", "cmt-rep111"]));
+    expect(parse(ev.acceptedText).comments).toEqual([]);
+    expect(ev.integrityOk).toBe(true);
+  });
+
+  it("cascades transitively through a reply-of-reply when the whole chain is confirmed", () => {
+    const ev = evaluateAgentEdit(canonicalWithGrandchild, lostWithGrandchild, new Set(["cmt-abc123", "cmt-rep111", "cmt-rep222"]));
+    expect(new Set(ev.removedIds)).toEqual(new Set(["cmt-abc123", "cmt-rep111", "cmt-rep222"]));
+    expect(parse(ev.acceptedText).comments).toEqual([]);
+    expect(ev.integrityOk).toBe(true);
+  });
+
+  it("does not skip ahead past an unconfirmed middle reply, even if the grandchild is confirmed", () => {
+    const ev = evaluateAgentEdit(canonicalWithGrandchild, lostWithGrandchild, new Set(["cmt-abc123", "cmt-rep222"]));
+    expect(new Set(ev.removedIds)).toEqual(new Set(["cmt-abc123"]));
+    expect(parse(ev.acceptedText).comments.map((c) => c.id).sort()).toEqual(["cmt-rep111", "cmt-rep222"]);
+    expect(ev.integrityOk).toBe(false);
+    expect(ev.integrityErrors.map((e) => e.code)).toContain("missing_parent");
+  });
+});
