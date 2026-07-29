@@ -90,6 +90,14 @@ anchored comment is an inline Markdown link whose href is the comment id:
 - **Question**: `question.multiSelect` false = pick one (radio), true = pick many
   (checkbox); the human may also answer with free text.
 - Generate ids as `cmt-` + 6 base36 characters.
+- **`date`**: you have no reliable clock, so never invent this by hand. For a reply/answer
+  or a document-level comment, use `inplan comment <file> (--parent-id <id>|--doc) --text
+  "..." [--model NAME] [--may-resolve] [--question <json>]` instead of hand-editing the JSON
+  block — it stamps `date` from the real system clock and fills `author` from `--model` for
+  you (same as `open`/`wait`), and prints the new comment's `id`/`date`/`author` back. A span
+  comment still needs a direct body edit (it must sit inline with its anchor link), so this
+  doesn't cover it — keep its `date` as close to real as you can, e.g. by reusing the date a
+  nearby `comment`/`wait` call just returned, rather than guessing a round number.
 - **`author`**: sign **every** comment you write with **your own model identity**, so
   the human sees which model is talking. Always pass `--model "<your model>"` (e.g.
   `--model "Opus 4.8"`) on `open`/`wait`; the wait result echoes the exact string to

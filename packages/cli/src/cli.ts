@@ -19,6 +19,7 @@ import {
   type LogEntry,
   LogEventType,
   parse,
+  type Question,
   readGlobalSettings,
   readLog,
   readStatus,
@@ -34,6 +35,7 @@ import { checkForUpdate, selfUpdate, UPDATE_PKG } from "./update";
 import { runningEditorPid } from "./editorProcess";
 import { applyGatedEdit } from "./applyEdit";
 import { evaluateAgentEdit } from "./gate";
+import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, type PluginGate } from "./pluginGate";
 import { announcePresence } from "./presence";
@@ -1413,10 +1415,11 @@ async function main(): Promise<void> {
       .filter(Boolean),
   );
 
-  if (!cmd || !["open", "wait", "signal", "message", "relay", "status", "promote", "demote", "upload"].includes(cmd)) {
+  if (!cmd || !["open", "wait", "signal", "message", "comment", "relay", "status", "promote", "demote", "upload"].includes(cmd)) {
     process.stderr.write(
       "usage: inplan <open|wait|signal> <file|--remote DOC_ID> [--model NAME] [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n" +
         '       inplan message <file> "your message"   (relay a note to the editor status bar)\n' +
+        "       inplan comment <file> (--parent-id <id>|--doc) --text \"...\" [--model NAME] [--may-resolve] [--question <json>]\n" +
         "       inplan relay [--hook <kind> | --text <s> [--activity]]   (agent-hook → editor; resolves the active doc)\n" +
         "       inplan status  <file>\n" +
         "       inplan upload  <file> [--org <slug>] [--repo <name>] [--path <p>] [--evict-lru]   (Collaborate on Cloud)\n" +
@@ -1439,6 +1442,10 @@ async function main(): Promise<void> {
   // resolving a local file/sidecar.
   const remoteDocId = getFlag(args, "remote");
   if (remoteDocId) {
+    if (cmd === "comment") {
+      process.stderr.write("inplan comment: cloud docs (--remote) aren't supported yet — edit the file directly and `wait`.\n");
+      process.exit(64);
+    }
     await runRemote(cmd, remoteDocId, explicitCursor, confirmed, args, undefined, model);
     return;
   }
@@ -1526,6 +1533,52 @@ async function main(): Promise<void> {
   if (cmd !== "open" && !existsSync(file)) {
     process.stderr.write(`inplan ${cmd}: file not found: ${file}\n`);
     process.exit(1);
+  }
+
+  // Append a reply/answer or document-level comment with the CLI's own real timestamp, instead
+  // of the agent hand-writing the JSON block (and having to invent the `date` field itself — see
+  // ./commentAdd.ts). Just rewrites the file; the agent's next `wait` picks it up like any other
+  // edit. Usage: `inplan comment <file> (--parent-id <id>|--doc) --text "..." [--model NAME]
+  // [--may-resolve] [--question <json>]`.
+  if (cmd === "comment") {
+    const text = getFlag(args, "text");
+    if (!text) {
+      process.stderr.write(
+        'inplan comment: usage: inplan comment <file> (--parent-id <id>|--doc) --text "..." [--model NAME] [--may-resolve] [--question <json>]\n',
+      );
+      process.exit(64);
+    }
+    const parentId = getFlag(args, "parent-id");
+    const questionRaw = getFlag(args, "question");
+    let question: Question | undefined;
+    if (questionRaw !== undefined) {
+      try {
+        question = JSON.parse(questionRaw) as Question;
+      } catch {
+        process.stderr.write("inplan comment: --question must be valid JSON\n");
+        process.exit(64);
+      }
+    }
+    try {
+      const currentText = readFileSync(file, "utf8");
+      const { text: nextText, comment } = addComment(currentText, {
+        text,
+        author: agentAuthorFor(model),
+        ...(parentId ? { parentId } : {}),
+        ...(hasFlag(args, "doc") ? { doc: true } : {}),
+        ...(question ? { question } : {}),
+        mayResolve: hasFlag(args, "may-resolve"),
+      });
+      writeFileSync(file, nextText);
+      output({ status: "commented", id: comment.id, date: comment.date, author: comment.author });
+    } catch (err) {
+      if (err instanceof AddCommentError) {
+        process.stderr.write(`${err.message}\n`);
+        process.exit(64);
+      }
+      throw err;
+    }
+    return;
   }
 
   if (cmd === "open") {
