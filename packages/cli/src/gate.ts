@@ -17,7 +17,9 @@ export interface AgentEditEvaluation {
   integrityErrors: IntegrityError[];
   /** Span comments newly orphaned by this edit (link removed vs canonical). */
   lost: Comment[];
-  /** Lost comments not yet acknowledged via --confirmed-comment-deletion. */
+  /** Comments the caller still needs to acknowledge via --confirmed-comment-deletion before this
+   *  edit can be accepted: newly-orphaned roots, plus any reply left dangling because a confirmed
+   *  parent was removed out from under it without its own id being confirmed too. */
   unconfirmed: Comment[];
   /** Confirmed-lost comment ids removed from the accepted document. */
   removedIds: string[];
@@ -48,6 +50,12 @@ export interface AgentEditEvaluation {
  * when that descendant's own id is *also* in `confirmed` — an unconfirmed
  * reply is left in place (and surfaces as `missing_parent`) rather than
  * silently deleted, so every removed comment is still one the caller named.
+ *
+ * A parent that IS confirmed but leaves an unconfirmed reply behind (the reply's own id was never
+ * named) would otherwise surface only as a bare `missing_parent` integrity error — correct, but it
+ * leaves the caller to reverse-engineer which reply id it's missing. Since the code already knows
+ * exactly which comments dangle, they're reported through `unconfirmed` instead (alongside newly-
+ * orphaned roots), so `wait`'s `confirm_required` response names the exact ids to add next time.
  */
 export function evaluateAgentEdit(
   canonicalText: string,
@@ -58,7 +66,6 @@ export function evaluateAgentEdit(
   const canonical = parse(canonicalText);
 
   const lost = detectLostComments(canonical, current);
-  const unconfirmed = lost.filter((c) => !confirmed.has(c.id));
 
   const removedSet = new Set(lost.filter((c) => confirmed.has(c.id)).map((c) => c.id));
   for (let grew = true; grew; ) {
@@ -77,7 +84,15 @@ export function evaluateAgentEdit(
     comments: current.comments.filter((c) => !removedSet.has(c.id)),
   };
 
-  const integrityErrors = checkIntegrity(accepted).errors.filter((e) => e.code !== "span_missing_link");
+  // Still-standing replies whose parent is about to be removed but who weren't themselves
+  // confirmed — exactly what would fail as `missing_parent` below, named instead of inferred.
+  const dangling = current.comments.filter((c) => c.parentId !== undefined && removedSet.has(c.parentId) && !removedSet.has(c.id));
+  const danglingIds = new Set(dangling.map((c) => c.id));
+  const unconfirmed = [...lost.filter((c) => !confirmed.has(c.id)), ...dangling];
+
+  const integrityErrors = checkIntegrity(accepted).errors.filter(
+    (e) => e.code !== "span_missing_link" && !(e.code === "missing_parent" && e.commentId !== undefined && danglingIds.has(e.commentId)),
+  );
 
   return {
     integrityOk: integrityErrors.length === 0,

@@ -48,12 +48,15 @@ describe("evaluateAgentEdit — descendant confirmation", () => {
   const canonicalWithGrandchild = serialize({ body: "Use [Postgres](#cmt-abc123).", comments: [comment, reply, grandchild] });
   const lostWithGrandchild = serialize({ body: "Use SQLite now.", comments: [comment, reply, grandchild] });
 
-  it("leaves an unconfirmed reply behind as a missing_parent error, rather than silently dropping it", () => {
+  it("surfaces an unconfirmed dangling reply as `unconfirmed`, naming exactly what to confirm next — rather than a bare missing_parent error", () => {
     const ev = evaluateAgentEdit(canonicalWithReply, lostWithReply, new Set(["cmt-abc123"]));
     expect(ev.removedIds).toEqual(["cmt-abc123"]);
     expect(parse(ev.acceptedText).comments.map((c) => c.id)).toEqual(["cmt-rep111"]);
-    expect(ev.integrityOk).toBe(false);
-    expect(ev.integrityErrors.map((e) => e.code)).toContain("missing_parent");
+    // The reply isn't silently dropped OR left to fail as a generic integrity error — it's named
+    // in `unconfirmed`, same signal as a newly-orphaned root, so `wait`'s confirm_required response
+    // tells the caller exactly which id to add next time instead of them inferring it from an error.
+    expect(ev.unconfirmed.map((c) => c.id)).toEqual(["cmt-rep111"]);
+    expect(ev.integrityOk).toBe(true);
   });
 
   it("removes a confirmed reply along with its confirmed orphaned parent", () => {
@@ -74,7 +77,23 @@ describe("evaluateAgentEdit — descendant confirmation", () => {
     const ev = evaluateAgentEdit(canonicalWithGrandchild, lostWithGrandchild, new Set(["cmt-abc123", "cmt-rep222"]));
     expect(new Set(ev.removedIds)).toEqual(new Set(["cmt-abc123"]));
     expect(parse(ev.acceptedText).comments.map((c) => c.id).sort()).toEqual(["cmt-rep111", "cmt-rep222"]);
-    expect(ev.integrityOk).toBe(false);
-    expect(ev.integrityErrors.map((e) => e.code)).toContain("missing_parent");
+    // Only the middle reply dangles (its parent was removed); the grandchild's own parent — the
+    // middle reply — is still present in the accepted doc, so it isn't itself flagged.
+    expect(ev.unconfirmed.map((c) => c.id)).toEqual(["cmt-rep111"]);
+    expect(ev.integrityOk).toBe(true);
+  });
+
+  it("cascades regardless of array order — a descendant listed before its ancestor still gets pulled in", () => {
+    // Reversed order: grandchild, then reply, then root. A single non-repeating pass over the
+    // array (in this order) would reach the grandchild before its parent (the reply) has been
+    // added to the removal set, and never revisit it — so it would wrongly leave the grandchild
+    // dangling. The fixpoint loop (repeat until nothing new is added) doesn't depend on order.
+    const reversedCanonical = serialize({ body: "Use [Postgres](#cmt-abc123).", comments: [grandchild, reply, comment] });
+    const reversedLost = serialize({ body: "Use SQLite now.", comments: [grandchild, reply, comment] });
+    const ev = evaluateAgentEdit(reversedCanonical, reversedLost, new Set(["cmt-abc123", "cmt-rep111", "cmt-rep222"]));
+    expect(new Set(ev.removedIds)).toEqual(new Set(["cmt-abc123", "cmt-rep111", "cmt-rep222"]));
+    expect(parse(ev.acceptedText).comments).toEqual([]);
+    expect(ev.unconfirmed).toEqual([]);
+    expect(ev.integrityOk).toBe(true);
   });
 });
