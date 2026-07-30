@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// Construct and append a reply/answer or document-level comment as a pure text transform, so
-// `date` is stamped from the CLI's own clock instead of a value the agent has to invent by hand
-// when it hand-edits the JSON block (agents have no real clock access, so those values were
-// often rounded guesses — inconsistent with, and sometimes later than, real timestamps the app
-// stamps for the human's own comments, which corrupts `orderComments`' chronological sort).
+// Construct and append a comment (reply/answer, document-level, or span-anchored) as a pure text
+// transform, so `date` is stamped from the CLI's own clock instead of a value the agent has to
+// invent by hand when it hand-edits the JSON block (agents have no real clock access, so those
+// values were often rounded guesses — inconsistent with, and sometimes later than, real
+// timestamps the app stamps for the human's own comments, which corrupts `orderComments`'
+// chronological sort).
 //
-// Deliberately excludes span comments: placing a new `[text](#cmt-id)` anchor link at the right
-// spot in the body is a body edit, which still goes through the normal Edit/Write + `wait` path.
-// The result is just appended to the file — no gate/channel interaction here — because the
-// agent's very next `wait` call evaluates and applies whatever is on disk exactly as it would an
-// agent hand-edit, so this only needs to produce a correctly-shaped, integrity-clean document.
+// A span comment additionally rewrites the body: `span` (the exact text to anchor, which must
+// appear exactly once so the target is unambiguous) gets wrapped in `[span](#cmt-id)` in place.
+// The result is just written to the file — no gate/channel interaction here — because the agent's
+// very next `wait` call evaluates and applies whatever is on disk exactly as it would an agent
+// hand-edit, so this only needs to produce a correctly-shaped, integrity-clean document.
 
 import { checkIntegrity, genId, parse, serialize, type Choice, type Comment, type ParsedDocument, type Question } from "@inplan/core";
 
@@ -19,10 +20,14 @@ export class AddCommentError extends Error {}
 export interface AddCommentInput {
   text: string;
   author: string;
-  /** Reply/answer target. Mutually exclusive with `doc`. */
+  /** Reply/answer target. Mutually exclusive with `doc`/`span`. */
   parentId?: string;
-  /** Document-level root comment (`anchor: "doc"`). Mutually exclusive with `parentId`. */
+  /** Document-level root comment (`anchor: "doc"`). Mutually exclusive with `parentId`/`span`. */
   doc?: boolean;
+  /** Span comment: the exact body text to anchor — wrapped in place as `[span](#cmt-id)`. Must
+   *  appear exactly once in the body (a repeated substring is rejected as ambiguous rather than
+   *  guessing which occurrence was meant). Mutually exclusive with `parentId`/`doc`. */
+  span?: string;
   /** Untyped because the caller (the CLI) only has `JSON.parse` output — validated below rather
    *  than trusted via a type assertion, so a syntactically-valid but wrong-shaped `--question`
    *  (`{}`, `"foo"`, a `choices` missing `label`) is rejected instead of getting written into the
@@ -49,17 +54,32 @@ function isQuestion(v: unknown): v is Question {
   return typeof q.multiSelect === "boolean" && Array.isArray(q.choices) && q.choices.every(isChoice);
 }
 
-/** Build the updated document text with the new comment appended. Throws {@link AddCommentError}
- *  on a usage mistake (bad parent, span-comment attempt, a malformed `question`, or a resulting
- *  integrity violation — the last one is defensive; the construction below shouldn't trigger it). */
-export function addComment(currentText: string, input: AddCommentInput): { text: string; comment: Comment } {
-  if (input.parentId && input.doc) {
-    throw new AddCommentError("comment: --parent-id and --doc are mutually exclusive");
-  }
-  if (!input.parentId && !input.doc) {
+/** Wrap `span` in a fresh `[span](#id)` link, in place, in `body`. Throws if `span` doesn't occur
+ *  in the body, or occurs more than once (an ambiguous target — this never guesses). Only ever
+ *  called with a non-empty `span` — {@link addComment}'s target check treats an empty string the
+ *  same as "no --span given" before this is reached. */
+function placeSpanLink(body: string, span: string, id: string): string {
+  const first = body.indexOf(span);
+  if (first === -1) throw new AddCommentError(`comment: --span text not found in the body: ${JSON.stringify(span)}`);
+  if (body.indexOf(span, first + span.length) !== -1) {
     throw new AddCommentError(
-      "comment: pass --parent-id <id> (reply) or --doc (document-level). Span comments need an in-body " +
-        "[text](#cmt-id) link — edit the body directly instead, then `wait`.",
+      `comment: --span text appears more than once in the body, so the target is ambiguous: ${JSON.stringify(span)}. Include more surrounding context to make it unique.`,
+    );
+  }
+  return body.slice(0, first) + `[${span}](#${id})` + body.slice(first + span.length);
+}
+
+/** Build the updated document text with the new comment appended. Throws {@link AddCommentError}
+ *  on a usage mistake (bad parent, bad/ambiguous `--span` text, a malformed `question`, or a
+ *  resulting integrity violation). */
+export function addComment(currentText: string, input: AddCommentInput): { text: string; comment: Comment } {
+  const targetCount = (input.parentId ? 1 : 0) + (input.doc ? 1 : 0) + (input.span ? 1 : 0);
+  if (targetCount > 1) {
+    throw new AddCommentError("comment: --parent-id, --doc, and --span are mutually exclusive");
+  }
+  if (targetCount === 0) {
+    throw new AddCommentError(
+      'comment: pass --parent-id <id> (reply), --doc (document-level), or --span "<exact body text>" (anchored to that text)',
     );
   }
   if (input.question !== undefined && !isQuestion(input.question)) {
@@ -75,7 +95,7 @@ export function addComment(currentText: string, input: AddCommentInput): { text:
   const now = input.now ?? (() => new Date());
   const comment: Comment = {
     id,
-    ...(input.parentId ? { parentId: input.parentId } : { anchor: "doc" as const }),
+    ...(input.parentId ? { parentId: input.parentId } : input.doc ? { anchor: "doc" as const } : {}),
     text: input.text,
     author: input.author,
     date: now().toISOString(),
@@ -84,10 +104,17 @@ export function addComment(currentText: string, input: AddCommentInput): { text:
     ...(input.mayResolve ? { may_resolve: true } : {}),
   };
 
-  const next: ParsedDocument = { body: doc.body, comments: [...doc.comments, comment], version: doc.version };
+  const body = input.span ? placeSpanLink(doc.body, input.span, id) : doc.body;
+  const next: ParsedDocument = { body, comments: [...doc.comments, comment], version: doc.version };
   const integrity = checkIntegrity(next);
   if (!integrity.ok) {
-    throw new AddCommentError(`comment: resulting document failed integrity check: ${integrity.errors.map((e) => e.message).join("; ")}`);
+    // A well-formed add — reply, doc-level, or span (its id is fresh, and wrapping the located
+    // text only adds characters, never removes an existing `](#id)`) — can't introduce corruption
+    // on its own. If this ever fires, the document already had a structural problem before this
+    // call; it isn't something this comment caused.
+    throw new AddCommentError(
+      `comment: the document already had a structural problem before this call (this comment didn't cause it): ${integrity.errors.map((e) => e.message).join("; ")}`,
+    );
   }
   return { text: serialize(next), comment };
 }

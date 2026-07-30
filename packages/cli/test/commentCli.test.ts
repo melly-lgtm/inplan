@@ -101,18 +101,51 @@ describe("inplan comment", () => {
     expect(r.err).toMatch(/must be shaped like/);
   });
 
-  it("rejects a promoted cloud doc instead of silently falling through to wait", () => {
+  it("rejects a promoted cloud doc, and the message points at the local file it has to fall back to", () => {
     // Promote the doc's status to "cloud" the same way `inplan promote` would, without needing a
     // real Supabase backend — routeFor only reads status.json.
     writeStatus(docPaths(file).statusPath, { location: "cloud", cloudDocId: "doc-123", originalPath: file });
     const r = run("comment", file, "--doc", "--text", "x");
     expect(r.code).toBe(64);
-    expect(r.err).toMatch(/cloud docs aren't supported/);
+    expect(r.err).toMatch(/cloud docs aren't supported yet — edit the file directly and `wait`/);
+  });
+
+  it("rejects a pure --remote doc without the 'edit the file directly' advice (there is no local file)", () => {
+    const r = run("comment", "--remote", "doc-123", "--doc", "--text", "x");
+    expect(r.code).toBe(64);
+    expect(r.err).toMatch(/cloud docs aren't supported yet\./);
+    expect(r.err).not.toMatch(/edit the file directly/);
   });
 
   it("errors cleanly on a nonexistent file", () => {
     const r = run("comment", join(home, "missing.plan.md"), "--doc", "--text", "x");
     expect(r.code).toBe(1);
     expect(r.err).toMatch(/file not found/);
+  });
+
+  describe("--span", () => {
+    it("anchors a span comment to the exact body text", () => {
+      const r = run("comment", file, "--span", "Postgres", "--text", "Reconsider this.");
+      expect(r.code).toBe(0);
+      const result = JSON.parse(r.out);
+      const body = readFileSync(file, "utf8");
+      expect(body).toContain(`[Postgres](#${result.id})`);
+      const doc = parse(body);
+      const added = doc.comments.find((c) => c.id === result.id);
+      expect(added?.parentId).toBeUndefined();
+      expect(added?.anchor).toBeUndefined();
+    });
+
+    it("rejects span text not present in the body", () => {
+      const r = run("comment", file, "--span", "SQLite", "--text", "x");
+      expect(r.code).toBe(64);
+      expect(r.err).toMatch(/not found in the body/);
+    });
+
+    it("rejects combining --span with --parent-id", () => {
+      const r = run("comment", file, "--span", "Postgres", "--parent-id", "cmt-abc123", "--text", "x");
+      expect(r.code).toBe(64);
+      expect(r.err).toMatch(/mutually exclusive/);
+    });
   });
 });

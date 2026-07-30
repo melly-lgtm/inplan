@@ -71,11 +71,15 @@ describe("addComment", () => {
     expect(without.comment.may_resolve).toBeUndefined();
   });
 
-  it("rejects both --parent-id and --doc together", () => {
-    expect(() => addComment(baseText, { text: "x", author: "a", parentId: "cmt-abc123", doc: true })).toThrow(AddCommentError);
+  it.each([
+    ["--parent-id + --doc", { parentId: "cmt-abc123", doc: true }],
+    ["--parent-id + --span", { parentId: "cmt-abc123", span: "Postgres" }],
+    ["--doc + --span", { doc: true, span: "Postgres" }],
+  ])("rejects combining more than one of --parent-id/--doc/--span (%s)", (_case, extra) => {
+    expect(() => addComment(baseText, { text: "x", author: "a", ...extra })).toThrow(/mutually exclusive/);
   });
 
-  it("rejects neither --parent-id nor --doc (span comments aren't supported here)", () => {
+  it("rejects when none of --parent-id/--doc/--span is given", () => {
     expect(() => addComment(baseText, { text: "x", author: "a" })).toThrow(AddCommentError);
   });
 
@@ -83,9 +87,48 @@ describe("addComment", () => {
     expect(() => addComment(baseText, { text: "x", author: "a", parentId: "cmt-zzzzzz" })).toThrow(/no such parent id/);
   });
 
-  it("refuses to add onto a document that's already structurally corrupt", () => {
+  it("refuses to add onto a document that's already structurally corrupt, and says so rather than blaming the new comment", () => {
     const danglingText = serialize({ body: "Use [x](#cmt-zzzzzz).", comments: [] });
-    expect(() => addComment(danglingText, { text: "x", author: "a", doc: true, now: () => REAL_DATE })).toThrow(/failed integrity check/);
+    expect(() => addComment(danglingText, { text: "x", author: "a", doc: true, now: () => REAL_DATE })).toThrow(
+      /already had a structural problem before this call \(this comment didn't cause it\)/,
+    );
+  });
+
+  describe("--span", () => {
+    // A fresh, link-free body — baseText already has "Postgres" wrapped in cmt-abc123's own
+    // link, which is exactly the overlap case exercised separately below.
+    const plainText = serialize({ body: "Use Postgres for storage.", comments: [] });
+
+    it("wraps the exact span text in a fresh anchor link, with no parentId/anchor field", () => {
+      const { text, comment } = addComment(plainText, { text: "Confirm.", author: "a", span: "Postgres", now: () => REAL_DATE });
+      expect(comment.parentId).toBeUndefined();
+      expect(comment.anchor).toBeUndefined();
+      const doc = parse(text);
+      expect(doc.body).toBe(`Use [Postgres](#${comment.id}) for storage.`);
+      expect(doc.comments.map((c) => c.id)).toEqual([comment.id]);
+    });
+
+    it("rejects span text that isn't in the body", () => {
+      expect(() => addComment(plainText, { text: "x", author: "a", span: "SQLite", now: () => REAL_DATE })).toThrow(/not found in the body/);
+    });
+
+    it("rejects span text that appears more than once, rather than guessing", () => {
+      const ambiguousText = serialize({ body: "Postgres or Postgres?", comments: [] });
+      expect(() => addComment(ambiguousText, { text: "x", author: "a", span: "Postgres", now: () => REAL_DATE })).toThrow(/appears more than once/);
+    });
+
+    it("treats an empty --span the same as not passing --span at all", () => {
+      expect(() => addComment(plainText, { text: "x", author: "a", span: "", now: () => REAL_DATE })).toThrow(
+        /pass --parent-id .* --doc .* or --span/,
+      );
+    });
+
+    it("refuses to add onto a document that's already structurally corrupt via --span too", () => {
+      const danglingText = serialize({ body: "Use [x](#cmt-zzzzzz) for storage.", comments: [] });
+      expect(() => addComment(danglingText, { text: "x", author: "a", span: "storage", now: () => REAL_DATE })).toThrow(
+        /already had a structural problem before this call \(this comment didn't cause it\)/,
+      );
+    });
   });
 
   it("produces a distinct id on each of several sequential calls", () => {
