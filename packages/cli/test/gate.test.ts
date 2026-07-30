@@ -96,4 +96,32 @@ describe("evaluateAgentEdit — descendant confirmation", () => {
     expect(ev.unconfirmed).toEqual([]);
     expect(ev.integrityOk).toBe(true);
   });
+
+  it("requires confirmation for a reply deleted outright from current, not just left dangling", () => {
+    // This edit didn't just orphan the root and leave the reply in place — it removed the reply
+    // object entirely, so it's present in canonical but absent from current altogether. Nothing in
+    // current alone can reveal that a reply ever existed there, let alone that its removal was never
+    // confirmed — the descendant scan has to fall back to canonical to still catch it.
+    const currentWithoutReply = serialize({ body: "Use SQLite now.", comments: [comment] });
+    const ev = evaluateAgentEdit(canonicalWithReply, currentWithoutReply, new Set(["cmt-abc123"]));
+    expect(ev.removedIds).toEqual(["cmt-abc123"]);
+    expect(ev.unconfirmed.map((c) => c.id)).toEqual(["cmt-rep111"]);
+    expect(ev.integrityOk).toBe(true); // gated via `unconfirmed`, same as any other dangling descendant
+  });
+
+  it("requires confirmation for a grandchild deleted outright, even with its parent reply confirmed and intact", () => {
+    const currentWithoutGrandchild = serialize({ body: "Use SQLite now.", comments: [comment, reply] });
+    const ev = evaluateAgentEdit(canonicalWithGrandchild, currentWithoutGrandchild, new Set(["cmt-abc123", "cmt-rep111"]));
+    expect(new Set(ev.removedIds)).toEqual(new Set(["cmt-abc123", "cmt-rep111"]));
+    expect(ev.unconfirmed.map((c) => c.id)).toEqual(["cmt-rep222"]);
+    expect(ev.integrityOk).toBe(true);
+  });
+
+  it("accepts an outright-deleted descendant once it's also confirmed", () => {
+    const currentWithoutReply = serialize({ body: "Use SQLite now.", comments: [comment] });
+    const ev = evaluateAgentEdit(canonicalWithReply, currentWithoutReply, new Set(["cmt-abc123", "cmt-rep111"]));
+    expect(new Set(ev.removedIds)).toEqual(new Set(["cmt-abc123", "cmt-rep111"]));
+    expect(ev.unconfirmed).toEqual([]);
+    expect(ev.integrityOk).toBe(true);
+  });
 });

@@ -56,6 +56,13 @@ export interface AgentEditEvaluation {
  * leaves the caller to reverse-engineer which reply id it's missing. Since the code already knows
  * exactly which comments dangle, they're reported through `unconfirmed` instead (alongside newly-
  * orphaned roots), so `wait`'s `confirm_required` response names the exact ids to add next time.
+ *
+ * That dangling scan has to look past `current` alone: an edit can delete a reply object outright
+ * (not just leave it dangling) in the same breath as orphaning its parent. Scanning only `current`
+ * would never see that reply at all — it's simply gone, so nothing flags its removal as needing
+ * confirmation, and it's deleted with no acknowledgement. `deletionGraph` unions in `canonical` so
+ * an outright-deleted descendant is still found (and still has to be named), current's copy taking
+ * precedence for anything that still exists there.
  */
 export function evaluateAgentEdit(
   canonicalText: string,
@@ -66,11 +73,12 @@ export function evaluateAgentEdit(
   const canonical = parse(canonicalText);
 
   const lost = detectLostComments(canonical, current);
+  const deletionGraph = new Map([...canonical.comments, ...current.comments].map((c) => [c.id, c]));
 
   const removedSet = new Set(lost.filter((c) => confirmed.has(c.id)).map((c) => c.id));
   for (let grew = true; grew; ) {
     grew = false;
-    for (const c of current.comments) {
+    for (const c of deletionGraph.values()) {
       if (c.parentId !== undefined && removedSet.has(c.parentId) && confirmed.has(c.id) && !removedSet.has(c.id)) {
         removedSet.add(c.id);
         grew = true;
@@ -84,9 +92,10 @@ export function evaluateAgentEdit(
     comments: current.comments.filter((c) => !removedSet.has(c.id)),
   };
 
-  // Still-standing replies whose parent is about to be removed but who weren't themselves
-  // confirmed — exactly what would fail as `missing_parent` below, named instead of inferred.
-  const dangling = current.comments.filter((c) => c.parentId !== undefined && removedSet.has(c.parentId) && !removedSet.has(c.id));
+  // A descendant of something being removed that wasn't itself confirmed — whether it's still
+  // standing in `current` (would fail as `missing_parent` below) or was deleted outright in this
+  // same edit (never reaches `accepted`/integrity at all, so nothing else would catch it).
+  const dangling = [...deletionGraph.values()].filter((c) => c.parentId !== undefined && removedSet.has(c.parentId) && !removedSet.has(c.id));
   const danglingIds = new Set(dangling.map((c) => c.id));
   const unconfirmed = [...lost.filter((c) => !confirmed.has(c.id)), ...dangling];
 
