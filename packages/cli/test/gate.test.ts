@@ -124,4 +124,17 @@ describe("evaluateAgentEdit — descendant confirmation", () => {
     expect(ev.unconfirmed).toEqual([]);
     expect(ev.integrityOk).toBe(true);
   });
+
+  it("uses canonical parentage to catch a descendant current reparented away, not current's relabeled shape", () => {
+    // The reply's *current* object no longer claims any relation to cmt-abc123 at all — its
+    // parentId is gone and it's now `anchor: "doc"`, as if it had always been an independent
+    // top-level comment. If the graph trusted current's shape for ancestry, this would silently
+    // succeed with the reply detached and never named. Canonical still records it as a reply to
+    // the parent being removed, so it must still be confirmed.
+    const reparented = { id: "cmt-rep111", anchor: "doc" as const, author: "a", date: "d", resolved: false, text: "reply" };
+    const currentReparented = serialize({ body: "Use SQLite now.", comments: [comment, reparented] });
+    const ev = evaluateAgentEdit(canonicalWithReply, currentReparented, new Set(["cmt-abc123"]));
+    expect(ev.removedIds).toEqual(["cmt-abc123"]);
+    expect(ev.unconfirmed.map((c) => c.id)).toEqual(["cmt-rep111"]);
+  });
 });

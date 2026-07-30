@@ -61,8 +61,13 @@ export interface AgentEditEvaluation {
  * (not just leave it dangling) in the same breath as orphaning its parent. Scanning only `current`
  * would never see that reply at all — it's simply gone, so nothing flags its removal as needing
  * confirmation, and it's deleted with no acknowledgement. `deletionGraph` unions in `canonical` so
- * an outright-deleted descendant is still found (and still has to be named), current's copy taking
- * precedence for anything that still exists there.
+ * an outright-deleted descendant is still found (and still has to be named).
+ *
+ * For an id that exists in both, canonical — not current — is authoritative for that graph. An
+ * edit could otherwise reparent a descendant away from its removed parent (drop `parentId`, relabel
+ * it `anchor: "doc"`) to make it look independent and dodge confirmation entirely; trusting current's
+ * shape for ancestry would fall for exactly that. Current only fills in ids canonical never had —
+ * genuinely new comments added in this same edit.
  */
 export function evaluateAgentEdit(
   canonicalText: string,
@@ -73,7 +78,7 @@ export function evaluateAgentEdit(
   const canonical = parse(canonicalText);
 
   const lost = detectLostComments(canonical, current);
-  const deletionGraph = new Map([...canonical.comments, ...current.comments].map((c) => [c.id, c]));
+  const deletionGraph = new Map([...current.comments, ...canonical.comments].map((c) => [c.id, c]));
 
   const removedSet = new Set(lost.filter((c) => confirmed.has(c.id)).map((c) => c.id));
   for (let grew = true; grew; ) {
