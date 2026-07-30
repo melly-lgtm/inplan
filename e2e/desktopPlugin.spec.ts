@@ -95,13 +95,17 @@ test("main verified + the renderer imported and activated the signed plugin bund
   // The marker is set by the stub's activate() — reached only if main verified the lease + both
   // files, ran the main entry (start), served the renderer entry over the scheme, and the renderer
   // imported + activated it with the session.
-  await expect.poll(() => win.evaluate(() => (globalThis as { __E2E_PLUGIN?: { active?: boolean } }).__E2E_PLUGIN?.active ?? false), { timeout: 8_000 }).toBe(true);
+  // Generous timeout: this whole trust path is a cold load (node verify + import → serve over the
+  // inplan-plugin: scheme → browser dynamic-import under CSP → activate). On a loaded CI runner it
+  // can legitimately take well over 8s; a tighter bound just flakes without proving anything.
+  await expect.poll(() => win.evaluate(() => (globalThis as { __E2E_PLUGIN?: { active?: boolean } }).__E2E_PLUGIN?.active ?? false), { timeout: 30_000 }).toBe(true);
 });
 
 test("the editor advertises the plugin's mode from its extraModes", async () => {
   // The cadence toggle only renders with >1 mode, so an Instant button proves extraModes merged
   // through setHostApi onto the host api the editor reads.
   // exact, so "Turn" doesn't also match the "Finish turn" button.
-  await expect(win.getByRole("button", { name: "Turn", exact: true })).toBeVisible();
-  await expect(win.getByRole("button", { name: "Instant", exact: true })).toBeVisible();
+  // Allow for the merge→render lag after activation on a slow runner (see the timeout note above).
+  await expect(win.getByRole("button", { name: "Turn", exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(win.getByRole("button", { name: "Instant", exact: true })).toBeVisible({ timeout: 15_000 });
 });
