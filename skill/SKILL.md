@@ -97,6 +97,14 @@ anchored comment is an inline Markdown link whose href is the comment id:
 - **Question**: `question.multiSelect` false = pick one (radio), true = pick many
   (checkbox); the human may also answer with free text.
 - Generate ids as `cmt-` + 6 base36 characters.
+- **`date`**: you have no reliable clock, so never invent this by hand. Use `inplan comment
+  <file> (--parent-id <id>|--doc|--span "exact body text") --text "..." [--model NAME]
+  [--may-resolve] [--question <json>]` instead of hand-editing the JSON block — it stamps
+  `date` from the real system clock and fills `author` from `--model` for you (same as
+  `open`/`wait`), and prints the new comment's `id`/`date`/`author` back. `--span` covers the
+  span-comment case too: give it the exact, currently-unlinked body text to anchor to (it must
+  occur exactly once — add surrounding context if it's ambiguous) and it wraps that text in
+  the link itself, so you never hand-edit the body for this either.
 - **`author`**: sign **every** comment you write with **your own model identity**, so
   the human sees which model is talking. Always pass `--model "<your model>"` (e.g.
   `--model "Opus 4.8"`) on `open`/`wait`; the wait result echoes the exact string to

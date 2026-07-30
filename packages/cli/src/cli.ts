@@ -34,6 +34,7 @@ import { checkForUpdate, selfUpdate, UPDATE_PKG } from "./update";
 import { runningEditorPid } from "./editorProcess";
 import { applyGatedEdit } from "./applyEdit";
 import { evaluateAgentEdit } from "./gate";
+import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, type PluginGate } from "./pluginGate";
 import { announcePresence } from "./presence";
@@ -1324,6 +1325,19 @@ export async function doUpload(file: string, args: string[]): Promise<void> {
   output({ status: "uploaded", cloudDocId, ...(org?.slug ? { locator: { org: org.slug, repo, path } } : {}) });
 }
 
+/** `comment` (see ./commentAdd.ts) only knows how to rewrite a local file — reject it before
+ *  either cloud path (`--remote DOC_ID`, or a promoted local doc that `routeFor` sends to the
+ *  Supabase backend) reaches `runRemote`, which has no "comment" case and would otherwise fall
+ *  through into `waitCycle` and silently do the wrong thing. `hasLocalFile` distinguishes the
+ *  two: a promoted doc genuinely has a local file to hand-edit as a fallback; a pure `--remote
+ *  DOC_ID` has no local file at all, so that advice would be nonsensical there. */
+function rejectCommentOnCloud(cmd: string, hasLocalFile: boolean): void {
+  if (cmd !== "comment") return;
+  const fallback = hasLocalFile ? " — edit the file directly and `wait`." : ".";
+  process.stderr.write(`inplan comment: cloud docs aren't supported yet${fallback}\n`);
+  process.exit(64);
+}
+
 /** Where an `open`/`wait`/`signal` on a local path should run, per the doc's status. */
 type Route = { kind: "local" } | { kind: "cloud"; docId: string } | { kind: "reconcile"; docId: string };
 
@@ -1413,10 +1427,11 @@ async function main(): Promise<void> {
       .filter(Boolean),
   );
 
-  if (!cmd || !["open", "wait", "signal", "message", "relay", "status", "promote", "demote", "upload"].includes(cmd)) {
+  if (!cmd || !["open", "wait", "signal", "message", "comment", "relay", "status", "promote", "demote", "upload"].includes(cmd)) {
     process.stderr.write(
       "usage: inplan <open|wait|signal> <file|--remote DOC_ID> [--model NAME] [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n" +
         '       inplan message <file> "your message"   (relay a note to the editor status bar)\n' +
+        "       inplan comment <file> (--parent-id <id>|--doc|--span \"text\") --text \"...\" [--model NAME] [--may-resolve] [--question <json>]\n" +
         "       inplan relay [--hook <kind> | --text <s> [--activity]]   (agent-hook → editor; resolves the active doc)\n" +
         "       inplan status  <file>\n" +
         "       inplan upload  <file> [--org <slug>] [--repo <name>] [--path <p>] [--evict-lru]   (Collaborate on Cloud)\n" +
@@ -1439,6 +1454,7 @@ async function main(): Promise<void> {
   // resolving a local file/sidecar.
   const remoteDocId = getFlag(args, "remote");
   if (remoteDocId) {
+    rejectCommentOnCloud(cmd, false);
     await runRemote(cmd, remoteDocId, explicitCursor, confirmed, args, undefined, model);
     return;
   }
@@ -1483,6 +1499,7 @@ async function main(): Promise<void> {
     return;
   }
   if (route.kind === "cloud") {
+    rejectCommentOnCloud(cmd, true);
     // `file` is this promoted local doc — pass it so a Save-locally request can
     // bring the body back to disk here.
     await runRemote(cmd, route.docId, explicitCursor, confirmed, args, file, model);
@@ -1526,6 +1543,58 @@ async function main(): Promise<void> {
   if (cmd !== "open" && !existsSync(file)) {
     process.stderr.write(`inplan ${cmd}: file not found: ${file}\n`);
     process.exit(1);
+  }
+
+  // Append a comment (reply/answer, document-level, or span-anchored) with the CLI's own real
+  // timestamp, instead of the agent hand-writing the JSON block (and having to invent the `date`
+  // field itself — see ./commentAdd.ts). Just rewrites the file; the agent's next `wait` picks it
+  // up like any other edit. Usage: `inplan comment <file> (--parent-id <id>|--doc|--span "text")
+  // --text "..." [--model NAME] [--may-resolve] [--question <json>]`.
+  if (cmd === "comment") {
+    const text = getFlag(args, "text");
+    if (!text) {
+      process.stderr.write(
+        'inplan comment: usage: inplan comment <file> (--parent-id <id>|--doc|--span "exact body text") --text "..." [--model NAME] [--may-resolve] [--question <json>]\n',
+      );
+      process.exit(64);
+    }
+    const parentId = getFlag(args, "parent-id");
+    const span = getFlag(args, "span");
+    const questionRaw = getFlag(args, "question");
+    let question: unknown;
+    if (questionRaw !== undefined) {
+      try {
+        question = JSON.parse(questionRaw);
+      } catch {
+        process.stderr.write("inplan comment: --question must be valid JSON\n");
+        process.exit(64);
+      }
+    }
+    try {
+      // Plain read-modify-write, no lock: a concurrent save from the human (e.g. Instant mode,
+      // live editing) in this window is a last-writer-wins race — no worse than a hand-edit via
+      // Edit/Write ever was, but worth naming now that this is a fast, easily-repeatable command
+      // rather than a one-off manual edit.
+      const currentText = readFileSync(file, "utf8");
+      const { text: nextText, comment } = addComment(currentText, {
+        text,
+        author: agentAuthorFor(model),
+        ...(parentId ? { parentId } : {}),
+        ...(hasFlag(args, "doc") ? { doc: true } : {}),
+        ...(span ? { span } : {}),
+        ...(question ? { question } : {}),
+        mayResolve: hasFlag(args, "may-resolve"),
+      });
+      writeFileSync(file, nextText);
+      output({ status: "commented", id: comment.id, date: comment.date, author: comment.author });
+    } catch (err) {
+      if (err instanceof AddCommentError) {
+        process.stderr.write(`${err.message}\n`);
+        process.exit(64);
+      }
+      throw err;
+    }
+    return;
   }
 
   if (cmd === "open") {
