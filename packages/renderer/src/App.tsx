@@ -52,6 +52,16 @@ import { applySegments, isChange, lineSegments, wordDiff, type DiffSegment, type
 
 const USER_AUTHOR = "You";
 const EMPTY: ParsedDocument = { body: "", comments: [] };
+/** A pasted/picked image's filename extension, by MIME type — an explicit map because some
+ *  subtypes aren't valid extensions as-is (e.g. "image/svg+xml" → "svg", not "svg+xml"). */
+const IMAGE_EXT_BY_MIME: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/avif": "avif",
+  "image/svg+xml": "svg",
+};
 const ZOOM_MIN = 0.6;
 const ZOOM_MAX = 1.8;
 
@@ -689,7 +699,10 @@ export function App(props: EditorProps = {}): JSX.Element {
   const onPickImage = useCallback(async (bytes: ArrayBuffer, mime: string): Promise<string | null> => {
     const saveAsset = hostApi().saveAsset;
     if (!saveAsset) return null;
-    const ext = mime.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
+    // Not just `mime.split("/")[1]`: some subtypes aren't valid filename extensions on their own
+    // (e.g. "svg+xml"), and the host's asset:save rejects anything that doesn't look like one —
+    // silently falling back to ".png" on an SVG's actual bytes, breaking the image.
+    const ext = IMAGE_EXT_BY_MIME[mime] ?? "png";
     const saved = await saveAsset(bytes, ext);
     return saved?.relPath ?? null;
   }, []);

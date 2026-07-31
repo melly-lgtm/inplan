@@ -109,4 +109,25 @@ describe("source pane formatting toolbar", () => {
     expect(saveAsset).toHaveBeenCalledWith(expect.any(ArrayBuffer), "png");
     expect(handle.insertImage).toHaveBeenCalledWith("plan.assets/x.png");
   });
+
+  it("maps each supported MIME type to its real extension (not the bare subtype, e.g. svg+xml)", async () => {
+    const saveAsset = vi.fn(async (_bytes: ArrayBuffer, ext: string) => ({ relPath: `plan.assets/x.${ext}` }));
+    (window as unknown as { api: { saveAsset: unknown } }).api.saveAsset = saveAsset;
+    await mount();
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+
+    for (const [mime, ext] of [
+      ["image/png", "png"],
+      ["image/jpeg", "jpg"],
+      ["image/gif", "gif"],
+      ["image/webp", "webp"],
+      ["image/avif", "avif"],
+      ["image/svg+xml", "svg"],
+    ] as const) {
+      const file = new File([new Uint8Array([1, 2, 3])], "shot", { type: mime });
+      Object.defineProperty(fileInput, "files", { value: [file], configurable: true });
+      await act(async () => fileInput.dispatchEvent(new Event("change", { bubbles: true })));
+      expect(saveAsset).toHaveBeenLastCalledWith(expect.any(ArrayBuffer), ext);
+    }
+  });
 });
