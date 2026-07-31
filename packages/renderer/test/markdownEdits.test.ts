@@ -86,6 +86,14 @@ describe("linePrefixEdit (blockquote / bullet / checklist)", () => {
   it("still prefixes a single blank line under the cursor (starting a fresh list/quote line)", () => {
     expect(apply("", linePrefixEdit("", 0, 0, "- "))).toBe("- ");
   });
+  it("with a prefixPattern, recognizes any matching variant (e.g. a checked checklist item) as already-prefixed", () => {
+    const checked = "- [x] Task";
+    expect(apply(checked, linePrefixEdit(checked, 0, checked.length, "- [ ] ", /^-\s\[[ xX]\]\s/))).toBe("Task");
+  });
+  it("with a prefixPattern, adding still uses the literal prefix (not the pattern)", () => {
+    const plain = "Task";
+    expect(apply(plain, linePrefixEdit(plain, 0, 0, "- [ ] ", /^-\s\[[ xX]\]\s/))).toBe("- [ ] Task");
+  });
 });
 
 describe("orderedListEdit", () => {
@@ -99,6 +107,10 @@ describe("orderedListEdit", () => {
   });
   it("still numbers a single blank line under the cursor", () => {
     expect(apply("", orderedListEdit("", 0, 0))).toBe("1. ");
+  });
+  it("renumbers cleanly on a mixed selection instead of stacking old numbers into new ones", () => {
+    const doc = "1. a\nb\n3. c";
+    expect(apply(doc, orderedListEdit(doc, 0, doc.length))).toBe("1. a\n2. b\n3. c");
   });
 });
 

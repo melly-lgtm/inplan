@@ -158,7 +158,7 @@ export const SourceEditor = forwardRef<
       withSelection(orderedListEdit);
     },
     toggleChecklist() {
-      withSelection((text, from, to) => linePrefixEdit(text, from, to, "- [ ] "));
+      withSelection((text, from, to) => linePrefixEdit(text, from, to, "- [ ] ", /^-\s\[[ xX]\]\s/));
     },
     insertLink() {
       withSelection(linkEdit);

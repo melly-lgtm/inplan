@@ -49,6 +49,13 @@ describe("SourceEditor formatting commands", () => {
     expect(text()).toBe("- [ ] Task");
   });
 
+  it("toggleChecklist recognizes an already-checked '- [x] ' line and strips it", () => {
+    const { ref, text } = mount("- [x] Task");
+    ref.current!.selectRange(0, 10);
+    ref.current!.toggleChecklist();
+    expect(text()).toBe("Task");
+  });
+
   it("toggleChecklist / toggleBulletList / toggleOrderedList / toggleBlockquote all work on an empty line", () => {
     for (const [run, expected] of [
       [(r: SourceEditorHandle) => r.toggleChecklist(), "- [ ] "],

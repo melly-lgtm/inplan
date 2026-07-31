@@ -56,18 +56,30 @@ export function wrapEdit(text: string, from: number, to: number, open: string, c
  *  line the selection spans. Adds it unless every spanned line already has it, in which case it
  *  strips it from all of them. Blank lines are left untouched WITHIN a multi-line span (so
  *  intentional paragraph breaks in a selection survive), but a single blank line under the
- *  cursor is a normal target — that's how you start a fresh list/quote line. */
-export function linePrefixEdit(text: string, from: number, to: number, prefix: string): TextEdit {
+ *  cursor is a normal target — that's how you start a fresh list/quote line.
+ *
+ *  `prefixPattern`, if given, is used instead of a literal `startsWith(prefix)` to detect an
+ *  existing prefix — the checklist call site needs this to recognize "- [x] " (checked) as well
+ *  as "- [ ] ", so re-toggling a checked item strips it instead of stacking another prefix. */
+export function linePrefixEdit(text: string, from: number, to: number, prefix: string, prefixPattern?: RegExp): TextEdit {
   const { start, end } = lineBounds(text, from, to);
   const lines = text.slice(start, end).split("\n");
   const skipBlank = lines.length > 1;
   const targetable = lines.filter((l) => !(skipBlank && l.length === 0));
-  const allPrefixed = targetable.length > 0 && targetable.every((l) => l.startsWith(prefix));
+  const matchLen = (l: string): number | null => {
+    if (prefixPattern) {
+      const m = prefixPattern.exec(l);
+      return m ? m[0].length : null;
+    }
+    return l.startsWith(prefix) ? prefix.length : null;
+  };
+  const allPrefixed = targetable.length > 0 && targetable.every((l) => matchLen(l) !== null);
   const insert = lines
     .map((l) => {
       if (skipBlank && l.length === 0) return l;
-      if (allPrefixed) return l.startsWith(prefix) ? l.slice(prefix.length) : l;
-      return l.startsWith(prefix) ? l : prefix + l;
+      const len = matchLen(l);
+      if (allPrefixed) return len !== null ? l.slice(len) : l;
+      return len !== null ? l : prefix + l;
     })
     .join("\n");
   return { changes: { from: start, to: end, insert }, selection: { anchor: start, head: start + insert.length } };
@@ -86,7 +98,7 @@ export function orderedListEdit(text: string, from: number, to: number): TextEdi
     .map((l) => {
       if (skipBlank && l.length === 0) return l;
       if (allNumbered) return l.replace(/^\d+\.\s/, "");
-      return `${n++}. ${l}`;
+      return `${n++}. ${l.replace(/^\d+\.\s/, "")}`;
     })
     .join("\n");
   return { changes: { from: start, to: end, insert }, selection: { anchor: start, head: start + insert.length } };

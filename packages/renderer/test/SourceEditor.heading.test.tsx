@@ -19,10 +19,10 @@ afterEach(cleanup);
 
 describe("SourceEditor.setHeading", () => {
   it("adds a heading prefix to a plain line", () => {
-    const { ref } = mount("Hello world");
+    const { ref, container } = mount("Hello world");
     ref.current!.selectRange(2, 2); // cursor inside the line
     ref.current!.setHeading(2);
-    expect(ref.current).toBeTruthy();
+    expect(container.querySelector(".cm-content")!.textContent).toBe("## Hello world");
   });
 
   it("clicking the same level again clears it back to a paragraph", () => {
