@@ -93,8 +93,12 @@ export const SourceEditor = forwardRef<
     onCutComments?: (text: string, from: number, to: number) => void;
     /** Paste a fragment carrying comments: the app re-IDs them, rewrites anchors, and splices. */
     onPasteComments?: (text: string, payload: ClipboardPayload, from: number, to: number) => void;
+    /** A pasted image's raw bytes + MIME type: the app writes it to disk and resolves the
+     *  relative link to embed, or null if it couldn't (host has nowhere to write it — e.g. a
+     *  cloud doc). Absent ⇒ pasting an image is a no-op (no host to save it against). */
+    onPasteImage?: (bytes: ArrayBuffer, mime: string) => Promise<string | null>;
   }
->(function SourceEditor({ value, editable, onChange, onCursorLine, onFind, find, binding, commentsForCopy, onCutComments, onPasteComments }, ref): JSX.Element {
+>(function SourceEditor({ value, editable, onChange, onCursorLine, onFind, find, binding, commentsForCopy, onCutComments, onPasteComments, onPasteImage }, ref): JSX.Element {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const editableComp = useRef(new Compartment());
@@ -112,6 +116,8 @@ export const SourceEditor = forwardRef<
   onCutCommentsRef.current = onCutComments;
   const onPasteCommentsRef = useRef(onPasteComments);
   onPasteCommentsRef.current = onPasteComments;
+  const onPasteImageRef = useRef(onPasteImage);
+  onPasteImageRef.current = onPasteImage;
 
   useImperativeHandle(ref, () => ({
     scrollToLine(line: number) {
@@ -250,6 +256,22 @@ export const SourceEditor = forwardRef<
             copy: (e, v) => handleCopyCut(e, v, false),
             cut: (e, v) => handleCopyCut(e, v, true),
             paste: (e, v) => {
+              // An image on the clipboard (screenshot tool, browser "copy image", etc.) — write
+              // it to disk and embed a Markdown image link, instead of falling through to
+              // CodeMirror's native paste (which has no text/plain to insert for an image-only
+              // clipboard anyway). Checked first: an image clipboard doesn't also carry the
+              // inplan comment payload the branch below looks for.
+              const imgFile = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith("image/"));
+              if (imgFile && onPasteImageRef.current) {
+                e.preventDefault();
+                const pos = v.state.selection.main.from;
+                const onPasteImage = onPasteImageRef.current;
+                void imgFile.arrayBuffer().then(async (bytes) => {
+                  const relPath = await onPasteImage(bytes, imgFile.type);
+                  if (relPath) v.dispatch({ changes: { from: pos, to: pos, insert: `![](${relPath})` } });
+                });
+                return true;
+              }
               if (!onPasteCommentsRef.current) return false;
               const html = e.clipboardData?.getData("text/html") ?? "";
               const payload = html ? readClipHtml(html) : null;
