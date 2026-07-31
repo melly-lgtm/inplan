@@ -543,6 +543,26 @@ function registerIpc(): void {
     }
     return { linkTarget: toPosix(relative(dirname(session.paths.file), abs)) };
   });
+  // An image (pasted or picked via the Source toolbar): written into a `<docname>.assets/`
+  // folder next to the doc (Typora-style), committed to git alongside it — never the sidecar
+  // dir, so the Markdown link it produces stays valid for anyone who clones the repo.
+  ipcMain.handle("asset:save", (_e, bytes: ArrayBuffer, ext: string) => {
+    if (!session) return null;
+    const docDir = dirname(session.paths.file);
+    const assetsDir = join(docDir, `${basename(session.paths.file).replace(/\.md$/i, "")}.assets`);
+    const safeExt = /^[a-z0-9]{1,5}$/i.test(ext) ? ext.toLowerCase() : "png";
+    const stamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14); // YYYYMMDDHHMMSS
+    let abs = join(assetsDir, `image-${stamp}.${safeExt}`);
+    for (let n = 1; existsSync(abs); n++) abs = join(assetsDir, `image-${stamp}-${n}.${safeExt}`);
+    try {
+      mkdirSync(assetsDir, { recursive: true });
+      writeFileSync(abs, Buffer.from(bytes));
+    } catch (e) {
+      process.stderr.write(`[inplan] asset:save failed: ${(e as Error).message}\n`);
+      return null;
+    }
+    return { relPath: toPosix(relative(docDir, abs)) };
+  });
   ipcMain.handle("doc:open", (_e, target: string) => {
     // `target` is the link path the renderer resolved against the current doc
     // (joined + `..`-normalized, relative to the filesystem root). Recover the

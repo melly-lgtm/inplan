@@ -138,3 +138,11 @@ export function linkEdit(text: string, from: number, to: number): TextEdit {
   const urlStart = from + 1 + label.length + 2;
   return { changes: { from, to, insert }, selection: { anchor: urlStart, head: urlStart + url.length } };
 }
+
+/** Insert `![](relPath)` for an image (pasted or picked via a file dialog) at the cursor,
+ *  replacing any selection. Unlike linkEdit, `relPath` is already final — it came from saving
+ *  the file, not a placeholder to fill in — so the cursor just lands right after it. */
+export function imageEdit(text: string, from: number, to: number, relPath: string): TextEdit {
+  const insert = `![](${relPath})`;
+  return { changes: { from, to, insert }, selection: { anchor: from + insert.length } };
+}

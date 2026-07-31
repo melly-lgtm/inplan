@@ -129,6 +129,7 @@ export const EN: Catalog = {
   "source.link": "Link",
   "source.inlineCode": "Inline code",
   "source.codeBlock": "Code block",
+  "source.image": "Image",
   "splitter.resize": "Drag to resize",
   // profile menu
   "profile.account": "Account menu",

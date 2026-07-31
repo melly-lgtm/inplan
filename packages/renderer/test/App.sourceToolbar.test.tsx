@@ -26,6 +26,7 @@ const handle = {
   toggleChecklist: vi.fn(),
   insertLink: vi.fn(),
   insertHorizontalRule: vi.fn(),
+  insertImage: vi.fn(),
 };
 let onCursorLine: ((line: number) => void) | undefined;
 
@@ -58,7 +59,7 @@ async function mount() {
 describe("source pane formatting toolbar", () => {
   it("renders all the formatting buttons", async () => {
     await mount();
-    for (const name of ["Heading", "Bold", "Italic", "Strikethrough", "Horizontal rule", "Quote", "Bullet list", "Numbered list", "Checklist", "Link", "Inline code", "Code block"]) {
+    for (const name of ["Heading", "Bold", "Italic", "Strikethrough", "Horizontal rule", "Quote", "Bullet list", "Numbered list", "Checklist", "Link", "Inline code", "Code block", "Image"]) {
       expect(screen.getByTitle(name)).toBeTruthy();
     }
   });
@@ -85,5 +86,27 @@ describe("source pane formatting toolbar", () => {
     await act(async () => onCursorLine?.(2)); // 0-based line 2 is "## Existing heading"
 
     expect(screen.getByTitle("Heading").textContent).toBe("H2");
+  });
+
+  it("the Image button is disabled when the host has no saveAsset (e.g. a cloud doc)", async () => {
+    await mount(); // memoryApi never sets api.saveAsset
+    expect((screen.getByTitle("Image") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("picking a file calls the host's saveAsset and inserts the returned link", async () => {
+    const saveAsset = vi.fn(async (_bytes: ArrayBuffer, ext: string) => ({ relPath: `plan.assets/x.${ext}` }));
+    (window as unknown as { api: { saveAsset: unknown } }).api.saveAsset = saveAsset;
+    await mount();
+
+    const imageBtn = screen.getByTitle("Image") as HTMLButtonElement;
+    expect(imageBtn.disabled).toBe(false);
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+    Object.defineProperty(fileInput, "files", { value: [file] });
+
+    await act(async () => fileInput.dispatchEvent(new Event("change", { bubbles: true })));
+
+    expect(saveAsset).toHaveBeenCalledWith(expect.any(ArrayBuffer), "png");
+    expect(handle.insertImage).toHaveBeenCalledWith("plan.assets/x.png");
   });
 });

@@ -15,6 +15,7 @@ import {
   IconChecklist,
   IconCodeBlock,
   IconHorizontalRule,
+  IconImage,
   IconInlineCode,
   IconItalic,
   IconLink,
@@ -29,15 +30,29 @@ export function SourceToolbar({
   body,
   activeLine,
   disabled,
+  onPickImage,
 }: {
   editorRef: RefObject<SourceEditorHandle>;
   body: string;
   activeLine: number | null;
   disabled: boolean;
+  /** Save a picked image's bytes next to the doc and resolve the relative link to embed.
+   *  Absent ⇒ no host to write a sibling file against (e.g. a cloud doc) — the button disables. */
+  onPickImage?: (bytes: ArrayBuffer, mime: string) => Promise<string | null>;
 }): JSX.Element {
   const t = useT();
   const headingBtnRef = useRef<HTMLButtonElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [headingMenuOpen, setHeadingMenuOpen] = useState(false);
+
+  const pickImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // reset so picking the SAME file again still fires onChange
+    if (!file || !onPickImage) return;
+    const bytes = await file.arrayBuffer();
+    const relPath = await onPickImage(bytes, file.type);
+    if (relPath) editorRef.current?.insertImage(relPath);
+  };
 
   const line = activeLine != null ? (body.split("\n")[activeLine] ?? "") : "";
   const currentLevel = ATX.exec(line)?.[1]?.length ?? 0;
@@ -91,7 +106,9 @@ export function SourceToolbar({
         <button disabled={disabled} title={t("source.link")} onClick={() => editorRef.current?.insertLink()}><IconLink /></button>
         <button disabled={disabled} title={t("source.inlineCode")} onClick={() => editorRef.current?.toggleInlineCode()}><IconInlineCode /></button>
         <button disabled={disabled} title={t("source.codeBlock")} onClick={() => editorRef.current?.toggleCodeBlock()}><IconCodeBlock /></button>
+        <button disabled={disabled || !onPickImage} title={t("source.image")} onClick={() => fileInputRef.current?.click()}><IconImage /></button>
       </div>
+      <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={pickImage} />
     </div>
   );
 }

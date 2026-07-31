@@ -682,6 +682,18 @@ export function App(props: EditorProps = {}): JSX.Element {
     [apply],
   );
 
+  // An image picked via the Source toolbar's file dialog: hand its raw bytes to the host, which
+  // writes them next to the open doc (e.g. `<docname>.assets/image-...png`) and returns the
+  // relative link to embed. Absent `saveAsset` (a host with nowhere to write a sibling file,
+  // e.g. a cloud doc) ⇒ no-op — the toolbar just leaves the doc untouched.
+  const onPickImage = useCallback(async (bytes: ArrayBuffer, mime: string): Promise<string | null> => {
+    const saveAsset = hostApi().saveAsset;
+    if (!saveAsset) return null;
+    const ext = mime.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
+    const saved = await saveAsset(bytes, ext);
+    return saved?.relPath ?? null;
+  }, []);
+
   // Auto-resolve: when the setting is on, resolve threads the agent suggested (its `may_resolve`
   // on the thread's last comment). Runs on load + when the setting flips on. We remember which
   // threads we've auto-resolved (`autoResolvedRef`) and skip them on later passes, so undoing an
@@ -1357,8 +1369,8 @@ export function App(props: EditorProps = {}): JSX.Element {
 
   const resolvedIds = useMemo(() => new Set(doc.comments.filter((c) => c.resolved).map((c) => c.id)), [doc.comments]);
   const previewHtml = useMemo(
-    () => renderMarkdown(doc.body, (id) => showResolvedOrphaned || !resolvedIds.has(id)),
-    [doc.body, resolvedIds, showResolvedOrphaned],
+    () => renderMarkdown(doc.body, (id) => showResolvedOrphaned || !resolvedIds.has(id), docPathRef.current),
+    [doc.body, resolvedIds, showResolvedOrphaned, docPathRef.current],
   );
 
   // Highlight find matches via the CSS Custom Highlight API (non-destructive
@@ -1826,7 +1838,7 @@ export function App(props: EditorProps = {}): JSX.Element {
               <DiffSource segs={editedSegs} accepted={accepted} focused={reviewCursor} onToggle={toggleHunk} />
             ) : (
               <EditorErrorBoundary label="The source editor">
-              <SourceToolbar editorRef={editorRef} body={doc.body} activeLine={activePreviewLine} disabled={editingLocked} />
+              <SourceToolbar editorRef={editorRef} body={doc.body} activeLine={activePreviewLine} disabled={editingLocked} onPickImage={hostApi().saveAsset ? onPickImage : undefined} />
               <SourceEditor
                 ref={editorRef}
                 binding={hostApi().binding ?? null}

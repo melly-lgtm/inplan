@@ -12,6 +12,7 @@ import {
   codeBlockEdit,
   headingEdit,
   horizontalRuleEdit,
+  imageEdit,
   linePrefixEdit,
   linkEdit,
   orderedListEdit,
@@ -39,6 +40,9 @@ export interface SourceEditorHandle {
   toggleChecklist(): void;
   insertLink(): void;
   insertHorizontalRule(): void;
+  /** Insert `![](relPath)` at the cursor (replacing any selection) — `relPath` is already the
+   *  final saved location (from a paste or the toolbar's file picker), nothing left to fill in. */
+  insertImage(relPath: string): void;
 }
 
 // The current line is shown by CodeMirror's own active-line highlight (basicSetup), which
@@ -165,6 +169,9 @@ export const SourceEditor = forwardRef<
     },
     insertHorizontalRule() {
       withSelection(horizontalRuleEdit);
+    },
+    insertImage(relPath: string) {
+      withSelection((text, from, to) => imageEdit(text, from, to, relPath));
     },
   }));
 

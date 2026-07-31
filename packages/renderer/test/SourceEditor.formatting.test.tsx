@@ -90,4 +90,11 @@ describe("SourceEditor formatting commands", () => {
     ref.current!.toggleCodeBlock();
     expect(text()).toBe("```x = 1```");
   });
+
+  it("insertImage inserts the image markdown at the cursor", () => {
+    const { ref, text } = mount("Para");
+    ref.current!.selectRange(4, 4);
+    ref.current!.insertImage("plan.assets/x.png");
+    expect(text()).toBe("Para![](plan.assets/x.png)");
+  });
 });

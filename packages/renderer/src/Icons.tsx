@@ -165,3 +165,11 @@ export const IconCodeBlock = (): JSX.Element => (
     <path d="M16 3a2 2 0 0 1 2 2v3a2 2 0 0 0 2 2 2 2 0 0 0-2 2v3a2 2 0 0 1-2 2" />
   </Glyph>
 );
+/** Picture frame (mountain + sun) — insert an image. */
+export const IconImage = (): JSX.Element => (
+  <Glyph>
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <circle cx="8.5" cy="8.5" r="1.5" />
+    <polyline points="21 15 16 10 5 21" />
+  </Glyph>
+);

@@ -10,6 +10,7 @@ import {
   codeBlockEdit,
   headingEdit,
   horizontalRuleEdit,
+  imageEdit,
   linePrefixEdit,
   linkEdit,
   orderedListEdit,
@@ -141,5 +142,17 @@ describe("linkEdit", () => {
   });
   it("uses a text placeholder when nothing is selected", () => {
     expect(apply("", linkEdit("", 0, 0))).toBe("[text](url)");
+  });
+});
+
+describe("imageEdit", () => {
+  it("inserts the image markdown at the cursor and lands the cursor right after it", () => {
+    const edit = imageEdit("", 0, 0, "plan.assets/x.png");
+    expect(apply("", edit)).toBe("![](plan.assets/x.png)");
+    expect(edit.selection).toEqual({ anchor: "![](plan.assets/x.png)".length });
+  });
+  it("replaces a selection rather than just inserting alongside it", () => {
+    const doc = "old text";
+    expect(apply(doc, imageEdit(doc, 0, 8, "plan.assets/x.png"))).toBe("![](plan.assets/x.png)");
   });
 });

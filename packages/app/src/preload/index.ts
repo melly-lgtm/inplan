@@ -140,6 +140,7 @@ const api: Api = {
     create: (path: string, content: string) => ipcRenderer.invoke("newdoc:create", path, content) as Promise<{ status: "created" | "exists"; linkTarget: string } | null>,
     append: (path: string, body: string, comments: Comment[]) => ipcRenderer.invoke("newdoc:append", path, body, comments) as Promise<{ linkTarget: string } | null>,
   },
+  saveAsset: (bytes: ArrayBuffer, ext: string) => ipcRenderer.invoke("asset:save", bytes, ext) as Promise<{ relPath: string } | null>,
   navigate: (dir: "back" | "forward") => ipcRenderer.invoke("nav:go", dir),
   onNavState: (cb: (s: { canBack: boolean; canForward: boolean }) => void) => {
     let active = true;
