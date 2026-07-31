@@ -238,6 +238,12 @@ body {
 .ap-vsplit:hover, .ap-vsplit:active { background: var(--accent); }
 .ap-pane:last-child { border-right: 0; }
 .ap-source { flex: 1; overflow: auto; }
+.ap-src-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--line); background: var(--bg); flex: 0 0 auto; }
+.ap-src-toolbar .ap-seg button {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 28px; height: 26px; padding: 0 8px; font-size: 13px; font-weight: 500;
+}
+.ap-src-toolbar svg { width: 15px; height: 15px; display: block; }
 
 .ap-tabs { display: flex; border-bottom: 1px solid var(--line); background: var(--bg); }
 .ap-tabs button { flex: 1; border: 0; background: transparent; padding: 8px; cursor: pointer; color: var(--muted); }

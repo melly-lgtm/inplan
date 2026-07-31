@@ -8,12 +8,37 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import type { Comment } from "@inplan/core";
 import type { EditorBinding } from "./api";
 import { buildClipHtml, readClipHtml, type ClipboardPayload } from "./clipboard";
+import {
+  codeBlockEdit,
+  headingEdit,
+  horizontalRuleEdit,
+  linePrefixEdit,
+  linkEdit,
+  orderedListEdit,
+  wrapEdit,
+  type TextEdit,
+} from "./markdownEdits";
 
 export interface SourceEditorHandle {
   /** Scroll to a 0-based source line and highlight it. */
   scrollToLine(line: number): void;
   /** Select a character range [from,to) and scroll it into view (for find navigation). */
   selectRange(from: number, to: number): void;
+  /** Set the heading level (1-6) of the cursor's line, or 0 to clear it back to a plain
+   *  paragraph. Setting the line's current level again clears it (toggle). */
+  setHeading(level: number): void;
+  /** Toolbar formatting commands — see markdownEdits.ts for the toggle semantics. */
+  toggleBold(): void;
+  toggleItalic(): void;
+  toggleStrikethrough(): void;
+  toggleInlineCode(): void;
+  toggleCodeBlock(): void;
+  toggleBlockquote(): void;
+  toggleBulletList(): void;
+  toggleOrderedList(): void;
+  toggleChecklist(): void;
+  insertLink(): void;
+  insertHorizontalRule(): void;
 }
 
 // The current line is shown by CodeMirror's own active-line highlight (basicSetup), which
@@ -105,7 +130,53 @@ export const SourceEditor = forwardRef<
       // focus on the find bar so Enter keeps stepping through matches.
       v.dispatch({ selection: { anchor: f, head: t }, effects: EditorView.scrollIntoView(f, { y: "center" }) });
     },
+    setHeading(level: number) {
+      withSelection((text, from) => headingEdit(text, from, level));
+    },
+    toggleBold() {
+      withSelection((text, from, to) => wrapEdit(text, from, to, "**"));
+    },
+    toggleItalic() {
+      withSelection((text, from, to) => wrapEdit(text, from, to, "_"));
+    },
+    toggleStrikethrough() {
+      withSelection((text, from, to) => wrapEdit(text, from, to, "~~"));
+    },
+    toggleInlineCode() {
+      withSelection((text, from, to) => wrapEdit(text, from, to, "`"));
+    },
+    toggleCodeBlock() {
+      withSelection(codeBlockEdit);
+    },
+    toggleBlockquote() {
+      withSelection((text, from, to) => linePrefixEdit(text, from, to, "> "));
+    },
+    toggleBulletList() {
+      withSelection((text, from, to) => linePrefixEdit(text, from, to, "- "));
+    },
+    toggleOrderedList() {
+      withSelection(orderedListEdit);
+    },
+    toggleChecklist() {
+      withSelection((text, from, to) => linePrefixEdit(text, from, to, "- [ ] "));
+    },
+    insertLink() {
+      withSelection(linkEdit);
+    },
+    insertHorizontalRule() {
+      withSelection(horizontalRuleEdit);
+    },
   }));
+
+  /** Read the current selection, run `fn` over it, and dispatch the resulting edit. */
+  function withSelection(fn: (text: string, from: number, to: number) => TextEdit) {
+    const v = view.current;
+    if (!v) return;
+    const { from, to } = v.state.selection.main;
+    const edit = fn(v.state.doc.toString(), from, to);
+    v.dispatch(edit);
+    v.focus();
+  }
 
   useEffect(() => {
     if (!host.current) return;

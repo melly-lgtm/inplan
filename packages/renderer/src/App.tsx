@@ -34,6 +34,7 @@ import { ContextMenu } from "./ContextMenu";
 import { MOD_KEY } from "./platform";
 import { QuestionChips } from "./QuestionChips";
 import { SourceEditor, type SourceEditorHandle } from "./SourceEditor";
+import { SourceToolbar } from "./SourceToolbar";
 import { StatusBar } from "./StatusBar";
 import { ProfileMenu } from "./ProfileMenu";
 import { AgentIndicator } from "./AgentIndicator";
@@ -1825,6 +1826,7 @@ export function App(props: EditorProps = {}): JSX.Element {
               <DiffSource segs={editedSegs} accepted={accepted} focused={reviewCursor} onToggle={toggleHunk} />
             ) : (
               <EditorErrorBoundary label="The source editor">
+              <SourceToolbar editorRef={editorRef} body={doc.body} activeLine={activePreviewLine} disabled={editingLocked} />
               <SourceEditor
                 ref={editorRef}
                 binding={hostApi().binding ?? null}
@@ -2053,6 +2055,7 @@ function PaneTabs({ tab, onTab }: { tab: "comments" | "source"; onTab: (t: "comm
     </div>
   );
 }
+
 
 /** Subscribe to the host's profile controller (identity + live agent presence).
  *  Returns null when the host wires no profile (tests / single-writer desktop).
