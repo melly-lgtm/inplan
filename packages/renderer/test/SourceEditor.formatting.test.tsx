@@ -13,9 +13,19 @@ import { SourceEditor, type SourceEditorHandle } from "../src/SourceEditor";
 
 function mount(value: string, editable = true) {
   const ref = createRef<SourceEditorHandle>();
-  const utils = render(<SourceEditor ref={ref} value={value} editable={editable} onChange={() => {}} />);
+  let latest = value;
+  const onChange = (v: string) => {
+    latest = v;
+  };
+  const utils = render(<SourceEditor ref={ref} value={value} editable={editable} onChange={onChange} />);
+  // .cm-content.textContent concatenates CodeMirror's per-line blocks with no "\n" between
+  // them — fine for the single-line assertions below, but would silently drop newlines for a
+  // multi-line one. `doc()` (the latest onChange value) preserves them; use it instead if a
+  // test ever needs to assert multi-line content.
   const text = () => utils.container.querySelector(".cm-content")!.textContent;
-  return { ref, text };
+  const doc = () => latest;
+  const setEditable = (next: boolean) => utils.rerender(<SourceEditor ref={ref} value={latest} editable={next} onChange={onChange} />);
+  return { ref, text, doc, setEditable };
 }
 
 afterEach(cleanup);
@@ -91,13 +101,17 @@ describe("SourceEditor formatting commands", () => {
     expect(text()).toBe("```x = 1```");
   });
 
-  it("no toolbar command mutates the doc while editable=false — e.g. the doc went read-only/agent-locked after a menu opened", () => {
-    const { ref, text } = mount("Hello world", false);
+  it("no toolbar command mutates the doc once editable flips to false mid-session — e.g. a menu opened, then the doc went read-only/agent-locked", () => {
+    // Starts editable (not already locked): the actual bug was a control that opened BEFORE
+    // the doc became read-only still working AFTER, which a mount-time editable=false can't
+    // exercise — EditorView.editable blocks typing but never blocked v.dispatch() directly.
+    const { ref, text, setEditable } = mount("Hello world", true);
+    setEditable(false);
     ref.current!.selectRange(0, 5);
     ref.current!.toggleBold();
     ref.current!.setHeading(2);
     ref.current!.insertLink();
-    expect(text()).toBe("Hello world"); // untouched — EditorView.editable alone doesn't block v.dispatch()
+    expect(text()).toBe("Hello world"); // untouched post-transition
   });
 
   it("insertImage inserts the image markdown (angle-bracket destination) at the cursor", () => {
