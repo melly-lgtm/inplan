@@ -725,6 +725,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       const file = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith("image/"));
       if (!file) return; // no image on the clipboard — leave native paste (a no-op here) alone
       e.preventDefault();
+      const pasteDocPath = docPathRef.current; // so we can detect a navigation mid-save, below
       let relPath: string | null;
       try {
         const bytes = await file.arrayBuffer();
@@ -735,13 +736,15 @@ export function App(props: EditorProps = {}): JSX.Element {
         setStatus(t("msg.imagePasteFailed"));
         return;
       }
-      if (!relPath) return;
+      // If the user navigated to a different doc while the write was in flight, docRef.current
+      // now belongs to THAT doc — inserting into it would drop the image into the wrong document.
+      if (!relPath || docPathRef.current !== pasteDocPath) return;
       const cur = docRef.current;
       const lines = cur.body.split("\n");
       let insertAfter = lines.length - 1;
       // activePreviewLine/docRef are both read fresh here, after the awaits above — a concurrent
-      // edit during the (host-write) round trip can still land the insert a line off (rare, and
-      // clamped below to stay in-bounds either way), but never crashes or targets a stale doc.
+      // edit (same doc) during the (host-write) round trip can still land the insert a line off
+      // (rare, and clamped below to stay in-bounds either way), but never crashes.
       if (activePreviewLine != null) {
         // Same lookup as the active-line highlight effect, so this always targets the block
         // that's actually highlighted — including when activePreviewLine lands mid-block (the

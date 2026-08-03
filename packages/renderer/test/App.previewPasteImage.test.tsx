@@ -158,6 +158,32 @@ describe("preview pane image paste", () => {
     expect(document.querySelector(".ap-rendered")!.innerHTML).toBe(before);
   });
 
+  it("does not apply the image link to a doc the user navigated to WHILE the save was still in flight", async () => {
+    let resolveSave!: (v: { relPath: string }) => void;
+    const session = createMemoryApi({ content: DOC }) as unknown as {
+      api: typeof window.api & { onNavigated: (cb: (p: { path: string; content: string }) => void) => void };
+    };
+    session.api.saveAsset = vi.fn(() => new Promise((resolve) => { resolveSave = resolve; }));
+    let navigatedCb: ((p: { path: string; content: string }) => void) | undefined;
+    session.api.onNavigated = (cb) => void (navigatedCb = cb);
+    (window as unknown as { api: unknown }).api = session.api;
+    await mountApp();
+
+    const rendered = document.querySelector(".ap-rendered")!;
+    await act(async () => firePasteImage(rendered, PNG));
+
+    // The save is still pending — navigate to a different document before it resolves.
+    await act(async () => navigatedCb?.({ path: "docs/B.md", content: "# B\n\nDoc B body.\n\n<!--inplan v1\n[]\n-->\n" }));
+    await waitFor(() => expect(document.body.textContent).toContain("Doc B body."));
+
+    await act(async () => resolveSave({ relPath: "plan.assets/x.png" }));
+    // Give the paste handler's continuation a turn to run (and NOT apply to doc B).
+    await act(async () => await Promise.resolve());
+
+    expect(document.querySelector(".ap-rendered")!.innerHTML).not.toContain("plan.assets/x.png");
+    expect(document.body.textContent).toContain("Doc B body.");
+  });
+
   it("does nothing for a plain (non-image) paste", async () => {
     const saveAsset = vi.fn();
     await mountApp();
