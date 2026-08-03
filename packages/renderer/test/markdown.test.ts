@@ -23,6 +23,16 @@ describe("renderMarkdown", () => {
     expect(lines.length).toBe(3);
     expect(new Set(lines).size).toBe(3); // distinct lines, not all the table's first line
   });
+
+  it("tags a single-line paragraph with matching data-line and data-end-line", () => {
+    const html = renderMarkdown("intro\n\nOne line.\n");
+    expect(html).toMatch(/data-line="2" data-end-line="2"/);
+  });
+
+  it("tags a multi-line paragraph's data-end-line as its LAST line, not its first (so an insert-after lands past the whole paragraph)", () => {
+    const html = renderMarkdown("line one\nline two\nline three\n");
+    expect(html).toMatch(/data-line="0" data-end-line="2"/);
+  });
 });
 
 describe("renderMarkdown image src resolution (pasted/picked images)", () => {

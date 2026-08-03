@@ -77,6 +77,25 @@ function anchorLine(body: string, id: string): number | null {
   return body.slice(0, idx).split("\n").length - 1;
 }
 
+/** The preview block that should be treated as "active" for source `line`: the closest
+ *  `[data-line]` element at or before it. `line` need not be a block's own start line — it may
+ *  land mid-block (the source editor's cursor line, via onCursorLine, isn't clamped to a block
+ *  boundary the way a preview click is). On a tie (a container and its first child share a
+ *  source line — `<ul>`/`<li>`, `<blockquote>`/`<p>`), the LATER DOM node wins, i.e. the more
+ *  specific child. */
+function closestPreviewBlock(root: Element | null | undefined, line: number): Element | null {
+  let best: Element | null = null;
+  let bestLine = -1;
+  root?.querySelectorAll("[data-line]").forEach((el) => {
+    const l = Number(el.getAttribute("data-line") ?? -1);
+    if (l <= line && l >= bestLine) {
+      bestLine = l;
+      best = el;
+    }
+  });
+  return best;
+}
+
 const liveSelection = (): string => window.getSelection()?.toString().trim() ?? "";
 
 /** Restart a one-shot CSS flash animation on `el` (remove → reflow → re-add) so it
@@ -397,6 +416,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         setAgentThinking(false);
         setAgentDone(false);
         setAgentMessages([]); // notes belong to the doc we just left — don't carry them over
+        setActivePreviewLine(null); // a synced line belongs to the doc we just left, not this one
         setStatus(`opened ${path.split("/").pop() ?? path}`);
         void hostApi().getProposal().then((parked) => parked != null && showProposal(parked));
       }),
@@ -596,24 +616,12 @@ export function App(props: EditorProps = {}): JSX.Element {
     if (!root) return;
     root.querySelectorAll(".ap-active-line").forEach((el) => el.classList.remove("ap-active-line"));
     if (activePreviewLine == null) return;
-    let best: Element | null = null;
-    let bestLine = -1;
-    // Among blocks at or before the active line, pick the closest one. On a tie
-    // (a container and its first child share a source line — `<ul>`/`<li>`,
-    // `<blockquote>`/`<p>`), `>=` lets the later DOM node win, i.e. the more
-    // specific child, so we highlight just that item rather than the whole list.
-    root.querySelectorAll("[data-line]").forEach((el) => {
-      const l = Number(el.getAttribute("data-line") ?? -1);
-      if (l <= activePreviewLine && l >= bestLine) {
-        bestLine = l;
-        best = el;
-      }
-    });
+    const best = closestPreviewBlock(root, activePreviewLine);
     if (best) {
-      (best as Element).classList.add("ap-active-line");
+      best.classList.add("ap-active-line");
       // Don't scroll the preview when the click originated here — only re-center
       // when the active line was driven from another pane (the source editor).
-      if (!skipPreviewScroll.current) (best as Element).scrollIntoView({ block: "center" });
+      if (!skipPreviewScroll.current) best.scrollIntoView({ block: "center" });
     }
     skipPreviewScroll.current = false;
   }, [activePreviewLine, doc.body]);
@@ -692,10 +700,10 @@ export function App(props: EditorProps = {}): JSX.Element {
     [apply],
   );
 
-  // An image picked via the Source toolbar's file dialog: hand its raw bytes to the host, which
-  // writes them next to the open doc (e.g. `<docname>.assets/image-...png`) and returns the
-  // relative link to embed. Absent `saveAsset` (a host with nowhere to write a sibling file,
-  // e.g. a cloud doc) ⇒ no-op — the toolbar just leaves the doc untouched.
+  // An image picked via the Source toolbar's file dialog OR pasted from the clipboard: hand its
+  // raw bytes to the host, which writes them next to the open doc (e.g.
+  // `<docname>.assets/image-...png`) and returns the relative link to embed. Absent `saveAsset`
+  // (a host with nowhere to write a sibling file, e.g. a cloud doc) ⇒ no-op.
   const onPickImage = useCallback(async (bytes: ArrayBuffer, mime: string): Promise<string | null> => {
     const saveAsset = hostApi().saveAsset;
     if (!saveAsset) return null;
@@ -706,6 +714,54 @@ export function App(props: EditorProps = {}): JSX.Element {
     const saved = await saveAsset(bytes, ext);
     return saved?.relPath ?? null;
   }, []);
+
+  // Pasting an image directly into the (read-only) preview: insert the link on a new line
+  // right after the active (blue-highlighted) block — its data-end-line, not just data-line, so
+  // a paste into a multi-line paragraph lands after the WHOLE paragraph rather than splitting
+  // it. No active block (nothing clicked/synced yet) ⇒ append at the end of the document.
+  const onPreviewPasteImage = useCallback(
+    async (e: React.ClipboardEvent<HTMLDivElement>) => {
+      if (editingLocked) return;
+      const file = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith("image/"));
+      if (!file) return; // no image on the clipboard — leave native paste (a no-op here) alone
+      e.preventDefault();
+      const pasteDocPath = docPathRef.current; // so we can detect a navigation mid-save, below
+      let relPath: string | null;
+      try {
+        const bytes = await file.arrayBuffer();
+        relPath = await onPickImage(bytes, file.type);
+      } catch {
+        // arrayBuffer()/onPickImage() rejected (e.g. the host write failed) — preventDefault()
+        // already ran, so silence here would drop the paste with no feedback at all.
+        setStatus(t("msg.imagePasteFailed"));
+        return;
+      }
+      // If the user navigated to a different doc while the write was in flight, docRef.current
+      // now belongs to THAT doc — inserting into it would drop the image into the wrong document.
+      if (!relPath || docPathRef.current !== pasteDocPath) return;
+      const cur = docRef.current;
+      const lines = cur.body.split("\n");
+      let insertAfter = lines.length - 1;
+      // activePreviewLine/docRef are both read fresh here, after the awaits above — a concurrent
+      // edit (same doc) during the (host-write) round trip can still land the insert a line off
+      // (rare, and clamped below to stay in-bounds either way), but never crashes.
+      if (activePreviewLine != null) {
+        // Same lookup as the active-line highlight effect, so this always targets the block
+        // that's actually highlighted — including when activePreviewLine lands mid-block (the
+        // source editor's cursor line need not be a block's own start line).
+        const blockEl = closestPreviewBlock(previewRef.current, activePreviewLine);
+        const endLine = blockEl?.getAttribute("data-end-line");
+        insertAfter = endLine != null ? Number(endLine) : activePreviewLine;
+      }
+      insertAfter = Math.min(Math.max(insertAfter, 0), lines.length - 1);
+      // Angle-bracket destination, not bare `![](relPath)`: relPath is `<docname>.assets/…`, and
+      // a doc name with a space/paren (e.g. "Product Plan.md") makes that a path markdown-it's
+      // bare destination syntax can't parse as a link at all.
+      lines.splice(insertAfter + 1, 0, "", `![](<${relPath}>)`);
+      apply({ ...cur, body: lines.join("\n") }, { type: "image_pasted", payload: {} });
+    },
+    [editingLocked, onPickImage, activePreviewLine, apply],
+  );
 
   // Auto-resolve: when the setting is on, resolve threads the agent suggested (its `may_resolve`
   // on the thread's last comment). Runs on load + when the setting flips on. We remember which
@@ -1819,7 +1875,9 @@ export function App(props: EditorProps = {}): JSX.Element {
           ) : (
           <div
             className="ap-rendered"
+            tabIndex={-1}
             dangerouslySetInnerHTML={{ __html: previewHtml }}
+            onPaste={onPreviewPasteImage}
             onClick={(e) => {
               const target = e.target as HTMLElement;
               const a = target.closest("a");
@@ -1884,6 +1942,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                 commentsForCopy={commentsForCopy}
                 onCutComments={editingLocked ? undefined : onCutComments}
                 onPasteComments={editingLocked ? undefined : onPasteComments}
+                onPasteImage={editingLocked || !hostApi().saveAsset ? undefined : onPickImage}
               />
               </EditorErrorBoundary>
             )}

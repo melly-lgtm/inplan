@@ -9,10 +9,16 @@
          img-src adds file: so a Markdown image (pasted/picked, saved as a sibling
          `<docname>.assets/*` file and embedded as a `file://` URL by renderMarkdown — see
          markdown.ts) can actually load; the plan doc lives outside the app's own bundle
-         directory, so 'self' alone can't cover it. -->
+         directory, so 'self' alone can't cover it. https: (not http:) lets a Markdown image
+         whose destination is a plain remote URL (typed directly, e.g. ![](https://...)) load
+         too — markdown.ts already leaves absolute URLs untouched, so this was the only thing
+         blocking them. http: is deliberately NOT included: any doc (agent-authored, shared via
+         a repo) can embed a remote image as a tracking pixel that leaks the viewer's IP the
+         moment the doc merely renders, and plaintext http adds an on-path tampering risk on top
+         of that with no offsetting benefit. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' inplan-plugin:; img-src 'self' file:; connect-src 'self' inplan-plugin: ws://127.0.0.1:* ws://localhost:*; frame-src https://inplan.ai http://127.0.0.1:* http://localhost:*"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' inplan-plugin:; img-src 'self' file: https:; connect-src 'self' inplan-plugin: ws://127.0.0.1:* ws://localhost:*; frame-src https://inplan.ai http://127.0.0.1:* http://localhost:*"
     />
     <title>inplan</title>
   </head>

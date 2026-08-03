@@ -99,12 +99,17 @@ md.renderer.rules.image = (tokens, idx, opts, env, self) => {
 // Tag block-level elements with their 0-based source line for cross-pane sync.
 // `tr_open` is tagged too so clicking a table cell syncs to the clicked ROW's source
 // line, not the table's first line (the cells themselves carry no line map).
+// data-end-line (tok.map's exclusive end, minus one) is the block's own LAST source line —
+// used to insert content (e.g. a pasted image) after the whole block, not mid-paragraph.
 const BLOCK_RULES = ["paragraph_open", "heading_open", "blockquote_open", "bullet_list_open", "ordered_list_open", "list_item_open", "table_open", "tr_open", "hr"];
 for (const name of BLOCK_RULES) {
   const orig = md.renderer.rules[name];
   md.renderer.rules[name] = (tokens, idx, options, env, self) => {
     const tok = tokens[idx]!;
-    if (tok.map) tok.attrSet("data-line", String(tok.map[0]));
+    if (tok.map) {
+      tok.attrSet("data-line", String(tok.map[0]));
+      tok.attrSet("data-end-line", String(tok.map[1] - 1));
+    }
     return orig ? orig(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options);
   };
 }
