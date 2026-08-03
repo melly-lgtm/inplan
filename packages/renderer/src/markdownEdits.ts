@@ -83,7 +83,10 @@ export function linePrefixEdit(text: string, from: number, to: number, prefix: s
       return len !== null ? l : prefix + l;
     })
     .join("\n");
-  return { changes: { from: start, to: end, insert }, selection: { anchor: start, head: start + insert.length } };
+  // A collapsed cursor at the end, not a selection over the whole result: a selection here
+  // meant the very next keystroke (typing the list item's text) replaced the prefix it just
+  // inserted instead of continuing after it.
+  return { changes: { from: start, to: end, insert }, selection: { anchor: start + insert.length } };
 }
 
 /** Toggle sequential "1. "/"2. "/… numbering across the selection's spanned lines (same
@@ -102,7 +105,9 @@ export function orderedListEdit(text: string, from: number, to: number): TextEdi
       return `${n++}. ${l.replace(/^\d+\.\s/, "")}`;
     })
     .join("\n");
-  return { changes: { from: start, to: end, insert }, selection: { anchor: start, head: start + insert.length } };
+  // Collapsed cursor at the end (see linePrefixEdit) — not a selection the next keystroke
+  // would replace.
+  return { changes: { from: start, to: end, insert }, selection: { anchor: start + insert.length } };
 }
 
 /** Toggle a fenced ``` code block around the selection (an empty selection opens an empty one

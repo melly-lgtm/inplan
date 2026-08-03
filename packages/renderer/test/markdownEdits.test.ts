@@ -91,6 +91,10 @@ describe("linePrefixEdit (blockquote / bullet / checklist)", () => {
     const checked = "- [x] Task";
     expect(apply(checked, linePrefixEdit(checked, 0, checked.length, "- [ ] ", /^-\s\[[ xX]\]\s/))).toBe("Task");
   });
+  it("collapses the cursor after the inserted prefix instead of leaving it selected — typing next must APPEND, not replace what the button just inserted", () => {
+    const edit = linePrefixEdit("", 0, 0, "- ");
+    expect(edit.selection).toEqual({ anchor: "- ".length }); // no `head` — a collapsed cursor, not a selection
+  });
   it("with a prefixPattern, adding still uses the literal prefix (not the pattern)", () => {
     const plain = "Task";
     expect(apply(plain, linePrefixEdit(plain, 0, 0, "- [ ] ", /^-\s\[[ xX]\]\s/))).toBe("- [ ] Task");
@@ -112,6 +116,10 @@ describe("orderedListEdit", () => {
   it("renumbers cleanly on a mixed selection instead of stacking old numbers into new ones", () => {
     const doc = "1. a\nb\n3. c";
     expect(apply(doc, orderedListEdit(doc, 0, doc.length))).toBe("1. a\n2. b\n3. c");
+  });
+  it("collapses the cursor after the inserted number instead of leaving it selected", () => {
+    const edit = orderedListEdit("", 0, 0);
+    expect(edit.selection).toEqual({ anchor: "1. ".length });
   });
 });
 
