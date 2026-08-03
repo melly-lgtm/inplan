@@ -11,9 +11,13 @@ import { forwardRef, useImperativeHandle } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryApi } from "../src/memoryApi";
 
+// Exposes the SourceEditor's onCursorLine prop on window so a test can fire it directly — this
+// is how activePreviewLine gets set from the SOURCE pane's cursor (as opposed to a preview
+// click, which always lands on a block's own data-line), and it need not be a block boundary.
 vi.mock("../src/SourceEditor", () => ({
-  SourceEditor: forwardRef(function SourceEditorStub(_props: unknown, ref: React.Ref<unknown>) {
+  SourceEditor: forwardRef(function SourceEditorStub(props: { onCursorLine?: (line: number) => void }, ref: React.Ref<unknown>) {
     useImperativeHandle(ref, () => ({ scrollToLine() {}, selectRange() {} }));
+    (window as unknown as { __fireCursorLine?: (line: number) => void }).__fireCursorLine = (line) => props.onCursorLine?.(line);
     return null;
   }),
 }));
@@ -96,6 +100,36 @@ describe("preview pane image paste", () => {
     const html = document.querySelector(".ap-rendered")!.innerHTML;
     expect(html.indexOf("item one")).toBeLessThan(html.indexOf("plan.assets/x.png"));
     expect(html.indexOf("plan.assets/x.png")).toBeLessThan(html.indexOf("item two"));
+  });
+
+  it("with the active line synced mid-paragraph (source cursor, not a preview click), still inserts after the WHOLE paragraph instead of splitting it", async () => {
+    const { App } = await import("../src/App");
+    document.body.innerHTML = '<div id="root"></div>';
+    const midDoc = "# Plan\n\nline one\nline two\nline three continues\n\nSecond paragraph.\n";
+    const session = createMemoryApi({ content: midDoc });
+    (session.api as unknown as { saveAsset: unknown }).saveAsset = vi.fn(async () => ({ relPath: "plan.assets/x.png" }));
+    (window as unknown as { api: unknown }).api = session.api;
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("Second paragraph."));
+
+    // The (mocked) SourceEditor only mounts once the Source tab is open.
+    fireEvent.click(screen.getByRole("button", { name: "Source" }));
+    await waitFor(() => expect((window as unknown as { __fireCursorLine?: unknown }).__fireCursorLine).toBeTypeOf("function"));
+
+    // The paragraph ("line one\nline two\nline three continues") spans source lines 2-4 as ONE
+    // block (data-line=2, data-end-line=4). Sync to its MIDDLE line (3, "line two") — a line with
+    // no [data-line] element of its own, the case an exact-match lookup can't resolve.
+    act(() => (window as unknown as { __fireCursorLine: (line: number) => void }).__fireCursorLine(3));
+
+    const rendered = document.querySelector(".ap-rendered")!;
+    await act(async () => firePasteImage(rendered, PNG));
+    await waitFor(() => expect(document.querySelector(".ap-rendered")?.innerHTML).toContain("plan.assets/x.png"));
+
+    // Must land after "line three continues" (the paragraph's actual last line), not right after
+    // "line two" (which would split the paragraph mid-block).
+    const html = document.querySelector(".ap-rendered")!.innerHTML;
+    expect(html.indexOf("line three continues")).toBeLessThan(html.indexOf("plan.assets/x.png"));
+    expect(html.indexOf("plan.assets/x.png")).toBeLessThan(html.indexOf("Second paragraph."));
   });
 
   it("still renders as an actual <img> when relPath has a space (from a doc name like 'Product Plan.md') — a bare, unbracketed destination wouldn't parse as an image at all", async () => {

@@ -69,6 +69,21 @@ describe("editor navigation (desktop)", () => {
     expect(document.body.textContent).not.toContain("Doc A body.");
   });
 
+  it("onNavigated clears the synced active-preview-line — a line highlighted in doc A must not carry over as 'active' in doc B", async () => {
+    const { fireNavigated } = mountWithNav("# A\n\nfirst line.\n\nsecond line.\n\n<!--inplan v1\n[]\n-->\n");
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("second line."));
+
+    const block = screen.getByText("first line.").closest("[data-line]")!;
+    fireEvent.click(block);
+    await waitFor(() => expect(document.querySelector(".ap-active-line")).not.toBeNull());
+
+    fireNavigated({ path: "docs/B.md", content: "# B\n\nDoc B body.\n\n<!--inplan v1\n[]\n-->\n" });
+    await waitFor(() => expect(document.body.textContent).toContain("Doc B body."));
+    expect(document.querySelector(".ap-active-line")).toBeNull();
+  });
+
   it("hides the nav buttons when the host has no navigate (web/tests)", async () => {
     document.body.innerHTML = '<div id="root"></div>';
     (window as unknown as { api: unknown }).api = createMemoryApi({ content: "# X\n\nbody\n\n<!--inplan v1\n[]\n-->\n" }).api;

@@ -77,6 +77,25 @@ function anchorLine(body: string, id: string): number | null {
   return body.slice(0, idx).split("\n").length - 1;
 }
 
+/** The preview block that should be treated as "active" for source `line`: the closest
+ *  `[data-line]` element at or before it. `line` need not be a block's own start line — it may
+ *  land mid-block (the source editor's cursor line, via onCursorLine, isn't clamped to a block
+ *  boundary the way a preview click is). On a tie (a container and its first child share a
+ *  source line — `<ul>`/`<li>`, `<blockquote>`/`<p>`), the LATER DOM node wins, i.e. the more
+ *  specific child. */
+function closestPreviewBlock(root: Element | null | undefined, line: number): Element | null {
+  let best: Element | null = null;
+  let bestLine = -1;
+  root?.querySelectorAll("[data-line]").forEach((el) => {
+    const l = Number(el.getAttribute("data-line") ?? -1);
+    if (l <= line && l >= bestLine) {
+      bestLine = l;
+      best = el;
+    }
+  });
+  return best;
+}
+
 const liveSelection = (): string => window.getSelection()?.toString().trim() ?? "";
 
 /** Restart a one-shot CSS flash animation on `el` (remove → reflow → re-add) so it
@@ -397,6 +416,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         setAgentThinking(false);
         setAgentDone(false);
         setAgentMessages([]); // notes belong to the doc we just left — don't carry them over
+        setActivePreviewLine(null); // a synced line belongs to the doc we just left, not this one
         setStatus(`opened ${path.split("/").pop() ?? path}`);
         void hostApi().getProposal().then((parked) => parked != null && showProposal(parked));
       }),
@@ -596,24 +616,12 @@ export function App(props: EditorProps = {}): JSX.Element {
     if (!root) return;
     root.querySelectorAll(".ap-active-line").forEach((el) => el.classList.remove("ap-active-line"));
     if (activePreviewLine == null) return;
-    let best: Element | null = null;
-    let bestLine = -1;
-    // Among blocks at or before the active line, pick the closest one. On a tie
-    // (a container and its first child share a source line — `<ul>`/`<li>`,
-    // `<blockquote>`/`<p>`), `>=` lets the later DOM node win, i.e. the more
-    // specific child, so we highlight just that item rather than the whole list.
-    root.querySelectorAll("[data-line]").forEach((el) => {
-      const l = Number(el.getAttribute("data-line") ?? -1);
-      if (l <= activePreviewLine && l >= bestLine) {
-        bestLine = l;
-        best = el;
-      }
-    });
+    const best = closestPreviewBlock(root, activePreviewLine);
     if (best) {
-      (best as Element).classList.add("ap-active-line");
+      best.classList.add("ap-active-line");
       // Don't scroll the preview when the click originated here — only re-center
       // when the active line was driven from another pane (the source editor).
-      if (!skipPreviewScroll.current) (best as Element).scrollIntoView({ block: "center" });
+      if (!skipPreviewScroll.current) best.scrollIntoView({ block: "center" });
     }
     skipPreviewScroll.current = false;
   }, [activePreviewLine, doc.body]);
@@ -724,11 +732,10 @@ export function App(props: EditorProps = {}): JSX.Element {
       const lines = cur.body.split("\n");
       let insertAfter = lines.length - 1;
       if (activePreviewLine != null) {
-        // Same tie-break as the active-line highlight effect above: when a container and its
-        // first child share a source line (`<ul>`/`<li>`, `<blockquote>`/`<p>`), take the LAST
-        // match (the more specific child) so this lines up with what's actually highlighted.
-        const matches = previewRef.current?.querySelectorAll(`[data-line="${activePreviewLine}"]`);
-        const blockEl = matches && matches.length > 0 ? matches[matches.length - 1] : null;
+        // Same lookup as the active-line highlight effect, so this always targets the block
+        // that's actually highlighted — including when activePreviewLine lands mid-block (the
+        // source editor's cursor line need not be a block's own start line).
+        const blockEl = closestPreviewBlock(previewRef.current, activePreviewLine);
         const endLine = blockEl?.getAttribute("data-end-line");
         insertAfter = endLine != null ? Number(endLine) : activePreviewLine;
       }
