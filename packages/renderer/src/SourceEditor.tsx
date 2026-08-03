@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { markdown } from "@codemirror/lang-markdown";
+import { insertNewlineContinueMarkupCommand, markdown } from "@codemirror/lang-markdown";
 import { Compartment, EditorState, Prec, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
 import { basicSetup } from "codemirror";
@@ -213,7 +213,13 @@ export const SourceEditor = forwardRef<
         // With a plugin binding, it owns the content; otherwise the controlled value.
         doc: binding ? binding.getText() : value,
         extensions: [
-          // ⌘F should open the app's find bar, not CodeMirror's own search panel.
+          // ⌘F should open the app's find bar, not CodeMirror's own search panel. Also
+          // overrides @codemirror/lang-markdown's own default Enter binding (still Prec.high,
+          // so ours must outrank it): its default only exits a 2-item TIGHT list on the
+          // SECOND Enter on an empty item — the first just loosens the list (CommonMark's
+          // tight/loose distinction), inserting a blank line most people read as a stray
+          // glitch rather than an intentional format change. `nonTightLists: false` skips
+          // that step, so Enter on an empty list item always exits immediately.
           Prec.highest(
             keymap.of([
               {
@@ -223,6 +229,7 @@ export const SourceEditor = forwardRef<
                   return true; // handled — suppress CodeMirror's search panel
                 },
               },
+              { key: "Enter", run: insertNewlineContinueMarkupCommand({ nonTightLists: false }) },
             ]),
           ),
           basicSetup,
