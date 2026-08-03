@@ -9,6 +9,7 @@ import { useRef, useState, type RefObject } from "react";
 import { useT } from "./i18n";
 import { ContextMenu } from "./ContextMenu";
 import type { SourceEditorHandle } from "./SourceEditor";
+import { ATX } from "./markdownEdits";
 import {
   IconBold,
   IconBulletList,
@@ -22,8 +23,6 @@ import {
   IconQuote,
   IconStrikethrough,
 } from "./Icons";
-
-const ATX = /^(#{1,6})\s+/;
 
 export function SourceToolbar({
   editorRef,
@@ -86,27 +85,27 @@ export function SourceToolbar({
       )}
 
       <div className="ap-seg">
-        <button disabled={disabled} title={t("source.bold")} onClick={() => editorRef.current?.toggleBold()}><IconBold /></button>
-        <button disabled={disabled} title={t("source.italic")} onClick={() => editorRef.current?.toggleItalic()}><IconItalic /></button>
-        <button disabled={disabled} title={t("source.strikethrough")} onClick={() => editorRef.current?.toggleStrikethrough()}><IconStrikethrough /></button>
+        <button disabled={disabled} title={t("source.bold")} aria-label={t("source.bold")} onClick={() => editorRef.current?.toggleBold()}><IconBold /></button>
+        <button disabled={disabled} title={t("source.italic")} aria-label={t("source.italic")} onClick={() => editorRef.current?.toggleItalic()}><IconItalic /></button>
+        <button disabled={disabled} title={t("source.strikethrough")} aria-label={t("source.strikethrough")} onClick={() => editorRef.current?.toggleStrikethrough()}><IconStrikethrough /></button>
       </div>
 
       <div className="ap-seg">
-        <button disabled={disabled} title={t("source.hr")} onClick={() => editorRef.current?.insertHorizontalRule()}><IconHorizontalRule /></button>
-        <button disabled={disabled} title={t("source.quote")} onClick={() => editorRef.current?.toggleBlockquote()}><IconQuote /></button>
+        <button disabled={disabled} title={t("source.hr")} aria-label={t("source.hr")} onClick={() => editorRef.current?.insertHorizontalRule()}><IconHorizontalRule /></button>
+        <button disabled={disabled} title={t("source.quote")} aria-label={t("source.quote")} onClick={() => editorRef.current?.toggleBlockquote()}><IconQuote /></button>
       </div>
 
       <div className="ap-seg">
-        <button disabled={disabled} title={t("source.bulletList")} onClick={() => editorRef.current?.toggleBulletList()}><IconBulletList /></button>
+        <button disabled={disabled} title={t("source.bulletList")} aria-label={t("source.bulletList")} onClick={() => editorRef.current?.toggleBulletList()}><IconBulletList /></button>
         <button disabled={disabled} title={t("source.orderedList")} onClick={() => editorRef.current?.toggleOrderedList()}>1.</button>
-        <button disabled={disabled} title={t("source.checklist")} onClick={() => editorRef.current?.toggleChecklist()}><IconChecklist /></button>
+        <button disabled={disabled} title={t("source.checklist")} aria-label={t("source.checklist")} onClick={() => editorRef.current?.toggleChecklist()}><IconChecklist /></button>
       </div>
 
       <div className="ap-seg">
-        <button disabled={disabled} title={t("source.link")} onClick={() => editorRef.current?.insertLink()}><IconLink /></button>
-        <button disabled={disabled} title={t("source.inlineCode")} onClick={() => editorRef.current?.toggleInlineCode()}><IconInlineCode /></button>
-        <button disabled={disabled} title={t("source.codeBlock")} onClick={() => editorRef.current?.toggleCodeBlock()}><IconCodeBlock /></button>
-        <button disabled={disabled || !onPickImage} title={t("source.image")} onClick={() => fileInputRef.current?.click()}><IconImage /></button>
+        <button disabled={disabled} title={t("source.link")} aria-label={t("source.link")} onClick={() => editorRef.current?.insertLink()}><IconLink /></button>
+        <button disabled={disabled} title={t("source.inlineCode")} aria-label={t("source.inlineCode")} onClick={() => editorRef.current?.toggleInlineCode()}><IconInlineCode /></button>
+        <button disabled={disabled} title={t("source.codeBlock")} aria-label={t("source.codeBlock")} onClick={() => editorRef.current?.toggleCodeBlock()}><IconCodeBlock /></button>
+        <button disabled={disabled || !onPickImage} title={t("source.image")} aria-label={t("source.image")} onClick={() => fileInputRef.current?.click()}><IconImage /></button>
       </div>
       <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={pickImage} />
     </div>

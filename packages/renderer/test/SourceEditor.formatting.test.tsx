@@ -11,9 +11,9 @@ import { createRef } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { SourceEditor, type SourceEditorHandle } from "../src/SourceEditor";
 
-function mount(value: string) {
+function mount(value: string, editable = true) {
   const ref = createRef<SourceEditorHandle>();
-  const utils = render(<SourceEditor ref={ref} value={value} editable onChange={() => {}} />);
+  const utils = render(<SourceEditor ref={ref} value={value} editable={editable} onChange={() => {}} />);
   const text = () => utils.container.querySelector(".cm-content")!.textContent;
   return { ref, text };
 }
@@ -89,6 +89,15 @@ describe("SourceEditor formatting commands", () => {
     ref.current!.selectRange(0, 5);
     ref.current!.toggleCodeBlock();
     expect(text()).toBe("```x = 1```");
+  });
+
+  it("no toolbar command mutates the doc while editable=false — e.g. the doc went read-only/agent-locked after a menu opened", () => {
+    const { ref, text } = mount("Hello world", false);
+    ref.current!.selectRange(0, 5);
+    ref.current!.toggleBold();
+    ref.current!.setHeading(2);
+    ref.current!.insertLink();
+    expect(text()).toBe("Hello world"); // untouched — EditorView.editable alone doesn't block v.dispatch()
   });
 
   it("insertImage inserts the image markdown at the cursor", () => {

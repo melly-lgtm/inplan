@@ -10,7 +10,8 @@ export interface TextEdit {
   selection: { anchor: number; head?: number };
 }
 
-const ATX = /^(#{1,6})\s+/;
+/** Markdown ATX heading prefix, e.g. "### " — shared with SourceToolbar.tsx's heading picker. */
+export const ATX = /^(#{1,6})\s+/;
 
 function lineBounds(text: string, from: number, to: number): { start: number; end: number } {
   const start = text.lastIndexOf("\n", from - 1) + 1;

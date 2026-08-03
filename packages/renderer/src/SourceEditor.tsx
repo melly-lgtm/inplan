@@ -175,10 +175,14 @@ export const SourceEditor = forwardRef<
     },
   }));
 
-  /** Read the current selection, run `fn` over it, and dispatch the resulting edit. */
+  /** Read the current selection, run `fn` over it, and dispatch the resulting edit. Toolbar
+   *  commands go through here, so this is also the lock gate: `EditorView.editable` alone only
+   *  stops the user from typing — it doesn't stop `v.dispatch()` — so without this check, a
+   *  toolbar control that opened before the doc became read-only/agent-locked (e.g. the heading
+   *  menu) could still mutate it after the fact. */
   function withSelection(fn: (text: string, from: number, to: number) => TextEdit) {
     const v = view.current;
-    if (!v) return;
+    if (!v || !editable) return;
     const { from, to } = v.state.selection.main;
     const edit = fn(v.state.doc.toString(), from, to);
     v.dispatch(edit);
