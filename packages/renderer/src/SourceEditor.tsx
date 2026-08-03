@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { markdown } from "@codemirror/lang-markdown";
+import { insertNewlineContinueMarkupCommand, markdown } from "@codemirror/lang-markdown";
 import { Compartment, EditorState, Prec, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
 import { basicSetup } from "codemirror";
@@ -8,12 +8,41 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import type { Comment } from "@inplan/core";
 import type { EditorBinding } from "./api";
 import { buildClipHtml, readClipHtml, type ClipboardPayload } from "./clipboard";
+import {
+  codeBlockEdit,
+  headingEdit,
+  horizontalRuleEdit,
+  imageEdit,
+  linePrefixEdit,
+  linkEdit,
+  orderedListEdit,
+  wrapEdit,
+  type TextEdit,
+} from "./markdownEdits";
 
 export interface SourceEditorHandle {
   /** Scroll to a 0-based source line and highlight it. */
   scrollToLine(line: number): void;
   /** Select a character range [from,to) and scroll it into view (for find navigation). */
   selectRange(from: number, to: number): void;
+  /** Set the heading level (1-6) of the cursor's line, or 0 to clear it back to a plain
+   *  paragraph. Setting the line's current level again clears it (toggle). */
+  setHeading(level: number): void;
+  /** Toolbar formatting commands — see markdownEdits.ts for the toggle semantics. */
+  toggleBold(): void;
+  toggleItalic(): void;
+  toggleStrikethrough(): void;
+  toggleInlineCode(): void;
+  toggleCodeBlock(): void;
+  toggleBlockquote(): void;
+  toggleBulletList(): void;
+  toggleOrderedList(): void;
+  toggleChecklist(): void;
+  insertLink(): void;
+  insertHorizontalRule(): void;
+  /** Insert `![](relPath)` at the cursor (replacing any selection) — `relPath` is already the
+   *  final saved location (from a paste or the toolbar's file picker), nothing left to fill in. */
+  insertImage(relPath: string): void;
 }
 
 // The current line is shown by CodeMirror's own active-line highlight (basicSetup), which
@@ -105,7 +134,60 @@ export const SourceEditor = forwardRef<
       // focus on the find bar so Enter keeps stepping through matches.
       v.dispatch({ selection: { anchor: f, head: t }, effects: EditorView.scrollIntoView(f, { y: "center" }) });
     },
+    setHeading(level: number) {
+      withSelection((text, from) => headingEdit(text, from, level));
+    },
+    toggleBold() {
+      withSelection((text, from, to) => wrapEdit(text, from, to, "**"));
+    },
+    toggleItalic() {
+      withSelection((text, from, to) => wrapEdit(text, from, to, "_"));
+    },
+    toggleStrikethrough() {
+      withSelection((text, from, to) => wrapEdit(text, from, to, "~~"));
+    },
+    toggleInlineCode() {
+      withSelection((text, from, to) => wrapEdit(text, from, to, "`"));
+    },
+    toggleCodeBlock() {
+      withSelection(codeBlockEdit);
+    },
+    toggleBlockquote() {
+      withSelection((text, from, to) => linePrefixEdit(text, from, to, "> "));
+    },
+    toggleBulletList() {
+      withSelection((text, from, to) => linePrefixEdit(text, from, to, "- "));
+    },
+    toggleOrderedList() {
+      withSelection(orderedListEdit);
+    },
+    toggleChecklist() {
+      withSelection((text, from, to) => linePrefixEdit(text, from, to, "- [ ] ", /^-\s\[[ xX]\]\s/));
+    },
+    insertLink() {
+      withSelection(linkEdit);
+    },
+    insertHorizontalRule() {
+      withSelection(horizontalRuleEdit);
+    },
+    insertImage(relPath: string) {
+      withSelection((text, from, to) => imageEdit(text, from, to, relPath));
+    },
   }));
+
+  /** Read the current selection, run `fn` over it, and dispatch the resulting edit. Toolbar
+   *  commands go through here, so this is also the lock gate: `EditorView.editable` alone only
+   *  stops the user from typing — it doesn't stop `v.dispatch()` — so without this check, a
+   *  toolbar control that opened before the doc became read-only/agent-locked (e.g. the heading
+   *  menu) could still mutate it after the fact. */
+  function withSelection(fn: (text: string, from: number, to: number) => TextEdit) {
+    const v = view.current;
+    if (!v || !editable) return;
+    const { from, to } = v.state.selection.main;
+    const edit = fn(v.state.doc.toString(), from, to);
+    v.dispatch(edit);
+    v.focus();
+  }
 
   useEffect(() => {
     if (!host.current) return;
@@ -131,7 +213,13 @@ export const SourceEditor = forwardRef<
         // With a plugin binding, it owns the content; otherwise the controlled value.
         doc: binding ? binding.getText() : value,
         extensions: [
-          // ⌘F should open the app's find bar, not CodeMirror's own search panel.
+          // ⌘F should open the app's find bar, not CodeMirror's own search panel. Also
+          // overrides @codemirror/lang-markdown's own default Enter binding (still Prec.high,
+          // so ours must outrank it): its default only exits a 2-item TIGHT list on the
+          // SECOND Enter on an empty item — the first just loosens the list (CommonMark's
+          // tight/loose distinction), inserting a blank line most people read as a stray
+          // glitch rather than an intentional format change. `nonTightLists: false` skips
+          // that step, so Enter on an empty list item always exits immediately.
           Prec.highest(
             keymap.of([
               {
@@ -141,6 +229,7 @@ export const SourceEditor = forwardRef<
                   return true; // handled — suppress CodeMirror's search panel
                 },
               },
+              { key: "Enter", run: insertNewlineContinueMarkupCommand({ nonTightLists: false }) },
             ]),
           ),
           basicSetup,

@@ -25,6 +25,53 @@ describe("renderMarkdown", () => {
   });
 });
 
+describe("renderMarkdown image src resolution (pasted/picked images)", () => {
+  it("leaves a relative image src untouched when no docPath is given", () => {
+    const html = renderMarkdown("![](plan.assets/x.png)");
+    expect(html).toContain('src="plan.assets/x.png"');
+  });
+
+  it("leaves a relative image src untouched when docPath isn't a real absolute filesystem path (e.g. a memory/cloud doc)", () => {
+    const html = renderMarkdown("![](plan.assets/x.png)", undefined, "memory://doc");
+    expect(html).toContain('src="plan.assets/x.png"');
+  });
+
+  it("resolves a relative src against a POSIX doc path into a file:// URL", () => {
+    const html = renderMarkdown("![](plan.assets/x.png)", undefined, "/home/user/project/plan.md");
+    expect(html).toContain('src="file:///home/user/project/plan.assets/x.png"');
+  });
+
+  it("resolves against a Windows doc path (backslashes, drive letter) into a well-formed file:/// URL", () => {
+    const html = renderMarkdown("![](plan.assets/x.png)", undefined, "C:\\Users\\me\\project\\plan.md");
+    expect(html).toContain('src="file:///C:/Users/me/project/plan.assets/x.png"');
+  });
+
+  it("resolves ../ segments the same way doc-to-doc links do", () => {
+    const html = renderMarkdown("![](../shared/x.png)", undefined, "/home/user/project/docs/plan.md");
+    expect(html).toContain('src="file:///home/user/project/shared/x.png"');
+  });
+
+  it("resolves an angle-bracket destination (spaces/parens, e.g. from a doc named 'Product Plan.md') without double-encoding", () => {
+    // markdown-it percent-encodes the destination at parse time ("Product%20Plan..." / "x%20y.png")
+    // before our rule ever sees it — the rule must decode before resolving + re-encoding, or the
+    // "%20" becomes "%2520" and the OS looks for a file literally named "x%20y.png".
+    const html = renderMarkdown("![](<Product Plan.assets/x y.png>)", undefined, "/home/user/project/plan.md");
+    expect(html).toContain('src="file:///home/user/project/Product%20Plan.assets/x%20y.png"');
+    expect(html).not.toContain("%2520");
+    expect(html).not.toContain("%25");
+  });
+
+  it("leaves an already-absolute/URL src untouched even with a docPath present", () => {
+    // file:// itself is excluded here: markdown-it's own link-destination grammar doesn't parse
+    // a triple-slash URL as an image link at all (stays literal `![...]` text) regardless of
+    // our rule — a pre-existing markdown-it limitation, not something our paste feature produces.
+    for (const src of ["http://example.com/x.png", "https://example.com/x.png", "data:image/png;base64,AAAA", "/already/abs.png"]) {
+      const html = renderMarkdown(`![](${src})`, undefined, "/home/user/project/plan.md");
+      expect(html).toContain(`src="${src}"`);
+    }
+  });
+});
+
 describe("renderMarkdown comment anchors", () => {
   const md = "before [anchored](#cmt-abc123) after";
 

@@ -34,6 +34,7 @@ import { ContextMenu } from "./ContextMenu";
 import { MOD_KEY } from "./platform";
 import { QuestionChips } from "./QuestionChips";
 import { SourceEditor, type SourceEditorHandle } from "./SourceEditor";
+import { SourceToolbar } from "./SourceToolbar";
 import { StatusBar } from "./StatusBar";
 import { ProfileMenu } from "./ProfileMenu";
 import { AgentIndicator } from "./AgentIndicator";
@@ -51,6 +52,16 @@ import { applySegments, isChange, lineSegments, wordDiff, type DiffSegment, type
 
 const USER_AUTHOR = "You";
 const EMPTY: ParsedDocument = { body: "", comments: [] };
+/** A pasted/picked image's filename extension, by MIME type — an explicit map because some
+ *  subtypes aren't valid extensions as-is (e.g. "image/svg+xml" → "svg", not "svg+xml"). */
+const IMAGE_EXT_BY_MIME: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/avif": "avif",
+  "image/svg+xml": "svg",
+};
 const ZOOM_MIN = 0.6;
 const ZOOM_MAX = 1.8;
 
@@ -680,6 +691,21 @@ export function App(props: EditorProps = {}): JSX.Element {
     },
     [apply],
   );
+
+  // An image picked via the Source toolbar's file dialog: hand its raw bytes to the host, which
+  // writes them next to the open doc (e.g. `<docname>.assets/image-...png`) and returns the
+  // relative link to embed. Absent `saveAsset` (a host with nowhere to write a sibling file,
+  // e.g. a cloud doc) ⇒ no-op — the toolbar just leaves the doc untouched.
+  const onPickImage = useCallback(async (bytes: ArrayBuffer, mime: string): Promise<string | null> => {
+    const saveAsset = hostApi().saveAsset;
+    if (!saveAsset) return null;
+    // Not just `mime.split("/")[1]`: some subtypes aren't valid filename extensions on their own
+    // (e.g. "svg+xml"), and the host's asset:save rejects anything that doesn't look like one —
+    // silently falling back to ".png" on an SVG's actual bytes, breaking the image.
+    const ext = IMAGE_EXT_BY_MIME[mime] ?? "png";
+    const saved = await saveAsset(bytes, ext);
+    return saved?.relPath ?? null;
+  }, []);
 
   // Auto-resolve: when the setting is on, resolve threads the agent suggested (its `may_resolve`
   // on the thread's last comment). Runs on load + when the setting flips on. We remember which
@@ -1355,8 +1381,11 @@ export function App(props: EditorProps = {}): JSX.Element {
   tryAddCommentRef.current = tryAddComment; // keep the keydown handler pointing at the latest
 
   const resolvedIds = useMemo(() => new Set(doc.comments.filter((c) => c.resolved).map((c) => c.id)), [doc.comments]);
+  // docPathRef.current isn't a dep: it's a ref (mutating it doesn't trigger a re-render), and
+  // every navigation that changes it also changes `doc.body` in the same update — that's
+  // already a listed dep, so this still recomputes exactly when the doc path does.
   const previewHtml = useMemo(
-    () => renderMarkdown(doc.body, (id) => showResolvedOrphaned || !resolvedIds.has(id)),
+    () => renderMarkdown(doc.body, (id) => showResolvedOrphaned || !resolvedIds.has(id), docPathRef.current),
     [doc.body, resolvedIds, showResolvedOrphaned],
   );
 
@@ -1825,6 +1854,7 @@ export function App(props: EditorProps = {}): JSX.Element {
               <DiffSource segs={editedSegs} accepted={accepted} focused={reviewCursor} onToggle={toggleHunk} />
             ) : (
               <EditorErrorBoundary label="The source editor">
+              <SourceToolbar editorRef={editorRef} body={doc.body} activeLine={activePreviewLine} disabled={editingLocked} onPickImage={hostApi().saveAsset ? onPickImage : undefined} />
               <SourceEditor
                 ref={editorRef}
                 binding={hostApi().binding ?? null}
@@ -2053,6 +2083,7 @@ function PaneTabs({ tab, onTab }: { tab: "comments" | "source"; onTab: (t: "comm
     </div>
   );
 }
+
 
 /** Subscribe to the host's profile controller (identity + live agent presence).
  *  Returns null when the host wires no profile (tests / single-writer desktop).

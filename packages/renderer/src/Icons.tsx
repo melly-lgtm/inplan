@@ -96,3 +96,80 @@ export const IconPencil = (): JSX.Element => (
     <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
   </Glyph>
 );
+
+// Source-pane formatting toolbar (SourceToolbar.tsx) — same stroked-line style as above.
+export const IconBold = (): JSX.Element => (
+  <Glyph>
+    <path d="M6 4h8a4 4 0 0 1 0 8H6z" />
+    <path d="M6 12h9a4 4 0 0 1 0 8H6z" />
+  </Glyph>
+);
+export const IconItalic = (): JSX.Element => (
+  <Glyph>
+    <line x1="19" y1="4" x2="10" y2="4" />
+    <line x1="14" y1="20" x2="5" y2="20" />
+    <line x1="15" y1="4" x2="9" y2="20" />
+  </Glyph>
+);
+export const IconStrikethrough = (): JSX.Element => (
+  <Glyph>
+    <path d="M16 4H9a3 3 0 0 0-2.83 4" />
+    <path d="M14 12a4 4 0 0 1 0 8H6" />
+    <line x1="4" y1="12" x2="20" y2="12" />
+  </Glyph>
+);
+export const IconHorizontalRule = (): JSX.Element => (
+  <Glyph><line x1="4" y1="12" x2="20" y2="12" /></Glyph>
+);
+/** Filled opening-quote glyph — blockquote. Solid (not stroked) reads more clearly as
+ *  quotation marks than a stroked outline does at toolbar size. */
+export const IconQuote = (): JSX.Element => (
+  <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true" focusable="false">
+    <path d="M9 6c-2.5 0-4.5 2-4.5 4.5S6.5 15 9 15c-.3 2.5-2 4-4.5 4v2c3.5 0 6.5-2.5 6.5-6.5V6H9zm10 0c-2.5 0-4.5 2-4.5 4.5s2 4.5 4.5 4.5c-.3 2.5-2 4-4.5 4v2c3.5 0 6.5-2.5 6.5-6.5V6h-2z" />
+  </svg>
+);
+export const IconBulletList = (): JSX.Element => (
+  <Glyph>
+    <line x1="9" y1="6" x2="20" y2="6" />
+    <line x1="9" y1="12" x2="20" y2="12" />
+    <line x1="9" y1="18" x2="20" y2="18" />
+    <circle cx="4.5" cy="6" r="1.2" fill="currentColor" stroke="none" />
+    <circle cx="4.5" cy="12" r="1.2" fill="currentColor" stroke="none" />
+    <circle cx="4.5" cy="18" r="1.2" fill="currentColor" stroke="none" />
+  </Glyph>
+);
+/** Checkbox with a checkmark — checklist / task list. */
+export const IconChecklist = (): JSX.Element => (
+  <Glyph>
+    <path d="M9 11l3 3L22 4" />
+    <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+  </Glyph>
+);
+export const IconLink = (): JSX.Element => (
+  <Glyph>
+    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+  </Glyph>
+);
+/** "</>" — inline code. */
+export const IconInlineCode = (): JSX.Element => (
+  <Glyph>
+    <polyline points="16 6 22 12 16 18" />
+    <polyline points="8 6 2 12 8 18" />
+  </Glyph>
+);
+/** Curly braces — fenced code block (distinct from the inline "</>" above). */
+export const IconCodeBlock = (): JSX.Element => (
+  <Glyph>
+    <path d="M8 3a2 2 0 0 0-2 2v3a2 2 0 0 1-2 2 2 2 0 0 1 2 2v3a2 2 0 0 0 2 2" />
+    <path d="M16 3a2 2 0 0 1 2 2v3a2 2 0 0 0 2 2 2 2 0 0 0-2 2v3a2 2 0 0 1-2 2" />
+  </Glyph>
+);
+/** Picture frame (mountain + sun) — insert an image. */
+export const IconImage = (): JSX.Element => (
+  <Glyph>
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <circle cx="8.5" cy="8.5" r="1.5" />
+    <polyline points="21 15 16 10 5 21" />
+  </Glyph>
+);
