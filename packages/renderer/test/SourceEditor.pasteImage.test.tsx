@@ -47,7 +47,19 @@ describe("SourceEditor image paste", () => {
     const [bytes, mime] = onPasteImage.mock.calls[0]!;
     expect(mime).toBe("image/png");
     expect(new Uint8Array(bytes)).toEqual(new Uint8Array([1, 2, 3]));
-    expect(text()).toBe("![](design.plan.assets/image-20260731.png)Hello world");
+    expect(text()).toBe("![](<design.plan.assets/image-20260731.png>)Hello world");
+  });
+
+  it("uses the angle-bracket destination form so a relPath with a space (from a doc name like 'Product Plan.md') still parses as an image", async () => {
+    const onPasteImage = vi.fn(async () => "Product Plan.assets/image-20260731.png");
+    const { ref, text } = mount(onPasteImage);
+    ref.current!.selectRange(0, 0);
+
+    await firePasteImage(document.querySelector(".cm-content")!, PNG);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(text()).toBe("![](<Product Plan.assets/image-20260731.png>)Hello world");
   });
 
   it("does nothing (no insert) when onPasteImage resolves null — e.g. the host couldn't write it", async () => {

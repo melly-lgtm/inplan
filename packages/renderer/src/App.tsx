@@ -729,7 +729,10 @@ export function App(props: EditorProps = {}): JSX.Element {
         insertAfter = endLine != null ? Number(endLine) : activePreviewLine;
       }
       insertAfter = Math.min(Math.max(insertAfter, 0), lines.length - 1);
-      lines.splice(insertAfter + 1, 0, "", `![](${relPath})`);
+      // Angle-bracket destination, not bare `![](relPath)`: relPath is `<docname>.assets/…`, and
+      // a doc name with a space/paren (e.g. "Product Plan.md") makes that a path markdown-it's
+      // bare destination syntax can't parse as a link at all.
+      lines.splice(insertAfter + 1, 0, "", `![](<${relPath}>)`);
       apply({ ...cur, body: lines.join("\n") }, { type: "image_pasted", payload: {} });
     },
     [editingLocked, onPickImage, activePreviewLine, apply],

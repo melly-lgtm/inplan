@@ -73,6 +73,17 @@ describe("preview pane image paste", () => {
     expect(html.indexOf("plan.assets/x.png")).toBeLessThan(html.indexOf("Second paragraph."));
   });
 
+  it("still renders as an actual <img> when relPath has a space (from a doc name like 'Product Plan.md') — a bare, unbracketed destination wouldn't parse as an image at all", async () => {
+    (window as unknown as { api: { saveAsset: unknown } }).api.saveAsset = vi.fn(async () => ({ relPath: "Product Plan.assets/x.png" }));
+    await mountApp();
+    const rendered = document.querySelector(".ap-rendered")!;
+
+    await act(async () => firePasteImage(rendered, PNG));
+    await waitFor(() => expect(document.querySelector(".ap-rendered img")).toBeTruthy());
+
+    expect(document.querySelector(".ap-rendered img")!.getAttribute("src")).toContain("Product%20Plan.assets/x.png");
+  });
+
   it("does nothing for a plain (non-image) paste", async () => {
     const saveAsset = vi.fn();
     await mountApp();

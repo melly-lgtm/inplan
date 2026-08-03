@@ -268,7 +268,7 @@ export const SourceEditor = forwardRef<
                 const onPasteImage = onPasteImageRef.current;
                 void imgFile.arrayBuffer().then(async (bytes) => {
                   const relPath = await onPasteImage(bytes, imgFile.type);
-                  if (relPath) v.dispatch({ changes: { from: pos, to: pos, insert: `![](${relPath})` } });
+                  if (relPath) v.dispatch(imageEdit(v.state.doc.toString(), pos, pos, relPath));
                 });
                 return true;
               }
