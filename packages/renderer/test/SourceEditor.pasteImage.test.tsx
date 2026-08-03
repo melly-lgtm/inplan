@@ -62,6 +62,24 @@ describe("SourceEditor image paste", () => {
     expect(text()).toBe("![](<Product Plan.assets/image-20260731.png>)Hello world");
   });
 
+  it("reads the cursor position at insert time, not at paste time — a save that finishes after the user has moved the cursor lands the image at the CURRENT position, not a stale one", async () => {
+    let resolveSave!: (relPath: string) => void;
+    const onPasteImage = vi.fn(() => new Promise<string | null>((resolve) => { resolveSave = resolve; }));
+    const { ref, text } = mount(onPasteImage);
+    ref.current!.selectRange(0, 0);
+
+    await firePasteImage(document.querySelector(".cm-content")!, PNG);
+    // The save is still in flight (onPasteImage hasn't resolved) — move the cursor to the end.
+    ref.current!.selectRange(11, 11); // "Hello world".length === 11
+    resolveSave("design.plan.assets/image-20260731.png");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Capturing the position before the await (the stale-pos bug) would insert at the front
+    // instead, and could throw a RangeError entirely if the doc had shrunk below that position.
+    expect(text()).toBe("Hello world![](<design.plan.assets/image-20260731.png>)");
+  });
+
   it("does nothing (no insert) when onPasteImage resolves null — e.g. the host couldn't write it", async () => {
     const onPasteImage = vi.fn(async () => null);
     const { ref, text } = mount(onPasteImage);

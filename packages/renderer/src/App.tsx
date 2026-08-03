@@ -724,7 +724,11 @@ export function App(props: EditorProps = {}): JSX.Element {
       const lines = cur.body.split("\n");
       let insertAfter = lines.length - 1;
       if (activePreviewLine != null) {
-        const blockEl = previewRef.current?.querySelector(`[data-line="${activePreviewLine}"]`);
+        // Same tie-break as the active-line highlight effect above: when a container and its
+        // first child share a source line (`<ul>`/`<li>`, `<blockquote>`/`<p>`), take the LAST
+        // match (the more specific child) so this lines up with what's actually highlighted.
+        const matches = previewRef.current?.querySelectorAll(`[data-line="${activePreviewLine}"]`);
+        const blockEl = matches && matches.length > 0 ? matches[matches.length - 1] : null;
         const endLine = blockEl?.getAttribute("data-end-line");
         insertAfter = endLine != null ? Number(endLine) : activePreviewLine;
       }
@@ -1850,7 +1854,7 @@ export function App(props: EditorProps = {}): JSX.Element {
           ) : (
           <div
             className="ap-rendered"
-            tabIndex={0}
+            tabIndex={-1}
             dangerouslySetInnerHTML={{ __html: previewHtml }}
             onPaste={onPreviewPasteImage}
             onClick={(e) => {

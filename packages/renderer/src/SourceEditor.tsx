@@ -264,11 +264,12 @@ export const SourceEditor = forwardRef<
               const imgFile = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith("image/"));
               if (imgFile && onPasteImageRef.current) {
                 e.preventDefault();
-                const pos = v.state.selection.main.from;
                 const onPasteImage = onPasteImageRef.current;
                 void imgFile.arrayBuffer().then(async (bytes) => {
                   const relPath = await onPasteImage(bytes, imgFile.type);
-                  if (relPath) v.dispatch(imageEdit(v.state.doc.toString(), pos, pos, relPath));
+                  if (!relPath) return;
+                  const pos = v.state.selection.main.from;
+                  v.dispatch(imageEdit(v.state.doc.toString(), pos, pos, relPath));
                 });
                 return true;
               }

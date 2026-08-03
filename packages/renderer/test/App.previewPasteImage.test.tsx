@@ -73,6 +73,31 @@ describe("preview pane image paste", () => {
     expect(html.indexOf("plan.assets/x.png")).toBeLessThan(html.indexOf("Second paragraph."));
   });
 
+  it("with a list item active, inserts after the ITEM (not the whole list) — a <ul> and its first <li> share a data-line, and the item is the more specific (last-DOM-order) match", async () => {
+    const { App } = await import("../src/App");
+    document.body.innerHTML = '<div id="root"></div>';
+    const listDoc = "# Plan\n\n- item one\n- item two\n\nNext paragraph.\n";
+    const session = createMemoryApi({ content: listDoc });
+    (session.api as unknown as { saveAsset: unknown }).saveAsset = vi.fn(async () => ({ relPath: "plan.assets/x.png" }));
+    (window as unknown as { api: unknown }).api = session.api;
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("Next paragraph."));
+
+    // Both the <ul> and its first <li> ("item one") report data-line="2" — click syncs to that line.
+    const itemOne = screen.getByText("item one");
+    fireEvent.click(itemOne.closest("[data-line]")!);
+
+    const rendered = document.querySelector(".ap-rendered")!;
+    await act(async () => firePasteImage(rendered, PNG));
+    await waitFor(() => expect(document.querySelector(".ap-rendered")?.innerHTML).toContain("plan.assets/x.png"));
+
+    // Must land right after "item one" (the <li>'s own end line), before "item two" — using the
+    // <ul>'s end line instead (the querySelector-first-match bug) would push it past "item two".
+    const html = document.querySelector(".ap-rendered")!.innerHTML;
+    expect(html.indexOf("item one")).toBeLessThan(html.indexOf("plan.assets/x.png"));
+    expect(html.indexOf("plan.assets/x.png")).toBeLessThan(html.indexOf("item two"));
+  });
+
   it("still renders as an actual <img> when relPath has a space (from a doc name like 'Product Plan.md') — a bare, unbracketed destination wouldn't parse as an image at all", async () => {
     (window as unknown as { api: { saveAsset: unknown } }).api.saveAsset = vi.fn(async () => ({ relPath: "Product Plan.assets/x.png" }));
     await mountApp();
