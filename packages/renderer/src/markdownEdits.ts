@@ -140,10 +140,15 @@ export function linkEdit(text: string, from: number, to: number): TextEdit {
   return { changes: { from, to, insert }, selection: { anchor: urlStart, head: urlStart + url.length } };
 }
 
-/** Insert `![](relPath)` for an image (pasted or picked via a file dialog) at the cursor,
+/** Insert `![](<relPath>)` for an image (pasted or picked via a file dialog) at the cursor,
  *  replacing any selection. Unlike linkEdit, `relPath` is already final — it came from saving
- *  the file, not a placeholder to fill in — so the cursor just lands right after it. */
+ *  the file, not a placeholder to fill in — so the cursor just lands right after it.
+ *  The angle-bracket destination form (rather than bare `![](relPath)`) is required, not
+ *  cosmetic: `relPath` is `<docname>.assets/…`, and a doc named e.g. "Product Plan.md" makes
+ *  that a path with a space — which markdown-it's bare (unbracketed) destination syntax can't
+ *  parse as a link at all, so the image would silently fail to render. `<...>` allows spaces
+ *  and parens; markdown.ts's image-src resolver decodes it back to the literal path. */
 export function imageEdit(text: string, from: number, to: number, relPath: string): TextEdit {
-  const insert = `![](${relPath})`;
+  const insert = `![](<${relPath}>)`;
   return { changes: { from, to, insert }, selection: { anchor: from + insert.length } };
 }

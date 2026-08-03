@@ -146,13 +146,21 @@ describe("linkEdit", () => {
 });
 
 describe("imageEdit", () => {
-  it("inserts the image markdown at the cursor and lands the cursor right after it", () => {
+  it("inserts the image markdown (angle-bracket destination) at the cursor and lands the cursor right after it", () => {
     const edit = imageEdit("", 0, 0, "plan.assets/x.png");
-    expect(apply("", edit)).toBe("![](plan.assets/x.png)");
-    expect(edit.selection).toEqual({ anchor: "![](plan.assets/x.png)".length });
+    expect(apply("", edit)).toBe("![](<plan.assets/x.png>)");
+    expect(edit.selection).toEqual({ anchor: "![](<plan.assets/x.png>)".length });
   });
   it("replaces a selection rather than just inserting alongside it", () => {
     const doc = "old text";
-    expect(apply(doc, imageEdit(doc, 0, 8, "plan.assets/x.png"))).toBe("![](plan.assets/x.png)");
+    expect(apply(doc, imageEdit(doc, 0, 8, "plan.assets/x.png"))).toBe("![](<plan.assets/x.png>)");
+  });
+  it("uses the angle-bracket form so a relPath with a space (from a doc name like 'Product Plan.md') still parses as an image", () => {
+    const edit = imageEdit("", 0, 0, "Product Plan.assets/x.png");
+    const inserted = apply("", edit);
+    expect(inserted).toBe("![](<Product Plan.assets/x.png>)");
+    // The bare (unbracketed) form is what would have silently failed to parse — assert the
+    // fix actually avoids emitting that shape.
+    expect(inserted).not.toBe("![](Product Plan.assets/x.png)");
   });
 });

@@ -81,7 +81,12 @@ md.renderer.rules.image = (tokens, idx, opts, env, self) => {
   if (docPath && src && !/^[a-z][a-z0-9+.-]*:/i.test(src) && !src.startsWith("//") && !src.startsWith("/")) {
     const normalizedDocPath = docPath.replace(/\\/g, "/");
     if (/^([a-z]:)?\//i.test(normalizedDocPath)) {
-      const abs = resolveDocPath(normalizedDocPath, src); // never carries its own leading "/" — add it back
+      // markdown-it already percent-encoded `src` (its normalizeLink runs at parse time, before
+      // this renderer rule) — decode it back to the literal path first, or the encodeURI below
+      // would double-encode it (e.g. a space's "%20" becoming "%2520", which the OS then looks
+      // for literally instead of resolving back to a space).
+      const decodedSrc = decodeURI(src);
+      const abs = resolveDocPath(normalizedDocPath, decodedSrc); // never carries its own leading "/" — add it back
       const withLeadingSlash = `/${abs.replace(/^\/+/, "")}`;
       // encodeURI (not encodeURIComponent) leaves "/" and a Windows drive letter's ":" alone,
       // only escaping characters actually unsafe in a URL (spaces, unicode, ...).

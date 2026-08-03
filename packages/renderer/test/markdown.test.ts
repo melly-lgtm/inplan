@@ -51,6 +51,16 @@ describe("renderMarkdown image src resolution (pasted/picked images)", () => {
     expect(html).toContain('src="file:///home/user/project/shared/x.png"');
   });
 
+  it("resolves an angle-bracket destination (spaces/parens, e.g. from a doc named 'Product Plan.md') without double-encoding", () => {
+    // markdown-it percent-encodes the destination at parse time ("Product%20Plan..." / "x%20y.png")
+    // before our rule ever sees it — the rule must decode before resolving + re-encoding, or the
+    // "%20" becomes "%2520" and the OS looks for a file literally named "x%20y.png".
+    const html = renderMarkdown("![](<Product Plan.assets/x y.png>)", undefined, "/home/user/project/plan.md");
+    expect(html).toContain('src="file:///home/user/project/Product%20Plan.assets/x%20y.png"');
+    expect(html).not.toContain("%2520");
+    expect(html).not.toContain("%25");
+  });
+
   it("leaves an already-absolute/URL src untouched even with a docPath present", () => {
     // file:// itself is excluded here: markdown-it's own link-destination grammar doesn't parse
     // a triple-slash URL as an image link at all (stays literal `![...]` text) regardless of

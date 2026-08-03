@@ -1381,9 +1381,12 @@ export function App(props: EditorProps = {}): JSX.Element {
   tryAddCommentRef.current = tryAddComment; // keep the keydown handler pointing at the latest
 
   const resolvedIds = useMemo(() => new Set(doc.comments.filter((c) => c.resolved).map((c) => c.id)), [doc.comments]);
+  // docPathRef.current isn't a dep: it's a ref (mutating it doesn't trigger a re-render), and
+  // every navigation that changes it also changes `doc.body` in the same update — that's
+  // already a listed dep, so this still recomputes exactly when the doc path does.
   const previewHtml = useMemo(
     () => renderMarkdown(doc.body, (id) => showResolvedOrphaned || !resolvedIds.has(id), docPathRef.current),
-    [doc.body, resolvedIds, showResolvedOrphaned, docPathRef.current],
+    [doc.body, resolvedIds, showResolvedOrphaned],
   );
 
   // Highlight find matches via the CSS Custom Highlight API (non-destructive

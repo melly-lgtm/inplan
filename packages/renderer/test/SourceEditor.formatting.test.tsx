@@ -100,10 +100,10 @@ describe("SourceEditor formatting commands", () => {
     expect(text()).toBe("Hello world"); // untouched — EditorView.editable alone doesn't block v.dispatch()
   });
 
-  it("insertImage inserts the image markdown at the cursor", () => {
+  it("insertImage inserts the image markdown (angle-bracket destination) at the cursor", () => {
     const { ref, text } = mount("Para");
     ref.current!.selectRange(4, 4);
     ref.current!.insertImage("plan.assets/x.png");
-    expect(text()).toBe("Para![](plan.assets/x.png)");
+    expect(text()).toBe("Para![](<plan.assets/x.png>)");
   });
 });
