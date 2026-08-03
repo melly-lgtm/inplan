@@ -3,7 +3,8 @@
 //
 // App.tsx's onPasteImage wiring: derives a file extension from the pasted image's MIME type,
 // calls the host's optional saveAsset(bytes, ext), and hands the SourceEditor the resulting
-// relative link (or null when the host can't save one — e.g. no saveAsset at all).
+// relative link. Without saveAsset (e.g. a cloud doc), SourceEditor doesn't get an
+// onPasteImage prop at all — same gating as the toolbar's image button.
 
 import { cleanup, render, waitFor } from "@testing-library/react";
 import { forwardRef, useImperativeHandle } from "react";
@@ -62,11 +63,9 @@ describe("App onPasteImage wiring", () => {
     expect(saveAsset).toHaveBeenCalledWith(expect.any(ArrayBuffer), "jpg");
   });
 
-  it("resolves null without crashing when the host has no saveAsset (e.g. a cloud doc)", async () => {
+  it("passes no onPasteImage at all when the host has no saveAsset (e.g. a cloud doc) — same gating as the toolbar's image button", async () => {
     await mountApp(); // memoryApi never sets api.saveAsset
 
-    const result = await onPasteImage!(new ArrayBuffer(3), "image/png");
-
-    expect(result).toBeNull();
+    expect(onPasteImage).toBeUndefined();
   });
 });

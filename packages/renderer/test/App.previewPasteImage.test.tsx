@@ -143,6 +143,21 @@ describe("preview pane image paste", () => {
     expect(document.querySelector(".ap-rendered img")!.getAttribute("src")).toContain("Product%20Plan.assets/x.png");
   });
 
+  it("when the host write fails after preventDefault(), reports it instead of a silent unhandled rejection", async () => {
+    (window as unknown as { api: { saveAsset: unknown } }).api.saveAsset = vi.fn(async () => {
+      throw new Error("disk full");
+    });
+    await mountApp();
+    const rendered = document.querySelector(".ap-rendered")!;
+    const before = document.querySelector(".ap-rendered")!.innerHTML;
+
+    await act(async () => firePasteImage(rendered, PNG));
+    await waitFor(() => expect(document.body.textContent).toContain("couldn't paste image"));
+
+    // No image link was inserted — the doc is untouched.
+    expect(document.querySelector(".ap-rendered")!.innerHTML).toBe(before);
+  });
+
   it("does nothing for a plain (non-image) paste", async () => {
     const saveAsset = vi.fn();
     await mountApp();

@@ -156,6 +156,7 @@ export const EN: Catalog = {
   "msg.turnFinished": "turn finished — waiting for agent",
   "msg.unsavedAnswer": "You have an unsaved answer — click “Answer” to save it, or Send again to skip.",
   "msg.cantAnchor": "Comments can't be anchored to this selection",
+  "msg.imagePasteFailed": "couldn't paste image",
   // status bar
   "status.ready": "ready",
   "status.thinking": "Agent is thinking",

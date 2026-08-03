@@ -725,12 +725,23 @@ export function App(props: EditorProps = {}): JSX.Element {
       const file = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith("image/"));
       if (!file) return; // no image on the clipboard — leave native paste (a no-op here) alone
       e.preventDefault();
-      const bytes = await file.arrayBuffer();
-      const relPath = await onPickImage(bytes, file.type);
+      let relPath: string | null;
+      try {
+        const bytes = await file.arrayBuffer();
+        relPath = await onPickImage(bytes, file.type);
+      } catch {
+        // arrayBuffer()/onPickImage() rejected (e.g. the host write failed) — preventDefault()
+        // already ran, so silence here would drop the paste with no feedback at all.
+        setStatus(t("msg.imagePasteFailed"));
+        return;
+      }
       if (!relPath) return;
       const cur = docRef.current;
       const lines = cur.body.split("\n");
       let insertAfter = lines.length - 1;
+      // activePreviewLine/docRef are both read fresh here, after the awaits above — a concurrent
+      // edit during the (host-write) round trip can still land the insert a line off (rare, and
+      // clamped below to stay in-bounds either way), but never crashes or targets a stale doc.
       if (activePreviewLine != null) {
         // Same lookup as the active-line highlight effect, so this always targets the block
         // that's actually highlighted — including when activePreviewLine lands mid-block (the
@@ -1928,7 +1939,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                 commentsForCopy={commentsForCopy}
                 onCutComments={editingLocked ? undefined : onCutComments}
                 onPasteComments={editingLocked ? undefined : onPasteComments}
-                onPasteImage={editingLocked ? undefined : onPickImage}
+                onPasteImage={editingLocked || !hostApi().saveAsset ? undefined : onPickImage}
               />
               </EditorErrorBoundary>
             )}

@@ -265,12 +265,18 @@ export const SourceEditor = forwardRef<
               if (imgFile && onPasteImageRef.current) {
                 e.preventDefault();
                 const onPasteImage = onPasteImageRef.current;
-                void imgFile.arrayBuffer().then(async (bytes) => {
-                  const relPath = await onPasteImage(bytes, imgFile.type);
-                  if (!relPath) return;
-                  const pos = v.state.selection.main.from;
-                  v.dispatch(imageEdit(v.state.doc.toString(), pos, pos, relPath));
-                });
+                void imgFile
+                  .arrayBuffer()
+                  .then(async (bytes) => {
+                    const relPath = await onPasteImage(bytes, imgFile.type);
+                    if (!relPath) return;
+                    const pos = v.state.selection.main.from;
+                    v.dispatch(imageEdit(v.state.doc.toString(), pos, pos, relPath));
+                  })
+                  // arrayBuffer()/onPasteImage() rejected (e.g. the host write failed) — this
+                  // component has no error-reporting channel of its own; drop it rather than an
+                  // unhandled rejection. The preview pane's paste handler (App.tsx) does have one.
+                  .catch(() => {});
                 return true;
               }
               if (!onPasteCommentsRef.current) return false;
