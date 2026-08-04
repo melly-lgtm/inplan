@@ -39,8 +39,24 @@ describe("inplan install-skill — Claude Code auto-approval", () => {
   it("merges the scoped allow rules + sidecar dir into ~/.claude/settings.json", () => {
     install();
     const s = readSettings();
-    expect(s.permissions.allow).toEqual(expect.arrayContaining(["Bash(inplan *)", "Edit(**/*.plan.md)", "Write(**/*.plan.md)", "Read(~/.inplan/**)", "Edit(~/.inplan/**)", "Write(~/.inplan/**)"]));
+    expect(s.permissions.allow).toEqual(expect.arrayContaining(["Bash(inplan *)", "Edit(**/*.plan.md)", "Read(~/.inplan/**)", "Edit(~/.inplan/**)"]));
     expect(s.permissions.additionalDirectories).toContain("~/.inplan/");
+    // No Write(...) rules — Edit already covers Write, and Claude Code ignores + warns about Write rules.
+    expect(s.permissions.allow).not.toContain("Write(**/*.plan.md)");
+    expect(s.permissions.allow).not.toContain("Write(~/.inplan/**)");
+  });
+
+  it("prunes the obsolete Write(...) rules a prior version installed, keeping the user's own", () => {
+    writeFileSync(
+      join(home, ".claude", "settings.json"),
+      JSON.stringify({ permissions: { allow: ["Write(**/*.plan.md)", "Write(~/.inplan/**)", "Write(src/**)"] } }) + "\n",
+    );
+    install();
+    const s = readSettings();
+    expect(s.permissions.allow).not.toContain("Write(**/*.plan.md)"); // pruned
+    expect(s.permissions.allow).not.toContain("Write(~/.inplan/**)"); // pruned
+    expect(s.permissions.allow).toContain("Write(src/**)"); // the user's own — untouched
+    expect(s.permissions.allow).toContain("Edit(**/*.plan.md)"); // added
   });
 
   it("is idempotent — running twice doesn't duplicate rules", () => {

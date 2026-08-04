@@ -962,7 +962,12 @@ function skillTargets(): { name: string; root: string; target: string }[] {
  *  editing plan files, and the ~/.inplan sidecars (control log / canonical / proposed /
  *  backups / status). The human reviews every change in the inplan app, so these never
  *  need a per-edit prompt. Deliberately narrow — NOT a global permission bypass. */
-const SKILL_ALLOW = ["Bash(inplan *)", "Edit(**/*.plan.md)", "Write(**/*.plan.md)", "Read(~/.inplan/**)", "Edit(~/.inplan/**)", "Write(~/.inplan/**)"];
+// NB: no `Write(...)` rules — an `Edit(<path>)` rule already covers ALL file-editing tools (Write
+// included), and Claude Code's permission system ignores `Write(<path>)` rules and warns about them.
+const SKILL_ALLOW = ["Bash(inplan *)", "Edit(**/*.plan.md)", "Read(~/.inplan/**)", "Edit(~/.inplan/**)"];
+// Rules earlier versions added that are now inert + warned-about — pruned on merge (below) so an
+// existing install stops surfacing the warning. Only ever the exact rules we added, never a user's.
+const SKILL_ALLOW_OBSOLETE = ["Write(**/*.plan.md)", "Write(~/.inplan/**)"];
 const SKILL_DIRS = ["~/.inplan/"]; // sidecars live outside the project cwd; grant file access there
 
 /** Merge {@link SKILL_ALLOW} / {@link SKILL_DIRS} into `~/.claude/settings.json`, preserving
@@ -984,9 +989,14 @@ function grantClaudePermissions(claudeRoot: string): boolean {
   // allow/additionalDirectories keys on JSON.stringify (and falsely report a grant).
   const rawPerms = settings.permissions;
   const perms = (rawPerms && typeof rawPerms === "object" && !Array.isArray(rawPerms) ? rawPerms : {}) as Record<string, unknown>;
-  const allow = Array.isArray(perms.allow) ? (perms.allow as string[]) : [];
+  let allow = Array.isArray(perms.allow) ? (perms.allow as string[]) : [];
   const dirs = Array.isArray(perms.additionalDirectories) ? (perms.additionalDirectories as string[]) : [];
   let changed = false;
+  // Prune the now-obsolete Write(...) rules a prior install added (Edit already covers Write, and
+  // these trip a Claude Code warning). Only these exact strings — never a user's own Write rules.
+  const beforePrune = allow.length;
+  allow = allow.filter((r) => !SKILL_ALLOW_OBSOLETE.includes(r));
+  if (allow.length !== beforePrune) changed = true;
   for (const r of SKILL_ALLOW) {
     if (!allow.includes(r)) {
       allow.push(r);

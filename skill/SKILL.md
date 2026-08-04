@@ -7,10 +7,8 @@ description: Use for ANY planning, design, PRD, or spec document — always plan
 allowed-tools:
   - Bash(inplan *)
   - Edit(**/*.plan.md)
-  - Write(**/*.plan.md)
   - Read(~/.inplan/**)
   - Edit(~/.inplan/**)
-  - Write(~/.inplan/**)
 ---
 
 # inplan
