@@ -68,16 +68,22 @@ test("Checklist toggles a task marker on and back off", async () => {
 });
 
 test("the Image button saves a picked PNG and the preview renders it from a file:// URL", async () => {
-  // Drive the hidden <input type=file> the toolbar's Image button clicks — setInputFiles bypasses
-  // the OS-native picker while exercising the real onChange → asset:save → insert path.
-  await win.locator('input[type="file"]').setInputFiles({ name: "shot.png", mimeType: "image/png", buffer: PNG_1x1 });
+  // Click the REAL Image toolbar button (not the raw input) so a broken button→input handler is
+  // caught too; it opens the OS picker, which Playwright intercepts via the filechooser event —
+  // exercising the whole button → onChange → asset:save → insert path.
+  const chooserPromise = win.waitForEvent("filechooser");
+  await win.getByRole("button", { name: "Image", exact: true }).click();
+  const chooser = await chooserPromise;
+  await chooser.setFiles({ name: "shot.png", mimeType: "image/png", buffer: PNG_1x1 });
 
   // The insert uses the angle-bracket destination and points at the doc's sibling assets folder.
   await expect.poll(() => source(win), { timeout: 10_000 }).toMatch(/!\[\]\(<[^>]*\.assets\/image-[^>]*\.png>\)/);
 
   // The whole chain works only if the file was written, the CSP allows file:, markdown.ts rewrote
-  // the relative src to file://, and the browser loaded it — assert the rendered <img> has pixels.
+  // the relative src to a file:// URL, and the browser loaded it. Assert BOTH: the src is actually
+  // a file:// URL (proves markdown.ts resolved it, not just any decodable image) AND it has pixels.
   const img = win.locator(".ap-rendered img, .ap-preview img").first();
   await expect(img).toBeVisible({ timeout: 10_000 });
+  await expect.poll(() => img.getAttribute("src"), { timeout: 10_000 }).toMatch(/^file:\/\/.*\.assets\/image-.*\.png$/);
   await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.naturalWidth), { timeout: 10_000 }).toBeGreaterThan(0);
 });
