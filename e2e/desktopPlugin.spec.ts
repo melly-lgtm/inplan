@@ -48,6 +48,11 @@ export function activate(session){globalThis.__E2E_PLUGIN={active:true,session};
 
 let app: ElectronApplication;
 let win: Page;
+// Capture the Electron MAIN-process stderr AND the RENDERER console/pageerror — the plugin trust
+// path spans both (main verifies + serves; the renderer imports + activates), and a failure in
+// either was previously invisible (the page trace sees neither the main stderr nor, reliably, the
+// renderer console). Dumped in afterAll so the next regression is diagnosable from the CI log.
+const capturedLogs: string[] = [];
 
 test.beforeAll(async () => {
   const dir = mkdtempSync(join(tmpdir(), "inplan-plugin-e2e-"));
@@ -82,11 +87,16 @@ test.beforeAll(async () => {
     executablePath: join(REPO, "node_modules/.bin/electron"),
     env: { ...process.env, INPLAN_HOME: home, INPLAN_SIDECAR_DIR: join(dir, "sidecars"), INPLAN_PLUGIN_PUBLIC_KEY: PUB_PEM },
   });
+  app.process().stderr?.on("data", (d: Buffer) => capturedLogs.push(d.toString().trimEnd()));
   win = await app.firstWindow();
+  win.on("console", (m) => capturedLogs.push(`[renderer.console.${m.type()}] ${m.text()}`));
+  win.on("pageerror", (e) => capturedLogs.push(`[renderer.pageerror] ${e.message}`));
   await expect(win.locator("body")).toContainText("Plugin E2E", { timeout: 15_000 });
 });
 
 test.afterAll(async () => {
+  const relevant = capturedLogs.filter((l) => /\[inplan\]|\[renderer\.|plugin|CORS|Refused|Security|verif|lease|sha|scheme|import/i.test(l));
+  if (relevant.length) console.log("=== plugin diagnostics (main stderr + renderer console) ===\n" + relevant.join("\n"));
   await app?.evaluate(({ app: a }) => a.exit(0)).catch(() => {});
   await app?.close().catch(() => {});
 });

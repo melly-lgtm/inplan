@@ -61,9 +61,14 @@ function setStatusSession(file: string, session: string | undefined): void {
   }
 }
 
-/** Register the privileged scheme. MUST run before app 'ready' (Electron requirement). */
+/** Register the privileged scheme. MUST run before app 'ready' (Electron requirement).
+ *  `corsEnabled` is required: the renderer document is `file://`, so its dynamic
+ *  `import("inplan-plugin://bundle/renderer.js")` is a CROSS-origin module fetch. Chromium (Electron
+ *  43+) blocks a cross-origin fetch to a custom scheme unless the scheme is CORS-enabled — without
+ *  this the import fails with "blocked by CORS policy … only supported for chrome/data/http/https",
+ *  and the plugin never activates (Instant mode / TOC / live-collab silently don't load). */
 export function registerPluginScheme(): void {
-  protocol.registerSchemesAsPrivileged([{ scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
+  protocol.registerSchemesAsPrivileged([{ scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 }
 
 /** Serve the *currently-verified* renderer-entry bytes over the scheme. Call once in whenReady. The
@@ -71,7 +76,12 @@ export function registerPluginScheme(): void {
 export function handlePluginScheme(): void {
   protocol.handle(SCHEME, () => {
     if (!state) return new Response("", { status: 404 });
-    return new Response(readFileSync(state.rendererPath), { headers: { "content-type": "text/javascript" } });
+    // Explicit ACAO alongside `corsEnabled`: the `file://` renderer imports this cross-origin, and
+    // the bytes are already Ed25519+sha384-verified before we ever serve them, so allowing our own
+    // renderer to import the verified entry is safe.
+    return new Response(readFileSync(state.rendererPath), {
+      headers: { "content-type": "text/javascript", "access-control-allow-origin": "*" },
+    });
   });
 }
 
