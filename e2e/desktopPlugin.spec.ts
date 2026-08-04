@@ -53,6 +53,7 @@ let win: Page;
 // either was previously invisible (the page trace sees neither the main stderr nor, reliably, the
 // renderer console). Dumped in afterAll so the next regression is diagnosable from the CI log.
 const capturedLogs: string[] = [];
+let flushStderr: () => void = () => {};
 
 test.beforeAll(async () => {
   const dir = mkdtempSync(join(tmpdir(), "inplan-plugin-e2e-"));
@@ -87,14 +88,31 @@ test.beforeAll(async () => {
     executablePath: join(REPO, "node_modules/.bin/electron"),
     env: { ...process.env, INPLAN_HOME: home, INPLAN_SIDECAR_DIR: join(dir, "sidecars"), INPLAN_PLUGIN_PUBLIC_KEY: PUB_PEM },
   });
-  app.process().stderr?.on("data", (d: Buffer) => capturedLogs.push(d.toString().trimEnd()));
+  // Buffer stderr by line — a `data` chunk is arbitrary bytes, so a diagnostic line can split
+  // across chunks; accumulate and only push complete lines (the remainder flushes in afterAll).
+  let stderrBuf = "";
+  app.process().stderr?.on("data", (d: Buffer) => {
+    stderrBuf += d.toString();
+    const parts = stderrBuf.split("\n");
+    stderrBuf = parts.pop() ?? "";
+    for (const line of parts) capturedLogs.push(line);
+  });
+  flushStderr = () => {
+    if (stderrBuf) capturedLogs.push(stderrBuf);
+  };
+  // Register renderer console + pageerror listeners on EVERY window as it opens (via app.on("window"),
+  // before firstWindow resolves), so console output during initial document load and the first plugin
+  // import — which can happen before firstWindow returns — isn't missed.
+  app.on("window", (page) => {
+    page.on("console", (m) => capturedLogs.push(`[renderer.console.${m.type()}] ${m.text()}`));
+    page.on("pageerror", (e) => capturedLogs.push(`[renderer.pageerror] ${e.message}`));
+  });
   win = await app.firstWindow();
-  win.on("console", (m) => capturedLogs.push(`[renderer.console.${m.type()}] ${m.text()}`));
-  win.on("pageerror", (e) => capturedLogs.push(`[renderer.pageerror] ${e.message}`));
   await expect(win.locator("body")).toContainText("Plugin E2E", { timeout: 15_000 });
 });
 
 test.afterAll(async () => {
+  flushStderr(); // emit any trailing partial stderr line
   const relevant = capturedLogs.filter((l) => /\[inplan\]|\[renderer\.|plugin|CORS|Refused|Security|verif|lease|sha|scheme|import/i.test(l));
   if (relevant.length) console.log("=== plugin diagnostics (main stderr + renderer console) ===\n" + relevant.join("\n"));
   await app?.evaluate(({ app: a }) => a.exit(0)).catch(() => {});
