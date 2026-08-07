@@ -27,7 +27,7 @@ import {
 } from "@inplan/core/node";
 import { agentAuthorFor } from "./agentAuthor";
 import { gitProvenance } from "./provenance";
-import { authedSession, clearAuth, currentUser, remoteBackend, saveAuth } from "./cliAuth";
+import { authedSession, clearAuth, currentUser, loadAuth, remoteBackend, saveAuth, type AuthFile } from "./cliAuth";
 import { browserLogin } from "./cliLogin";
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
 import { checkForUpdate, selfUpdate, UPDATE_PKG } from "./update";
@@ -525,7 +525,7 @@ async function doLogin(args: string[]): Promise<void> {
   // Interactive browser handoff. No partial-credential mode: anything short of the full
   // non-interactive set above falls through to the browser, which is the intended UX.
   try {
-    const auth = await browserLogin({ onUrl: (u) => process.stderr.write(`Opening your browser to sign in:\n  ${u}\nIf it didn't open, paste that URL into your browser.\n`) });
+    const auth = await defaultBrowserLogin();
     saveAuth(auth);
     await persistCloudIdentity();
     output({ status: "logged_in", url: auth.url, ...(auth.email ? { email: auth.email } : {}) });
@@ -547,6 +547,48 @@ async function persistCloudIdentity(): Promise<void> {
 }
 
 /**
+ * May we open a browser to sign in on the user's behalf? Auto-login is a foreground
+ * convenience for a human at a terminal — never for a background agent hook, a CI job,
+ * or a piped/headless invocation, where popping a browser would hang or surprise. Gate
+ * on a real TTY on both ends, honour `CI`/`INPLAN_NO_BROWSER`, and an explicit `--no-login`.
+ */
+export function canInteractiveLogin(args: string[]): boolean {
+  if (hasFlag(args, "no-login")) return false;
+  if (process.env.CI || process.env.INPLAN_NO_BROWSER) return false;
+  return Boolean(process.stdin.isTTY && process.stderr.isTTY);
+}
+
+/**
+ * Ensure a cloud session exists before a foreground cloud command runs. When there are
+ * no stored credentials *and* we're interactive, run the browser login inline (so the
+ * connect instruction is just `inplan wait --remote <doc>` — no separate `inplan login`).
+ * Returns false when we can't/shouldn't auto-login (headless, --no-login, or the handoff
+ * failed); the caller prints the actionable "run `inplan login`" guidance and exits.
+ *
+ * Scoped to the *missing credentials* case (loadAuth === null) on purpose: an expired
+ * session still falls through to the existing refresh path + its message, so we never
+ * pop a browser on every routine expiry. `login` is injectable for tests.
+ */
+export async function ensureLoggedIn(args: string[], login: () => Promise<AuthFile> = defaultBrowserLogin): Promise<boolean> {
+  if (loadAuth()) return true; // credentials present → remoteBackend refreshes (expiry handled there)
+  if (!canInteractiveLogin(args)) return false;
+  try {
+    process.stderr.write("inplan: not signed in — opening your browser to sign in…\n");
+    saveAuth(await login());
+    await persistCloudIdentity();
+    return true;
+  } catch (e) {
+    process.stderr.write(`inplan login: ${e instanceof Error ? e.message : String(e)}\n`);
+    return false;
+  }
+}
+
+/** The real browser handoff used by auto-login (mirrors `doLogin`'s interactive path). */
+function defaultBrowserLogin(): Promise<AuthFile> {
+  return browserLogin({ onUrl: (u) => process.stderr.write(`Opening your browser to sign in:\n  ${u}\nIf it didn't open, paste that URL into your browser.\n`) });
+}
+
+/**
  * Drive a *cloud* document as the logged-in agent. There is no local editor to
  * spawn (a cloud doc opens in the browser), so `open`/`wait` both attach + wait
  * over the Supabase backend, and `signal` appends the agent's protocol events.
@@ -556,6 +598,12 @@ async function persistCloudIdentity(): Promise<void> {
  * its original path on disk). The bare `--remote <docId>` case has no local file.
  */
 async function runRemote(cmd: string, docId: string, explicitCursor: number | null, confirmed: Set<string>, rest: string[], localFile?: string, model?: string): Promise<void> {
+  // Self-heal a fresh machine: with no stored credentials, sign in inline (interactive
+  // only) so `inplan wait --remote <doc>` works without a preceding `inplan login`.
+  if (!(await ensureLoggedIn(rest))) {
+    process.stderr.write("inplan: not logged in (or session expired) — run `inplan login`\n");
+    process.exit(1);
+  }
   const backend = await remoteBackend(docId, "cli-agent");
   if (!backend) {
     process.stderr.write("inplan: not logged in (or session expired) — run `inplan login`\n");
@@ -1439,7 +1487,9 @@ async function main(): Promise<void> {
 
   if (!cmd || !["open", "wait", "signal", "message", "comment", "relay", "status", "promote", "demote", "upload"].includes(cmd)) {
     process.stderr.write(
-      "usage: inplan <open|wait|signal> <file|--remote DOC_ID> [--model NAME] [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n" +
+      "usage: inplan open  <file>   (create/open a local plan in the editor)\n" +
+        "       inplan wait   <file|--remote DOC_ID> [--model NAME] [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n" +
+        "       inplan signal <file|--remote DOC_ID> [--done] [--reload]\n" +
         '       inplan message <file> "your message"   (relay a note to the editor status bar)\n' +
         "       inplan comment <file> (--parent-id <id>|--doc|--span \"text\") --text \"...\" [--model NAME] [--may-resolve] [--question <json>]\n" +
         "       inplan relay [--hook <kind> | --text <s> [--activity]]   (agent-hook → editor; resolves the active doc)\n" +
@@ -1465,7 +1515,14 @@ async function main(): Promise<void> {
   const remoteDocId = getFlag(args, "remote");
   if (remoteDocId) {
     rejectCommentOnCloud(cmd, false);
-    await runRemote(cmd, remoteDocId, explicitCursor, confirmed, args, undefined, model);
+    // `open` and `wait` are the same over the cloud backend — a cloud doc has no local
+    // editor to launch, which is the only thing `open` adds locally. So `open --remote`
+    // is deprecated: warn and behave exactly as `wait --remote`.
+    const remoteCmd = cmd === "open" ? "wait" : cmd;
+    if (cmd === "open") {
+      process.stderr.write("inplan: `open --remote` is deprecated (a cloud doc has no local editor to launch) — use `wait --remote`. Attaching as `wait`.\n");
+    }
+    await runRemote(remoteCmd, remoteDocId, explicitCursor, confirmed, args, undefined, model);
     return;
   }
 
