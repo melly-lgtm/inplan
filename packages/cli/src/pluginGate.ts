@@ -13,8 +13,11 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveDesktopPlugin } from "@inplan/core/node";
 
+/** Default collab hub websocket URL. Exported so the CLI's session wiring and this HTTP-base
+ *  derivation share ONE literal (both keyed off `INPLAN_PLUGIN_URL`) and can't drift apart. */
+export const DEFAULT_HUB_URL = "wss://inplan-collab.fly.dev";
 /** Plugin server HTTP base (ws→http), shared with the desktop app's entitlement check. */
-const PLUGIN_HTTP = (process.env.INPLAN_PLUGIN_URL || "wss://inplan-collab.fly.dev").replace(/^ws/, "http");
+const PLUGIN_HTTP = (process.env.INPLAN_PLUGIN_URL || DEFAULT_HUB_URL).replace(/^ws/, "http");
 /** The same cache root the app uses, so a bundle fetched by either side is reused (and re-verified). */
 const defaultCacheDir = (): string => join(process.env.INPLAN_HOME || join(homedir(), ".inplan"), "plugin-cache");
 

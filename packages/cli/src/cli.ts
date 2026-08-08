@@ -36,7 +36,7 @@ import { applyGatedEdit } from "./applyEdit";
 import { evaluateAgentEdit } from "./gate";
 import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
-import { loadPluginGate, type PluginGate } from "./pluginGate";
+import { loadPluginGate, DEFAULT_HUB_URL, type PluginGate } from "./pluginGate";
 import { announcePresence } from "./presence";
 import { wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
@@ -673,32 +673,48 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
   const presence = announcePresence(docId, backend.token, model);
   try {
     // Live collaboration (paid perk): if the user is entitled, load the signature-verified collab
-    // plugin and drive the agent's edits through the Yjs hub — a CRDT, so it's multi-user-safe,
-    // unlike a blind store overwrite. The agent's working surface is a local `.md` materialized from
-    // the hub's canonical on first attach (kept across turns so its edits survive); edits sync back
-    // via the gate. Not entitled / unverified / no plugin ⇒ null ⇒ the turn-based store path below.
-    const hubUrl = process.env.INPLAN_PLUGIN_URL || "wss://inplan-collab.fly.dev";
+    // plugin and drive the agent's edits through the Yjs hub instead of a blind store overwrite. The
+    // agent's working surface is a local `.md` materialized from the hub's canonical on first attach
+    // (kept across turns so its edits survive); edits sync back via the gate. Not entitled /
+    // unverified / no plugin ⇒ null ⇒ the turn-based store path below.
+    // NB (known gap, tracked): a turn applies the WHOLE working file against the current hub
+    // canonical, and the file is seeded only once — so a human edit made in the hub between turns can
+    // be reverted by the next agent apply. Concurrent LIVE typing is CRDT-merged, but this
+    // between-turns case is not yet fully multi-user-safe.
+    const hubUrl = process.env.INPLAN_PLUGIN_URL || DEFAULT_HUB_URL;
     const hubSession = JSON.stringify({ url: hubUrl, docName: docId, token: backend.token });
     const gate = await loadPluginGate(hubSession, { token: backend.token });
     if (gate) {
       const workFile = join(sidecarRoot(), "remote", `${docId}.plan.md`);
       mkdirSync(dirname(workFile), { recursive: true });
-      if (!existsSync(workFile)) writeFileSync(workFile, await gate.readCanonical()); // seed once; keep edits across turns
-      process.stderr.write(`inplan: live-collab — plan at ${workFile}; read/edit it there, then re-run to sync\n`);
-      await waitCycle(
-        {
-          channel: live.channel, // turns/comments still ride the cloud control log (self-refreshing)…
-          store: fsBackend(workFile).store, // …while the agent reads/edits a local working copy…
-          history: async () => (await live.channel.readSince(0)).entries,
-          logExit: () => {},
-          ...(onSaveLocally ? { onSaveLocally } : {}),
-        },
-        explicitCursor,
-        confirmed,
-        model,
-        gate, // …and accepted edits apply through the hub (CRDT), not the store.
-      );
-      return;
+      // Seed the local working copy once. If the hub is unreachable on first attach, don't abort the
+      // whole wait — fall through to the turn-based store path below (the documented fallback).
+      let onGate = true;
+      if (!existsSync(workFile)) {
+        try {
+          writeFileSync(workFile, await gate.readCanonical());
+        } catch (e) {
+          process.stderr.write(`inplan: live-collab hub unreachable (${String(e)}); using turn-based sync\n`);
+          onGate = false;
+        }
+      }
+      if (onGate) {
+        process.stderr.write(`inplan: live-collab — plan at ${workFile}; read/edit it there, then re-run to sync\n`);
+        await waitCycle(
+          {
+            channel: live.channel, // turns/comments still ride the cloud control log (self-refreshing)…
+            store: fsBackend(workFile).store, // …while the agent reads/edits a local working copy…
+            history: async () => (await live.channel.readSince(0)).entries,
+            logExit: () => {},
+            ...(onSaveLocally ? { onSaveLocally } : {}),
+          },
+          explicitCursor,
+          confirmed,
+          model,
+          gate, // …and accepted edits apply through the hub, not the store.
+        );
+        return;
+      }
     }
 
     await waitCycle(
