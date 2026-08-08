@@ -677,10 +677,6 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     // agent's working surface is a local `.md` materialized from the hub's canonical on first attach
     // (kept across turns so its edits survive); edits sync back via the gate. Not entitled /
     // unverified / no plugin ⇒ null ⇒ the turn-based store path below.
-    // NB (known gap, tracked): a turn applies the WHOLE working file against the current hub
-    // canonical, and the file is seeded only once — so a human edit made in the hub between turns can
-    // be reverted by the next agent apply. Concurrent LIVE typing is CRDT-merged, but this
-    // between-turns case is not yet fully multi-user-safe.
     const hubUrl = process.env.INPLAN_PLUGIN_URL || DEFAULT_HUB_URL;
     const hubSession = JSON.stringify({ url: hubUrl, docName: docId, token: backend.token });
     const gate = await loadPluginGate(hubSession, { token: backend.token });
@@ -699,11 +695,25 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
         }
       }
       if (onGate) {
+        // Working doc stays on the local file, but Review-mode PROPOSALS persist to the CLOUD doc's
+        // proposal store (via live.store) — otherwise a parked proposal would sit in this machine's
+        // sidecar, invisible to the human in the web editor who's meant to accept/reject it.
+        const localStore = fsBackend(workFile).store;
+        const gateStore: DocumentStore = {
+          loadDoc: () => localStore.loadDoc(),
+          saveDoc: (c) => localStore.saveDoc(c),
+          getCanonical: () => localStore.getCanonical(),
+          setCanonical: (c) => localStore.setCanonical(c),
+          backup: (c, m) => localStore.backup(c, m),
+          getProposed: () => live.store.getProposed(),
+          setProposed: (c) => live.store.setProposed(c),
+          clearProposed: () => live.store.clearProposed(),
+        };
         process.stderr.write(`inplan: live-collab — plan at ${workFile}; read/edit it there, then re-run to sync\n`);
         await waitCycle(
           {
             channel: live.channel, // turns/comments still ride the cloud control log (self-refreshing)…
-            store: fsBackend(workFile).store, // …while the agent reads/edits a local working copy…
+            store: gateStore, // …the agent reads/edits a local working copy; proposals go to the cloud…
             history: async () => (await live.channel.readSince(0)).entries,
             logExit: () => {},
             ...(onSaveLocally ? { onSaveLocally } : {}),
@@ -713,6 +723,16 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
           model,
           gate, // …and accepted edits apply through the hub, not the store.
         );
+        // Re-sync the working copy from the hub canonical AFTER the turn — the human has just taken
+        // their turn, so the hub now holds their edits plus the agent's applied ones. Refreshing here
+        // (rather than never) means the agent's NEXT turn edits on top of the human's changes, so the
+        // next whole-file apply can't revert them. Done at turn-end (not start) so it never clobbers
+        // the edits the agent made before re-running. Best-effort: a hub blip just leaves last state.
+        try {
+          writeFileSync(workFile, await gate.readCanonical());
+        } catch {
+          /* hub momentarily unreachable — keep the current working copy; next turn re-syncs */
+        }
         return;
       }
     }
