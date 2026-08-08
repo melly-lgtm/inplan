@@ -24,7 +24,7 @@ vi.mock("@inplan/backend-supabase", () => ({
   SupabaseDocumentStore: class { constructor(public db: unknown, public docId: string) {} },
 }));
 
-import { authedSession, currentUser, remoteBackend, saveAuth, authPath } from "../src/cliAuth";
+import { authedSession, currentUser, remoteBackend, saveAuth, authPath, withAuthLock } from "../src/cliAuth";
 
 let home: string;
 beforeEach(() => {
@@ -120,5 +120,30 @@ describe("remoteBackend", () => {
     expect(b?.token).toBe("jwt-123");
     expect((b?.channel as unknown as { docId: string }).docId).toBe("doc-1");
     expect((b?.store as unknown as { docId: string }).docId).toBe("doc-1");
+  });
+});
+
+describe("withAuthLock", () => {
+  it("acquires a free lock and runs fn", async () => {
+    const fn = vi.fn(async () => "ran");
+    const r = await withAuthLock(fn, { waitMs: 2000 });
+    expect(r).toEqual({ acquired: true, value: "ran" });
+    expect(fn).toHaveBeenCalledOnce();
+  });
+
+  it("reclaims a STALE lock (atomically) and runs fn", async () => {
+    mkdirSync(join(home, "auth.lock")); // a leftover lock from a crashed holder
+    const fn = vi.fn(async () => "ran");
+    const r = await withAuthLock(fn, { staleMs: -1, waitMs: 2000 }); // staleMs:-1 ⇒ treat any lock as stale
+    expect(r).toEqual({ acquired: true, value: "ran" });
+    expect(fn).toHaveBeenCalledOnce();
+  });
+
+  it("does NOT run fn when a fresh lock is held and can't be acquired (no unlocked refresh)", async () => {
+    mkdirSync(join(home, "auth.lock")); // held by a live holder; fresh ⇒ never reclaimed
+    const fn = vi.fn(async () => "ran");
+    const r = await withAuthLock(fn, { staleMs: 999_999, waitMs: 150 });
+    expect(r).toEqual({ acquired: false });
+    expect(fn).not.toHaveBeenCalled();
   });
 });

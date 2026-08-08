@@ -100,10 +100,16 @@ export interface AuthedSession {
 // file with a token another already rotated away — which then gets revoked and kills the whole
 // session (observed: a `wait` loop + any concurrent command). Serializing the critical section,
 // and loading INSIDE the lock so each refresher starts from the freshest token, closes the race.
-const LOCK_WAIT_MS = 10_000; // give up waiting after this and proceed best-effort (never deadlock)
-// A lock older than this is assumed abandoned (crashed holder) and stolen. Set well above any
-// plausible refresh (a token refresh is ~1s) so a live refresh is never stolen out from under us.
+const LOCK_WAIT_MS = 10_000; // stop waiting after this and report non-acquisition (never deadlock)
+// A lock older than this is assumed abandoned (crashed holder) and reclaimed. Set well above any
+// plausible refresh (a token refresh is ~1s) so a live refresh is never reclaimed out from under us.
 const LOCK_STALE_MS = 60_000;
+
+/** Tunable timings — overridable in tests. */
+export interface AuthLockOpts {
+  waitMs?: number;
+  staleMs?: number;
+}
 
 function lockDir(): string {
   return join(process.env.INPLAN_HOME || join(homedir(), ".inplan"), "auth.lock");
@@ -112,43 +118,55 @@ function lockOwnerPath(): string {
   return join(lockDir(), "owner");
 }
 
-async function withAuthLock<T>(fn: () => Promise<T>): Promise<T> {
+/**
+ * Run `fn` while holding an exclusive cross-process lock over auth.json. Returns
+ * `{ acquired: true, value }` ONLY when this process held the lock for the whole of `fn`. If the
+ * lock can't be acquired within `waitMs`, returns `{ acquired: false }` WITHOUT running `fn` — the
+ * caller must NOT then refresh unlocked (concurrent refreshSession rotates the single-use token and
+ * logs the session out). Reclaiming an abandoned lock is atomic (rename-aside), so two racers can
+ * never both "steal" and proceed. Exported for the concurrency tests.
+ */
+export async function withAuthLock<T>(fn: () => Promise<T>, opts: AuthLockOpts = {}): Promise<{ acquired: true; value: T } | { acquired: false }> {
   const lock = lockDir();
   mkdirSync(process.env.INPLAN_HOME || join(homedir(), ".inplan"), { recursive: true });
-  // A per-acquisition token so cleanup only removes a lock THIS call still owns — if a slow refresh
-  // ever exceeds LOCK_STALE_MS and a successor steals + re-acquires, we must not delete theirs.
   const token = `${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
-  const deadline = Date.now() + LOCK_WAIT_MS;
+  const waitMs = opts.waitMs ?? LOCK_WAIT_MS;
+  const staleMs = opts.staleMs ?? LOCK_STALE_MS;
+  const deadline = Date.now() + waitMs;
   let held = false;
   while (Date.now() < deadline) {
     try {
-      mkdirSync(lock); // atomic create — fails if another holder exists
+      mkdirSync(lock); // atomic create — fails (EEXIST) if a holder exists
       writeFileSync(lockOwnerPath(), token);
       held = true;
       break;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      // Reclaim an abandoned lock ATOMICALLY: rename it aside — only one racer's rename can succeed,
+      // so we never delete a lock a peer just (re)acquired (a `stat`-then-`rm` had that race). A
+      // fresh lock isn't stale, so a live refresh is never reclaimed.
       try {
-        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) {
-          rmSync(lock, { recursive: true, force: true }); // steal an abandoned lock
-          continue;
+        if (Date.now() - statSync(lock).mtimeMs > staleMs) {
+          const aside = `${lock}.stale-${token}`;
+          renameSync(lock, aside); // atomic; throws if another racer already moved/removed it
+          rmSync(aside, { recursive: true, force: true });
+          continue; // retry mkdir immediately
         }
       } catch {
-        continue; // the lock vanished between stat and now — retry acquiring
+        continue; // lock vanished / we lost the reclaim race — just retry acquiring
       }
       await new Promise((r) => setTimeout(r, 40 + Math.floor(Math.random() * 40)));
     }
   }
+  if (!held) return { acquired: false }; // never run fn() unlocked — a racing refresh would corrupt the session
   try {
-    return await fn(); // proceed even if unacquired (best-effort) — a held lock is the common case
+    return { acquired: true, value: await fn() };
   } finally {
-    if (held) {
-      try {
-        // Only release a lock we still own (see `token`) — never delete a successor's.
-        if (readFileSync(lockOwnerPath(), "utf8") === token) rmSync(lock, { recursive: true, force: true });
-      } catch {
-        /* owner file gone / lock already stolen — leave it for its current owner */
-      }
+    try {
+      // Only release a lock we still own (see `token`) — never delete a successor's.
+      if (readFileSync(lockOwnerPath(), "utf8") === token) rmSync(lock, { recursive: true, force: true });
+    } catch {
+      /* owner file gone / lock already reclaimed — leave it for its current owner */
     }
   }
 }
@@ -194,9 +212,9 @@ export async function authedSession(): Promise<AuthedSession | null> {
   if (reused) return reused;
 
   // Slow path — the cached token is missing/expiring: refresh (which rotates the refresh token)
-  // under a cross-process lock, and cache the new access token so the next callers take the fast
+  // ONLY under the exclusive lock, and cache the new access token so later callers take the fast
   // path. Load again inside the lock in case a concurrent process just refreshed.
-  return withAuthLock(async () => {
+  const locked = await withAuthLock<AuthedSession | null>(async () => {
     const auth = loadAuth();
     if (!auth) return null;
     const fresh = await reuseCached(auth); // a peer may have refreshed while we waited for the lock
@@ -217,6 +235,12 @@ export async function authedSession(): Promise<AuthedSession | null> {
     });
     return { db, session: data.session };
   });
+  if (locked.acquired) return locked.value;
+
+  // Couldn't acquire the lock within the deadline (heavy contention). Do NOT refresh unlocked — the
+  // holder almost certainly just refreshed and cached a fresh token, so re-check the cache. If it's
+  // still not usable, return null (a retryable "not logged in") — never a racing refresh.
+  return reuseCached(loadAuth() ?? cached);
 }
 
 /** The signed-in user (id + email + display name), or null when not logged in / session invalid. */
