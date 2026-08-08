@@ -6,7 +6,7 @@
 // must belong to the document's org). The service-role key is NEVER used here:
 // the local CLI runs as the human, the same as the browser SPA.
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
@@ -159,9 +159,22 @@ export async function withAuthLock<T>(fn: () => Promise<T>, opts: AuthLockOpts =
     }
   }
   if (!held) return { acquired: false }; // never run fn() unlocked — a racing refresh would corrupt the session
+  // Heartbeat: keep renewing the lock's mtime while we hold it, so a LIVE holder is never reclaimed
+  // on age alone even if `fn` runs longer than staleMs (a slow/hung network refresh). Only a CRASHED
+  // holder stops the heartbeat → the lock actually goes stale and a waiter can reclaim it. The timer
+  // fires on the event loop during `fn`'s awaits; unref so it never keeps the process alive.
+  const beat = setInterval(() => {
+    try {
+      utimesSync(lock, new Date(), new Date());
+    } catch {
+      /* released/removed — nothing to renew */
+    }
+  }, Math.max(1, Math.floor(staleMs / 3)));
+  if (typeof beat.unref === "function") beat.unref();
   try {
     return { acquired: true, value: await fn() };
   } finally {
+    clearInterval(beat);
     try {
       // Only release a lock we still own (see `token`) — never delete a successor's.
       if (readFileSync(lockOwnerPath(), "utf8") === token) rmSync(lock, { recursive: true, force: true });

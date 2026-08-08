@@ -146,4 +146,32 @@ describe("withAuthLock", () => {
     expect(r).toEqual({ acquired: false });
     expect(fn).not.toHaveBeenCalled();
   });
+
+  it("retains ownership across a callback longer than staleMs (heartbeat) — the 2nd fn waits for the 1st", async () => {
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const order: string[] = [];
+    // First holder runs WELL past staleMs (150ms ≫ 30ms). Without the heartbeat the second would
+    // reclaim the "stale" lock at ~30ms and interleave; with it, the first's lock stays fresh.
+    const first = withAuthLock(
+      async () => {
+        order.push("A:start");
+        await sleep(150);
+        order.push("A:end");
+        return "A";
+      },
+      { staleMs: 30, waitMs: 3000 },
+    );
+    await sleep(15); // let the first acquire before the second contends
+    const second = withAuthLock(
+      async () => {
+        order.push("B");
+        return "B";
+      },
+      { staleMs: 30, waitMs: 3000 },
+    );
+    const [ra, rb] = await Promise.all([first, second]);
+    expect(ra).toEqual({ acquired: true, value: "A" });
+    expect(rb).toEqual({ acquired: true, value: "B" });
+    expect(order).toEqual(["A:start", "A:end", "B"]); // B ran only after A completed
+  });
 });
