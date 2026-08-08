@@ -36,7 +36,7 @@ import { applyGatedEdit } from "./applyEdit";
 import { evaluateAgentEdit } from "./gate";
 import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
-import { loadPluginGate, DEFAULT_HUB_URL, type PluginGate } from "./pluginGate";
+import { loadPluginGate, resolveHubUrl, type PluginGate } from "./pluginGate";
 import { announcePresence } from "./presence";
 import { wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
@@ -434,16 +434,19 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
     return;
   }
 
-  await channel.setCursor(result.cursor); // advance the persisted cursor so the next call continues here
-
   // Cloud→local handoff: a human on the web asked us to bring the doc back to disk.
   // The backend's handler downloads + relocates + flips status and emits its own
-  // result, so we hand off instead of printing the normal turn status.
+  // result, so we hand off instead of printing the normal turn status. Do this BEFORE advancing the
+  // cursor: if the handler throws (e.g. the gate path's hub read fails), the SaveLocallyRequested
+  // event stays unconsumed so the next run retries — otherwise the handoff would be lost. On success
+  // the doc becomes local, so the cloud cursor is moot.
   if (backend.onSaveLocally && result.entries.some((e) => e.type === LogEventType.SaveLocallyRequested)) {
     backend.logExit("save_locally");
     await backend.onSaveLocally();
     return;
   }
+
+  await channel.setCursor(result.cursor); // advance the persisted cursor so the next call continues here
 
   // In-window navigation: the editor followed a link to a sibling doc and parked a
   // `navigated_to {path}`. Step down here and report the new path so the agent loop
@@ -677,7 +680,7 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     // agent's working surface is a local `.md` materialized from the hub's canonical on first attach
     // (kept across turns so its edits survive); edits sync back via the gate. Not entitled /
     // unverified / no plugin ⇒ null ⇒ the turn-based store path below.
-    const hubUrl = process.env.INPLAN_PLUGIN_URL || DEFAULT_HUB_URL;
+    const hubUrl = resolveHubUrl();
     const hubSession = JSON.stringify({ url: hubUrl, docName: docId, token: backend.token });
     const gate = await loadPluginGate(hubSession, { token: backend.token });
     if (gate) {
