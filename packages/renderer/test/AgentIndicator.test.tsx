@@ -112,11 +112,11 @@ describe("AgentIndicator", () => {
     expect(document.body.textContent).toMatch(/coding agent/i); // framed as an agent hand-off, not a human command
     expect(document.body.textContent).toContain("…"); // long instruction shown middle-elided in the box
     fireEvent.click(screen.getByRole("button", { name: /^copy$/i }));
-    // Copies the FULL bootstrap instruction (install check + install + login + the connect command).
+    // Copies the FULL bootstrap instruction (install check + install + the connect command).
     const copied = writeText.mock.calls[0][0] as string;
     expect(copied).toContain(cmd); // the connect command, in full
     expect(copied).toContain("npm i -g inplan"); // how to install if missing
-    expect(copied).toContain("inplan login"); // how to sign in
+    expect(copied).toContain("inplan login"); // explicit sign-in step so headless (non-TTY) agents aren't relying on interactive-only auto-login
   });
 
   it("omits the local-agent command when the host supplies none (desktop)", () => {
