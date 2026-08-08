@@ -63,4 +63,16 @@ describe("inplan open", () => {
     expect(r.stderr).toMatch(/file not found/i);
     expect(existsSync(file)).toBe(false); // wait never creates the file
   });
+
+  it("deprecates `open --remote` and runs it as `wait --remote`", () => {
+    // A cloud doc has no local editor to launch — the only thing `open` adds locally — so
+    // `open --remote` is a deprecated alias for `wait --remote`. With no stored credentials in
+    // this non-interactive spawn it falls straight through to the wait path's auth guard (never
+    // opening a browser), which proves the forward happened.
+    const r = spawnSync(process.execPath, [CLI, "open", "--remote", "doc-abc"], { env, encoding: "utf8" });
+    expect(r.stderr).toMatch(/`open --remote` is deprecated/i);
+    expect(r.stderr).toMatch(/use `wait --remote`/i);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/not logged in/i);
+  });
 });
