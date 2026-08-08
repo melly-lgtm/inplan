@@ -657,10 +657,39 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       }
     : undefined;
 
-  // While we hold the turn on a cloud doc, announce the local agent in the doc's
-  // presence room so the web badge shows "agent · your machine"; clear it on exit.
+  // While we hold the turn on a cloud doc, announce the local agent in the doc's presence room so
+  // the web badge shows "agent · your machine"; clear it on exit (wraps both wait paths below).
   const presence = announcePresence(docId, backend.token, model);
   try {
+    // Live collaboration (paid perk): if the user is entitled, load the signature-verified collab
+    // plugin and drive the agent's edits through the Yjs hub — a CRDT, so it's multi-user-safe,
+    // unlike a blind store overwrite. The agent's working surface is a local `.md` materialized from
+    // the hub's canonical on first attach (kept across turns so its edits survive); edits sync back
+    // via the gate. Not entitled / unverified / no plugin ⇒ null ⇒ the turn-based store path below.
+    const hubUrl = process.env.INPLAN_PLUGIN_URL || "wss://inplan-collab.fly.dev";
+    const hubSession = JSON.stringify({ url: hubUrl, docName: docId, token: backend.token });
+    const gate = await loadPluginGate(hubSession, { token: backend.token });
+    if (gate) {
+      const workFile = join(sidecarRoot(), "remote", `${docId}.plan.md`);
+      mkdirSync(dirname(workFile), { recursive: true });
+      if (!existsSync(workFile)) writeFileSync(workFile, await gate.readCanonical()); // seed once; keep edits across turns
+      process.stderr.write(`inplan: live-collab — plan at ${workFile}; read/edit it there, then re-run to sync\n`);
+      await waitCycle(
+        {
+          channel: backend.channel, // turns/comments still ride the cloud control log…
+          store: fsBackend(workFile).store, // …while the agent reads/edits a local working copy…
+          history: async () => (await backend.channel.readSince(0)).entries,
+          logExit: () => {},
+          ...(onSaveLocally ? { onSaveLocally } : {}),
+        },
+        explicitCursor,
+        confirmed,
+        model,
+        gate, // …and accepted edits apply through the hub (CRDT), not the store.
+      );
+      return;
+    }
+
     await waitCycle(
       {
         channel: backend.channel,
