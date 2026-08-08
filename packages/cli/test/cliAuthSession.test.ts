@@ -36,6 +36,7 @@ let home: string;
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "inplan-auth-"));
   process.env.INPLAN_HOME = home;
+  refreshResult = { data: { session: null }, error: null }; // reset so tests don't inherit a prior one's value
   refreshSession.mockClear();
   setSession.mockClear();
 });
@@ -161,6 +162,15 @@ describe("liveRemoteBackend", () => {
     // each acquire the lock and rotate the single-use token in series.
     await Promise.all([live.channel.getCursor(), live.channel.readSince(0), live.channel.getCursor()]);
     expect(refreshSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the last-good client once it has expired and a re-mint fails (no polling dead creds)", async () => {
+    saveAuth({ url: "https://x.supabase.co", anonKey: "anon", refreshToken: "rt", email: "e@x.io", accessToken: "old", expiresAt: now() - 1 });
+    refreshResult = { data: { session: session({ access_token: "t1", expires_at: now() - 1 }) }, error: null }; // mint yields an already-expired token
+    const live = liveRemoteBackend("doc-1");
+    await live.channel.getCursor(); // inner is set, but its cached expiry is already in the past
+    refreshResult = { data: { session: null }, error: { message: "network" } }; // the next re-mint fails
+    await expect(live.channel.getCursor()).rejects.toThrow(/inplan login/); // expired inner ⇒ surfaced, not reused
   });
 });
 

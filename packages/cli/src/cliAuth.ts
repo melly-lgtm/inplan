@@ -358,7 +358,10 @@ export function liveRemoteBackend(docId: string, consumerId = "cli-agent"): Live
           // we reuse rather than re-mint on every call, while still re-checking soon.
           expiresAt = loadAuth()?.expiresAt ?? now + 300;
         }
-        return b ?? inner; // transient refresh failure ⇒ keep the last-good client and retry next call
+        // Transient refresh failure ⇒ keep the last-good client and retry next call, but ONLY while it
+        // hasn't actually expired — past expiry it would poll with dead credentials, so surface null
+        // and let the session be treated as unavailable.
+        return b ?? (inner && expiresAt > Math.floor(Date.now() / 1000) ? inner : null);
       })
       .finally(() => {
         inflight = null;
