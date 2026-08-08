@@ -725,6 +725,22 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
               output({ status: "moved_local", path: localFile, reopened: pid !== null });
             }
           : undefined;
+        // Track a mid-turn hub read failure: if the hub drops during the turn, waitCycle falls back
+        // to the local store and applies the agent's edit there — so we must NOT re-sync afterward
+        // (that would overwrite the local-only edit with stale hub canonical). The next turn pushes
+        // the preserved local edit to the hub once it's reachable again.
+        let hubReadFailed = false;
+        const trackedGate: PluginGate = {
+          readCanonical: async () => {
+            try {
+              return await gate.readCanonical();
+            } catch (e) {
+              hubReadFailed = true;
+              throw e;
+            }
+          },
+          applyRevision: (md) => gate.applyRevision(md),
+        };
         process.stderr.write(`inplan: live-collab — plan at ${workFile}; read/edit it there, then re-run to sync\n`);
         await waitCycle(
           {
@@ -737,17 +753,23 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
           explicitCursor,
           confirmed,
           model,
-          gate, // …and accepted edits apply through the hub, not the store.
+          trackedGate, // …and accepted edits apply through the hub, not the store.
         );
         // Re-sync the working copy from the hub canonical AFTER the turn — the human has just taken
         // their turn, so the hub now holds their edits plus the agent's applied ones. Refreshing here
         // (rather than never) means the agent's NEXT turn edits on top of the human's changes, so the
         // next whole-file apply can't revert them. Done at turn-end (not start) so it never clobbers
-        // the edits the agent made before re-running. Best-effort: a hub blip just leaves last state.
-        try {
-          writeFileSync(workFile, await gate.readCanonical());
-        } catch {
-          /* hub momentarily unreachable — keep the current working copy; next turn re-syncs */
+        // the edits the agent made before re-running. SKIP when the turn degraded to the local store
+        // (hub dropped mid-turn): the accepted edit lives only in the working copy, so re-syncing
+        // would discard it — keep it and let the next turn push it. Best-effort otherwise.
+        if (!hubReadFailed) {
+          try {
+            writeFileSync(workFile, await gate.readCanonical());
+          } catch {
+            /* hub momentarily unreachable — keep the current working copy; next turn re-syncs */
+          }
+        } else {
+          process.stderr.write("inplan: hub was unreachable this turn — keeping local edits (will sync next turn)\n");
         }
         return;
       }
