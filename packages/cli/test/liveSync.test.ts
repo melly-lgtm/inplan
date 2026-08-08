@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, it } from "vitest";
-import { shouldHydrateWorkFile } from "../src/liveSync";
+import { shouldHydrateWorkFile, pendingRequiresReplay } from "../src/liveSync";
 
 describe("shouldHydrateWorkFile", () => {
   it("seeds when the working copy doesn't exist yet", () => {
@@ -25,5 +25,21 @@ describe("shouldHydrateWorkFile", () => {
 
   it("keeps the copy when there's no recorded synced hash to trust", () => {
     expect(shouldHydrateWorkFile({ exists: true, pending: false, currentHash: "h", syncedHash: null })).toBe(false);
+  });
+});
+
+describe("pendingRequiresReplay", () => {
+  it("marks pending on a hub WRITE failure (a local revision needs replay)", () => {
+    expect(pendingRequiresReplay({ readFailed: false, writeFailed: true })).toBe(true);
+  });
+
+  it("does NOT mark pending on a read-only failure (no local revision to replay)", () => {
+    // The regression: a transient read failure with a clean working copy must not create .pending,
+    // or the next healthy run would skip hydration and could apply the stale copy over newer hub edits.
+    expect(pendingRequiresReplay({ readFailed: true, writeFailed: false })).toBe(false);
+  });
+
+  it("marks pending if a write failed even when a read also failed", () => {
+    expect(pendingRequiresReplay({ readFailed: true, writeFailed: true })).toBe(true);
   });
 });

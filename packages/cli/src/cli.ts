@@ -37,7 +37,7 @@ import { evaluateAgentEdit } from "./gate";
 import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, resolveHubUrl, type PluginGate } from "./pluginGate";
-import { shouldHydrateWorkFile } from "./liveSync";
+import { shouldHydrateWorkFile, pendingRequiresReplay } from "./liveSync";
 import { announcePresence } from "./presence";
 import { wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
@@ -749,18 +749,22 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
             }
           : undefined;
 
-        // Guard BOTH hub directions so any drop degrades gracefully instead of crashing the turn:
+        // Guard BOTH hub directions so any drop degrades gracefully instead of crashing the turn,
+        // tracking read and write failures SEPARATELY (they mean different things afterward):
         //  - read failure ⇒ re-throw so waitCycle takes its existing local-store fallback;
         //  - write failure ⇒ persist the edit to the local working copy (so it's not lost) and don't
         //    re-throw, so the turn still emits a status instead of exiting 1 from main().catch.
-        // Either way `hubFailed` is set, so we mark the edit pending and skip the end-of-turn re-sync.
-        let hubFailed = false;
+        // Any failure skips the end-of-turn re-sync; only a WRITE failure marks `.pending` (a local
+        // revision to replay) — a read-only failure must not, or the next healthy run would skip
+        // hydration and risk reverting newer hub edits.
+        let hubReadFailed = false;
+        let hubWriteFailed = false;
         const trackedGate: PluginGate = {
           readCanonical: async () => {
             try {
               return await gate.readCanonical();
             } catch (e) {
-              hubFailed = true;
+              hubReadFailed = true;
               throw e;
             }
           },
@@ -768,7 +772,7 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
             try {
               await gate.applyRevision(md);
             } catch (e) {
-              hubFailed = true;
+              hubWriteFailed = true;
               process.stderr.write(`inplan: live-collab hub write failed (${String(e)}); kept the edit locally to retry\n`);
               await localStore.setCanonical(md);
               await localStore.saveDoc(md);
@@ -790,11 +794,15 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
           trackedGate, // …and accepted edits apply through the hub, not the store.
         );
 
-        if (hubFailed) {
-          // The hub dropped mid-turn; the accepted edit lives only in the working copy. Mark it
-          // pending (so the next run preserves it and pushes it) and DO NOT re-sync — re-syncing would
-          // overwrite that edit with stale hub canonical.
-          writeFileSync(pendingPath, "1");
+        if (hubReadFailed || hubWriteFailed) {
+          // The hub dropped mid-turn; DO NOT re-sync (that would overwrite a local edit with stale hub
+          // canonical). Mark `.pending` ONLY when a WRITE failed — that's the case with a local
+          // revision persisted off-hub that must be replayed. A read-only failure leaves the working
+          // copy either unchanged (clean) or hash-diverged (agent edited); both are handled by the
+          // start-of-turn hydration check, and a spurious `.pending` would wrongly skip it next run.
+          if (pendingRequiresReplay({ readFailed: hubReadFailed, writeFailed: hubWriteFailed })) {
+            writeFileSync(pendingPath, "1");
+          }
           process.stderr.write("inplan: hub was unavailable this turn — keeping local edits (will sync next turn)\n");
         } else {
           // Turn applied to the hub. The working copy is now consistent with the hub for the agent's

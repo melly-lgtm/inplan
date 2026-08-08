@@ -32,3 +32,15 @@ export function shouldHydrateWorkFile(o: HydrateInput): boolean {
   if (o.pending) return false;
   return o.currentHash != null && o.currentHash === o.syncedHash;
 }
+
+/**
+ * Whether a hub failure during the turn left a local revision that must be replayed to the hub later
+ * — i.e. whether to mark the working copy `.pending`. ONLY a WRITE failure qualifies: the accepted
+ * edit was persisted locally and hasn't reached the hub. A READ failure alone must NOT: the agent may
+ * have made no edit, and a spurious `.pending` would skip hydration on the next healthy run and risk
+ * applying a stale copy back over newer hub edits. (The synced-hash check preserves any genuine local
+ * edit on the read path anyway, since an edited copy no longer matches the recorded hash.)
+ */
+export function pendingRequiresReplay(o: { readFailed: boolean; writeFailed: boolean }): boolean {
+  return o.writeFailed;
+}
