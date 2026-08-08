@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, it } from "vitest";
-import { shouldHydrateWorkFile, pendingRequiresReplay } from "../src/liveSync";
+import { shouldHydrateWorkFile, pendingRequiresReplay, trackGateDegradations } from "../src/liveSync";
 
 describe("shouldHydrateWorkFile", () => {
   it("seeds when the working copy doesn't exist yet", () => {
@@ -41,5 +41,56 @@ describe("pendingRequiresReplay", () => {
 
   it("marks pending if a write failed even when a read also failed", () => {
     expect(pendingRequiresReplay({ readFailed: true, writeFailed: true })).toBe(true);
+  });
+});
+
+describe("trackGateDegradations", () => {
+  const makeStore = () => {
+    const calls = { setCanonical: [] as string[], saveDoc: [] as string[] };
+    return {
+      store: {
+        setCanonical: async (c: string) => void calls.setCanonical.push(c),
+        saveDoc: async (c: string) => void calls.saveDoc.push(c),
+      },
+      calls,
+    };
+  };
+
+  it("read failure: re-throws and flags readFailed, without touching the local store", async () => {
+    const { store, calls } = makeStore();
+    const t = trackGateDegradations({ readCanonical: async () => { throw new Error("hub down"); }, applyRevision: async () => {} }, store);
+    await expect(t.gate.readCanonical()).rejects.toThrow("hub down"); // re-throws ⇒ waitCycle takes its local fallback
+    expect(t.readFailed()).toBe(true);
+    expect(t.writeFailed()).toBe(false);
+    expect(calls.setCanonical).toEqual([]); // the wrapper itself persists nothing on a read failure…
+    expect(calls.saveDoc).toEqual([]); // …so no spurious local revision ⇒ no .pending
+  });
+
+  it("write failure: persists the edit locally, flags writeFailed, does NOT re-throw", async () => {
+    const { store, calls } = makeStore();
+    let logged = "";
+    const t = trackGateDegradations(
+      { readCanonical: async () => "CANON", applyRevision: async () => { throw new Error("post failed"); } },
+      store,
+      (m) => { logged = m; },
+    );
+    await expect(t.gate.applyRevision("EDIT")).resolves.toBeUndefined(); // swallowed ⇒ the turn still completes
+    expect(t.writeFailed()).toBe(true);
+    expect(t.readFailed()).toBe(false);
+    expect(calls.setCanonical).toEqual(["EDIT"]); // preserve-and-retry: the edit is kept locally…
+    expect(calls.saveDoc).toEqual(["EDIT"]);
+    expect(logged).toContain("post failed");
+  });
+
+  it("success: delegates to the real gate and flags nothing", async () => {
+    const { store, calls } = makeStore();
+    const applied: string[] = [];
+    const t = trackGateDegradations({ readCanonical: async () => "CANON", applyRevision: async (md) => void applied.push(md) }, store);
+    expect(await t.gate.readCanonical()).toBe("CANON");
+    await t.gate.applyRevision("X");
+    expect(applied).toEqual(["X"]);
+    expect(t.readFailed()).toBe(false);
+    expect(t.writeFailed()).toBe(false);
+    expect(calls.setCanonical).toEqual([]); // no local persistence on the happy path
   });
 });

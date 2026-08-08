@@ -37,7 +37,7 @@ import { evaluateAgentEdit } from "./gate";
 import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, resolveHubUrl, type PluginGate } from "./pluginGate";
-import { shouldHydrateWorkFile, pendingRequiresReplay } from "./liveSync";
+import { shouldHydrateWorkFile, pendingRequiresReplay, trackGateDegradations } from "./liveSync";
 import { announcePresence } from "./presence";
 import { wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
@@ -750,35 +750,14 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
           : undefined;
 
         // Guard BOTH hub directions so any drop degrades gracefully instead of crashing the turn,
-        // tracking read and write failures SEPARATELY (they mean different things afterward):
-        //  - read failure ⇒ re-throw so waitCycle takes its existing local-store fallback;
-        //  - write failure ⇒ persist the edit to the local working copy (so it's not lost) and don't
-        //    re-throw, so the turn still emits a status instead of exiting 1 from main().catch.
-        // Any failure skips the end-of-turn re-sync; only a WRITE failure marks `.pending` (a local
-        // revision to replay) — a read-only failure must not, or the next healthy run would skip
-        // hydration and risk reverting newer hub edits.
-        let hubReadFailed = false;
-        let hubWriteFailed = false;
-        const trackedGate: PluginGate = {
-          readCanonical: async () => {
-            try {
-              return await gate.readCanonical();
-            } catch (e) {
-              hubReadFailed = true;
-              throw e;
-            }
-          },
-          applyRevision: async (md) => {
-            try {
-              await gate.applyRevision(md);
-            } catch (e) {
-              hubWriteFailed = true;
-              process.stderr.write(`inplan: live-collab hub write failed (${String(e)}); kept the edit locally to retry\n`);
-              await localStore.setCanonical(md);
-              await localStore.saveDoc(md);
-            }
-          },
-        };
+        // tracking read and write failures separately (see trackGateDegradations): a read failure
+        // re-throws (waitCycle falls back to the local store); a write failure persists the edit
+        // locally and doesn't re-throw (the turn still emits a status). Any failure skips the
+        // end-of-turn re-sync; only a WRITE marks `.pending` — a read-only failure must not, or the
+        // next healthy run would skip hydration and risk reverting newer hub edits.
+        const tracked = trackGateDegradations(gate, localStore, (m) =>
+          process.stderr.write(`inplan: live-collab hub write failed (${m}); kept the edit locally to retry\n`),
+        );
         process.stderr.write(`inplan: live-collab — plan at ${workFile}; read/edit it there, then re-run to sync\n`);
         await waitCycle(
           {
@@ -791,16 +770,16 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
           explicitCursor,
           confirmed,
           model,
-          trackedGate, // …and accepted edits apply through the hub, not the store.
+          tracked.gate, // …and accepted edits apply through the hub, not the store.
         );
 
-        if (hubReadFailed || hubWriteFailed) {
+        if (tracked.readFailed() || tracked.writeFailed()) {
           // The hub dropped mid-turn; DO NOT re-sync (that would overwrite a local edit with stale hub
           // canonical). Mark `.pending` ONLY when a WRITE failed — that's the case with a local
           // revision persisted off-hub that must be replayed. A read-only failure leaves the working
           // copy either unchanged (clean) or hash-diverged (agent edited); both are handled by the
           // start-of-turn hydration check, and a spurious `.pending` would wrongly skip it next run.
-          if (pendingRequiresReplay({ readFailed: hubReadFailed, writeFailed: hubWriteFailed })) {
+          if (pendingRequiresReplay({ readFailed: tracked.readFailed(), writeFailed: tracked.writeFailed() })) {
             writeFileSync(pendingPath, "1");
           }
           process.stderr.write("inplan: hub was unavailable this turn — keeping local edits (will sync next turn)\n");

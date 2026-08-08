@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// Pure decision helpers for the live-collab working-copy sync. The tricky question — "when is it
-// safe to overwrite the agent's local working copy with a freshly probed hub canonical?" — is kept
-// side-effect-free here so it can be unit-tested without a live hub, then driven from `runRemote`.
+// Helpers for the live-collab working-copy sync. The tricky decisions — "when is it safe to
+// overwrite the agent's local working copy?" and "how does a hub failure degrade?" — live here so
+// they can be unit-tested without a live hub, then driven from `runRemote`.
+
+import type { DocumentStore } from "@inplan/core/node";
+import type { PluginGate } from "./pluginGate";
 
 export interface HydrateInput {
   /** Does the working copy already exist on disk? */
@@ -43,4 +46,54 @@ export function shouldHydrateWorkFile(o: HydrateInput): boolean {
  */
 export function pendingRequiresReplay(o: { readFailed: boolean; writeFailed: boolean }): boolean {
   return o.writeFailed;
+}
+
+export interface TrackedGate {
+  /** The gate to hand to `waitCycle` — wraps the real one with graceful hub-failure handling. */
+  gate: PluginGate;
+  readFailed: () => boolean;
+  writeFailed: () => boolean;
+}
+
+/**
+ * Wrap a hub gate so failures during a turn are observable and degrade gracefully:
+ *  - `readCanonical()` re-throws on failure (so `waitCycle` takes its existing local-store fallback),
+ *    recording `readFailed`;
+ *  - `applyRevision()` on failure persists the edit to the local store (preserve-and-retry) and does
+ *    NOT re-throw — so the turn still completes and emits a status instead of crashing to
+ *    `main().catch`/exit 1 — recording `writeFailed`.
+ * The caller uses the flags to skip the end-of-turn re-sync and, per {@link pendingRequiresReplay},
+ * mark the working copy `.pending` only when a local revision actually needs replaying (a write).
+ */
+export function trackGateDegradations(
+  gate: PluginGate,
+  localStore: Pick<DocumentStore, "setCanonical" | "saveDoc">,
+  onWriteError?: (message: string) => void,
+): TrackedGate {
+  let readFailed = false;
+  let writeFailed = false;
+  return {
+    readFailed: () => readFailed,
+    writeFailed: () => writeFailed,
+    gate: {
+      readCanonical: async () => {
+        try {
+          return await gate.readCanonical();
+        } catch (e) {
+          readFailed = true;
+          throw e;
+        }
+      },
+      applyRevision: async (md) => {
+        try {
+          await gate.applyRevision(md);
+        } catch (e) {
+          writeFailed = true;
+          onWriteError?.(String(e));
+          await localStore.setCanonical(md);
+          await localStore.saveDoc(md);
+        }
+      },
+    },
+  };
 }
