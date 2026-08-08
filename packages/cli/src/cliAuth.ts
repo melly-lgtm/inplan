@@ -6,7 +6,7 @@
 // must belong to the document's org). The service-role key is NEVER used here:
 // the local CLI runs as the human, the same as the browser SPA.
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
@@ -70,12 +70,17 @@ export function loadAuth(): AuthFile | null {
 export function saveAuth(auth: AuthFile): void {
   const path = authPath();
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(auth, null, 2)}\n`, { mode: 0o600 });
+  // Atomic replace: write a 0600 temp file in the same dir, then rename over auth.json, so a
+  // concurrent (lockless fast-path) loadAuth can never observe a half-written file. rename is
+  // atomic within a filesystem; the temp name is pid-scoped to avoid two writers colliding.
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(auth, null, 2)}\n`, { mode: 0o600 });
   try {
-    chmodSync(path, 0o600);
+    chmodSync(tmp, 0o600);
   } catch {
     /* best-effort on platforms without POSIX modes */
   }
+  renameSync(tmp, path);
 }
 
 /** Forget the stored credentials (sign out). No-op if not logged in. */
@@ -96,20 +101,29 @@ export interface AuthedSession {
 // session (observed: a `wait` loop + any concurrent command). Serializing the critical section,
 // and loading INSIDE the lock so each refresher starts from the freshest token, closes the race.
 const LOCK_WAIT_MS = 10_000; // give up waiting after this and proceed best-effort (never deadlock)
-const LOCK_STALE_MS = 15_000; // a lock older than this is assumed abandoned (crashed holder) and stolen
+// A lock older than this is assumed abandoned (crashed holder) and stolen. Set well above any
+// plausible refresh (a token refresh is ~1s) so a live refresh is never stolen out from under us.
+const LOCK_STALE_MS = 60_000;
 
 function lockDir(): string {
   return join(process.env.INPLAN_HOME || join(homedir(), ".inplan"), "auth.lock");
+}
+function lockOwnerPath(): string {
+  return join(lockDir(), "owner");
 }
 
 async function withAuthLock<T>(fn: () => Promise<T>): Promise<T> {
   const lock = lockDir();
   mkdirSync(process.env.INPLAN_HOME || join(homedir(), ".inplan"), { recursive: true });
+  // A per-acquisition token so cleanup only removes a lock THIS call still owns — if a slow refresh
+  // ever exceeds LOCK_STALE_MS and a successor steals + re-acquires, we must not delete theirs.
+  const token = `${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
   const deadline = Date.now() + LOCK_WAIT_MS;
   let held = false;
   while (Date.now() < deadline) {
     try {
       mkdirSync(lock); // atomic create — fails if another holder exists
+      writeFileSync(lockOwnerPath(), token);
       held = true;
       break;
     } catch (e) {
@@ -130,9 +144,10 @@ async function withAuthLock<T>(fn: () => Promise<T>): Promise<T> {
   } finally {
     if (held) {
       try {
-        rmSync(lock, { recursive: true, force: true });
+        // Only release a lock we still own (see `token`) — never delete a successor's.
+        if (readFileSync(lockOwnerPath(), "utf8") === token) rmSync(lock, { recursive: true, force: true });
       } catch {
-        /* already gone */
+        /* owner file gone / lock already stolen — leave it for its current owner */
       }
     }
   }

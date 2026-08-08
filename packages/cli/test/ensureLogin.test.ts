@@ -47,7 +47,11 @@ afterEach(() => {
   delete process.env.INPLAN_HOME;
   rmSync(home, { recursive: true, force: true });
   for (const stream of ["stdin", "stderr"] as const) {
-    if (ttyDescriptors[stream]) Object.defineProperty(process[stream], "isTTY", ttyDescriptors[stream]!);
+    if (ttyDescriptors[stream]) {
+      Object.defineProperty(process[stream], "isTTY", ttyDescriptors[stream]!);
+    } else {
+      delete (process[stream] as { isTTY?: boolean }).isTTY; // no original descriptor → drop the injected own-prop
+    }
     ttyDescriptors[stream] = undefined;
   }
 });

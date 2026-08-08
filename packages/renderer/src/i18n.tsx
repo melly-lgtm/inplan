@@ -196,7 +196,7 @@ export const EN: Catalog = {
   "agent.atLimit": "Usage limit reached — turns are paused until your plan resets or you upgrade",
   "agent.connection": "Agent connection",
   "agent.localCmdHint": "Paste this to your coding agent:",
-  "agent.localCmdBody": "Collaborate with me on my inplan plan. Check the CLI with `inplan --version` (if missing, install it: `npm i -g inplan`), then run `{cmd}` and work with me through the comments (it signs you in automatically the first time).",
+  "agent.localCmdBody": "Collaborate with me on my inplan plan. Check the CLI with `inplan --version` (if missing, install it: `npm i -g inplan`), then run `{cmd}` and work with me through the comments (you may be prompted to sign in the first time).",
   "agent.copy": "Copy",
   "agent.copied": "Copied",
   // comment rail
