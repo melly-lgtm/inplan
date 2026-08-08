@@ -357,11 +357,18 @@ export function liveRemoteBackend(docId: string, consumerId = "cli-agent"): Live
           // Trust the persisted expiry; if a session somehow carried none, assume a short validity so
           // we reuse rather than re-mint on every call, while still re-checking soon.
           expiresAt = loadAuth()?.expiresAt ?? now + 300;
+          return b;
         }
-        // Transient refresh failure ⇒ keep the last-good client and retry next call, but ONLY while it
-        // hasn't actually expired — past expiry it would poll with dead credentials, so surface null
-        // and let the session be treated as unavailable.
-        return b ?? (inner && expiresAt > Math.floor(Date.now() / 1000) ? inner : null);
+        // Re-mint failed. Keep the last-good client ONLY for a genuinely transient failure — i.e. we're
+        // still logged in (creds present) AND its token hasn't expired — so a brief network blip
+        // doesn't drop a valid session. Otherwise (another process logged out ⇒ no creds, or the token
+        // expired) DISCARD it: clear inner/expiresAt so tokenNow()/subscribe(), which bypass need(),
+        // can't keep serving a stale/expired/revoked client, and callers get a clean "unavailable".
+        const stillLoggedIn = loadAuth() !== null;
+        if (stillLoggedIn && inner && expiresAt > Math.floor(Date.now() / 1000)) return inner;
+        inner = null;
+        expiresAt = 0;
+        return null;
       })
       .finally(() => {
         inflight = null;

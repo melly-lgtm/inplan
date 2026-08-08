@@ -3,7 +3,7 @@
 // Covers the authenticated-session paths of cliAuth (refresh, rotation persist,
 // remoteBackend wiring) with a mocked supabase-js — no network, no real creds.
 
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -171,6 +171,21 @@ describe("liveRemoteBackend", () => {
     await live.channel.getCursor(); // inner is set, but its cached expiry is already in the past
     refreshResult = { data: { session: null }, error: { message: "network" } }; // the next re-mint fails
     await expect(live.channel.getCursor()).rejects.toThrow(/inplan login/); // expired inner ⇒ surfaced, not reused
+    expect(live.tokenNow()).toBeNull(); // …and the expired client is DISCARDED, not left exposed via tokenNow()/subscribe()
+  });
+
+  it("discards the cached client when another process logs out, even if the token hasn't expired", async () => {
+    // Token is valid but within the skew, so each call re-mints. First call mints; then auth.json is
+    // removed (a logout elsewhere). The next re-mint must clear the cached client rather than keep
+    // serving a still-unexpired-but-revoked session.
+    saveAuth({ url: "https://x.supabase.co", anonKey: "anon", refreshToken: "rt", email: "e@x.io", accessToken: "valid", expiresAt: now() + 60 });
+    refreshResult = { data: { session: session({ access_token: "valid", expires_at: now() + 60 }) }, error: null };
+    const live = liveRemoteBackend("doc-1");
+    await live.channel.getCursor();
+    expect(live.tokenNow()).not.toBeNull(); // authenticated so far
+    rmSync(authPath()); // another process logged out ⇒ loadAuth() is now null
+    await expect(live.channel.getCursor()).rejects.toThrow(/inplan login/);
+    expect(live.tokenNow()).toBeNull(); // cached client dropped despite the token not being expired
   });
 });
 
