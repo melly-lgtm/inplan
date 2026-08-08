@@ -20,11 +20,16 @@ vi.mock("@supabase/supabase-js", () => ({
   createClient: vi.fn(() => ({ auth: { refreshSession, setSession } })),
 }));
 vi.mock("@inplan/backend-supabase", () => ({
-  SupabaseControlChannel: class { constructor(public db: unknown, public docId: string, public consumer: string) {} },
+  // getCursor echoes the client's access token so a test can prove which minted client a
+  // self-refreshing call delegated to (i.e. whether it re-minted).
+  SupabaseControlChannel: class {
+    constructor(public db: { auth?: { token?: string } }, public docId: string, public consumer: string) {}
+    async getCursor() { return 0; }
+  },
   SupabaseDocumentStore: class { constructor(public db: unknown, public docId: string) {} },
 }));
 
-import { authedSession, currentUser, remoteBackend, saveAuth, authPath, withAuthLock } from "../src/cliAuth";
+import { authedSession, currentUser, liveRemoteBackend, remoteBackend, saveAuth, authPath, withAuthLock } from "../src/cliAuth";
 
 let home: string;
 beforeEach(() => {
@@ -123,6 +128,31 @@ describe("remoteBackend", () => {
   });
 });
 
+describe("liveRemoteBackend", () => {
+  const now = () => Math.floor(Date.now() / 1000);
+
+  it("mints once then reuses the client while the token stays valid (no re-refresh)", async () => {
+    saveAuth({ url: "https://x.supabase.co", anonKey: "anon", refreshToken: "rt", email: "e@x.io", accessToken: "cached-jwt", expiresAt: now() + 3600 });
+    const live = liveRemoteBackend("doc-1");
+    await live.channel.getCursor(); // first call mints (fast path: setSession, no refresh)
+    await live.channel.getCursor(); // token still valid ⇒ reuse the cached inner, no new mint
+    expect(refreshSession).not.toHaveBeenCalled(); // never rotates the single-use token
+    expect(setSession).toHaveBeenCalledTimes(1); // minted exactly once
+    expect(live.tokenNow()).toBe("cached-jwt");
+  });
+
+  it("re-mints through the locked refresh path when the cached token is within the expiry skew", async () => {
+    saveAuth({ url: "https://x.supabase.co", anonKey: "anon", refreshToken: "rt-old", email: "e@x.io", accessToken: "old", expiresAt: now() + 60 }); // < ACCESS_SKEW_S ⇒ stale
+    refreshResult = { data: { session: session({ access_token: "jwt-123", expires_at: now() + 3600 }) }, error: null };
+    const live = liveRemoteBackend("doc-1");
+    await live.channel.getCursor();
+    expect(refreshSession).toHaveBeenCalledTimes(1); // expiring ⇒ coordinated refresh
+    await live.channel.getCursor();
+    expect(refreshSession).toHaveBeenCalledTimes(1); // freshly minted token is valid ⇒ reused, not re-refreshed
+    expect(live.tokenNow()).toBe("jwt-123");
+  });
+});
+
 describe("withAuthLock", () => {
   it("acquires a free lock and runs fn", async () => {
     const fn = vi.fn(async () => "ran");
@@ -145,6 +175,24 @@ describe("withAuthLock", () => {
     const r = await withAuthLock(fn, { staleMs: 999_999, waitMs: 150 });
     expect(r).toEqual({ acquired: false });
     expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("fences a reclaimed holder: stillMine() flips false once the owner marker changes (paused-then-stolen)", async () => {
+    // Simulate this process being paused past staleMs and a successor stealing the lock: the owner
+    // marker no longer carries our token, so stillMine() must report false — the signal the refresh
+    // path uses to abort rather than rotate the single-use token alongside the new owner.
+    const seen: boolean[] = [];
+    const r = await withAuthLock(
+      async ({ stillMine }) => {
+        seen.push(stillMine()); // true — we still own it
+        writeFileSync(join(home, "auth.lock", "owner"), "successor-token"); // a reclaimer took over
+        seen.push(stillMine()); // false — no longer ours
+        return "done";
+      },
+      { waitMs: 2000 },
+    );
+    expect(r).toEqual({ acquired: true, value: "done" });
+    expect(seen).toEqual([true, false]);
   });
 
   it("retains ownership across a callback longer than staleMs (heartbeat) — the 2nd fn waits for the 1st", async () => {

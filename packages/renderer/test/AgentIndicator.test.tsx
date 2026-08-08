@@ -116,7 +116,7 @@ describe("AgentIndicator", () => {
     const copied = writeText.mock.calls[0][0] as string;
     expect(copied).toContain(cmd); // the connect command, in full
     expect(copied).toContain("npm i -g inplan"); // how to install if missing
-    expect(copied).not.toContain("inplan login"); // sign-in is now automatic on first `wait` — no separate step
+    expect(copied).toContain("inplan login"); // explicit sign-in step so headless (non-TTY) agents aren't relying on interactive-only auto-login
   });
 
   it("omits the local-agent command when the host supplies none (desktop)", () => {

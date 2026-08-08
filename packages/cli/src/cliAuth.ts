@@ -126,7 +126,10 @@ function lockOwnerPath(): string {
  * logs the session out). Reclaiming an abandoned lock is atomic (rename-aside), so two racers can
  * never both "steal" and proceed. Exported for the concurrency tests.
  */
-export async function withAuthLock<T>(fn: () => Promise<T>, opts: AuthLockOpts = {}): Promise<{ acquired: true; value: T } | { acquired: false }> {
+export async function withAuthLock<T>(
+  fn: (fence: { stillMine: () => boolean }) => Promise<T>,
+  opts: AuthLockOpts = {},
+): Promise<{ acquired: true; value: T } | { acquired: false }> {
   const lock = lockDir();
   mkdirSync(process.env.INPLAN_HOME || join(homedir(), ".inplan"), { recursive: true });
   const token = `${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
@@ -159,20 +162,35 @@ export async function withAuthLock<T>(fn: () => Promise<T>, opts: AuthLockOpts =
     }
   }
   if (!held) return { acquired: false }; // never run fn() unlocked — a racing refresh would corrupt the session
+  // Ownership fence: the owner marker still carries OUR token. If this process was paused (SIGSTOP,
+  // laptop sleep, a blocked event loop) past staleMs, a waiter can reclaim the lock and write its own
+  // token; when we resume we're no longer the owner. Callers MUST re-check `stillMine()` immediately
+  // before any single-use side effect (the refresh-token rotation) so a stolen holder aborts instead
+  // of rotating alongside the new owner. Narrows the window to the check→act gap (a few ms), vs. the
+  // whole of `fn`.
+  const stillMine = (): boolean => {
+    try {
+      return readFileSync(lockOwnerPath(), "utf8") === token;
+    } catch {
+      return false; // owner file gone / lock reclaimed ⇒ not ours
+    }
+  };
   // Heartbeat: keep renewing the lock's mtime while we hold it, so a LIVE holder is never reclaimed
   // on age alone even if `fn` runs longer than staleMs (a slow/hung network refresh). Only a CRASHED
-  // holder stops the heartbeat → the lock actually goes stale and a waiter can reclaim it. The timer
-  // fires on the event loop during `fn`'s awaits; unref so it never keeps the process alive.
+  // (or paused) holder stops the heartbeat → the lock actually goes stale and a waiter can reclaim it.
+  // Guard on `stillMine()` so a resumed-after-reclaim holder never renews a SUCCESSOR's lock (which
+  // would wrongly keep the new owner's lock fresh / fight its heartbeat). The timer fires on the event
+  // loop during `fn`'s awaits; unref so it never keeps the process alive.
   const beat = setInterval(() => {
     try {
-      utimesSync(lock, new Date(), new Date());
+      if (stillMine()) utimesSync(lock, new Date(), new Date());
     } catch {
       /* released/removed — nothing to renew */
     }
   }, Math.max(1, Math.floor(staleMs / 3)));
   if (typeof beat.unref === "function") beat.unref();
   try {
-    return { acquired: true, value: await fn() };
+    return { acquired: true, value: await fn({ stillMine }) };
   } finally {
     clearInterval(beat);
     try {
@@ -190,7 +208,7 @@ export async function withAuthLock<T>(fn: () => Promise<T>, opts: AuthLockOpts =
  * `auth.json` so the next invocation starts fresh. Returns null when not logged
  * in or the session can't be refreshed (callers print "run `inplan login`").
  */
-/** Refresh a full minute before expiry so a reused token never lands on a just-expired boundary. */
+/** Refresh two minutes before expiry so a reused token never lands on a just-expired boundary. */
 const ACCESS_SKEW_S = 120;
 
 // A CLI client that never refreshes on its own: short-lived ops refresh explicitly (below), and
@@ -227,12 +245,16 @@ export async function authedSession(): Promise<AuthedSession | null> {
   // Slow path — the cached token is missing/expiring: refresh (which rotates the refresh token)
   // ONLY under the exclusive lock, and cache the new access token so later callers take the fast
   // path. Load again inside the lock in case a concurrent process just refreshed.
-  const locked = await withAuthLock<AuthedSession | null>(async () => {
+  const locked = await withAuthLock<AuthedSession | null>(async ({ stillMine }) => {
     const auth = loadAuth();
     if (!auth) return null;
     const fresh = await reuseCached(auth); // a peer may have refreshed while we waited for the lock
     if (fresh) return fresh;
 
+    // Fence the single-use rotation: if we were paused past staleMs and reclaimed, bail rather than
+    // refresh alongside the new owner (that double-rotate revokes the token → logs the session out).
+    // The caller re-checks the cache on non-acquisition, so returning null here is safely retryable.
+    if (!stillMine()) return null;
     const db = newClient(auth);
     const { data, error } = await db.auth.refreshSession({ refresh_token: auth.refreshToken });
     if (error || !data.session) return null;
@@ -292,4 +314,61 @@ export async function remoteBackend(docId: string, consumerId = "cli-agent"): Pr
     store: new SupabaseDocumentStore(s.db, docId),
     token: s.session.access_token,
   };
+}
+
+/** A doc backend that transparently re-mints its authenticated client before the access token
+ *  expires. A long `wait --remote` (the human idles past the ~1h JWT lifetime) otherwise keeps
+ *  polling a fixed client whose token has expired — its reads 401 and the wait silently stalls,
+ *  never seeing the user's turn. Re-minting runs through {@link remoteBackend}→{@link authedSession}
+ *  (the lock-coordinated, refresh-token-persisting path), so it NEVER rotates the single-use token
+ *  off-lock — which is exactly the race `autoRefreshToken:false` closes. Every channel/store call
+ *  first ensures a fresh inner backend; between re-mints (≈ once per token lifetime) the cached one
+ *  is reused, so the hot poll path creates no per-tick clients. */
+export interface LiveRemoteBackend {
+  channel: ControlChannel;
+  store: DocumentStore;
+  /** The freshest access token (for presence/websocket re-auth), or null if the session is gone. */
+  tokenNow(): string | null;
+}
+export function liveRemoteBackend(docId: string, consumerId = "cli-agent"): LiveRemoteBackend {
+  let inner: RemoteBackend | null = null;
+  let expiresAt = 0; // the cached inner's access-token expiry (unix seconds)
+  const fresh = async (): Promise<RemoteBackend | null> => {
+    const now = Math.floor(Date.now() / 1000);
+    if (inner && expiresAt - now > ACCESS_SKEW_S) return inner; // still valid — reuse (no re-mint)
+    const b = await remoteBackend(docId, consumerId);
+    if (b) {
+      inner = b;
+      expiresAt = loadAuth()?.expiresAt ?? 0; // authedSession persisted the new expiry
+    }
+    return inner;
+  };
+  const need = async (): Promise<RemoteBackend> => {
+    const b = await fresh();
+    if (!b) throw new Error("inplan: not logged in (or session expired) — run `inplan login`");
+    return b;
+  };
+  const channel: ControlChannel = {
+    append: async (e, o) => (await need()).channel.append(e, o),
+    readSince: async (c) => (await need()).channel.readSince(c),
+    // The poll-based wait never subscribes; delegate best-effort to the current inner (a re-mint
+    // doesn't migrate an active subscription — not needed on this path).
+    subscribe: (cb) => inner?.channel.subscribe(cb) ?? (() => {}),
+    getCursor: async () => (await need()).channel.getCursor(),
+    setCursor: async (s) => (await need()).channel.setCursor(s),
+    claimLock: async (t) => (await need()).channel.claimLock(t),
+    isSuperseded: async (t) => (await need()).channel.isSuperseded(t),
+    presence: async () => (await need()).channel.presence(),
+  };
+  const store: DocumentStore = {
+    loadDoc: async () => (await need()).store.loadDoc(),
+    saveDoc: async (c) => (await need()).store.saveDoc(c),
+    getCanonical: async () => (await need()).store.getCanonical(),
+    setCanonical: async (c) => (await need()).store.setCanonical(c),
+    getProposed: async () => (await need()).store.getProposed(),
+    setProposed: async (c) => (await need()).store.setProposed(c),
+    clearProposed: async () => (await need()).store.clearProposed(),
+    backup: async (c, m) => (await need()).store.backup(c, m),
+  };
+  return { channel, store, tokenNow: () => inner?.token ?? null };
 }

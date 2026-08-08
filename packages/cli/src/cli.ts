@@ -27,7 +27,7 @@ import {
 } from "@inplan/core/node";
 import { agentAuthorFor } from "./agentAuthor";
 import { gitProvenance } from "./provenance";
-import { authedSession, clearAuth, currentUser, loadAuth, remoteBackend, saveAuth, type AuthFile } from "./cliAuth";
+import { authedSession, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, type AuthFile } from "./cliAuth";
 import { browserLogin } from "./cliLogin";
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
 import { checkForUpdate, selfUpdate, UPDATE_PKG } from "./update";
@@ -647,12 +647,19 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     return;
   }
 
+  // A `wait` can block for longer than the ~1h access-token lifetime (the human idles before taking
+  // their turn). Poll through a self-refreshing backend so the token is re-minted — via the
+  // lock-coordinated authedSession() path, never an off-lock auto-refresh — before it expires,
+  // instead of silently 401ing mid-wait. Short ops above (signal/message) used the one-shot `backend`.
+  const live = liveRemoteBackend(docId, "cli-agent");
+
   // Save-locally handoff (only when following a promoted local file): download the
   // live body to its original path, flip the status back to local, reopen the local
-  // editor, and report — the inverse of "Collaborate on Cloud".
+  // editor, and report — the inverse of "Collaborate on Cloud". Reads through `live` since the
+  // handoff can fire after a long wait (the initial token may have expired by then).
   const onSaveLocally = localFile
     ? async () => {
-        const body = await backend.store.loadDoc();
+        const body = await live.store.loadDoc();
         writeFileSync(localFile, body);
         writeStatus(docPaths(localFile).statusPath, { location: "local", originalPath: localFile, lastSyncedHash: hashBody(body) });
         const pid = spawnApp(localFile); // reopen the doc in the local editor
@@ -660,15 +667,17 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       }
     : undefined;
 
-  // While we hold the turn on a cloud doc, announce the local agent in the doc's
-  // presence room so the web badge shows "agent · your machine"; clear it on exit.
+  // While we hold the turn on a cloud doc, announce the local agent in the doc's presence room so
+  // the web badge shows "agent · your machine"; clear it on exit. (Presence is a cosmetic websocket
+  // on the initial token; the correctness-critical DB polling rides `live` above and stays
+  // authenticated across the whole wait, even past the initial token's ~1h expiry.)
   const presence = announcePresence(docId, backend.token, model);
   try {
     await waitCycle(
       {
-        channel: backend.channel,
-        store: backend.store,
-        history: async () => (await backend.channel.readSince(0)).entries,
+        channel: live.channel,
+        store: live.store,
+        history: async () => (await live.channel.readSince(0)).entries,
         logExit: () => {}, // no local sidecar for a cloud doc
         ...(onSaveLocally ? { onSaveLocally } : {}),
       },
