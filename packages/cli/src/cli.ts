@@ -555,7 +555,10 @@ async function persistCloudIdentity(): Promise<void> {
 export function canInteractiveLogin(args: string[]): boolean {
   if (hasFlag(args, "no-login")) return false;
   if (process.env.CI || process.env.INPLAN_NO_BROWSER) return false;
-  return Boolean(process.stdin.isTTY && process.stderr.isTTY);
+  // A human at a terminal has BOTH stdin and stdout as TTYs. Gate on stdout (not stderr): piping
+  // stdout — `inplan wait --remote DOC | tool` — is programmatic use and must never open a browser,
+  // yet stderr often stays a TTY there, so an stderr check would wrongly allow it.
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
 /**

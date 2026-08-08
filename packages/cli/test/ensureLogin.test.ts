@@ -24,9 +24,9 @@ import { loadAuth, saveAuth, type AuthFile } from "../src/cliAuth";
 let home: string;
 const ttyDescriptors: Record<string, PropertyDescriptor | undefined> = {};
 
-/** Force stdin/stderr's isTTY (a getter on the streams) so "interactive" is deterministic. */
+/** Force stdin/stdout's isTTY (a getter on the streams) so "interactive" is deterministic. */
 function setTTY(value: boolean): void {
-  for (const stream of ["stdin", "stderr"] as const) {
+  for (const stream of ["stdin", "stdout"] as const) {
     ttyDescriptors[stream] ??= Object.getOwnPropertyDescriptor(process[stream], "isTTY");
     Object.defineProperty(process[stream], "isTTY", { value, configurable: true });
   }
@@ -46,7 +46,7 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.INPLAN_HOME;
   rmSync(home, { recursive: true, force: true });
-  for (const stream of ["stdin", "stderr"] as const) {
+  for (const stream of ["stdin", "stdout"] as const) {
     if (ttyDescriptors[stream]) {
       Object.defineProperty(process[stream], "isTTY", ttyDescriptors[stream]!);
     } else {
@@ -71,6 +71,22 @@ describe("canInteractiveLogin", () => {
   it("is false without a TTY even when nothing else opts out", () => {
     setTTY(false);
     expect(canInteractiveLogin([])).toBe(false);
+  });
+
+  it("is false when stdout is piped even though stdin/stderr are TTYs (`… | tool` ⇒ no browser)", () => {
+    // The reported case: `inplan wait --remote DOC | tool` — stdout is piped for programmatic use,
+    // but stdin and stderr stay TTYs. Must NOT be eligible for a browser login.
+    const origStderr = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+    Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true }); // piped
+    try {
+      expect(canInteractiveLogin([])).toBe(false);
+    } finally {
+      // afterEach restores stdin/stdout; stderr isn't managed there, so reset it here.
+      if (origStderr) Object.defineProperty(process.stderr, "isTTY", origStderr);
+      else delete (process.stderr as { isTTY?: boolean }).isTTY;
+    }
   });
 });
 
