@@ -222,10 +222,12 @@ function newClient(auth: AuthFile): SupabaseClient {
 }
 
 /** Bind a client to a still-valid cached access token WITHOUT a network refresh (no rotation).
- *  Returns null if there's no usable cached token or it's within the expiry skew. */
-async function reuseCached(auth: AuthFile): Promise<AuthedSession | null> {
+ *  Returns null if there's no usable cached token or it's within `skewS` of expiry. `skewS` defaults
+ *  to the refresh skew (proactively re-mint before expiry); pass 0 to accept any not-yet-expired
+ *  token (the contention fallback, where the token is still usable while a peer refreshes). */
+async function reuseCached(auth: AuthFile, skewS = ACCESS_SKEW_S): Promise<AuthedSession | null> {
   if (!auth.accessToken || !auth.expiresAt) return null;
-  if (auth.expiresAt - Math.floor(Date.now() / 1000) <= ACCESS_SKEW_S) return null;
+  if (auth.expiresAt - Math.floor(Date.now() / 1000) <= skewS) return null;
   const db = newClient(auth);
   // setSession only decodes+stores when the access token is unexpired (no network call, no
   // rotation). We've already checked expiry, so this is purely local.
@@ -273,9 +275,12 @@ export async function authedSession(): Promise<AuthedSession | null> {
   if (locked.acquired) return locked.value;
 
   // Couldn't acquire the lock within the deadline (heavy contention). Do NOT refresh unlocked — the
-  // holder almost certainly just refreshed and cached a fresh token, so re-check the cache. If it's
-  // still not usable, return null (a retryable "not logged in") — never a racing refresh.
-  return reuseCached(loadAuth() ?? cached);
+  // holder is refreshing and about to persist. Re-check the cache with skew 0: accept the current
+  // token as long as it isn't actually expired (it stays valid for up to the skew window), so
+  // transient contention returns a usable session rather than a spurious null. Only a genuinely
+  // expired/absent session yields null here — the one case where callers SHOULD say "run inplan
+  // login". This keeps a long `wait` from aborting (and misreporting "logged out") on lock churn.
+  return reuseCached(loadAuth() ?? cached, 0);
 }
 
 /** The signed-in user (id + email + display name), or null when not logged in / session invalid. */
@@ -325,6 +330,10 @@ export async function remoteBackend(docId: string, consumerId = "cli-agent"): Pr
  *  first ensures a fresh inner backend; between re-mints (≈ once per token lifetime) the cached one
  *  is reused, so the hot poll path creates no per-tick clients. */
 export interface LiveRemoteBackend {
+  /** A control channel that re-mints its client before expiry. NOTE: `channel.subscribe` is
+   *  best-effort and unsupported before the first request lands (there's no inner client yet, so a
+   *  pre-mint subscription is dropped); this backend is built for the POLL-based wait, which never
+   *  subscribes. A future push-based consumer must not rely on subscribe here. */
   channel: ControlChannel;
   store: DocumentStore;
   /** The freshest access token (for presence/websocket re-auth), or null if the session is gone. */

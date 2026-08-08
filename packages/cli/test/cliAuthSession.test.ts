@@ -20,10 +20,10 @@ vi.mock("@supabase/supabase-js", () => ({
   createClient: vi.fn(() => ({ auth: { refreshSession, setSession } })),
 }));
 vi.mock("@inplan/backend-supabase", () => ({
-  // getCursor echoes the client's access token so a test can prove which minted client a
-  // self-refreshing call delegated to (i.e. whether it re-minted).
+  // A minimal channel: getCursor/readSince are stubbed so a delegating call has something to hit.
+  // Tests assert delegation by side effect (refresh/setSession call counts), not the return values.
   SupabaseControlChannel: class {
-    constructor(public db: { auth?: { token?: string } }, public docId: string, public consumer: string) {}
+    constructor(public db: unknown, public docId: string, public consumer: string) {}
     async getCursor() { return 0; }
     async readSince(cursor: number) { return { entries: [], cursor }; }
   },
