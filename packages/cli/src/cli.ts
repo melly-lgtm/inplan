@@ -683,16 +683,17 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     if (gate) {
       const workFile = join(sidecarRoot(), "remote", `${docId}.plan.md`);
       mkdirSync(dirname(workFile), { recursive: true });
-      // Seed the local working copy once. If the hub is unreachable on first attach, don't abort the
-      // whole wait — fall through to the turn-based store path below (the documented fallback).
+      // Probe the hub on EVERY run (not just first attach): if it's unreachable now, fall through to
+      // the turn-based `live.store` path below (the documented fallback) rather than silently staying
+      // on the local-only gateStore and stranding cloud edits in the working copy. Seed the working
+      // copy the first time; on later runs keep it (it may hold the agent's not-yet-applied edits).
       let onGate = true;
-      if (!existsSync(workFile)) {
-        try {
-          writeFileSync(workFile, await gate.readCanonical());
-        } catch (e) {
-          process.stderr.write(`inplan: live-collab hub unreachable (${String(e)}); using turn-based sync\n`);
-          onGate = false;
-        }
+      try {
+        const canonical = await gate.readCanonical();
+        if (!existsSync(workFile)) writeFileSync(workFile, canonical);
+      } catch (e) {
+        process.stderr.write(`inplan: live-collab hub unreachable (${String(e)}); using turn-based sync\n`);
+        onGate = false;
       }
       if (onGate) {
         // Working doc stays on the local file, but Review-mode PROPOSALS persist to the CLOUD doc's
@@ -709,6 +710,18 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
           setProposed: (c) => live.store.setProposed(c),
           clearProposed: () => live.store.clearProposed(),
         };
+        // Save-local handoff on the gate path reads the HUB canonical (the source of truth here);
+        // live.store isn't updated by gate.applyRevision, so reading it would write a stale doc. If
+        // the hub read fails we throw BEFORE writing status, so the doc isn't switched to local.
+        const onSaveLocallyGate = localFile
+          ? async () => {
+              const body = await gate.readCanonical();
+              writeFileSync(localFile, body);
+              writeStatus(docPaths(localFile).statusPath, { location: "local", originalPath: localFile, lastSyncedHash: hashBody(body) });
+              const pid = spawnApp(localFile);
+              output({ status: "moved_local", path: localFile, reopened: pid !== null });
+            }
+          : undefined;
         process.stderr.write(`inplan: live-collab — plan at ${workFile}; read/edit it there, then re-run to sync\n`);
         await waitCycle(
           {
@@ -716,7 +729,7 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
             store: gateStore, // …the agent reads/edits a local working copy; proposals go to the cloud…
             history: async () => (await live.channel.readSince(0)).entries,
             logExit: () => {},
-            ...(onSaveLocally ? { onSaveLocally } : {}),
+            ...(onSaveLocallyGate ? { onSaveLocally: onSaveLocallyGate } : {}),
           },
           explicitCursor,
           confirmed,
