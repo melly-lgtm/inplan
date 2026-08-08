@@ -25,6 +25,7 @@ vi.mock("@inplan/backend-supabase", () => ({
   SupabaseControlChannel: class {
     constructor(public db: { auth?: { token?: string } }, public docId: string, public consumer: string) {}
     async getCursor() { return 0; }
+    async readSince(cursor: number) { return { entries: [], cursor }; }
   },
   SupabaseDocumentStore: class { constructor(public db: unknown, public docId: string) {} },
 }));
@@ -151,6 +152,16 @@ describe("liveRemoteBackend", () => {
     expect(refreshSession).toHaveBeenCalledTimes(1); // freshly minted token is valid ⇒ reused, not re-refreshed
     expect(live.tokenNow()).toBe("jwt-123");
   });
+
+  it("coalesces concurrent re-mints into a single refresh (no rotation storm)", async () => {
+    saveAuth({ url: "https://x.supabase.co", anonKey: "anon", refreshToken: "rt-old", email: "e@x.io", accessToken: "old", expiresAt: now() + 60 }); // stale ⇒ needs a re-mint
+    refreshResult = { data: { session: session({ access_token: "jwt-123", expires_at: now() + 3600 }) }, error: null };
+    const live = liveRemoteBackend("doc-1");
+    // Fire several channel calls before the first re-mint resolves: they must share ONE refresh, not
+    // each acquire the lock and rotate the single-use token in series.
+    await Promise.all([live.channel.getCursor(), live.channel.readSince(0), live.channel.getCursor()]);
+    expect(refreshSession).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("withAuthLock", () => {
@@ -198,24 +209,25 @@ describe("withAuthLock", () => {
   it("retains ownership across a callback longer than staleMs (heartbeat) — the 2nd fn waits for the 1st", async () => {
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const order: string[] = [];
-    // First holder runs WELL past staleMs (150ms ≫ 30ms). Without the heartbeat the second would
-    // reclaim the "stale" lock at ~30ms and interleave; with it, the first's lock stays fresh.
+    // First holder runs WELL past staleMs (600ms ≫ 200ms). Without the heartbeat the second would
+    // reclaim the "stale" lock at ~200ms and interleave; with it, the first's lock stays fresh. Wide
+    // margins (600/200/50) keep this robust against event-loop stalls on a loaded CI runner.
     const first = withAuthLock(
       async () => {
         order.push("A:start");
-        await sleep(150);
+        await sleep(600);
         order.push("A:end");
         return "A";
       },
-      { staleMs: 30, waitMs: 3000 },
+      { staleMs: 200, waitMs: 5000 },
     );
-    await sleep(15); // let the first acquire before the second contends
+    await sleep(50); // let the first acquire before the second contends
     const second = withAuthLock(
       async () => {
         order.push("B");
         return "B";
       },
-      { staleMs: 30, waitMs: 3000 },
+      { staleMs: 200, waitMs: 5000 },
     );
     const [ra, rb] = await Promise.all([first, second]);
     expect(ra).toEqual({ acquired: true, value: "A" });

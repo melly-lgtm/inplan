@@ -333,15 +333,28 @@ export interface LiveRemoteBackend {
 export function liveRemoteBackend(docId: string, consumerId = "cli-agent"): LiveRemoteBackend {
   let inner: RemoteBackend | null = null;
   let expiresAt = 0; // the cached inner's access-token expiry (unix seconds)
+  let inflight: Promise<RemoteBackend | null> | null = null; // the single in-progress re-mint, if any
   const fresh = async (): Promise<RemoteBackend | null> => {
     const now = Math.floor(Date.now() / 1000);
-    if (inner && expiresAt - now > ACCESS_SKEW_S) return inner; // still valid — reuse (no re-mint)
-    const b = await remoteBackend(docId, consumerId);
-    if (b) {
-      inner = b;
-      expiresAt = loadAuth()?.expiresAt ?? 0; // authedSession persisted the new expiry
-    }
-    return inner;
+    if (inner && expiresAt - now > ACCESS_SKEW_S) return inner; // cached token still valid — reuse
+    // Coalesce concurrent re-mints into ONE refresh: every channel/store call routes through here, so
+    // without this several could each acquire the lock and rotate the refresh token in series. A
+    // re-mint goes through remoteBackend()→authedSession(), which re-reads auth.json INSIDE the lock —
+    // so it always starts from the freshest persisted token even if another process just rotated it.
+    inflight ??= remoteBackend(docId, consumerId)
+      .then((b) => {
+        if (b) {
+          inner = b;
+          // Trust the persisted expiry; if a session somehow carried none, assume a short validity so
+          // we reuse rather than re-mint on every call, while still re-checking soon.
+          expiresAt = loadAuth()?.expiresAt ?? now + 300;
+        }
+        return b ?? inner; // transient refresh failure ⇒ keep the last-good client and retry next call
+      })
+      .finally(() => {
+        inflight = null;
+      });
+    return inflight;
   };
   const need = async (): Promise<RemoteBackend> => {
     const b = await fresh();
