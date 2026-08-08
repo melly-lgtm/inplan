@@ -3,8 +3,11 @@
 import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 import * as Y from "yjs";
 import WebSocket from "ws";
+import { resolveHubUrl } from "./pluginGate";
 
-const COLLAB_URL = process.env.INPLAN_COLLAB_URL || "wss://inplan-collab.fly.dev";
+// Presence must connect to the SAME collab hub the agent's edits target — use the shared resolver so
+// the badge can't probe a different hub than where edits land.
+const COLLAB_URL = resolveHubUrl();
 
 export interface PresenceHandle {
   /** Tear down the awareness connection (call when the wait ends / the process exits). */
