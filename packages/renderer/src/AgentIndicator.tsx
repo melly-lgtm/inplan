@@ -139,9 +139,13 @@ export function AgentIndicator({
       {open && (
         <div className="ap-agent-menu" role="menu">
           <div className="ap-agent-detail">
+            {/* An agent that holds the turn is attached, so the opened menu must not contradict the
+                button by claiming "No agent connected" while the button reads "working". */}
             {location
-              ? `${t("agent.detail", { where: location === "cloud" ? t("agent.whereCloud") : t("agent.whereLocal") })}${model ? ` · ${model}` : ""}`
-              : t("agent.none")}
+              ? `${t("agent.detail", { where: location === "cloud" ? t("agent.whereCloud") : t("agent.whereLocal") })}${model ? ` · ${model}` : ""}${working ? ` · ${t("agent.working")}` : ""}`
+              : working
+                ? `${t("agent.detail", { where: t("agent.whereLocal") })} · ${t("agent.working")}`
+                : t("agent.none")}
             {quota && (
               <div className="ap-agent-quota">{`${t("agent.plan", { pct: Math.round(quota.usedPct * 100) })}${quota.overage ? ` ${t("agent.overIncluded")}` : ""}`}</div>
             )}

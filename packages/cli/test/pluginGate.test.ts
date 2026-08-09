@@ -69,6 +69,21 @@ describe("loadPluginGate", () => {
     await loadPluginGate(SESSION, { token: null, apiBase: "https://plugin.test", cacheDir: "/tmp/cache", publicKey: "PEM" }, deps({ resolve }));
     expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ token: null, apiBase: "https://plugin.test", cacheDir: "/tmp/cache", publicKey: "PEM" }));
   });
+
+  // `""` means "nothing can be verified" and must REACH the resolver, which then refuses without a
+  // network call. Forwarding on truthiness would drop it and silently substitute the baked-in key —
+  // verifying against exactly the thing the caller disabled.
+  it("forwards an explicit empty publicKey instead of falling back to the baked-in key", async () => {
+    const resolve = vi.fn(async () => offline);
+    await loadPluginGate(SESSION, { token: "jwt", publicKey: "" }, deps({ resolve }));
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ publicKey: "" }));
+  });
+
+  it("omits publicKey entirely when the caller gives none (resolver uses its default)", async () => {
+    const resolve = vi.fn(async () => resolved(bundle({ "cli.js": "/c.js" }, "cli.js")));
+    await loadPluginGate(SESSION, { token: "jwt" }, deps({ resolve }));
+    expect(resolve).toHaveBeenCalledWith(expect.not.objectContaining({ publicKey: expect.anything() }));
+  });
 });
 
 describe("loadPluginGateOutcome", () => {

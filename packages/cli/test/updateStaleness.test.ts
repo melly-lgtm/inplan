@@ -79,6 +79,18 @@ describe("warnIfOutdated", () => {
     expect(result).toContain("0.1.26");
   });
 
+  // A partial record passes the freshness check but carries no verdict, so serving it would suppress
+  // the refresh for the whole TTL — silence a user cannot tell from "you're up to date".
+  it("treats an incomplete cache record as a miss and re-checks", async () => {
+    for (const bad of [{ at: 1000 }, { at: 1000, latest: 42 }, { at: 1000, latest: null }, { latest: "0.1.26" }]) {
+      const fetchLatest = vi.fn(async () => "0.1.26");
+      const cache = memCache(JSON.stringify(bad));
+      const { result } = await capture(() => warnIfOutdated("inplan", "0.1.25", { fetchLatest, now: () => 1500, ...cache }));
+      expect(fetchLatest, JSON.stringify(bad)).toHaveBeenCalledTimes(1);
+      expect(result).toContain("0.1.26");
+    }
+  });
+
   it("a corrupt cache is ignored, not fatal", async () => {
     const fetchLatest = vi.fn(async () => "0.1.26");
     const cache = memCache("{not json");

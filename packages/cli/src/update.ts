@@ -27,15 +27,23 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-/** The latest published version of `pkg`, or null if the registry can't be reached. */
+/** How long the registry gets to answer. Callers await this before doing real work (`wait --remote`
+ *  checks staleness before attaching), so an unbounded `fetch` on a stalled connection would hang the
+ *  command rather than degrade to "no answer". */
+export const REGISTRY_TIMEOUT_MS = 3000;
+
+/** The latest published version of `pkg`, or null if the registry can't be reached in time. */
 export async function latestVersion(pkg: string): Promise<string | null> {
   try {
-    const res = await fetch(`https://registry.npmjs.org/${pkg.replace("/", "%2F")}/latest`, { headers: { accept: "application/json" } });
+    const res = await fetch(`https://registry.npmjs.org/${pkg.replace("/", "%2F")}/latest`, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(REGISTRY_TIMEOUT_MS),
+    });
     if (!res.ok) return null;
     const data = (await res.json()) as { version?: string };
     return typeof data.version === "string" ? data.version : null;
   } catch {
-    return null;
+    return null; // unreachable, malformed, or timed out — all "no answer"
   }
 }
 
@@ -89,10 +97,12 @@ export async function warnIfOutdated(pkg: string, current: string, deps: Stalene
     const cached = deps.readCache?.() ?? null;
     if (cached) {
       const { at, latest } = JSON.parse(cached) as { at?: number; latest?: string };
-      // Serve from cache only while fresh AND not from the future (a clock rewind must not pin a
-      // stale verdict for six hours).
-      if (typeof at === "number" && at <= now && now - at < STALENESS_TTL_MS) {
-        return typeof latest === "string" && compareVersions(current, latest) < 0 ? emitOutdated(pkg, current, latest) : null;
+      // Serve from cache only when the record is COMPLETE, fresh, and not from the future. A partial
+      // record (`{"at":…}` with no `latest`) would otherwise pass the freshness check and suppress
+      // the registry refresh for the whole TTL — silence indistinguishable from "you're up to date".
+      // A clock rewind likewise must not pin a stale verdict for six hours.
+      if (typeof at === "number" && typeof latest === "string" && at <= now && now - at < STALENESS_TTL_MS) {
+        return compareVersions(current, latest) < 0 ? emitOutdated(pkg, current, latest) : null;
       }
     }
   } catch {

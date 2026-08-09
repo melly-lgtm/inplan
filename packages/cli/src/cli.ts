@@ -705,172 +705,145 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
   // instead of silently 401ing mid-wait. Short ops above (signal/message) used the one-shot `backend`.
   const live = liveRemoteBackend(docId, "cli-agent");
 
-  // Save-locally handoff (only when following a promoted local file): download the
-  // live body to its original path, flip the status back to local, reopen the local
-  // editor, and report — the inverse of "Collaborate on Cloud". Reads through `live` since the
-  // handoff can fire after a long wait (the initial token may have expired by then).
-  const onSaveLocally = localFile
-    ? async () => {
-        const body = await live.store.loadDoc();
-        writeFileSync(localFile, body);
-        writeStatus(docPaths(localFile).statusPath, { location: "local", originalPath: localFile, lastSyncedHash: hashBody(body) });
-        const pid = spawnApp(localFile); // reopen the doc in the local editor
-        output({ status: "moved_local", path: localFile, reopened: pid !== null });
-      }
-    : undefined;
+  // Live collaboration (paid perk): if the user is entitled, load the signature-verified collab
+  // plugin and drive the agent's edits through the Yjs hub instead of a blind store overwrite. The
+  // agent's working surface is a local `.md` materialized from the hub's canonical on first attach
+  // (kept across turns so its edits survive); edits sync back via the gate.
+  //
+  // Resolved BEFORE announcing presence: an agent that is about to exit must never light up the
+  // web's "agent · your machine" badge, and `process.exit` below would skip any `finally` teardown.
+  const hubUrl = resolveHubUrl();
+  const hubSession = JSON.stringify({ url: hubUrl, docName: docId, token: backend.token });
+  const { gate, reason } = await loadPluginGateOutcome(hubSession, { token: backend.token });
+  // No gate ⇒ STOP. The turn-based `live.store` path exists for the managed cloud agent, which holds
+  // the body in memory; an out-of-process local agent needs a file, and the gate is what materializes
+  // one. Falling through would attach, consume the human's turns, and silently never be able to read
+  // or edit the document — so say why and exit non-zero instead.
+  if (!gate) {
+    explainNoGate(reason, localFile);
+    process.exit(reason === "unentitled" ? EXIT_UPGRADE_REQUIRED : EXIT_PLUGIN_UNAVAILABLE);
+  }
 
-  // the web badge shows "agent · your machine"; clear it on exit (wraps both wait paths below).
+  // the web badge shows "agent · your machine"; clear it on exit.
   // (Presence is a cosmetic websocket on the initial token; the correctness-critical DB polling
   // rides `live` above and stays authenticated across the whole wait, even past the ~1h expiry.)
   const presence = announcePresence(docId, backend.token, model);
   try {
-    // Live collaboration (paid perk): if the user is entitled, load the signature-verified collab
-    // plugin and drive the agent's edits through the Yjs hub instead of a blind store overwrite. The
-    // agent's working surface is a local `.md` materialized from the hub's canonical on first attach
-    // (kept across turns so its edits survive); edits sync back via the gate.
-    const hubUrl = resolveHubUrl();
-    const hubSession = JSON.stringify({ url: hubUrl, docName: docId, token: backend.token });
-    const { gate, reason } = await loadPluginGateOutcome(hubSession, { token: backend.token });
-    // No gate ⇒ STOP. The turn-based `live.store` path below exists for the managed cloud agent,
-    // which holds the body in memory; an out-of-process local agent needs a file, and the gate is
-    // what materializes one. Falling through would attach, consume the human's turns, and silently
-    // never be able to read or edit the document — so say why and exit non-zero instead.
-    if (!gate) {
-      explainNoGate(reason, localFile);
-      process.exit(reason === "unentitled" ? EXIT_UPGRADE_REQUIRED : EXIT_PLUGIN_UNAVAILABLE);
+    const workFile = join(sidecarRoot(), "remote", `${docId}.plan.md`);
+    const pendingPath = `${workFile}.pending`; // marker: a local fallback edit awaits a hub push
+    const hashPath = `${workFile}.synced`; // hash of the working copy at our last write/sync
+    mkdirSync(dirname(workFile), { recursive: true });
+    const readIf = (p: string): string | null => (existsSync(p) ? readFileSync(p, "utf8") : null);
+    const recordSynced = (content: string) => writeFileSync(hashPath, hashBody(content));
+
+    // Probe the hub on EVERY run. A failure here means we cannot materialize the working copy, so
+    // there is nothing for an out-of-process agent to read or edit — the same dead end the
+    // missing-gate branch above rejects, reached one step later. Falling back to the turn-based
+    // `live.store` path would just reinstate it silently, so stop and say so instead.
+    let canonical = "";
+    try {
+      canonical = await gate.readCanonical();
+    } catch (e) {
+      process.stderr.write(`inplan: live-collab hub unreachable (${String(e)})\n`);
+      presence.destroy(); // `process.exit` skips the `finally` below
+      explainNoGate("unavailable", localFile);
+      process.exit(EXIT_PLUGIN_UNAVAILABLE);
     }
-    // Scope block for the gate path's locals. It falls through to the turn-based `waitCycle` below
-    // only when the hub turns out to be unreachable mid-run (`onGate === false`).
-    {
-      const workFile = join(sidecarRoot(), "remote", `${docId}.plan.md`);
-      const pendingPath = `${workFile}.pending`; // marker: a local fallback edit awaits a hub push
-      const hashPath = `${workFile}.synced`; // hash of the working copy at our last write/sync
-      mkdirSync(dirname(workFile), { recursive: true });
-      const readIf = (p: string): string | null => (existsSync(p) ? readFileSync(p, "utf8") : null);
-      const recordSynced = (content: string) => writeFileSync(hashPath, hashBody(content));
-
-      // Probe the hub on EVERY run: if unreachable now, fall through to the turn-based `live.store`
-      // path (the documented fallback) rather than staying on the local-only gateStore and stranding
-      // cloud edits in the working copy.
-      let onGate = true;
-      let canonical = "";
-      try {
-        canonical = await gate.readCanonical();
-      } catch (e) {
-        process.stderr.write(`inplan: live-collab hub unreachable (${String(e)}); using turn-based sync\n`);
-        onGate = false;
-      }
-      if (onGate) {
-        // Decide whether to (re)hydrate the working copy from the freshly probed canonical. Seed if
-        // absent; keep it if a local fallback edit is pending (must push first); otherwise refresh it
-        // ONLY when the agent hasn't touched it since our last sync (hash match) — so we pull the
-        // human's edits without clobbering unsynced agent edits. This is also what lets a FAILED
-        // end-of-turn re-sync self-heal on the next run.
-        const exists = existsSync(workFile);
-        if (
-          shouldHydrateWorkFile({
-            exists,
-            pending: existsSync(pendingPath),
-            currentHash: exists ? hashBody(readFileSync(workFile, "utf8")) : null,
-            syncedHash: readIf(hashPath),
-          })
-        ) {
-          writeFileSync(workFile, canonical);
-          recordSynced(canonical);
-        }
-
-        // Working doc stays on the local file, but Review-mode PROPOSALS persist to the CLOUD doc's
-        // proposal store (via live.store) — otherwise a parked proposal would sit in this machine's
-        // sidecar, invisible to the human in the web editor who's meant to accept/reject it.
-        const localStore = fsBackend(workFile).store;
-        const gateStore: DocumentStore = {
-          loadDoc: () => localStore.loadDoc(),
-          saveDoc: (c) => localStore.saveDoc(c),
-          getCanonical: () => localStore.getCanonical(),
-          setCanonical: (c) => localStore.setCanonical(c),
-          backup: (c, m) => localStore.backup(c, m),
-          getProposed: () => live.store.getProposed(),
-          setProposed: (c) => live.store.setProposed(c),
-          clearProposed: () => live.store.clearProposed(),
-        };
-        // Save-local handoff on the gate path reads the HUB canonical (the source of truth here);
-        // live.store isn't updated by gate.applyRevision, so reading it would write a stale doc. If
-        // the hub read fails we throw BEFORE writing status, so the doc isn't switched to local.
-        const onSaveLocallyGate = localFile
-          ? async () => {
-              const body = await gate.readCanonical();
-              writeFileSync(localFile, body);
-              writeStatus(docPaths(localFile).statusPath, { location: "local", originalPath: localFile, lastSyncedHash: hashBody(body) });
-              const pid = spawnApp(localFile);
-              output({ status: "moved_local", path: localFile, reopened: pid !== null });
-            }
-          : undefined;
-
-        // Guard BOTH hub directions so any drop degrades gracefully instead of crashing the turn,
-        // tracking read and write failures separately (see trackGateDegradations): a read failure
-        // re-throws (waitCycle falls back to the local store); a write failure persists the edit
-        // locally and doesn't re-throw (the turn still emits a status). Any failure skips the
-        // end-of-turn re-sync; only a WRITE marks `.pending` — a read-only failure must not, or the
-        // next healthy run would skip hydration and risk reverting newer hub edits.
-        const tracked = trackGateDegradations(gate, localStore, (m) =>
-          process.stderr.write(`inplan: live-collab hub write failed (${m}); kept the edit locally to retry\n`),
-        );
-        process.stderr.write(`inplan: live-collab — plan at ${workFile}; read/edit it there, then re-run to sync\n`);
-        await waitCycle(
-          {
-            channel: live.channel, // turns/comments still ride the cloud control log (self-refreshing)…
-            store: gateStore, // …the agent reads/edits a local working copy; proposals go to the cloud…
-            history: async () => (await live.channel.readSince(0)).entries,
-            logExit: () => {},
-            ...(onSaveLocallyGate ? { onSaveLocally: onSaveLocallyGate } : {}),
-          },
-          explicitCursor,
-          confirmed,
-          model,
-          tracked.gate, // …and accepted edits apply through the hub, not the store.
-        );
-
-        if (tracked.readFailed() || tracked.writeFailed()) {
-          // The hub dropped mid-turn; DO NOT re-sync (that would overwrite a local edit with stale hub
-          // canonical). Mark `.pending` ONLY when a WRITE failed — that's the case with a local
-          // revision persisted off-hub that must be replayed. A read-only failure leaves the working
-          // copy either unchanged (clean) or hash-diverged (agent edited); both are handled by the
-          // start-of-turn hydration check, and a spurious `.pending` would wrongly skip it next run.
-          if (pendingRequiresReplay({ readFailed: tracked.readFailed(), writeFailed: tracked.writeFailed() })) {
-            writeFileSync(pendingPath, "1");
-          }
-          process.stderr.write("inplan: hub was unavailable this turn — keeping local edits (will sync next turn)\n");
-        } else {
-          // Turn applied to the hub. The working copy is now consistent with the hub for the agent's
-          // part, so record its hash (this makes a FAILED re-sync below self-heal: next run sees a
-          // matching hash and safely hydrates). Then re-sync the copy to the latest canonical (folding
-          // in the human's just-taken turn) so the agent's NEXT turn builds on it, and clear pending.
-          if (existsSync(pendingPath)) rmSync(pendingPath);
-          recordSynced(readFileSync(workFile, "utf8"));
-          try {
-            const fresh = await gate.readCanonical();
-            writeFileSync(workFile, fresh);
-            recordSynced(fresh);
-          } catch {
-            /* transient: leave the copy (its hash still matches) so the next run hydrates it */
-          }
-        }
-        return;
-      }
+    // Decide whether to (re)hydrate the working copy from the freshly probed canonical. Seed if
+    // absent; keep it if a local fallback edit is pending (must push first); otherwise refresh it
+    // ONLY when the agent hasn't touched it since our last sync (hash match) — so we pull the
+    // human's edits without clobbering unsynced agent edits. This is also what lets a FAILED
+    // end-of-turn re-sync self-heal on the next run.
+    const exists = existsSync(workFile);
+    if (
+      shouldHydrateWorkFile({
+        exists,
+        pending: existsSync(pendingPath),
+        currentHash: exists ? hashBody(readFileSync(workFile, "utf8")) : null,
+        syncedHash: readIf(hashPath),
+      })
+    ) {
+      writeFileSync(workFile, canonical);
+      recordSynced(canonical);
     }
 
+    // Working doc stays on the local file, but Review-mode PROPOSALS persist to the CLOUD doc's
+    // proposal store (via live.store) — otherwise a parked proposal would sit in this machine's
+    // sidecar, invisible to the human in the web editor who's meant to accept/reject it.
+    const localStore = fsBackend(workFile).store;
+    const gateStore: DocumentStore = {
+      loadDoc: () => localStore.loadDoc(),
+      saveDoc: (c) => localStore.saveDoc(c),
+      getCanonical: () => localStore.getCanonical(),
+      setCanonical: (c) => localStore.setCanonical(c),
+      backup: (c, m) => localStore.backup(c, m),
+      getProposed: () => live.store.getProposed(),
+      setProposed: (c) => live.store.setProposed(c),
+      clearProposed: () => live.store.clearProposed(),
+    };
+    // Save-local handoff on the gate path reads the HUB canonical (the source of truth here);
+    // live.store isn't updated by gate.applyRevision, so reading it would write a stale doc. If
+    // the hub read fails we throw BEFORE writing status, so the doc isn't switched to local.
+    const onSaveLocallyGate = localFile
+      ? async () => {
+          const body = await gate.readCanonical();
+          writeFileSync(localFile, body);
+          writeStatus(docPaths(localFile).statusPath, { location: "local", originalPath: localFile, lastSyncedHash: hashBody(body) });
+          const pid = spawnApp(localFile);
+          output({ status: "moved_local", path: localFile, reopened: pid !== null });
+        }
+      : undefined;
+
+    // Guard BOTH hub directions so any drop degrades gracefully instead of crashing the turn,
+    // tracking read and write failures separately (see trackGateDegradations): a read failure
+    // re-throws (waitCycle falls back to the local store); a write failure persists the edit
+    // locally and doesn't re-throw (the turn still emits a status). Any failure skips the
+    // end-of-turn re-sync; only a WRITE marks `.pending` — a read-only failure must not, or the
+    // next healthy run would skip hydration and risk reverting newer hub edits.
+    const tracked = trackGateDegradations(gate, localStore, (m) =>
+      process.stderr.write(`inplan: live-collab hub write failed (${m}); kept the edit locally to retry\n`),
+    );
+    process.stderr.write(`inplan: live-collab — plan at ${workFile}; read/edit it there, then re-run to sync\n`);
     await waitCycle(
       {
-        channel: live.channel,
-        store: live.store,
+        channel: live.channel, // turns/comments still ride the cloud control log (self-refreshing)…
+        store: gateStore, // …the agent reads/edits a local working copy; proposals go to the cloud…
         history: async () => (await live.channel.readSince(0)).entries,
-        logExit: () => {}, // no local sidecar for a cloud doc
-        ...(onSaveLocally ? { onSaveLocally } : {}),
+        logExit: () => {},
+        ...(onSaveLocallyGate ? { onSaveLocally: onSaveLocallyGate } : {}),
       },
       explicitCursor,
       confirmed,
       model,
+      tracked.gate, // …and accepted edits apply through the hub, not the store.
     );
+
+    if (tracked.readFailed() || tracked.writeFailed()) {
+      // The hub dropped mid-turn; DO NOT re-sync (that would overwrite a local edit with stale hub
+      // canonical). Mark `.pending` ONLY when a WRITE failed — that's the case with a local
+      // revision persisted off-hub that must be replayed. A read-only failure leaves the working
+      // copy either unchanged (clean) or hash-diverged (agent edited); both are handled by the
+      // start-of-turn hydration check, and a spurious `.pending` would wrongly skip it next run.
+      if (pendingRequiresReplay({ readFailed: tracked.readFailed(), writeFailed: tracked.writeFailed() })) {
+        writeFileSync(pendingPath, "1");
+      }
+      process.stderr.write("inplan: hub was unavailable this turn — keeping local edits (will sync next turn)\n");
+    } else {
+      // Turn applied to the hub. The working copy is now consistent with the hub for the agent's
+      // part, so record its hash (this makes a FAILED re-sync below self-heal: next run sees a
+      // matching hash and safely hydrates). Then re-sync the copy to the latest canonical (folding
+      // in the human's just-taken turn) so the agent's NEXT turn builds on it, and clear pending.
+      if (existsSync(pendingPath)) rmSync(pendingPath);
+      recordSynced(readFileSync(workFile, "utf8"));
+      try {
+        const fresh = await gate.readCanonical();
+        writeFileSync(workFile, fresh);
+        recordSynced(fresh);
+      } catch {
+        /* transient: leave the copy (its hash still matches) so the next run hydrates it */
+      }
+    }
+    return;
   } finally {
     presence.destroy();
   }

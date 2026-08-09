@@ -159,6 +159,28 @@ describe("AgentIndicator", () => {
     expect(btn.querySelector(".ap-agent-pie")).toBeTruthy();
   });
 
+  it("the opened menu says working too, instead of contradicting the button with 'No agent connected'", () => {
+    render(<AgentIndicator location={null} working />);
+    fireEvent.click(screen.getByRole("button"));
+    expect(document.querySelector(".ap-agent-detail")?.textContent).toMatch(/working/i);
+    expect(document.body.textContent).not.toMatch(/No agent connected/i);
+  });
+
+  it("the menu keeps saying 'No agent connected' when nothing holds the turn", () => {
+    render(<AgentIndicator location={null} />);
+    fireEvent.click(screen.getByRole("button"));
+    expect(document.body.textContent).toMatch(/No agent connected/i);
+  });
+
+  it("a busy agent WITH a peer shows both where it runs and that it is working", () => {
+    render(<AgentIndicator location="local" model="Opus 5" working />);
+    fireEvent.click(screen.getByRole("button"));
+    const detail = document.querySelector(".ap-agent-detail")?.textContent ?? "";
+    expect(detail).toMatch(/your machine/i);
+    expect(detail).toMatch(/Opus 5/);
+    expect(detail).toMatch(/working/i);
+  });
+
   // Showing the connect command to someone whose plan can't use it is what produced a CLI that
   // attaches, consumes turns, and then silently can't edit.
   it("replaces the connect command with an upgrade CTA when the local agent isn't entitled", () => {

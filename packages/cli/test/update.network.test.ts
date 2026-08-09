@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const spawnMock = vi.fn();
 vi.mock("node:child_process", () => ({ spawn: (...a: unknown[]) => spawnMock(...a) }));
 
-import { latestVersion, selfUpdate } from "../src/update";
+import { latestVersion, REGISTRY_TIMEOUT_MS, selfUpdate } from "../src/update";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -67,5 +67,29 @@ describe("selfUpdate", () => {
     const p = selfUpdate("p");
     child.emit("error", new Error("npm not found"));
     await expect(p).resolves.toEqual({ ok: false, output: "npm not found" });
+  });
+});
+
+// `wait --remote` awaits the staleness check before it attaches, so an unbounded registry request
+// would turn a stalled connection into a hung command instead of a skipped warning.
+describe("latestVersion request bounding", () => {
+  it("aborts after REGISTRY_TIMEOUT_MS and reports no answer", async () => {
+    const seen: (AbortSignal | undefined)[] = [];
+    const stub = vi.fn(async (_u: string, init?: { signal?: AbortSignal }) => {
+      seen.push(init?.signal);
+      // Resolve only if the caller's signal fires — i.e. prove the request is actually bounded.
+      return await new Promise<Response>((_res, rej) => init?.signal?.addEventListener("abort", () => rej(new Error("aborted"))));
+    });
+    vi.stubGlobal("fetch", stub as unknown as typeof fetch);
+    try {
+      expect(await latestVersion("inplan")).toBeNull();
+      expect(seen[0]).toBeInstanceOf(AbortSignal);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }, 10_000);
+
+  it("REGISTRY_TIMEOUT_MS is short enough to keep a turn responsive", () => {
+    expect(REGISTRY_TIMEOUT_MS).toBeLessThanOrEqual(5000);
   });
 });

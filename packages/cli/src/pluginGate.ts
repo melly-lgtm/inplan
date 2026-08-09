@@ -74,7 +74,11 @@ export async function loadPluginGateOutcome(session: string, options: LoadPlugin
       apiBase: options.apiBase ?? PLUGIN_HTTP,
       token: options.token,
       cacheDir: options.cacheDir ?? defaultCacheDir(),
-      ...(options.publicKey ? { publicKey: options.publicKey } : {}),
+      // Forward whenever DEFINED, not whenever truthy: an explicit `""` means "nothing can be
+      // verified" and must reach the resolver, which then refuses without a network call. Dropping
+      // it would silently substitute the baked-in key and verify against something the caller
+      // deliberately disabled.
+      ...(options.publicKey !== undefined ? { publicKey: options.publicKey } : {}),
     });
     if (!plugin) return { gate: null, reason };
     const cliName = plugin.entries.cli;
