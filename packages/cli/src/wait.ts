@@ -25,9 +25,13 @@ export interface WaitOptions {
   pollMs?: number;
   /** Which entries should wake the agent. Default: any user-authored entry. */
   isActionable?: (e: LogEntry) => boolean;
-  /** Give up after this many CONSECUTIVE failed polls and resolve with `failed`. Default 30 —
-   *  with the 200ms cadence and the auth backoff, comfortably minutes of transient tolerance. */
-  maxConsecutiveErrors?: number;
+  /** Give up only after this long of CONTINUOUS poll failure, resolving with `failed`. Expressed in
+   *  TIME, not tick count, on purpose: a token refresh backs off up to 60s, during which every poll
+   *  fails for one underlying reason. Counting ticks would treat a single cooldown as hundreds of
+   *  independent failures and abandon the wait seconds into a backoff designed to outlast it. */
+  errorGraceMs?: number;
+  /** Injectable clock (tests). */
+  now?: () => number;
   /** Watch editor presence and resolve (editorGone) if a once-alive editor dies. Default true. */
   watchEditor?: boolean;
   /** This waiter's single-waiter token; if a newer waiter supersedes it, step down. */
@@ -66,7 +70,8 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
   const pollMs = opts.pollMs ?? 200;
   const isActionable = opts.isActionable ?? defaultActionable;
   const watchEditor = opts.watchEditor ?? true;
-  const maxConsecutiveErrors = opts.maxConsecutiveErrors ?? 30;
+  const errorGraceMs = opts.errorGraceMs ?? 5 * 60_000;
+  const now = opts.now ?? Date.now;
   const ch = opts.channel;
 
   return new Promise<WaitResult>((resolve, reject) => {
@@ -75,7 +80,7 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
     let sawEditorAlive = false;
     let busy = false;
     let done = false;
-    let consecutiveErrors = 0;
+    let failingSince: number | null = null; // when the current unbroken failure run started
 
     const cleanup = () => {
       clearInterval(timer);
@@ -140,15 +145,15 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
             finish({ entries, cursor });
           }
         }
-        consecutiveErrors = 0; // a clean poll clears the streak
+        failingSince = null; // a clean poll ends the failure run
       } catch (e) {
         // A poll can fail for reasons that resolve themselves (a blip, a 5xx, an in-flight token
         // refresh) and for reasons that never will (the session is gone). Tolerate a streak, then
         // END the wait with a result. Before this, the rejection escaped `void tick()` as an
         // unhandled rejection and Node killed the process — printing a stack trace where the agent
         // expects one line of JSON, and losing the turn entirely.
-        consecutiveErrors += 1;
-        if (consecutiveErrors >= maxConsecutiveErrors) {
+        failingSince ??= now();
+        if (now() - failingSince >= errorGraceMs) {
           finish({ entries: [], cursor: opts.cursor, failed: e instanceof Error ? e : new Error(String(e)) });
         }
       } finally {

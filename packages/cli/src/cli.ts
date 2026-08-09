@@ -1969,7 +1969,13 @@ if (isProgramEntry()) {
   // An unhandled rejection anywhere (a stray promise in a poll loop, a listener callback) otherwise
   // kills the process under Node's default `--unhandled-rejections=throw`, leaving the agent with an
   // exit code, a stack trace on stderr, and no parseable result at all.
+  // Latch: `exitAfterFlush` only SCHEDULES the exit, so concurrent rejections would each emit their
+  // own JSON before the process actually goes — breaking the one-object-per-run stdout contract the
+  // agent parses. First one wins; the rest are dropped.
+  let exitingForUnhandledRejection = false;
   process.on("unhandledRejection", (reason) => {
+    if (exitingForUnhandledRejection) return;
+    exitingForUnhandledRejection = true;
     const message = reason instanceof Error ? reason.message : String(reason);
     process.stderr.write(`inplan: unexpected error — ${message}\n`);
     output({ status: "internal_error", message });

@@ -91,7 +91,7 @@ describe("wait survives a failing poll", () => {
         channel: failingChannel(err),
         cursor: 0,
         pollMs: 1,
-        maxConsecutiveErrors: 3,
+        errorGraceMs: 0, // give up on the first failure — deterministic, no wall-clock dependence
         watchEditor: false,
       });
       expect(result.failed?.message).toContain("session expired");
@@ -119,7 +119,7 @@ describe("wait survives a failing poll", () => {
       presence: async () => true,
     } as unknown as ControlChannel;
 
-    const result = await waitForActions({ channel: ch, cursor: 0, pollMs: 1, debounceMs: 1, maxConsecutiveErrors: 10, watchEditor: false });
+    const result = await waitForActions({ channel: ch, cursor: 0, pollMs: 1, debounceMs: 1, errorGraceMs: 60_000, watchEditor: false });
     expect(result.failed).toBeUndefined(); // recovered
     expect(result.entries.length).toBe(1);
   });
@@ -142,8 +142,43 @@ describe("wait survives a failing poll", () => {
       presence: async () => true,
     } as unknown as ControlChannel;
 
-    // 6 failures total, but never 2 in a row — well past maxConsecutiveErrors if it didn't reset.
-    const result = await waitForActions({ channel: ch, cursor: 0, pollMs: 1, debounceMs: 1, maxConsecutiveErrors: 3, watchEditor: false });
+    // A fake clock makes the reset observable: without it, the run that starts at t=0 would exceed
+    // the 150ms grace long before the channel recovers.
+    let t = 0;
+    const result = await waitForActions({ channel: ch, cursor: 0, pollMs: 1, debounceMs: 1, errorGraceMs: 150, now: () => (t += 100), watchEditor: false });
     expect(result.failed).toBeUndefined();
+  });
+});
+
+// The backoff and the give-up budget are two of this PR's own fixes, and they interact: a refresh
+// cooldown of up to 60s means EVERY poll in that window fails for one underlying reason. A tick-count
+// budget would read that single cooldown as hundreds of independent failures and abandon a wait
+// seconds into a backoff designed to outlast it — so the budget is expressed in time.
+describe("give-up budget vs refresh backoff", () => {
+  it("survives a full 60s refresh cooldown by default", () => {
+    const DEFAULT_GRACE_MS = 5 * 60_000;
+    expect(DEFAULT_GRACE_MS).toBeGreaterThan(refreshBackoffMs(1000)); // one max-length cooldown…
+    expect(DEFAULT_GRACE_MS / refreshBackoffMs(1000)).toBeGreaterThanOrEqual(5); // …and several more
+  });
+
+  it("does not give up early just because the poll cadence is fast", async () => {
+    // 200ms polls over a 60s cooldown = ~300 failing ticks. Time-based, that is one failure run.
+    let t = 0;
+    const ch = {
+      append: async () => {},
+      readSince: async () => { throw new Error("session refresh cooling off"); },
+      subscribe: () => () => {},
+      getCursor: async () => 0,
+      setCursor: async () => {},
+      claimLock: async () => {},
+      isSuperseded: async () => false,
+      presence: async () => true,
+    } as unknown as ControlChannel;
+    // 300 ticks of 200ms advance 60s of fake time — under the 5-minute grace, so it must NOT give up.
+    const result = await Promise.race([
+      waitForActions({ channel: ch, cursor: 0, pollMs: 1, errorGraceMs: 5 * 60_000, now: () => (t += 200), watchEditor: false }),
+      new Promise((r) => setTimeout(() => r("still waiting"), 300)),
+    ]);
+    expect(result).toBe("still waiting");
   });
 });
