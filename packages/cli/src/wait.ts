@@ -2,6 +2,10 @@
 
 import { LogEventType, type ControlChannel, type LogEntry } from "@inplan/core/node";
 
+/** How long a wait tolerates CONTINUOUS poll failure before giving up. Exported so the test that
+ *  claims it outlasts a full refresh cooldown asserts the REAL value rather than a copy of it. */
+export const DEFAULT_ERROR_GRACE_MS = 5 * 60_000;
+
 export interface WaitResult {
   /** Set when the wait gave up after repeated poll failures (expired session, network gone).
    *  A wait must END on this, never die — the agent's channel is JSON, not a stack trace. */
@@ -70,7 +74,7 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
   const pollMs = opts.pollMs ?? 200;
   const isActionable = opts.isActionable ?? defaultActionable;
   const watchEditor = opts.watchEditor ?? true;
-  const errorGraceMs = opts.errorGraceMs ?? 5 * 60_000;
+  const errorGraceMs = opts.errorGraceMs ?? DEFAULT_ERROR_GRACE_MS;
   const now = opts.now ?? Date.now;
   const ch = opts.channel;
 

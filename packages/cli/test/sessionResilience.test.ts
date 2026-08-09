@@ -10,7 +10,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { LIVE_REFRESH_SKEW_S, refreshBackoffMs } from "../src/cliAuth";
-import { waitForActions } from "../src/wait";
+import { DEFAULT_ERROR_GRACE_MS, waitForActions } from "../src/wait";
 import type { ControlChannel } from "@inplan/core";
 
 describe("refresh backoff", () => {
@@ -155,10 +155,31 @@ describe("wait survives a failing poll", () => {
 // budget would read that single cooldown as hundreds of independent failures and abandon a wait
 // seconds into a backoff designed to outlast it — so the budget is expressed in time.
 describe("give-up budget vs refresh backoff", () => {
-  it("survives a full 60s refresh cooldown by default", () => {
-    const DEFAULT_GRACE_MS = 5 * 60_000;
-    expect(DEFAULT_GRACE_MS).toBeGreaterThan(refreshBackoffMs(1000)); // one max-length cooldown…
-    expect(DEFAULT_GRACE_MS / refreshBackoffMs(1000)).toBeGreaterThanOrEqual(5); // …and several more
+  it("survives a full 60s refresh cooldown on the REAL default", () => {
+    // Asserted against wait.ts's exported constant, not a copy: a local literal would keep passing
+    // while the shipped default drifted, which is the opposite of what this test is for.
+    expect(DEFAULT_ERROR_GRACE_MS).toBeGreaterThan(refreshBackoffMs(1000)); // one max-length cooldown…
+    expect(DEFAULT_ERROR_GRACE_MS / refreshBackoffMs(1000)).toBeGreaterThanOrEqual(5); // …and several more
+  });
+
+  it("applies that default when the caller passes no budget", async () => {
+    let t = 0;
+    const ch = {
+      append: async () => {},
+      readSince: async () => { throw new Error("cooling off"); },
+      subscribe: () => () => {},
+      getCursor: async () => 0,
+      setCursor: async () => {},
+      claimLock: async () => {},
+      isSuperseded: async () => false,
+      presence: async () => true,
+    } as unknown as ControlChannel;
+    // No errorGraceMs: the shipped default must carry it past a full cooldown without giving up.
+    const result = await Promise.race([
+      waitForActions({ channel: ch, cursor: 0, pollMs: 1, now: () => (t += 1_000), watchEditor: false }),
+      new Promise((r) => setTimeout(() => r("still waiting"), 250)),
+    ]);
+    expect(result).toBe("still waiting");
   });
 
   it("does not give up early just because the poll cadence is fast", async () => {
