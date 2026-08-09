@@ -51,17 +51,25 @@ describe("refresh backoff", () => {
     for (let f = 1; f < 30; f++) expect(refreshBackoffMs(f + 1)).toBeGreaterThanOrEqual(refreshBackoffMs(f));
   });
 
-  // The incident: ~120s of budget at a 200ms cadence is ~600 replays of one single-use token.
+  // The incident: an unthrottled retry replays the token once per poll, so a 2-minute window is
+  // hundreds of replays. Both sides are DERIVED — the throttled count from the real schedule, the
+  // unthrottled from the real poll cadence — so the contrast can actually fail if either changes.
   it("collapses a 2-minute failure window from hundreds of attempts to a handful", () => {
-    const window = 120_000;
-    let elapsed = 0;
-    let attempts = 0;
-    while (elapsed < window) {
-      attempts += 1;
-      elapsed += refreshBackoffMs(attempts);
-    }
-    expect(attempts).toBeLessThan(10);
-    expect(window / 200).toBeGreaterThan(500); // what it used to be
+    const windowMs = 120_000;
+    const POLL_MS = 200; // the wait loop's cadence, which the old code retried on
+    const attemptsWith = (delay: (n: number) => number) => {
+      let elapsed = 0;
+      let n = 0;
+      while (elapsed < windowMs) {
+        n += 1;
+        elapsed += delay(n);
+      }
+      return n;
+    };
+    const throttled = attemptsWith(refreshBackoffMs);
+    const unthrottled = attemptsWith(() => POLL_MS);
+    expect(throttled).toBeLessThan(10);
+    expect(unthrottled / throttled).toBeGreaterThan(50); // orders of magnitude, not a tweak
   });
 });
 
@@ -294,5 +302,48 @@ describe("a hung poll", () => {
   it("the default bound is long enough for a real read but short of any human timescale", () => {
     expect(DEFAULT_POLL_TIMEOUT_MS).toBeGreaterThanOrEqual(10_000);
     expect(DEFAULT_POLL_TIMEOUT_MS).toBeLessThan(DEFAULT_ERROR_GRACE_MS);
+  });
+});
+
+// Both reviewers independently flagged this: `alive` starting at `false` meant a presence call that
+// THREW read as "the editor is gone". Harmless while presence only rejected on real errors; once the
+// poll gained a timeout, a single 30s stall could end a live session after one earlier success.
+describe("presence: unknown is not absent", () => {
+  const channelWithPresence = (presence: () => Promise<boolean>) =>
+    ({
+      append: async () => {},
+      readSince: async (cursor: number) => ({ entries: [], cursor }),
+      subscribe: () => () => {},
+      getCursor: async () => 0,
+      setCursor: async () => {},
+      claimLock: async () => {},
+      isSuperseded: async () => false,
+      presence,
+    }) as unknown as ControlChannel;
+
+  it("does not report editorGone when presence stalls after a successful read", async () => {
+    let calls = 0;
+    const ch = channelWithPresence(() => {
+      calls += 1;
+      return calls === 1 ? Promise.resolve(true) : new Promise(() => {}); // alive once, then stalls
+    });
+    await stillWaitingAfter(150, (signal) => waitForActions({ channel: ch, cursor: 0, pollMs: 1, pollTimeoutMs: 5, watchEditor: true, signal }));
+  });
+
+  it("does not report editorGone when presence throws after a successful read", async () => {
+    let calls = 0;
+    const ch = channelWithPresence(async () => {
+      calls += 1;
+      if (calls === 1) return true;
+      throw new Error("presence unreadable");
+    });
+    await stillWaitingAfter(80, (signal) => waitForActions({ channel: ch, cursor: 0, pollMs: 1, watchEditor: true, signal }));
+  });
+
+  it("STILL reports editorGone when presence deterministically answers false", async () => {
+    let calls = 0;
+    const ch = channelWithPresence(async () => ++calls === 1); // true once, then a real false
+    const r = await waitForActions({ channel: ch, cursor: 0, pollMs: 1, watchEditor: true });
+    expect(r.editorGone).toBe(true); // the real signal must survive the fix
   });
 });

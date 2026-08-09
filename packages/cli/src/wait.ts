@@ -13,6 +13,30 @@ export const DEFAULT_ERROR_GRACE_MS = 5 * 60_000;
  *  means "unknown", which must not end a wait, but must not freeze it either. */
 export const DEFAULT_POLL_TIMEOUT_MS = 30_000;
 
+/** Tracks whether a previously timed-out request is STILL running.
+ *
+ *  `withTimeout` abandons the caller's view of a request; it cannot cancel the request itself,
+ *  because `ControlChannel` exposes no `AbortSignal` (adding one reaches into `@inplan/core` and the
+ *  Supabase backend — worth doing, but not in this change). Without this gate each timeout would
+ *  immediately fire a duplicate while its predecessor was still in flight, stacking requests against
+ *  a service that is, by hypothesis, already struggling. */
+function inFlightGate(): { busy: () => boolean; run: <T>(start: () => Promise<T>, ms: number) => Promise<T> } {
+  let pending = 0;
+  return {
+    busy: () => pending > 0,
+    run: <T,>(start: () => Promise<T>, ms: number): Promise<T> => {
+      pending += 1;
+      const underlying = start();
+      // Settle-tracking only; the rejection is surfaced by the race below, not here.
+      void underlying.then(
+        () => (pending -= 1),
+        () => (pending -= 1),
+      );
+      return withTimeout(underlying, ms);
+    },
+  };
+}
+
 /** Reject if `p` hasn't settled within `ms`. The timer is always cleared, so a resolved poll never
  *  leaves a pending handle holding the process open. */
 async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
@@ -114,6 +138,10 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
     let busy = false;
     let done = false;
     let failingSince: number | null = null; // when the current unbroken failure run started
+    // One gate per call site: a stalled read must not block the lock probe, or vice versa.
+    const reads = inFlightGate();
+    const locks = inFlightGate();
+    const presences = inFlightGate();
 
     const cleanup = () => {
       clearInterval(timer);
@@ -135,16 +163,25 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
     // Channel reads are async; guard against overlapping ticks and post-resolve work.
     const tick = async () => {
       if (busy || done) return;
+      // A previous read timed out but is still running: issuing another would stack duplicates on a
+      // service that is evidently struggling. Skip this tick, and keep the failure run going so the
+      // grace budget still advances toward giving up rather than stalling silently.
+      if (reads.busy()) {
+        const at = now();
+        failingSince ??= at;
+        if (at - failingSince >= errorGraceMs) finish({ entries: [], cursor: opts.cursor, failed: new Error("polls timed out and are still in flight") });
+        return;
+      }
       busy = true;
       try {
-        const { entries, cursor } = await withTimeout(ch.readSince(opts.cursor), pollTimeoutMs);
+        const { entries, cursor } = await reads.run(() => ch.readSince(opts.cursor), pollTimeoutMs);
         if (done) return;
 
         // Single-waiter lock: if a newer waiter claimed the doc, step down so only
         // one waiter is ever live. A read blip is treated as "still ours".
         if (opts.token) {
           try {
-            if (await withTimeout(ch.isSuperseded(opts.token), pollTimeoutMs)) {
+            if (!locks.busy() && (await locks.run(() => ch.isSuperseded(opts.token!), pollTimeoutMs))) {
               finish({ entries, cursor, superseded: true });
               return;
             }
@@ -156,14 +193,18 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
         // Editor liveness: once we've seen the editor present, exit if it goes
         // away — so a wait never lingers as a zombie after the window is gone.
         if (watchEditor) {
-          let alive = false;
+          // UNKNOWN and FALSE are different answers. `alive` starting at `false` meant a presence
+          // call that threw was read as "the editor is gone" — and once this poll gained a timeout,
+          // a mere 30s stall could end a live session with `editorGone` after a single earlier
+          // success. Only a presence read that actually returned `false` may end the wait.
+          let alive: boolean | undefined;
           try {
-            alive = await withTimeout(ch.presence(), pollTimeoutMs);
+            if (!presences.busy()) alive = await presences.run(() => ch.presence(), pollTimeoutMs);
           } catch {
             /* presence unknown — keep waiting */
           }
-          if (alive) sawEditorAlive = true;
-          else if (sawEditorAlive) {
+          if (alive === true) sawEditorAlive = true;
+          else if (alive === false && sawEditorAlive) {
             finish({ entries, cursor, editorGone: true });
             return;
           }
