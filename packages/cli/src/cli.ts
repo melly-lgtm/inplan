@@ -362,7 +362,12 @@ function logWaitExit(p: DocPaths, reason: string): void {
  * cursor, else "start from now" (current max). It is persisted on return so the
  * agent never hand-manages it and turns can't be skipped.
  */
-async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string, gate: PluginGate | null = null): Promise<void> {
+/** What a wait cycle did. `exiting` means it SCHEDULED a fail-fast exit (confirm_required /
+ *  integrity_error) that will fire from an async stdout flush — callers must stop immediately rather
+ *  than run their post-cycle work in the race window. */
+type WaitOutcome = "ok" | "exiting";
+
+async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string, gate: PluginGate | null = null): Promise<WaitOutcome> {
   const { channel, store } = backend;
   const history = await backend.history();
 
@@ -403,12 +408,12 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
       lost: ev.unconfirmed.map((c) => ({ id: c.id, text: c.text, author: c.author })),
     });
     exitAfterFlush(3);
-    return;
+    return "exiting";
   }
   if (!ev.integrityOk) {
     output({ status: "integrity_error", errors: ev.integrityErrors });
     exitAfterFlush(2);
-    return;
+    return "exiting";
   }
   // In Review mode an agent **body** change is quarantined as a proposal rather
   // than applied: the working file + canonical stay put, the agent's version is
@@ -449,7 +454,7 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
   if (result.superseded) {
     backend.logExit("superseded");
     output({ status: "superseded" });
-    return;
+    return "ok";
   }
 
   // Cloud→local handoff: a human on the web asked us to bring the doc back to disk.
@@ -461,7 +466,7 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
   if (backend.onSaveLocally && result.entries.some((e) => e.type === LogEventType.SaveLocallyRequested)) {
     backend.logExit("save_locally");
     await backend.onSaveLocally();
-    return;
+    return "ok";
   }
 
   await channel.setCursor(result.cursor); // advance the persisted cursor so the next call continues here
@@ -474,7 +479,7 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
     const path = (navEntry.payload as { path?: string } | undefined)?.path;
     backend.logExit("navigated");
     output({ status: "navigated", ...(path ? { path } : {}), cursor: result.cursor, closed: false });
-    return;
+    return "ok";
   }
 
   // The editor logs WHY it closed (completed / window_closed); a crash logs nothing.
@@ -514,6 +519,7 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
     closed: status === "closed",
     entries: result.entries,
   });
+  return "ok";
 }
 
 /**
@@ -826,7 +832,7 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       process.stderr.write(`inplan: live-collab hub write failed (${m}); kept the edit locally to retry\n`),
     );
     process.stderr.write(`inplan: live-collab — plan at ${workFile}; read/edit it there, then re-run to sync\n`);
-    await waitCycle(
+    const outcome = await waitCycle(
       {
         channel: live.channel, // turns/comments still ride the cloud control log (self-refreshing)…
         store: gateStore, // …the agent reads/edits a local working copy; proposals go to the cloud…
@@ -839,6 +845,14 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       model,
       tracked.gate, // …and accepted edits apply through the hub, not the store.
     );
+
+    // A fail-fast turn (confirm_required / integrity_error) has SCHEDULED its exit, which fires from
+    // an async stdout flush rather than immediately. Stop here: the re-sync below rewrites the
+    // working copy from the hub canonical, and running it for a turn that just reported failure would
+    // race the exit and nondeterministically discard the very edit the agent was told to fix.
+    // (A bare `process.exit` used to make this unreachable; making the exit flush-safe made it
+    // reachable, so the stop has to be explicit.)
+    if (outcome === "exiting") return;
 
     if (tracked.readFailed() || tracked.writeFailed()) {
       // The hub dropped mid-turn; DO NOT re-sync (that would overwrite a local edit with stale hub

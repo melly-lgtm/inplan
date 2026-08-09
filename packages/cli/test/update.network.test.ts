@@ -77,8 +77,11 @@ describe("latestVersion request bounding", () => {
     const seen: (AbortSignal | undefined)[] = [];
     const stub = vi.fn(async (_u: string, init?: { signal?: AbortSignal }) => {
       seen.push(init?.signal);
-      // Resolve only if the caller's signal fires — i.e. prove the request is actually bounded.
-      return await new Promise<Response>((_res, rej) => init?.signal?.addEventListener("abort", () => rej(new Error("aborted"))));
+      // Fail LOUDLY rather than hang: without a signal the promise below would never settle, and a
+      // regression that dropped the bound would surface as a 10s Vitest timeout instead of a message.
+      if (!init?.signal) throw new Error("latestVersion must pass an AbortSignal");
+      // Settle only when the caller's signal fires — i.e. prove the request is actually bounded.
+      return await new Promise<Response>((_res, rej) => init.signal!.addEventListener("abort", () => rej(new Error("aborted"))));
     });
     vi.stubGlobal("fetch", stub as unknown as typeof fetch);
     try {

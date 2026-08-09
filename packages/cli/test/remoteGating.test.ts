@@ -9,6 +9,7 @@
 // distinct: telling a paying customer to upgrade because a server hiccuped is the worst outcome.
 
 import { describe, expect, it, vi } from "vitest";
+import { readFile } from "node:fs/promises";
 import { EXIT_PLUGIN_UNAVAILABLE, EXIT_UPGRADE_REQUIRED, exitAfterFlush, explainNoGate } from "../src/cli";
 
 function capture(fn: () => void): { err: string; out: string } {
@@ -97,5 +98,28 @@ describe("exitAfterFlush", () => {
     const out = { write: vi.fn((_c: string, cb?: (e?: Error) => void) => (cb?.(new Error("EPIPE")), true)) };
     exitAfterFlush(5, out as never, exit);
     expect(exit).toHaveBeenCalledWith(5); // a broken pipe must not hang the process
+  });
+});
+
+// `exitAfterFlush` SCHEDULES an exit rather than performing one, so a fail-fast turn no longer stops
+// its caller by itself. `waitCycle` therefore reports the outcome, and the gate path must bail on it
+// — otherwise the end-of-turn re-sync rewrites the working copy from the hub canonical for a turn
+// that just reported failure, racing the exit and discarding the edit the agent was told to fix.
+describe("fail-fast outcome propagation", () => {
+  it("the gate path stops on `exiting` instead of running its end-of-turn re-sync", async () => {
+    const src = await readFile(new URL("../src/cli.ts", import.meta.url), "utf8");
+
+    // waitCycle reports the scheduled exit rather than returning void…
+    expect(src).toMatch(/async function waitCycle\([^)]*\): Promise<WaitOutcome>/s);
+    for (const code of ["exitAfterFlush(3);", "exitAfterFlush(2);"]) {
+      const after = src.slice(src.indexOf(code) + code.length, src.indexOf(code) + code.length + 40);
+      expect(after, code).toMatch(/return "exiting";/);
+    }
+
+    // …and the caller bails BEFORE the block that mutates the working copy.
+    const bail = src.indexOf('if (outcome === "exiting") return;');
+    expect(bail).toBeGreaterThan(-1);
+    const resync = src.indexOf("recordSynced(readFileSync(workFile", bail);
+    expect(resync).toBeGreaterThan(bail);
   });
 });
