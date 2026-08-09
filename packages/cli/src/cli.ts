@@ -30,13 +30,13 @@ import { gitProvenance } from "./provenance";
 import { authedSession, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, type AuthFile } from "./cliAuth";
 import { browserLogin } from "./cliLogin";
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
-import { checkForUpdate, selfUpdate, UPDATE_PKG } from "./update";
+import { checkForUpdate, selfUpdate, UPDATE_PKG, warnIfOutdated } from "./update";
 import { runningEditorPid } from "./editorProcess";
 import { applyGatedEdit } from "./applyEdit";
 import { evaluateAgentEdit } from "./gate";
 import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
-import { loadPluginGate, resolveHubUrl, type PluginGate } from "./pluginGate";
+import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenceReason, type PluginGate } from "./pluginGate";
 import { shouldHydrateWorkFile, pendingRequiresReplay, trackGateDegradations } from "./liveSync";
 import { announcePresence } from "./presence";
 import { wakePredicate, waitForActions } from "./wait";
@@ -595,6 +595,50 @@ function defaultBrowserLogin(): Promise<AuthFile> {
   return browserLogin({ onUrl: (u) => process.stderr.write(`Opening your browser to sign in:\n  ${u}\nIf it didn't open, paste that URL into your browser.\n`) });
 }
 
+/** Where the staleness check parks its verdict, so it costs one registry hit per TTL, not per turn. */
+function stalenessCache(): { readCache: () => string | null; writeCache: (v: string) => void } {
+  const path = join(sidecarRoot(), ".update-check.json");
+  return {
+    readCache: () => (existsSync(path) ? readFileSync(path, "utf8") : null),
+    writeCache: (v) => {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, v);
+    },
+  };
+}
+
+/** `wait --remote` on a plan that doesn't include the local agent. Distinct from the generic 1 so a
+ *  wrapper can tell "buy something" from "retry later" without scraping stderr. */
+export const EXIT_UPGRADE_REQUIRED = 4;
+/** `wait --remote` when we couldn't get a verified answer (offline / server error / bad bundle). */
+export const EXIT_PLUGIN_UNAVAILABLE = 5;
+
+/**
+ * Explain, to a human and to the coding agent reading our JSON, why we can't serve this cloud doc.
+ *
+ * The two reasons need different words: `unentitled` is a plan limit the human can act on, while
+ * `unavailable` is a transient failure they should just retry. Telling a paying customer to upgrade
+ * because a server hiccuped is the worst outcome here, which is why the reason is only ever
+ * `unentitled` on an explicit server denial (see {@link resolvePluginOutcome}).
+ */
+export function explainNoGate(reason: PluginAbsenceReason, localFile?: string): void {
+  if (reason === "unentitled") {
+    process.stderr.write(
+      "inplan: this plan doesn't include the local agent on cloud documents.\n" +
+        "  Open the document in your browser and click the agent indicator to upgrade.\n" +
+        (localFile ? `  Or keep working offline for free: \`inplan demote ${localFile}\` brings it back to disk.\n` : ""),
+    );
+    output({ status: "upgrade_required", reason, ...(localFile ? { localFile } : {}) });
+    return;
+  }
+  process.stderr.write(
+    "inplan: couldn't verify your plan for this cloud document (offline, or the service is down).\n" +
+      "  This is not a plan limit — retry in a moment.\n" +
+      (localFile ? `  To work offline meanwhile: \`inplan demote ${localFile}\`.\n` : ""),
+  );
+  output({ status: "plugin_unavailable", reason, ...(localFile ? { localFile } : {}) });
+}
+
 /**
  * Drive a *cloud* document as the logged-in agent. There is no local editor to
  * spawn (a cloud doc opens in the browser), so `open`/`wait` both attach + wait
@@ -616,6 +660,10 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     process.stderr.write("inplan: not logged in (or session expired) — run `inplan login`\n");
     process.exit(1);
   }
+
+  // Cloud docs are the one place an out-of-date CLI fails *silently* — it attaches and looks fine
+  // while missing the code path the document needs. Warn early, cached, and never block the turn.
+  await warnIfOutdated(UPDATE_PKG, VERSION, stalenessCache());
 
   if (cmd === "signal") {
     if (hasFlag(rest, "done")) {
@@ -679,12 +727,21 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     // Live collaboration (paid perk): if the user is entitled, load the signature-verified collab
     // plugin and drive the agent's edits through the Yjs hub instead of a blind store overwrite. The
     // agent's working surface is a local `.md` materialized from the hub's canonical on first attach
-    // (kept across turns so its edits survive); edits sync back via the gate. Not entitled /
-    // unverified / no plugin ⇒ null ⇒ the turn-based store path below.
+    // (kept across turns so its edits survive); edits sync back via the gate.
     const hubUrl = resolveHubUrl();
     const hubSession = JSON.stringify({ url: hubUrl, docName: docId, token: backend.token });
-    const gate = await loadPluginGate(hubSession, { token: backend.token });
-    if (gate) {
+    const { gate, reason } = await loadPluginGateOutcome(hubSession, { token: backend.token });
+    // No gate ⇒ STOP. The turn-based `live.store` path below exists for the managed cloud agent,
+    // which holds the body in memory; an out-of-process local agent needs a file, and the gate is
+    // what materializes one. Falling through would attach, consume the human's turns, and silently
+    // never be able to read or edit the document — so say why and exit non-zero instead.
+    if (!gate) {
+      explainNoGate(reason, localFile);
+      process.exit(reason === "unentitled" ? EXIT_UPGRADE_REQUIRED : EXIT_PLUGIN_UNAVAILABLE);
+    }
+    // Scope block for the gate path's locals. It falls through to the turn-based `waitCycle` below
+    // only when the hub turns out to be unreachable mid-run (`onGate === false`).
+    {
       const workFile = join(sidecarRoot(), "remote", `${docId}.plan.md`);
       const pendingPath = `${workFile}.pending`; // marker: a local fallback edit awaits a hub push
       const hashPath = `${workFile}.synced`; // hash of the working copy at our last write/sync

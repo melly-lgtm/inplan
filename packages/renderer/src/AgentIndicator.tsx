@@ -28,19 +28,30 @@ function QuotaPie({ pct, color }: { pct: number; color: string }): JSX.Element {
  */
 export function AgentIndicator({
   location,
+  working,
   model,
   quota,
   byoKey,
   policy,
   onSetPolicy,
+  localEntitled,
+  onUpgrade,
   localCommand,
 }: {
   location: AgentLocation | null;
+  /** The agent holds the turn. A turn-based local agent's CLI exits between turns, so it stops
+   *  being a presence peer for exactly as long as it is busy — without this the badge reads
+   *  "disconnected" precisely while the agent works, and green only while it idles. */
+  working?: boolean;
   model?: string;
   quota?: { usedPct: number; overage: boolean };
   byoKey?: boolean;
   policy?: AgentPolicy;
   onSetPolicy?: (p: AgentPolicy) => void | Promise<void>;
+  /** False when the host's plan doesn't include a local agent here; undefined ⇒ not gated. */
+  localEntitled?: boolean;
+  /** Host-supplied upgrade path for the gated case. */
+  onUpgrade?: () => void | Promise<void>;
   /** Host-supplied command a local agent runs to serve this doc (cloud); shown under "local". */
   localCommand?: string;
 }): JSX.Element {
@@ -48,6 +59,8 @@ export function AgentIndicator({
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  // Only an explicit `false` gates: hosts that don't gate the feature leave it undefined.
+  const localGated = localEntitled === false;
   // What the human pastes to their coding agent: an instruction (with the connect command inlined),
   // not a command for the human to run themselves. Copy carries the FULL text; the box shows a
   // middle-elided preview (the full bootstrap — check/install/login/connect — is long).
@@ -72,11 +85,14 @@ export function AgentIndicator({
     { value: "local", label: t("agent.waitLocal") },
     { value: "manual", label: t("agent.dontConnect") },
   ];
-  // The label next to the icon: `remote (model)` / `local (model)` / `disconnected`.
+  // The label next to the icon: `remote (model)` / `local (model)` / `working` / `disconnected`.
+  // "working" wins over a null location: an agent that holds the turn is attached by definition,
+  // whatever its socket is doing.
   const labelFor = (loc: AgentLocation | null, m?: string): string => {
-    if (loc === "cloud") return `${t("agent.remote")}${m ? ` (${m})` : ""}`;
-    if (loc === "local") return `${t("agent.local")}${m ? ` (${m})` : ""}`;
-    return t("agent.disconnected");
+    const suffix = `${m ? ` (${m})` : ""}${working ? ` · ${t("agent.working")}` : ""}`;
+    if (loc === "cloud") return `${t("agent.remote")}${suffix}`;
+    if (loc === "local") return `${t("agent.local")}${suffix}`;
+    return working ? `${t("agent.working")}` : t("agent.disconnected");
   };
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
@@ -101,7 +117,10 @@ export function AgentIndicator({
         : "var(--accent)";
     icon = quota ? <QuotaPie pct={quota.usedPct} color={color} /> : <span className="ap-agent-dot" style={{ background: color }} aria-hidden="true" />;
   } else if (location === "local") {
-    icon = <span className="ap-agent-dot ap-agent-local" aria-hidden="true" />;
+    icon = <span className={`ap-agent-dot ap-agent-local${working ? " ap-agent-working" : ""}`} aria-hidden="true" />;
+  } else if (working) {
+    // No peer, but the agent holds the turn — amber, not red. Red here would mean "nobody is coming".
+    icon = <span className="ap-agent-dot ap-agent-working" aria-hidden="true" />;
   } else {
     icon = <span className="ap-agent-dot ap-agent-off" aria-hidden="true" />;
   }
@@ -148,9 +167,20 @@ export function AgentIndicator({
               ))}
             </div>
           )}
-          {/* "Wait for my local agent" → an instruction the human pastes to their coding agent so it
-              connects to + serves this cloud doc (the connect command is inlined). */}
-          {policy === "local" && agentMessage && (
+          {/* "Wait for my local agent" → either the connect instruction, or — when the host's plan
+              doesn't include it — the reason and a way to upgrade. Showing the command to someone
+              who can't use it is what produced a CLI that attaches and then silently can't edit. */}
+          {policy === "local" && localGated && (
+            <div className="ap-agent-localcmd ap-agent-upsell">
+              <div className="ap-agent-localcmd-hint">{t("agent.localLocked")}</div>
+              {onUpgrade && (
+                <button className="ap-agent-upgrade" onClick={() => void onUpgrade()}>
+                  {t("agent.seePlans")}
+                </button>
+              )}
+            </div>
+          )}
+          {policy === "local" && !localGated && agentMessage && (
             <div className="ap-agent-localcmd">
               <div className="ap-agent-localcmd-hint">{t("agent.localCmdHint")}</div>
               <div className="ap-agent-localcmd-row">

@@ -1567,6 +1567,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         }
         forceSettingsOpen={forceSettingsOpen}
         locked={editingLocked}
+        agentThinking={agentThinking}
         nav={
           typeof hostApi().navigate === "function"
             ? { canBack: navState.canBack, canForward: navState.canForward, onBack: () => void hostApi().navigate?.("back"), onForward: () => void hostApi().navigate?.("forward") }
@@ -2187,6 +2188,8 @@ function TopBar(props: {
   onReplayTutorial?: () => void; // settings menu: re-run the first-run tour
   forceSettingsOpen?: boolean; // onboarding: hold the ⚙ menu open on the settings step
   locked: boolean;
+  /** The agent holds the turn (we handed it over and it hasn't reported back). */
+  agentThinking?: boolean;
   nav?: { canBack: boolean; canForward: boolean; onBack: () => void; onForward: () => void };
 }): JSX.Element {
   const { cadence, acceptance, panes, onMode } = props;
@@ -2197,7 +2200,12 @@ function TopBar(props: {
   // flagged `agentAvailable` (entitled + auto policy), OR an agent is connected (`agentLocation`, e.g.
   // a local CLI). Only when neither holds is there genuinely no agent. The desktop's local agent is
   // implicit (not presence-aware), so these stay enabled there.
-  const noAgent = profile?.presenceAware === true && profile.agentAvailable !== true && profile.agentLocation == null;
+  //
+  // A turn-based local agent is NOT a persistent peer either: its CLI exits between turns, so
+  // `agentLocation` goes null for exactly as long as the agent is busy working. Treat "we handed it
+  // the turn and it hasn't answered" as an attached agent, or Finish-turn greys out mid-handoff and
+  // the human is stranded by the very act of handing over.
+  const noAgent = profile?.presenceAware === true && profile.agentAvailable !== true && profile.agentLocation == null && props.agentThinking !== true;
   const noAgentTitle = noAgent ? t("topbar.noAgent") : undefined;
   return (
     <header className="ap-topbar">
@@ -2304,11 +2312,14 @@ function TopBar(props: {
       {profile?.presenceAware && (
         <AgentIndicator
           location={profile.agentLocation}
+          working={props.agentThinking === true}
           model={profile.agentModel}
           quota={profile.agentQuota}
           byoKey={profile.agentByoKey}
           policy={profile.agentPolicy}
           onSetPolicy={profile.onSetAgentPolicy}
+          localEntitled={profile.agentLocalEntitled}
+          onUpgrade={profile.onUpgrade}
           localCommand={hostApi().localAgentCommand}
         />
       )}

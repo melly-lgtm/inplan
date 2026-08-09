@@ -142,6 +142,16 @@ export interface ProfileState {
    * is true. Hosts that don't set this fall back to the `agentLocation != null` check.
    */
   agentAvailable?: boolean;
+  /**
+   * True when this host's plan includes attaching a *local* agent to this document. Only a host
+   * that actually gates the feature sets it; `undefined` means "not gated here" (the desktop, where
+   * a local agent on a local file is always available) and is treated as allowed. When false, the
+   * indicator offers {@link onUpgrade} in place of the connect instruction — the renderer never
+   * learns anything about plans or prices, it just asks the host to sell.
+   */
+  agentLocalEntitled?: boolean;
+  /** Host-supplied upgrade path, invoked when a gated feature is clicked. Absent ⇒ no CTA shown. */
+  onUpgrade?: () => void | Promise<void>;
   /** The doc's current agent-provisioning policy. Present + `onSetAgentPolicy` ⇒ the
    *  menu-bar agent indicator renders the connection picker. */
   agentPolicy?: AgentPolicy;

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, it, vi } from "vitest";
-import { loadPluginGate, type PluginGateDeps } from "../src/pluginGate";
-import type { ResolvedPlugin } from "@inplan/core/node";
+import { loadPluginGate, loadPluginGateOutcome, type PluginGateDeps } from "../src/pluginGate";
+import type { PluginOutcome, ResolvedPlugin } from "@inplan/core/node";
 
 const SESSION = "ws://127.0.0.1:51234";
 
@@ -14,11 +14,16 @@ const bundle = (files: Record<string, string>, cli?: string): ResolvedPlugin => 
   entries: cli ? { cli } : {},
 });
 
+/** Resolve outcomes, mirroring what resolvePluginOutcome returns. */
+const resolved = (p: ResolvedPlugin): PluginOutcome => ({ plugin: p, reason: null });
+const denied: PluginOutcome = { plugin: null, reason: "unentitled" };
+const offline: PluginOutcome = { plugin: null, reason: "unavailable" };
+
 /** Build injectable deps with a stub resolve + a stub CLI entry whose gate() returns a PluginGate. */
 function deps(over: Partial<PluginGateDeps> & { gate?: { readCanonical: ReturnType<typeof vi.fn>; applyRevision: ReturnType<typeof vi.fn> } } = {}): PluginGateDeps {
   const gate = over.gate ?? { readCanonical: vi.fn(async () => "live body"), applyRevision: vi.fn(async () => {}) };
   return {
-    resolve: over.resolve ?? (async () => bundle({ "cli.js": "/cache/v1/cli.js" }, "cli.js")),
+    resolve: over.resolve ?? (async () => resolved(bundle({ "cli.js": "/cache/v1/cli.js" }, "cli.js"))),
     importCli: over.importCli ?? (async () => ({ gate: () => gate })),
   };
 }
@@ -35,16 +40,16 @@ describe("loadPluginGate", () => {
     expect(gateImpl.applyRevision).toHaveBeenCalledWith("new body");
   });
 
-  it("not entitled (resolve → null) → null, and never imports the CLI entry", async () => {
+  it("not entitled (resolve denies) → null, and never imports the CLI entry", async () => {
     const importCli = vi.fn();
-    const gate = await loadPluginGate(SESSION, { token: "jwt" }, deps({ resolve: async () => null, importCli }));
+    const gate = await loadPluginGate(SESSION, { token: "jwt" }, deps({ resolve: async () => denied, importCli }));
     expect(gate).toBeNull();
     expect(importCli).not.toHaveBeenCalled();
   });
 
   it("bundle has no cli entry (renderer-only plugin) → null, and never imports", async () => {
     const importCli = vi.fn();
-    const gate = await loadPluginGate(SESSION, { token: "jwt" }, deps({ resolve: async () => bundle({ "renderer.js": "/cache/v1/renderer.js" }), importCli }));
+    const gate = await loadPluginGate(SESSION, { token: "jwt" }, deps({ resolve: async () => resolved(bundle({ "renderer.js": "/cache/v1/renderer.js" })), importCli }));
     expect(gate).toBeNull();
     expect(importCli).not.toHaveBeenCalled();
   });
@@ -60,8 +65,41 @@ describe("loadPluginGate", () => {
   });
 
   it("threads token + an explicit publicKey/cacheDir/apiBase into resolve", async () => {
-    const resolve = vi.fn(async () => bundle({ "cli.js": "/cache/v1/cli.js" }, "cli.js"));
+    const resolve = vi.fn(async () => resolved(bundle({ "cli.js": "/cache/v1/cli.js" }, "cli.js")));
     await loadPluginGate(SESSION, { token: null, apiBase: "https://plugin.test", cacheDir: "/tmp/cache", publicKey: "PEM" }, deps({ resolve }));
     expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ token: null, apiBase: "https://plugin.test", cacheDir: "/tmp/cache", publicKey: "PEM" }));
+  });
+});
+
+describe("loadPluginGateOutcome", () => {
+  it("propagates `unentitled` — the one answer that justifies telling the human to upgrade", async () => {
+    const out = await loadPluginGateOutcome(SESSION, { token: "jwt" }, deps({ resolve: async () => denied }));
+    expect(out).toEqual({ gate: null, reason: "unentitled" });
+  });
+
+  it("propagates `unavailable` for an outage, so it is never mistaken for a paywall", async () => {
+    const out = await loadPluginGateOutcome(SESSION, { token: "jwt" }, deps({ resolve: async () => offline }));
+    expect(out).toEqual({ gate: null, reason: "unavailable" });
+  });
+
+  it("a resolve that throws is `unavailable`, never `unentitled`", async () => {
+    const out = await loadPluginGateOutcome(SESSION, { token: "jwt" }, deps({ resolve: async () => { throw new Error("network"); } }));
+    expect(out).toEqual({ gate: null, reason: "unavailable" });
+  });
+
+  it("entitled but the bundle ships no CLI entry → `unavailable` (not a plan problem)", async () => {
+    const out = await loadPluginGateOutcome(SESSION, { token: "jwt" }, deps({ resolve: async () => resolved(bundle({ "renderer.js": "/r.js" })) }));
+    expect(out).toEqual({ gate: null, reason: "unavailable" });
+  });
+
+  it("a failing import of the verified CLI entry is `unavailable`", async () => {
+    const out = await loadPluginGateOutcome(SESSION, { token: "jwt" }, deps({ importCli: async () => { throw new Error("bad module"); } }));
+    expect(out).toEqual({ gate: null, reason: "unavailable" });
+  });
+
+  it("success carries the gate and no reason", async () => {
+    const out = await loadPluginGateOutcome(SESSION, { token: "jwt" }, deps());
+    expect(out.reason).toBeNull();
+    expect(await out.gate!.readCanonical()).toBe("live body");
   });
 });

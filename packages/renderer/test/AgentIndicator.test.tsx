@@ -115,7 +115,7 @@ describe("AgentIndicator", () => {
     // Copies the FULL bootstrap instruction (install check + install + the connect command).
     const copied = writeText.mock.calls[0][0] as string;
     expect(copied).toContain(cmd); // the connect command, in full
-    expect(copied).toContain("npm i -g inplan"); // how to install if missing
+    expect(copied).toContain("npm i -g inplan@latest"); // installs OR updates — an out-of-date CLI fails silently
     expect(copied).toContain("inplan login"); // explicit sign-in step so headless (non-TTY) agents aren't relying on interactive-only auto-login
   });
 
@@ -123,6 +123,69 @@ describe("AgentIndicator", () => {
     render(<AgentIndicator location="local" policy="local" onSetPolicy={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: /agent connection/i }));
     expect(screen.queryByRole("button", { name: /^copy$/i })).toBeNull();
+  });
+
+  // A turn-based local agent's CLI exits between turns, so its presence peer vanishes for exactly as
+  // long as the agent is busy. Presence alone therefore reads "disconnected" while it works and
+  // "connected" only while it idles — inverted. `working` is the third state that fixes that.
+  it("reads 'working', not 'disconnected', when the agent holds the turn with no peer", () => {
+    render(<AgentIndicator location={null} working />);
+    const btn = screen.getByRole("button");
+    expect(btn.textContent).toContain("working");
+    expect(btn.textContent).not.toContain("disconnected");
+    expect(btn.querySelector(".ap-agent-working")).toBeTruthy();
+    expect(btn.querySelector(".ap-agent-off")).toBeNull(); // never the red "nobody is coming" dot
+  });
+
+  it("still reads 'disconnected' when no agent holds the turn", () => {
+    render(<AgentIndicator location={null} />);
+    expect(screen.getByRole("button").textContent).toContain("disconnected");
+    expect(screen.getByRole("button").querySelector(".ap-agent-off")).toBeTruthy();
+  });
+
+  it("keeps the location label and adds 'working' when a peer IS present and busy", () => {
+    render(<AgentIndicator location="local" model="Opus 5" working />);
+    const btn = screen.getByRole("button");
+    expect(btn.textContent).toContain("local (Opus 5)");
+    expect(btn.textContent).toContain("working");
+    expect(btn.querySelector(".ap-agent-working")).toBeTruthy();
+  });
+
+  it("marks a busy cloud agent as working without losing its quota pie", () => {
+    render(<AgentIndicator location="cloud" model="Opus" working quota={{ usedPct: 0.4, overage: false }} />);
+    const btn = screen.getByRole("button");
+    expect(btn.textContent).toContain("remote (Opus)");
+    expect(btn.textContent).toContain("working");
+    expect(btn.querySelector(".ap-agent-pie")).toBeTruthy();
+  });
+
+  // Showing the connect command to someone whose plan can't use it is what produced a CLI that
+  // attaches, consumes turns, and then silently can't edit.
+  it("replaces the connect command with an upgrade CTA when the local agent isn't entitled", () => {
+    const onUpgrade = vi.fn();
+    const cmd = "inplan wait --remote doc-123";
+    render(<AgentIndicator location={null} policy="local" onSetPolicy={vi.fn()} localCommand={cmd} localEntitled={false} onUpgrade={onUpgrade} />);
+    fireEvent.click(screen.getByRole("button", { name: /agent connection/i }));
+    expect(document.body.textContent).not.toContain(cmd);
+    expect(document.body.textContent).toMatch(/Pro and above/i);
+    fireEvent.click(screen.getByRole("button", { name: /see plans/i }));
+    expect(onUpgrade).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the reason but no CTA when the host offers no upgrade path", () => {
+    render(<AgentIndicator location={null} policy="local" onSetPolicy={vi.fn()} localCommand="c" localEntitled={false} />);
+    fireEvent.click(screen.getByRole("button", { name: /agent connection/i }));
+    expect(document.body.textContent).toMatch(/Pro and above/i);
+    expect(screen.queryByRole("button", { name: /see plans/i })).toBeNull();
+  });
+
+  it("only an explicit false gates — an ungated host (undefined) still gets the command", () => {
+    const cmd = "inplan wait --remote doc-9";
+    const { rerender } = render(<AgentIndicator location={null} policy="local" onSetPolicy={vi.fn()} localCommand={cmd} />);
+    fireEvent.click(screen.getByRole("button", { name: /agent connection/i }));
+    expect(screen.getByRole("button", { name: /^copy$/i })).toBeTruthy();
+    rerender(<AgentIndicator location={null} policy="local" onSetPolicy={vi.fn()} localCommand={cmd} localEntitled />);
+    expect(screen.getByRole("button", { name: /^copy$/i })).toBeTruthy();
   });
 
   it("closes the menu on an outside mousedown", () => {

@@ -4,14 +4,17 @@
 // session on the doc's status (`status.pluginSession`) AND the user is entitled, the CLI loads the
 // plugin's verified CLI entry and gates the agent through the plugin instead of the `.md` — so an
 // agent edit lands in whatever shared document the plugin manages. Open-core ships only this loader;
-// the plugin code lives in the signature-verified bundle that `resolveDesktopPlugin` fetches +
-// verifies before we `import()` it. Not entitled / unverified / no CLI entry ⇒ null ⇒ the caller
-// stays on the file-backed gate. Open-core never interprets the session string.
+// the plugin code lives in the signature-verified bundle that `resolvePluginOutcome` fetches +
+// verifies before we `import()` it. Not entitled / unverified / no CLI entry ⇒ no gate ⇒ the caller
+// either stays on the file-backed gate (local docs) or explains itself and stops (cloud docs, which
+// have no file to fall back to). Open-core never interprets the session string.
 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { resolveDesktopPlugin } from "@inplan/core/node";
+import { resolvePluginOutcome, type PluginAbsenceReason } from "@inplan/core/node";
+
+export type { PluginAbsenceReason };
 
 /** Default collab hub websocket URL. */
 export const DEFAULT_HUB_URL = "wss://inplan-collab.fly.dev";
@@ -39,11 +42,11 @@ interface CliEntry {
 
 /** Injectable seams so the wait path is unit-testable without a real signed bundle / live plugin. */
 export interface PluginGateDeps {
-  resolve: typeof resolveDesktopPlugin;
+  resolve: typeof resolvePluginOutcome;
   importCli: (path: string) => Promise<CliEntry>;
 }
 const defaultDeps: PluginGateDeps = {
-  resolve: resolveDesktopPlugin,
+  resolve: resolvePluginOutcome,
   importCli: (p) => import(pathToFileURL(p).href) as Promise<CliEntry>,
 };
 
@@ -55,25 +58,43 @@ export interface LoadPluginGateOptions {
   publicKey?: string;
 }
 
+/** A gate load's outcome: the gate, or why there isn't one — so a caller that must explain itself
+ *  to a human can tell "your plan doesn't include this" from "we couldn't reach the server". */
+export type PluginGateOutcome = { gate: PluginGate; reason: null } | { gate: null; reason: PluginAbsenceReason };
+
 /**
- * Load the entitlement-gated, signature-verified plugin gate for `session`. Returns a
- * {@link PluginGate} when the user is entitled and the verified bundle ships a CLI entry; otherwise
- * null (⇒ file-backed gate). Fail-soft: any verify / fetch / import failure returns null. The
- * plugin owns reachability — its read/apply time out, and the caller falls back to the file.
+ * Load the entitlement-gated, signature-verified plugin gate for `session`, or the reason there
+ * isn't one. Fail-soft: any verify / fetch / import failure yields `unavailable`, and only an
+ * explicit server denial yields `unentitled`. The plugin owns reachability — its read/apply time
+ * out, and the caller falls back to the file.
  */
-export async function loadPluginGate(session: string, options: LoadPluginGateOptions, deps: PluginGateDeps = defaultDeps): Promise<PluginGate | null> {
+export async function loadPluginGateOutcome(session: string, options: LoadPluginGateOptions, deps: PluginGateDeps = defaultDeps): Promise<PluginGateOutcome> {
   try {
-    const bundle = await deps.resolve({
+    const { plugin, reason } = await deps.resolve({
       apiBase: options.apiBase ?? PLUGIN_HTTP,
       token: options.token,
       cacheDir: options.cacheDir ?? defaultCacheDir(),
       ...(options.publicKey ? { publicKey: options.publicKey } : {}),
     });
-    const cliName = bundle?.entries.cli;
-    const cliPath = cliName ? bundle?.files[cliName] : undefined;
-    if (!cliPath) return null; // not entitled / unverified / no CLI entry in the bundle
+    if (!plugin) return { gate: null, reason };
+    const cliName = plugin.entries.cli;
+    const cliPath = cliName ? plugin.files[cliName] : undefined;
+    // Entitled + verified, but the bundle ships no CLI entry: not a plan problem, so `unavailable`.
+    if (!cliPath) return { gate: null, reason: "unavailable" };
     const cli = await deps.importCli(cliPath);
-    return cli.gate(session);
+    return { gate: cli.gate(session), reason: null };
+  } catch {
+    return { gate: null, reason: "unavailable" }; // any failure ⇒ file-backed
+  }
+}
+
+/**
+ * {@link loadPluginGateOutcome} for callers that only need "gate or not" (the local-file wait path,
+ * which silently runs file-backed without the plugin).
+ */
+export async function loadPluginGate(session: string, options: LoadPluginGateOptions, deps: PluginGateDeps = defaultDeps): Promise<PluginGate | null> {
+  try {
+    return (await loadPluginGateOutcome(session, options, deps)).gate;
   } catch {
     return null; // any failure ⇒ file-backed
   }

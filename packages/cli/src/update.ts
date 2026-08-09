@@ -62,3 +62,54 @@ export function selfUpdate(pkg: string): Promise<{ ok: boolean; output: string }
     child.on("close", (code) => resolve({ ok: code === 0, output: output.trim() }));
   });
 }
+
+/** How long a staleness check is cached. `wait --remote` runs once per TURN (the CLI exits between
+ *  turns), so an uncached check would hit the npm registry on every hand-back. */
+export const STALENESS_TTL_MS = 6 * 60 * 60 * 1000;
+
+/** Injectable seams so the staleness warning is testable without a registry or a real clock. */
+export interface StalenessDeps {
+  fetchLatest?: (pkg: string) => Promise<string | null>;
+  now?: () => number;
+  readCache?: () => string | null;
+  writeCache?: (v: string) => void;
+}
+
+/**
+ * Warn (on stderr, never stdout — stdout is the agent's JSON channel) when this CLI is older than
+ * the published version. Best-effort: a registry failure is silence, never an error.
+ *
+ * This exists because an out-of-date CLI talking to a newer cloud is the failure mode with no
+ * symptom — it attaches, behaves plausibly, and silently lacks the code path the document needs.
+ * Returns the message it wrote, or null.
+ */
+export async function warnIfOutdated(pkg: string, current: string, deps: StalenessDeps = {}): Promise<string | null> {
+  const now = (deps.now ?? Date.now)();
+  try {
+    const cached = deps.readCache?.() ?? null;
+    if (cached) {
+      const { at, latest } = JSON.parse(cached) as { at?: number; latest?: string };
+      // Serve from cache only while fresh AND not from the future (a clock rewind must not pin a
+      // stale verdict for six hours).
+      if (typeof at === "number" && at <= now && now - at < STALENESS_TTL_MS) {
+        return typeof latest === "string" && compareVersions(current, latest) < 0 ? emitOutdated(pkg, current, latest) : null;
+      }
+    }
+  } catch {
+    /* unreadable cache ⇒ just re-check */
+  }
+  const latest = await (deps.fetchLatest ?? latestVersion)(pkg);
+  if (latest === null) return null; // registry unreachable — say nothing rather than cry wolf
+  try {
+    deps.writeCache?.(JSON.stringify({ at: now, latest }));
+  } catch {
+    /* cache is an optimisation, not a requirement */
+  }
+  return compareVersions(current, latest) < 0 ? emitOutdated(pkg, current, latest) : null;
+}
+
+function emitOutdated(pkg: string, current: string, latest: string): string {
+  const msg = `inplan: your CLI is ${current}; ${latest} is available. Some cloud documents need a newer CLI — update with \`npm i -g ${pkg}@latest\`.`;
+  process.stderr.write(`${msg}\n`);
+  return msg;
+}

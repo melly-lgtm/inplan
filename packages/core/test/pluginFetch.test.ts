@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { resolveDesktopPlugin, type LeaseClaims } from "../src/node";
+import { resolveDesktopPlugin, resolvePluginOutcome, type LeaseClaims } from "../src/node";
 
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 const pub = publicKey.export({ type: "spki", format: "pem" }).toString();
@@ -149,5 +149,70 @@ describe("resolveDesktopPlugin", () => {
     const forgedLease = `${body}.${sign(null, Buffer.from(body), other).toString("base64url")}`; // signed by the wrong key
     const tbl = { [`${API}/api/v1/desktop-plugin`]: { ok: true, json: { entitled: true, lease: forgedLease, bundleUrl: BUNDLE } } };
     expect(await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 2000, fetchImpl: fakeFetch(tbl) })).toBeNull();
+  });
+});
+
+// The reason a resolve produced no plugin is user-facing: a CLI turns `unentitled` into "upgrade
+// your plan" and `unavailable` into "try again". Mislabelling an outage as a paywall would tell a
+// paying customer to buy what they already own, so every failure mode is pinned here.
+describe("resolvePluginOutcome — absence reasons", () => {
+  it("entitled online → the plugin, with no reason", async () => {
+    const out = await resolvePluginOutcome({ apiBase: API, token: "jwt", cacheDir: cacheDir(), publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
+    expect(out.reason).toBeNull();
+    expect(out.plugin?.version).toBe("v1");
+  });
+
+  it("an explicit `entitled: false` is the ONLY thing that reports `unentitled`", async () => {
+    const tbl = { [`${API}/api/v1/desktop-plugin`]: { ok: true, json: { entitled: false } } };
+    const out = await resolvePluginOutcome({ apiBase: API, token: "jwt", cacheDir: cacheDir(), publicKey: pub, now: 1000, fetchImpl: fakeFetch(tbl) });
+    expect(out).toEqual({ plugin: null, reason: "unentitled" });
+  });
+
+  it("a denial still wins over a primed cache (a lapsed plan must stop the perk)", async () => {
+    const cd = cacheDir();
+    await resolvePluginOutcome({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
+    const tbl = { [`${API}/api/v1/desktop-plugin`]: { ok: true, json: { entitled: false } } };
+    const out = await resolvePluginOutcome({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 2000, fetchImpl: fakeFetch(tbl) });
+    expect(out).toEqual({ plugin: null, reason: "unentitled" });
+  });
+
+  it("a network error with no cache is `unavailable`, not `unentitled`", async () => {
+    const boom = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
+    const out = await resolvePluginOutcome({ apiBase: API, token: "jwt", cacheDir: cacheDir(), publicKey: pub, now: 1000, fetchImpl: boom });
+    expect(out).toEqual({ plugin: null, reason: "unavailable" });
+  });
+
+  it("a 500 from the entitlement server is `unavailable` (no verdict was given)", async () => {
+    const tbl = { [`${API}/api/v1/desktop-plugin`]: { ok: false } };
+    const out = await resolvePluginOutcome({ apiBase: API, token: "jwt", cacheDir: cacheDir(), publicKey: pub, now: 1000, fetchImpl: fakeFetch(tbl) });
+    expect(out).toEqual({ plugin: null, reason: "unavailable" });
+  });
+
+  it("logged out (no token) is `unavailable` — being signed out is not a plan verdict", async () => {
+    const out = await resolvePluginOutcome({ apiBase: API, token: null, cacheDir: cacheDir(), publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
+    expect(out).toEqual({ plugin: null, reason: "unavailable" });
+  });
+
+  it("an expired cached lease offline is `unavailable`", async () => {
+    const cd = cacheDir();
+    const tbl = { ...happyTable, [`${API}/api/v1/desktop-plugin`]: { ok: true, json: { entitled: true, lease: lease(5000), bundleUrl: BUNDLE } } };
+    await resolvePluginOutcome({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(tbl) });
+    const offline = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
+    const out = await resolvePluginOutcome({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 6000, fetchImpl: offline });
+    expect(out).toEqual({ plugin: null, reason: "unavailable" });
+  });
+
+  it("a missing public key is `unavailable` and never probes the server", async () => {
+    const spy = fakeFetch(happyTable);
+    const calls: string[] = [];
+    const counting = (async (u: string) => { calls.push(String(u)); return spy(u as never); }) as unknown as typeof fetch;
+    const out = await resolvePluginOutcome({ apiBase: API, token: "jwt", cacheDir: cacheDir(), publicKey: "", now: 1000, fetchImpl: counting });
+    expect(out).toEqual({ plugin: null, reason: "unavailable" });
+    expect(calls).toEqual([]);
+  });
+
+  it("resolveDesktopPlugin stays the thin `plugin-or-null` wrapper over the same resolve", async () => {
+    const tbl = { [`${API}/api/v1/desktop-plugin`]: { ok: true, json: { entitled: false } } };
+    expect(await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cacheDir(), publicKey: pub, now: 1000, fetchImpl: fakeFetch(tbl) })).toBeNull();
   });
 });
