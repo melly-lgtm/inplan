@@ -94,6 +94,27 @@ describe("agent-presence gating of Instant + Finish-turn", () => {
     expect(instantBtn().disabled).toBe(false); // still attached — it is thinking, not absent
   });
 
+  // Switching cadence expresses a preference for the NEXT turn. It must not retroactively cancel a
+  // hand-off already in flight: dropping the lock mid-turn reopens the document for editing while
+  // the agent is still writing its revision.
+  it("keeps the editor locked across a Turn→Instant switch while the agent still holds the turn", async () => {
+    const live = mutableProfile({ user: { name: "Diane" }, agentLocation: "local", presenceAware: true, actions: [] });
+    await renderApp(undefined, live.controller);
+    fireEvent.click(finishBtn());
+    await waitFor(() => expect(document.body.textContent).toMatch(/Agent is thinking/i));
+
+    // Save is disabled purely by the editor lock, so it is the honest probe for it.
+    const saveBtn = () => screen.getByRole("button", { name: /save/i }) as HTMLButtonElement;
+    expect(saveBtn().disabled).toBe(true);
+
+    fireEvent.click(instantBtn()); // change cadence mid-turn
+    // Still locked: the outstanding turn, not the current cadence, decides.
+    // The switch must actually land, or the assertion below proves nothing: without the fix,
+    // `locksEditor` would go false here and Save would become enabled.
+    await waitFor(() => expect(instantBtn().className).toContain("active"));
+    expect(saveBtn().disabled).toBe(true);
+  });
+
   it("still disables them when the agent is absent and no turn is outstanding", async () => {
     const live = mutableProfile({ user: { name: "Diane" }, agentLocation: "local", presenceAware: true, actions: [] });
     await renderApp(undefined, live.controller);

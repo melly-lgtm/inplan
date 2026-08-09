@@ -162,8 +162,13 @@ describe("AgentIndicator", () => {
   it("the opened menu says working too, instead of contradicting the button with 'No agent connected'", () => {
     render(<AgentIndicator location={null} working />);
     fireEvent.click(screen.getByRole("button"));
-    expect(document.querySelector(".ap-agent-detail")?.textContent).toMatch(/working/i);
+    const detail = document.querySelector(".ap-agent-detail")?.textContent ?? "";
+    expect(detail).toMatch(/working/i);
     expect(document.body.textContent).not.toMatch(/No agent connected/i);
+    // …but it must not INVENT a location. `working` carries none, and "your machine" would only be
+    // right because a local CLI happens to be the one agent shaped this way today.
+    expect(detail).not.toMatch(/your machine/i);
+    expect(detail).not.toMatch(/cloud/i);
   });
 
   it("the menu keeps saying 'No agent connected' when nothing holds the turn", () => {

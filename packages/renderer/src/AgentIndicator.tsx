@@ -143,8 +143,11 @@ export function AgentIndicator({
                 button by claiming "No agent connected" while the button reads "working". */}
             {location
               ? `${t("agent.detail", { where: location === "cloud" ? t("agent.whereCloud") : t("agent.whereLocal") })}${model ? ` · ${model}` : ""}${working ? ` · ${t("agent.working")}` : ""}`
-              : working
-                ? `${t("agent.detail", { where: t("agent.whereLocal") })} · ${t("agent.working")}`
+              : // Busy with no peer: report the state WITHOUT claiming where it runs. `working` carries
+                // no location, and inferring "your machine" would only be right because a local CLI
+                // happens to be the one agent shaped this way today.
+                working
+                ? `${t("agent.workingNoWhere")}`
                 : t("agent.none")}
             {quota && (
               <div className="ap-agent-quota">{`${t("agent.plan", { pct: Math.round(quota.usedPct * 100) })}${quota.overage ? ` ${t("agent.overIncluded")}` : ""}`}</div>

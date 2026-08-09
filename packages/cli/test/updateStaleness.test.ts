@@ -25,7 +25,7 @@ async function capture(fn: () => Promise<string | null>): Promise<{ result: stri
 /** An in-memory staleness cache. */
 function memCache(initial: string | null = null) {
   let v = initial;
-  return { readCache: () => v, writeCache: (s: string) => void (v = s), peek: () => v };
+  return { readCache: () => v, writeCache: (s: string) => void (v = s) };
 }
 
 describe("warnIfOutdated", () => {
@@ -73,7 +73,7 @@ describe("warnIfOutdated", () => {
 
   it("a cache stamped in the future is re-checked, not trusted (clock rewind)", async () => {
     const fetchLatest = vi.fn(async () => "0.1.26");
-    const cache = memCache(JSON.stringify({ at: 50_000, latest: "0.1.25" }));
+    const cache = memCache(JSON.stringify({ at: 50_000, latest: "0.1.25", pkg: "inplan" }));
     const { result } = await capture(() => warnIfOutdated("inplan", "0.1.25", { fetchLatest, now: () => 1000, ...cache }));
     expect(fetchLatest).toHaveBeenCalledTimes(1);
     expect(result).toContain("0.1.26");
@@ -82,13 +82,30 @@ describe("warnIfOutdated", () => {
   // A partial record passes the freshness check but carries no verdict, so serving it would suppress
   // the refresh for the whole TTL — silence a user cannot tell from "you're up to date".
   it("treats an incomplete cache record as a miss and re-checks", async () => {
-    for (const bad of [{ at: 1000 }, { at: 1000, latest: 42 }, { at: 1000, latest: null }, { latest: "0.1.26" }]) {
+    for (const bad of [{ at: 1000, pkg: "inplan" }, { at: 1000, latest: 42, pkg: "inplan" }, { at: 1000, latest: null, pkg: "inplan" }, { latest: "0.1.26", pkg: "inplan" }]) {
       const fetchLatest = vi.fn(async () => "0.1.26");
       const cache = memCache(JSON.stringify(bad));
       const { result } = await capture(() => warnIfOutdated("inplan", "0.1.25", { fetchLatest, now: () => 1500, ...cache }));
       expect(fetchLatest, JSON.stringify(bad)).toHaveBeenCalledTimes(1);
       expect(result).toContain("0.1.26");
     }
+  });
+
+  // `INPLAN_PKG` lets a fork or scoped build share this cache file. Without the package in the
+  // record, a fork would compare its own version against the OFFICIAL package's latest — warning
+  // falsely, or staying silent about a real fork update, for the whole TTL.
+  it("treats a cache written for a different package as a miss", async () => {
+    const fetchLatest = vi.fn(async () => "2.0.0");
+    const cache = memCache(JSON.stringify({ at: 1000, latest: "0.1.26", pkg: "inplan" }));
+    const { result } = await capture(() => warnIfOutdated("@acme/inplan-fork", "1.0.0", { fetchLatest, now: () => 1500, ...cache }));
+    expect(fetchLatest).toHaveBeenCalledTimes(1);
+    expect(result).toContain("2.0.0");
+  });
+
+  it("records the package it checked, so the next run can tell whose verdict it holds", async () => {
+    const cache = memCache();
+    await capture(() => warnIfOutdated("inplan", "0.1.25", { fetchLatest: async () => "0.1.26", now: () => 1000, ...cache }));
+    expect(JSON.parse(cache.readCache()!)).toEqual({ at: 1000, latest: "0.1.26", pkg: "inplan" });
   });
 
   it("a corrupt cache is ignored, not fatal", async () => {

@@ -563,8 +563,16 @@ export function App(props: EditorProps = {}): JSX.Element {
     return () => document.removeEventListener("keydown", onKey);
   }, [composer, findOpen, proposal, reviewOpen, undo, redo, readOnly]);
 
-  // The agent holds the turn (Turn mode, thinking) — this is the lock that offers "take back control".
-  const agentLocked = mode.locksEditor && agentThinking;
+  // The agent holds the turn — this is the lock that offers "take back control".
+  //
+  // Gated on the OUTSTANDING TURN, not on the current cadence. `agentThinking` is set only by Finish
+  // turn, which only renders in a locking mode, so it means exactly "we handed the turn over and the
+  // agent hasn't reported back". Reading `mode.locksEditor` here instead let a Turn→Instant switch
+  // mid-turn drop the lock and reopen the document for editing while the agent was still writing its
+  // revision. Switching cadence expresses a preference for the NEXT turn; it must not retroactively
+  // cancel the hand-off that is already in flight. (A stuck agent is still escapable via "take back
+  // control", which clears `agentThinking` directly.)
+  const agentLocked = agentThinking;
   // Any reason editing is blocked: the agent's turn, OR a host-declared read-only doc. Used to gate
   // all mutation (body edits, comments, accept/apply, finish turn). Read-only is NOT agent-turn, so
   // it must not surface the take-back affordance (see canTakeBack below).

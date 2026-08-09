@@ -661,9 +661,6 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     process.exit(1);
   }
 
-  // Cloud docs are the one place an out-of-date CLI fails *silently* — it attaches and looks fine
-  // while missing the code path the document needs. Warn early, cached, and never block the turn.
-  await warnIfOutdated(UPDATE_PKG, VERSION, stalenessCache());
 
   if (cmd === "signal") {
     if (hasFlag(rest, "done")) {
@@ -698,6 +695,13 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     output({ status: "messaged" });
     return;
   }
+
+  // Cloud docs are the one place an out-of-date CLI fails *silently* — it attaches and looks fine
+  // while missing the code path the document needs. Deliberately BELOW the `signal`/`message` early
+  // returns: those run once per turn and must stay snappy, and a registry lookup only writes its
+  // cache on success — so on a degraded network every short op would re-pay the full timeout. Only
+  // the attaching path, which is the one that can silently misbehave, is worth the check.
+  await warnIfOutdated(UPDATE_PKG, VERSION, stalenessCache());
 
   // A `wait` can block for longer than the ~1h access-token lifetime (the human idles before taking
   // their turn). Poll through a self-refreshing backend so the token is re-minted — via the

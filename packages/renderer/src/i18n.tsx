@@ -189,6 +189,8 @@ export const EN: Catalog = {
   "agent.whereCloud": "cloud",
   "agent.whereLocal": "your machine",
   "agent.detail": "Agent · {where}",
+  // Busy but with no presence peer, so we can't say where it runs — deliberately location-free.
+  "agent.workingNoWhere": "Agent · working",
   "agent.none": "No agent connected",
   "agent.plan": "Plan {pct}%",
   "agent.overIncluded": "— over included",

@@ -96,12 +96,15 @@ export async function warnIfOutdated(pkg: string, current: string, deps: Stalene
   try {
     const cached = deps.readCache?.() ?? null;
     if (cached) {
-      const { at, latest } = JSON.parse(cached) as { at?: number; latest?: string };
-      // Serve from cache only when the record is COMPLETE, fresh, and not from the future. A partial
-      // record (`{"at":…}` with no `latest`) would otherwise pass the freshness check and suppress
-      // the registry refresh for the whole TTL — silence indistinguishable from "you're up to date".
-      // A clock rewind likewise must not pin a stale verdict for six hours.
-      if (typeof at === "number" && typeof latest === "string" && at <= now && now - at < STALENESS_TTL_MS) {
+      const { at, latest, pkg: cachedPkg } = JSON.parse(cached) as { at?: number; latest?: string; pkg?: string };
+      // Serve from cache only when the record is COMPLETE, FOR THIS PACKAGE, fresh, and not from the
+      // future. A partial record (`{"at":…}` with no `latest`) would otherwise pass the freshness
+      // check and suppress the registry refresh for the whole TTL — silence indistinguishable from
+      // "you're up to date". The package must match because `INPLAN_PKG` lets a fork or a scoped
+      // build share this cache file: without it, a fork would compare its version against the
+      // official package's, warning falsely or staying silent for six hours. A clock rewind likewise
+      // must not pin a stale verdict.
+      if (typeof at === "number" && typeof latest === "string" && cachedPkg === pkg && at <= now && now - at < STALENESS_TTL_MS) {
         return compareVersions(current, latest) < 0 ? emitOutdated(pkg, current, latest) : null;
       }
     }
@@ -111,7 +114,7 @@ export async function warnIfOutdated(pkg: string, current: string, deps: Stalene
   const latest = await (deps.fetchLatest ?? latestVersion)(pkg);
   if (latest === null) return null; // registry unreachable — say nothing rather than cry wolf
   try {
-    deps.writeCache?.(JSON.stringify({ at: now, latest }));
+    deps.writeCache?.(JSON.stringify({ at: now, latest, pkg }));
   } catch {
     /* cache is an optimisation, not a requirement */
   }
