@@ -9,7 +9,7 @@
 // distinct: telling a paying customer to upgrade because a server hiccuped is the worst outcome.
 
 import { describe, expect, it, vi } from "vitest";
-import { EXIT_PLUGIN_UNAVAILABLE, EXIT_UPGRADE_REQUIRED, explainNoGate } from "../src/cli";
+import { EXIT_PLUGIN_UNAVAILABLE, EXIT_UPGRADE_REQUIRED, exitAfterFlush, explainNoGate } from "../src/cli";
 
 function capture(fn: () => void): { err: string; out: string } {
   let err = "";
@@ -66,5 +66,36 @@ describe("explainNoGate", () => {
     // 1 generic, 2 integrity_error, 3 confirm_required, 64 usage.
     expect(EXIT_UPGRADE_REQUIRED).not.toBe(EXIT_PLUGIN_UNAVAILABLE);
     expect([EXIT_UPGRADE_REQUIRED, EXIT_PLUGIN_UNAVAILABLE].every((c) => ![0, 1, 2, 3, 64].includes(c))).toBe(true);
+  });
+});
+
+// The coded exits exist to hand the agent a machine-readable status. Node's stdout is ASYNC when
+// piped — the normal case under a coding agent — so `output(...)` followed by a bare `process.exit`
+// delivers the code with no payload. These pin that the exit waits for the drain.
+describe("exitAfterFlush", () => {
+  it("does not exit until the stdout write has flushed", () => {
+    const exit = vi.fn();
+    let cb: (() => void) | undefined;
+    const out = { write: vi.fn((_c: string, c?: () => void) => ((cb = c), true)) };
+    exitAfterFlush(7, out as never, exit);
+    expect(exit).not.toHaveBeenCalled(); // still buffered — exiting here would truncate the JSON
+    cb!();
+    expect(exit).toHaveBeenCalledWith(7);
+  });
+
+  it("queues its barrier AFTER the payload, so ordering guarantees the flush covers it", () => {
+    const writes: string[] = [];
+    const out = { write: vi.fn((c: string, cb?: () => void) => (writes.push(c), cb?.(), true)) };
+    out.write(JSON.stringify({ status: "upgrade_required" }) + "\n");
+    exitAfterFlush(4, out as never, vi.fn());
+    expect(writes[0]).toContain("upgrade_required");
+    expect(writes[1]).toBe(""); // the zero-length drain barrier, written last
+  });
+
+  it("still exits when the stream reports an error to the callback", () => {
+    const exit = vi.fn();
+    const out = { write: vi.fn((_c: string, cb?: (e?: Error) => void) => (cb?.(new Error("EPIPE")), true)) };
+    exitAfterFlush(5, out as never, exit);
+    expect(exit).toHaveBeenCalledWith(5); // a broken pipe must not hang the process
   });
 });

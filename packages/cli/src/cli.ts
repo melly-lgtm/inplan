@@ -52,6 +52,21 @@ function output(obj: unknown): void {
   process.stdout.write(JSON.stringify(obj) + "\n");
 }
 
+/**
+ * Schedule an exit that waits for stdout to drain.
+ *
+ * Node's stdout is ASYNCHRONOUS when piped — the normal case, since the CLI runs as a coding agent's
+ * subprocess — and `process.exit()` discards whatever is still buffered. An `output(...)` immediately
+ * followed by `process.exit(n)` therefore delivers the exit code with no payload: exactly the
+ * machine-readable status these coded exits exist to carry. Stream writes are ordered, so this
+ * zero-length write's callback runs only once everything queued before it has been flushed.
+ *
+ * Callers MUST `return` straight after: this SCHEDULES the exit, it does not perform it.
+ */
+export function exitAfterFlush(code: number, out: Pick<NodeJS.WriteStream, "write"> = process.stdout, exit: (c: number) => void = process.exit): void {
+  out.write("", () => exit(code));
+}
+
 function getFlag(args: string[], name: string): string | undefined {
   const withEq = args.find((a) => a.startsWith(`--${name}=`));
   if (withEq) return withEq.slice(name.length + 3);
@@ -387,11 +402,13 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
       message: "Edit removes anchored comment(s). Re-run wait with --confirmed-comment-deletion=<ids> to proceed.",
       lost: ev.unconfirmed.map((c) => ({ id: c.id, text: c.text, author: c.author })),
     });
-    process.exit(3);
+    exitAfterFlush(3);
+    return;
   }
   if (!ev.integrityOk) {
     output({ status: "integrity_error", errors: ev.integrityErrors });
-    process.exit(2);
+    exitAfterFlush(2);
+    return;
   }
   // In Review mode an agent **body** change is quarantined as a proposal rather
   // than applied: the working file + canonical stay put, the agent's version is
@@ -725,7 +742,8 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
   // or edit the document — so say why and exit non-zero instead.
   if (!gate) {
     explainNoGate(reason, localFile);
-    process.exit(reason === "unentitled" ? EXIT_UPGRADE_REQUIRED : EXIT_PLUGIN_UNAVAILABLE);
+    exitAfterFlush(reason === "unentitled" ? EXIT_UPGRADE_REQUIRED : EXIT_PLUGIN_UNAVAILABLE);
+    return;
   }
 
   // the web badge shows "agent · your machine"; clear it on exit.
@@ -749,9 +767,9 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       canonical = await gate.readCanonical();
     } catch (e) {
       process.stderr.write(`inplan: live-collab hub unreachable (${String(e)})\n`);
-      presence.destroy(); // `process.exit` skips the `finally` below
       explainNoGate("unavailable", localFile);
-      process.exit(EXIT_PLUGIN_UNAVAILABLE);
+      exitAfterFlush(EXIT_PLUGIN_UNAVAILABLE);
+      return; // the `finally` below tears presence down on the way out
     }
     // Decide whether to (re)hydrate the working copy from the freshly probed canonical. Seed if
     // absent; keep it if a local fallback edit is pending (must push first); otherwise refresh it
