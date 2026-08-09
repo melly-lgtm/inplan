@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, it } from "vitest";
-import { shouldHydrateWorkFile, pendingRequiresReplay, trackGateDegradations } from "../src/liveSync";
+import { shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations } from "../src/liveSync";
 
 describe("shouldHydrateWorkFile", () => {
   it("seeds when the working copy doesn't exist yet", () => {
@@ -92,5 +92,42 @@ describe("trackGateDegradations", () => {
     expect(t.readFailed()).toBe(false);
     expect(t.writeFailed()).toBe(false);
     expect(calls.setCanonical).toEqual([]); // no local persistence on the happy path
+  });
+});
+
+// `exitAfterFlush` SCHEDULES an exit rather than performing one, so a fail-fast turn no longer stops
+// its caller by itself. This is the decision that has to stop it — and it is the one that protects
+// the working copy, which on `confirm_required` holds the agent's pending edit and nothing else does.
+describe("postTurnAction", () => {
+  const healthy = { readFailed: false, writeFailed: false };
+
+  it("stops on a fail-fast outcome, so the re-sync can't race the pending exit", () => {
+    expect(postTurnAction("exiting", healthy)).toBe("stop");
+  });
+
+  it("stops on a fail-fast outcome even when the hub also degraded", () => {
+    // `stop` must win outright: `keep-local` writes a `.pending` marker, which is still a mutation
+    // on behalf of a turn that already reported failure.
+    for (const d of [{ readFailed: true, writeFailed: false }, { readFailed: false, writeFailed: true }, { readFailed: true, writeFailed: true }]) {
+      expect(postTurnAction("exiting", d), JSON.stringify(d)).toBe("stop");
+    }
+  });
+
+  it("keeps local edits when the hub dropped mid-turn", () => {
+    expect(postTurnAction("ok", { readFailed: true, writeFailed: false })).toBe("keep-local");
+    expect(postTurnAction("ok", { readFailed: false, writeFailed: true })).toBe("keep-local");
+    expect(postTurnAction("ok", { readFailed: true, writeFailed: true })).toBe("keep-local");
+  });
+
+  it("re-syncs only on a healthy turn", () => {
+    expect(postTurnAction("ok", healthy)).toBe("resync");
+  });
+
+  it("is total: every outcome × degradation pair yields exactly one action", () => {
+    const actions = new Set<string>();
+    for (const outcome of ["ok", "exiting"] as const)
+      for (const readFailed of [true, false])
+        for (const writeFailed of [true, false]) actions.add(postTurnAction(outcome, { readFailed, writeFailed }));
+    expect([...actions].sort()).toEqual(["keep-local", "resync", "stop"]);
   });
 });

@@ -37,7 +37,7 @@ import { evaluateAgentEdit } from "./gate";
 import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenceReason, type PluginGate } from "./pluginGate";
-import { shouldHydrateWorkFile, pendingRequiresReplay, trackGateDegradations } from "./liveSync";
+import { shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
 import { announcePresence } from "./presence";
 import { wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
@@ -362,11 +362,6 @@ function logWaitExit(p: DocPaths, reason: string): void {
  * cursor, else "start from now" (current max). It is persisted on return so the
  * agent never hand-manages it and turns can't be skipped.
  */
-/** What a wait cycle did. `exiting` means it SCHEDULED a fail-fast exit (confirm_required /
- *  integrity_error) that will fire from an async stdout flush — callers must stop immediately rather
- *  than run their post-cycle work in the race window. */
-type WaitOutcome = "ok" | "exiting";
-
 async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string, gate: PluginGate | null = null): Promise<WaitOutcome> {
   const { channel, store } = backend;
   const history = await backend.history();
@@ -846,15 +841,10 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       tracked.gate, // …and accepted edits apply through the hub, not the store.
     );
 
-    // A fail-fast turn (confirm_required / integrity_error) has SCHEDULED its exit, which fires from
-    // an async stdout flush rather than immediately. Stop here: the re-sync below rewrites the
-    // working copy from the hub canonical, and running it for a turn that just reported failure would
-    // race the exit and nondeterministically discard the very edit the agent was told to fix.
-    // (A bare `process.exit` used to make this unreachable; making the exit flush-safe made it
-    // reachable, so the stop has to be explicit.)
-    if (outcome === "exiting") return;
+    const action = postTurnAction(outcome, { readFailed: tracked.readFailed(), writeFailed: tracked.writeFailed() });
+    if (action === "stop") return; // a fail-fast exit is pending — never touch the working copy
 
-    if (tracked.readFailed() || tracked.writeFailed()) {
+    if (action === "keep-local") {
       // The hub dropped mid-turn; DO NOT re-sync (that would overwrite a local edit with stale hub
       // canonical). Mark `.pending` ONLY when a WRITE failed — that's the case with a local
       // revision persisted off-hub that must be replayed. A read-only failure leaves the working
