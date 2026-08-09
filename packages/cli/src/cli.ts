@@ -37,7 +37,7 @@ import { evaluateAgentEdit } from "./gate";
 import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenceReason, type PluginGate } from "./pluginGate";
-import { shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
+import { demoteSource, shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
 import { announcePresence } from "./presence";
 import { wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
@@ -61,10 +61,19 @@ function output(obj: unknown): void {
  * machine-readable status these coded exits exist to carry. Stream writes are ordered, so this
  * zero-length write's callback runs only once everything queued before it has been flushed.
  *
+ * BOTH streams are drained. stderr is buffered when piped too, so draining stdout alone could still
+ * drop the human-facing explanation — on the deny paths that message is the *only* thing telling
+ * someone how to fix their situation.
+ *
  * Callers MUST `return` straight after: this SCHEDULES the exit, it does not perform it.
  */
-export function exitAfterFlush(code: number, out: Pick<NodeJS.WriteStream, "write"> = process.stdout, exit: (c: number) => void = process.exit): void {
-  out.write("", () => exit(code));
+export function exitAfterFlush(
+  code: number,
+  out: Pick<NodeJS.WriteStream, "write"> = process.stdout,
+  exit: (c: number) => void = process.exit,
+  err: Pick<NodeJS.WriteStream, "write"> = process.stderr,
+): void {
+  out.write("", () => err.write("", () => exit(code)));
 }
 
 function getFlag(args: string[], name: string): string | undefined {
@@ -937,21 +946,29 @@ async function doDemote(file: string, args: string[]): Promise<void> {
   }
   const hubSession = JSON.stringify({ url: resolveHubUrl(), docName: st.cloudDocId, token: backend.token });
   const { gate } = await loadPluginGateOutcome(hubSession, { token: backend.token });
-  let body: string;
-  let source: "hub" | "store" = "hub";
+  let hubBody: string | null = null;
   try {
-    if (!gate) throw new Error("no gate");
-    body = await gate.readCanonical();
+    if (gate) hubBody = await gate.readCanonical();
   } catch {
-    // Fall back rather than fail: a free plan never had hub writes of its own, so the store IS its
-    // document. Say so in the result, because for a doc that WAS on the hub this copy can lag.
-    body = await backend.store.loadDoc();
-    source = "store";
+    hubBody = null; // hub unreachable — we cannot verify what the store copy is missing
   }
   const dest = st.originalPath ?? file;
+  const choice = demoteSource({ hubReadable: hubBody !== null, fromStore: hasFlag(args, "from-store") });
+  if (choice.use === "abort") {
+    process.stderr.write(
+      "inplan demote: couldn't read the live document from the collab hub.\n" +
+        `  The server copy may be missing edits made through the hub, and demoting overwrites ${shellQuote(dest)}\n` +
+        "  and switches the document to local — together, that can't be undone.\n" +
+        "  Retry when the hub is reachable, or re-run with --from-store to accept the server copy as-is.\n",
+    );
+    output({ status: "demote_blocked", reason: choice.reason, path: dest });
+    exitAfterFlush(EXIT_PLUGIN_UNAVAILABLE);
+    return;
+  }
+  const body = choice.use === "hub" ? hubBody! : await backend.store.loadDoc();
   writeFileSync(dest, body);
   writeStatus(p.statusPath, { location: "local", originalPath: dest, lastSyncedHash: hashBody(body) });
-  output({ status: "demoted", location: "local", path: dest, source });
+  output({ status: "demoted", location: "local", path: dest, source: choice.use });
 }
 
 /** First Markdown H1 in the body, for a cloud doc's title (falls back to the filename). */
@@ -1720,7 +1737,7 @@ async function main(): Promise<void> {
         "       inplan status  <file>\n" +
         "       inplan upload  <file> [--org <slug>] [--repo <name>] [--path <p>] [--evict-lru]   (Collaborate on Cloud)\n" +
         "       inplan promote <file> --cloud-doc <docId> [--locator org/repo/path]\n" +
-        "       inplan demote  <file>\n" +
+        "       inplan demote  <file> [--from-store]   (bring a cloud doc back to disk; --from-store accepts the server copy when the hub is unreadable)\n" +
         "       inplan login   (opens the browser to sign in; or --url <url> --anon <key> --refresh <token> for scripts)\n" +
         "       inplan whoami | logout\n",
     );

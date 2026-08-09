@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, it } from "vitest";
-import { shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations } from "../src/liveSync";
+import { demoteSource, shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations } from "../src/liveSync";
 
 describe("shouldHydrateWorkFile", () => {
   it("seeds when the working copy doesn't exist yet", () => {
@@ -129,5 +129,26 @@ describe("postTurnAction", () => {
       for (const readFailed of [true, false])
         for (const writeFailed of [true, false]) actions.add(postTurnAction(outcome, { readFailed, writeFailed }));
     expect([...actions].sort()).toEqual(["keep-local", "resync", "stop"]);
+  });
+});
+
+// `demote` overwrites the user's original file AND flips the doc to local — irreversible together.
+// `gate.applyRevision` never writes `live.store`, so when the hub is unreadable there is no way to
+// distinguish a current server copy from one missing every hub edit. Refusing beats guessing.
+describe("demoteSource", () => {
+  it("uses the hub whenever it can be read", () => {
+    expect(demoteSource({ hubReadable: true, fromStore: false })).toEqual({ use: "hub" });
+  });
+
+  it("prefers the hub even when --from-store was passed (the flag is a fallback, not an override)", () => {
+    expect(demoteSource({ hubReadable: true, fromStore: true })).toEqual({ use: "hub" });
+  });
+
+  it("refuses rather than silently writing an unverifiable copy", () => {
+    expect(demoteSource({ hubReadable: false, fromStore: false })).toEqual({ use: "abort", reason: "hub_unreadable" });
+  });
+
+  it("accepts the store copy only on an explicit opt-in", () => {
+    expect(demoteSource({ hubReadable: false, fromStore: true })).toEqual({ use: "store" });
   });
 });

@@ -73,21 +73,27 @@ describe("explainNoGate", () => {
 // piped — the normal case under a coding agent — so `output(...)` followed by a bare `process.exit`
 // delivers the code with no payload. These pin that the exit waits for the drain.
 describe("exitAfterFlush", () => {
-  it("does not exit until the stdout write has flushed", () => {
+  it("does not exit until BOTH streams have flushed", () => {
     const exit = vi.fn();
-    let cb: (() => void) | undefined;
-    const out = { write: vi.fn((_c: string, c?: () => void) => ((cb = c), true)) };
-    exitAfterFlush(7, out as never, exit);
-    expect(exit).not.toHaveBeenCalled(); // still buffered — exiting here would truncate the JSON
-    cb!();
+    let outCb: (() => void) | undefined;
+    let errCb: (() => void) | undefined;
+    const out = { write: vi.fn((_c: string, c?: () => void) => ((outCb = c), true)) };
+    const err = { write: vi.fn((_c: string, c?: () => void) => ((errCb = c), true)) };
+    exitAfterFlush(7, out as never, exit, err as never);
+    expect(exit).not.toHaveBeenCalled(); // stdout still buffered — exiting here truncates the JSON
+    outCb!();
+    expect(err.write).toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled(); // stderr is buffered when piped too — the guidance would be lost
+    errCb!();
     expect(exit).toHaveBeenCalledWith(7);
   });
 
   it("queues its barrier AFTER the payload, so ordering guarantees the flush covers it", () => {
     const writes: string[] = [];
     const out = { write: vi.fn((c: string, cb?: () => void) => (writes.push(c), cb?.(), true)) };
+    const err = { write: vi.fn((_c: string, cb?: () => void) => (cb?.(), true)) };
     out.write(JSON.stringify({ status: "upgrade_required" }) + "\n");
-    exitAfterFlush(4, out as never, vi.fn());
+    exitAfterFlush(4, out as never, vi.fn(), err as never);
     expect(writes[0]).toContain("upgrade_required");
     expect(writes[1]).toBe(""); // the zero-length drain barrier, written last
   });
@@ -95,7 +101,8 @@ describe("exitAfterFlush", () => {
   it("still exits when the stream reports an error to the callback", () => {
     const exit = vi.fn();
     const out = { write: vi.fn((_c: string, cb?: (e?: Error) => void) => (cb?.(new Error("EPIPE")), true)) };
-    exitAfterFlush(5, out as never, exit);
+    const err = { write: vi.fn((_c: string, cb?: (e?: Error) => void) => (cb?.(new Error("EPIPE")), true)) };
+    exitAfterFlush(5, out as never, exit, err as never);
     expect(exit).toHaveBeenCalledWith(5); // a broken pipe must not hang the process
   });
 });
@@ -121,34 +128,5 @@ describe("shellQuote", () => {
 
   it("escapes an embedded single quote by closing, escaping, and reopening", () => {
     expect(shellQuote("/w/it's.md")).toBe("'/w/it'" + String.fromCharCode(92) + "''s.md'");
-  });
-});
-
-// `demote` overwrites the user's original file. On a doc a local agent has been editing through the
-// hub, `live.store` holds pre-hub content (`gate.applyRevision` never writes it) — so reading the
-// store there would destroy every edit since. `onSaveLocallyGate` already reads the hub for exactly
-// this reason; these pin that `demote` makes the same choice, and degrades honestly when it can't.
-describe("demote source selection", () => {
-  const pick = async (gate: { readCanonical: () => Promise<string> } | null, storeBody: string) => {
-    try {
-      if (!gate) throw new Error("no gate");
-      return { body: await gate.readCanonical(), source: "hub" as const };
-    } catch {
-      return { body: storeBody, source: "store" as const };
-    }
-  };
-
-  it("prefers the hub canonical when a gate is available", async () => {
-    const gate = { readCanonical: async () => "hub body (agent's latest)" };
-    expect(await pick(gate, "stale pre-hub body")).toEqual({ body: "hub body (agent's latest)", source: "hub" });
-  });
-
-  it("falls back to the store with no gate, and reports which it used", async () => {
-    expect(await pick(null, "store body")).toEqual({ body: "store body", source: "store" });
-  });
-
-  it("falls back rather than failing when the hub read throws (hub down)", async () => {
-    const gate = { readCanonical: async () => { throw new Error("hub unreachable"); } };
-    expect(await pick(gate, "store body")).toEqual({ body: "store body", source: "store" });
   });
 });

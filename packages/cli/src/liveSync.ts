@@ -125,3 +125,26 @@ export function postTurnAction(outcome: WaitOutcome, degraded: { readFailed: boo
   if (outcome === "exiting") return "stop";
   return degraded.readFailed || degraded.writeFailed ? "keep-local" : "resync";
 }
+
+/** Where `demote` should take the body it writes over the user's original file. */
+export type DemoteSource =
+  /** The hub canonical — authoritative whenever it can be read. */
+  | { use: "hub" }
+  /** The server copy, explicitly accepted by the user despite being unverifiable. */
+  | { use: "store" }
+  /** Write nothing and keep the doc in the cloud. */
+  | { use: "abort"; reason: "hub_unreadable" };
+
+/**
+ * Choose `demote`'s source, defaulting to refusing rather than guessing.
+ *
+ * `gate.applyRevision` never writes `live.store`, so when the hub can't be read there is no way to
+ * tell a store copy that is current from one missing every edit a local agent made through the hub.
+ * Demotion overwrites the user's original file AND flips the doc to local — irreversible together —
+ * so an unverifiable copy must not complete it silently. The user can still accept that copy with an
+ * explicit opt-in, which is a decision they can make and this code cannot.
+ */
+export function demoteSource({ hubReadable, fromStore }: { hubReadable: boolean; fromStore: boolean }): DemoteSource {
+  if (hubReadable) return { use: "hub" };
+  return fromStore ? { use: "store" } : { use: "abort", reason: "hub_unreadable" };
+}
