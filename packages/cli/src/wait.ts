@@ -3,6 +3,9 @@
 import { LogEventType, type ControlChannel, type LogEntry } from "@inplan/core/node";
 
 export interface WaitResult {
+  /** Set when the wait gave up after repeated poll failures (expired session, network gone).
+   *  A wait must END on this, never die — the agent's channel is JSON, not a stack trace. */
+  failed?: Error;
   entries: LogEntry[];
   cursor: number;
   /** True when the wait ended because the editor process went away (not via a turn/close action). */
@@ -22,6 +25,9 @@ export interface WaitOptions {
   pollMs?: number;
   /** Which entries should wake the agent. Default: any user-authored entry. */
   isActionable?: (e: LogEntry) => boolean;
+  /** Give up after this many CONSECUTIVE failed polls and resolve with `failed`. Default 30 —
+   *  with the 200ms cadence and the auth backoff, comfortably minutes of transient tolerance. */
+  maxConsecutiveErrors?: number;
   /** Watch editor presence and resolve (editorGone) if a once-alive editor dies. Default true. */
   watchEditor?: boolean;
   /** This waiter's single-waiter token; if a newer waiter supersedes it, step down. */
@@ -60,6 +66,7 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
   const pollMs = opts.pollMs ?? 200;
   const isActionable = opts.isActionable ?? defaultActionable;
   const watchEditor = opts.watchEditor ?? true;
+  const maxConsecutiveErrors = opts.maxConsecutiveErrors ?? 30;
   const ch = opts.channel;
 
   return new Promise<WaitResult>((resolve, reject) => {
@@ -68,6 +75,7 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
     let sawEditorAlive = false;
     let busy = false;
     let done = false;
+    let consecutiveErrors = 0;
 
     const cleanup = () => {
       clearInterval(timer);
@@ -131,6 +139,17 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
           } else if (deadline !== null && Date.now() >= deadline) {
             finish({ entries, cursor });
           }
+        }
+        consecutiveErrors = 0; // a clean poll clears the streak
+      } catch (e) {
+        // A poll can fail for reasons that resolve themselves (a blip, a 5xx, an in-flight token
+        // refresh) and for reasons that never will (the session is gone). Tolerate a streak, then
+        // END the wait with a result. Before this, the rejection escaped `void tick()` as an
+        // unhandled rejection and Node killed the process — printing a stack trace where the agent
+        // expects one line of JSON, and losing the turn entirely.
+        consecutiveErrors += 1;
+        if (consecutiveErrors >= maxConsecutiveErrors) {
+          finish({ entries: [], cursor: opts.cursor, failed: e instanceof Error ? e : new Error(String(e)) });
         }
       } finally {
         busy = false;

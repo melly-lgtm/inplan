@@ -260,3 +260,27 @@ describe("withAuthLock", () => {
     expect(order).toEqual(["A:start", "A:end", "B"]); // B ran only after A completed
   });
 });
+
+// The incident's most likely root cause: a refresh response without a rotated token used to be
+// papered over with `|| auth.refreshToken`, persisting a token the server had almost certainly just
+// spent. The session then looked healthy for the rest of the access token's hour and failed every
+// refresh afterwards — exactly one success, then permanent death.
+describe("a refresh with no rotated token", () => {
+  it("does NOT persist the old refresh token as if it were fresh", async () => {
+    seed();
+    const before = JSON.parse(readFileSync(authPath(), "utf8")) as { refreshToken: string; accessToken?: string };
+    refreshResult = { data: { session: session({ refresh_token: undefined }) }, error: null };
+    const s = await authedSession();
+    expect(s).toBeNull(); // treated as a failed refresh…
+    const after = JSON.parse(readFileSync(authPath(), "utf8")) as { refreshToken: string; accessToken?: string };
+    expect(after.refreshToken).toBe(before.refreshToken); // …and the stored token is untouched
+    expect(after.accessToken).toBeUndefined(); // no half-written session either
+  });
+
+  it("still persists normally when the server does rotate", async () => {
+    seed();
+    refreshResult = { data: { session: session() }, error: null };
+    expect(await authedSession()).not.toBeNull();
+    expect((JSON.parse(readFileSync(authPath(), "utf8")) as { refreshToken: string }).refreshToken).toBe("rt-new");
+  });
+});

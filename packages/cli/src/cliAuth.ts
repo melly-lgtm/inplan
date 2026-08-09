@@ -235,13 +235,19 @@ async function reuseCached(auth: AuthFile, skewS = ACCESS_SKEW_S): Promise<Authe
   return error || !data.session ? null : { db, session: data.session };
 }
 
-export async function authedSession(): Promise<AuthedSession | null> {
+/** Proactive margin for a LONG-LIVED `wait`: refresh this far before expiry so a failure has room to
+ *  retry. The 2-minute {@link ACCESS_SKEW_S} leaves ~2 minutes of budget, which is how a single bad
+ *  refresh became a dead session. One-shot commands keep the small skew — they exit immediately, and
+ *  a wide margin there would only rotate the single-use token more often than necessary. */
+export const LIVE_REFRESH_SKEW_S = 10 * 60;
+
+export async function authedSession(skewS = ACCESS_SKEW_S): Promise<AuthedSession | null> {
   const cached = loadAuth();
   if (!cached) return null;
 
   // Fast path — reuse a still-valid access token: no refresh, no rotation, no lock. This is what
   // makes concurrent `inplan` processes safe (they never touch the single-use refresh token).
-  const reused = await reuseCached(cached);
+  const reused = await reuseCached(cached, skewS);
   if (reused) return reused;
 
   // Slow path — the cached token is missing/expiring: refresh (which rotates the refresh token)
@@ -250,7 +256,7 @@ export async function authedSession(): Promise<AuthedSession | null> {
   const locked = await withAuthLock<AuthedSession | null>(async ({ stillMine }) => {
     const auth = loadAuth();
     if (!auth) return null;
-    const fresh = await reuseCached(auth); // a peer may have refreshed while we waited for the lock
+    const fresh = await reuseCached(auth, skewS); // a peer may have refreshed while we waited for the lock
     if (fresh) return fresh;
 
     // Fence the single-use rotation: if we were paused past staleMs and reclaimed, bail rather than
@@ -261,11 +267,21 @@ export async function authedSession(): Promise<AuthedSession | null> {
     const { data, error } = await db.auth.refreshSession({ refresh_token: auth.refreshToken });
     if (error || !data.session) return null;
 
+    // A refresh response with no rotated token is anomalous, and the old fallback (`|| auth.refreshToken`)
+    // hid it in the most damaging way: rotation had almost certainly happened server-side, so we'd
+    // persist a CONSUMED token, look healthy for the rest of the access token's hour, and then fail
+    // every refresh forever. Treat it as a failed refresh instead — we keep the stored token untouched,
+    // so a server that genuinely doesn't rotate stays usable on the next attempt.
+    if (!data.session.refresh_token) {
+      process.stderr.write("inplan: refresh returned no new refresh token; keeping the stored one and retrying rather than persisting a possibly-spent token\n");
+      return null;
+    }
+
     // Persist the rotated refresh token + the new access token (& expiry) so the fast path can
     // reuse it, and `whoami` has an identity without another round-trip.
     saveAuth({
       ...auth,
-      refreshToken: data.session.refresh_token || auth.refreshToken,
+      refreshToken: data.session.refresh_token,
       accessToken: data.session.access_token,
       ...(data.session.expires_at ? { expiresAt: data.session.expires_at } : {}),
       ...(data.session.user?.email ? { email: data.session.user.email } : {}),
@@ -310,8 +326,8 @@ export interface RemoteBackend {
  * Bind an authenticated client to one cloud document. Returns null when not
  * logged in (the caller prints "run `inplan login`").
  */
-export async function remoteBackend(docId: string, consumerId = "cli-agent"): Promise<RemoteBackend | null> {
-  const s = await authedSession();
+export async function remoteBackend(docId: string, consumerId = "cli-agent", skewS?: number): Promise<RemoteBackend | null> {
+  const s = await authedSession(skewS);
   if (!s) return null;
   return {
     db: s.db,
@@ -339,20 +355,38 @@ export interface LiveRemoteBackend {
   /** The freshest access token (for presence/websocket re-auth), or null if the session is gone. */
   tokenNow(): string | null;
 }
+/** Backoff after a failed re-mint. The poll loop calls through here every `pollMs` (200ms), so an
+ *  unthrottled retry replays the SAME single-use refresh token hundreds of times a minute — which is
+ *  how GoTrue's reuse detection gets tripped and the whole token family revoked. A failing refresh
+ *  must therefore get slower, not faster. */
+const REFRESH_BACKOFF_BASE_MS = 1_000;
+const REFRESH_BACKOFF_MAX_MS = 60_000;
+/** Exported for the test that pins the schedule. */
+export const refreshBackoffMs = (failures: number): number => Math.min(REFRESH_BACKOFF_BASE_MS * 2 ** Math.max(0, failures - 1), REFRESH_BACKOFF_MAX_MS);
+
 export function liveRemoteBackend(docId: string, consumerId = "cli-agent"): LiveRemoteBackend {
   let inner: RemoteBackend | null = null;
   let expiresAt = 0; // the cached inner's access-token expiry (unix seconds)
   let inflight: Promise<RemoteBackend | null> | null = null; // the single in-progress re-mint, if any
+  let failures = 0; // consecutive failed re-mints, driving the backoff
+  let retryAfterMs = 0; // epoch ms before which we must NOT touch the refresh token again
   const fresh = async (): Promise<RemoteBackend | null> => {
     const now = Math.floor(Date.now() / 1000);
-    if (inner && expiresAt - now > ACCESS_SKEW_S) return inner; // cached token still valid — reuse
+    // Refresh well BEFORE expiry (10 min, not 2) so a failure has a real retry budget instead of one
+    // shot at the cliff.
+    if (inner && expiresAt - now > LIVE_REFRESH_SKEW_S) return inner; // cached token still valid — reuse
+    // Cooling off after a failure: serve the cached client while its token is genuinely unexpired,
+    // and otherwise report unavailable WITHOUT another rotation attempt.
+    if (Date.now() < retryAfterMs && !inflight) return inner && expiresAt > now ? inner : null;
     // Coalesce concurrent re-mints into ONE refresh: every channel/store call routes through here, so
     // without this several could each acquire the lock and rotate the refresh token in series. A
     // re-mint goes through remoteBackend()→authedSession(), which re-reads auth.json INSIDE the lock —
     // so it always starts from the freshest persisted token even if another process just rotated it.
-    inflight ??= remoteBackend(docId, consumerId)
+    inflight ??= remoteBackend(docId, consumerId, LIVE_REFRESH_SKEW_S)
       .then((b) => {
         if (b) {
+          failures = 0;
+          retryAfterMs = 0;
           inner = b;
           // Trust the persisted expiry; if a session somehow carried none, assume a short validity so
           // we reuse rather than re-mint on every call, while still re-checking soon.
@@ -364,6 +398,8 @@ export function liveRemoteBackend(docId: string, consumerId = "cli-agent"): Live
         // doesn't drop a valid session. Otherwise (another process logged out ⇒ no creds, or the token
         // expired) DISCARD it: clear inner/expiresAt so tokenNow()/subscribe(), which bypass need(),
         // can't keep serving a stale/expired/revoked client, and callers get a clean "unavailable".
+        failures += 1;
+        retryAfterMs = Date.now() + refreshBackoffMs(failures);
         const stillLoggedIn = loadAuth() !== null;
         if (stillLoggedIn && inner && expiresAt > Math.floor(Date.now() / 1000)) return inner;
         inner = null;

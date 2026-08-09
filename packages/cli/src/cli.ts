@@ -453,6 +453,17 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
   const isActionable = wakePredicate(mode.wake);
   const result = await waitForActions({ channel, cursor, debounceMs, pollMs, isActionable, token: lockToken });
 
+  // The wait gave up after a streak of failed polls — an expired session is the common cause. Report
+  // it as a status the agent can act on and exit non-zero. It used to reach here as an unhandled
+  // rejection that killed the process mid-poll: a stack trace on stderr, nothing on stdout.
+  if (result.failed) {
+    backend.logExit("poll_failed");
+    process.stderr.write(`inplan: lost contact with the document (${result.failed.message}).\n  If your session expired, run \`inplan login\` and re-attach.\n`);
+    output({ status: "wait_failed", message: result.failed.message });
+    exitAfterFlush(EXIT_WAIT_FAILED);
+    return "exiting";
+  }
+
   // Superseded: a newer waiter owns the doc now. Step down quietly without
   // advancing the cursor (the live waiter handles it).
   if (result.superseded) {
@@ -639,6 +650,8 @@ function stalenessCache(): { readCache: () => string | null; writeCache: (v: str
 export const EXIT_UPGRADE_REQUIRED = 4;
 /** `wait --remote` when we couldn't get a verified answer (offline / server error / bad bundle). */
 export const EXIT_PLUGIN_UNAVAILABLE = 5;
+/** A wait that gave up after repeated poll failures (usually an expired session). */
+export const EXIT_WAIT_FAILED = 6;
 
 /**
  * Explain, to a human and to the coding agent reading our JSON, why we can't serve this cloud doc.
@@ -1952,8 +1965,19 @@ function isProgramEntry(): boolean {
   }
 }
 if (isProgramEntry()) {
+  // Backstop: stdout is the agent's JSON channel, so NOTHING may reach it as a raw Node stack trace.
+  // An unhandled rejection anywhere (a stray promise in a poll loop, a listener callback) otherwise
+  // kills the process under Node's default `--unhandled-rejections=throw`, leaving the agent with an
+  // exit code, a stack trace on stderr, and no parseable result at all.
+  process.on("unhandledRejection", (reason) => {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    process.stderr.write(`inplan: unexpected error — ${message}\n`);
+    output({ status: "internal_error", message });
+    exitAfterFlush(1);
+  });
   main().catch((err) => {
     process.stderr.write(`inplan: ${(err as Error).message}\n`);
-    process.exit(1);
+    output({ status: "internal_error", message: (err as Error).message });
+    exitAfterFlush(1);
   });
 }
