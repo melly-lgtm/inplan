@@ -6,8 +6,11 @@ import { LogEventType, type ControlChannel, type LogEntry } from "@inplan/core/n
  *  claims it outlasts a full refresh cooldown asserts the REAL value rather than a copy of it. */
 export const DEFAULT_ERROR_GRACE_MS = 5 * 60_000;
 
-/** How long a single poll may take before it is abandoned. `SupabaseControlChannel.readSince` has no
- *  client-side timeout, so without this a stalled request pins `busy` and the wait hangs. */
+/** How long a single channel request may take before it is abandoned. The Supabase channel has no
+ *  client-side timeout on ANY of its calls, so a stall in `readSince`, `isSuperseded`, or `presence`
+ *  alike pins `busy` and the wait hangs — bounding only the first would just move the hang. The two
+ *  probe calls keep their existing swallow-and-continue handling: a timed-out lock or presence read
+ *  means "unknown", which must not end a wait, but must not freeze it either. */
 export const DEFAULT_POLL_TIMEOUT_MS = 30_000;
 
 /** Reject if `p` hasn't settled within `ms`. The timer is always cleared, so a resolved poll never
@@ -141,7 +144,7 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
         // one waiter is ever live. A read blip is treated as "still ours".
         if (opts.token) {
           try {
-            if (await ch.isSuperseded(opts.token)) {
+            if (await withTimeout(ch.isSuperseded(opts.token), pollTimeoutMs)) {
               finish({ entries, cursor, superseded: true });
               return;
             }
@@ -155,7 +158,7 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
         if (watchEditor) {
           let alive = false;
           try {
-            alive = await ch.presence();
+            alive = await withTimeout(ch.presence(), pollTimeoutMs);
           } catch {
             /* presence unknown — keep waiting */
           }

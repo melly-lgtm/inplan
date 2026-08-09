@@ -13,6 +13,23 @@ import { LIVE_REFRESH_SKEW_S, refreshBackoffMs } from "../src/cliAuth";
 import { DEFAULT_ERROR_GRACE_MS, DEFAULT_POLL_TIMEOUT_MS, waitForActions } from "../src/wait";
 import type { ControlChannel } from "@inplan/core";
 
+/** Assert a wait is STILL RUNNING after `ms`, then stop it.
+ *
+ *  A bare `Promise.race` only abandons the caller's view: `waitForActions` keeps its interval alive,
+ *  and with a 1ms poll and an injected clock it spins at ~1kHz past the end of the test. Aborting
+ *  clears the interval deterministically, so the assertion costs one timer instead of thousands. */
+async function stillWaitingAfter(ms: number, run: (signal: AbortSignal) => Promise<unknown>): Promise<void> {
+  const ctl = new AbortController();
+  const wait = run(ctl.signal).then(
+    (r) => ({ settled: r }),
+    (e) => ({ rejected: e as Error }),
+  );
+  const outcome = await Promise.race([wait, new Promise((r) => setTimeout(() => r("pending"), ms))]);
+  expect(outcome).toBe("pending"); // it must not have finished on its own
+  ctl.abort();
+  await wait; // the abort rejection is the expected end; awaiting it proves the loop stopped
+}
+
 describe("refresh backoff", () => {
   it("grows exponentially instead of hammering a single-use token", () => {
     expect(refreshBackoffMs(1)).toBe(1_000);
@@ -175,11 +192,7 @@ describe("give-up budget vs refresh backoff", () => {
       presence: async () => true,
     } as unknown as ControlChannel;
     // No errorGraceMs: the shipped default must carry it past a full cooldown without giving up.
-    const result = await Promise.race([
-      waitForActions({ channel: ch, cursor: 0, pollMs: 1, now: () => (t += 1_000), watchEditor: false }),
-      new Promise((r) => setTimeout(() => r("still waiting"), 250)),
-    ]);
-    expect(result).toBe("still waiting");
+    await stillWaitingAfter(250, (signal) => waitForActions({ channel: ch, cursor: 0, pollMs: 1, now: () => (t += 1_000), watchEditor: false, signal }));
   });
 
   it("does not give up early just because the poll cadence is fast", async () => {
@@ -196,11 +209,9 @@ describe("give-up budget vs refresh backoff", () => {
       presence: async () => true,
     } as unknown as ControlChannel;
     // 300 ticks of 200ms advance 60s of fake time — under the 5-minute grace, so it must NOT give up.
-    const result = await Promise.race([
-      waitForActions({ channel: ch, cursor: 0, pollMs: 1, errorGraceMs: 5 * 60_000, now: () => (t += 200), watchEditor: false }),
-      new Promise((r) => setTimeout(() => r("still waiting"), 300)),
-    ]);
-    expect(result).toBe("still waiting");
+    await stillWaitingAfter(300, (signal) =>
+      waitForActions({ channel: ch, cursor: 0, pollMs: 1, errorGraceMs: 5 * 60_000, now: () => (t += 200), watchEditor: false, signal }),
+    );
   });
 });
 
@@ -230,6 +241,38 @@ describe("a hung poll", () => {
       watchEditor: false,
     });
     expect(result.failed?.message).toMatch(/timed out after 10ms/);
+  });
+
+  // Bounding only `readSince` would have MOVED the hang rather than removed it: `isSuperseded` and
+  // `presence` are awaited in the same tick and are equally unbounded on the Supabase channel.
+  // "Still waiting" is NOT the assertion here — a FROZEN wait is also still waiting, so that would
+  //  pass with the bug present. The discriminator is whether the tick recycles: a stalled probe that
+  //  pins `busy` lets `readSince` run exactly ONCE, ever.
+  const pollsDuring = async (ms: number, stall: "lock" | "presence") => {
+    let reads = 0;
+    const ch = {
+      append: async () => {},
+      readSince: async (cursor: number) => ((reads += 1), { entries: [], cursor }),
+      subscribe: () => () => {},
+      getCursor: async () => 0,
+      setCursor: async () => {},
+      claimLock: async () => {},
+      isSuperseded: stall === "lock" ? () => new Promise(() => {}) : async () => false,
+      presence: stall === "presence" ? () => new Promise(() => {}) : async () => true,
+    } as unknown as ControlChannel;
+    await stillWaitingAfter(ms, (signal) =>
+      waitForActions({ channel: ch, cursor: 0, pollMs: 1, pollTimeoutMs: 10, token: "lock-1", watchEditor: stall === "presence", signal }),
+    );
+    return reads;
+  };
+
+  it("keeps polling when the LOCK probe stalls, instead of freezing on it", async () => {
+    // A stalled lock read means "unknown", which must not END the wait — but must not freeze it.
+    expect(await pollsDuring(120, "lock")).toBeGreaterThan(1);
+  });
+
+  it("keeps polling when the PRESENCE probe stalls", async () => {
+    expect(await pollsDuring(120, "presence")).toBeGreaterThan(1);
   });
 
   it("does not fire the timeout for a poll that answers in time", async () => {
