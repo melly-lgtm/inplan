@@ -563,8 +563,16 @@ export function App(props: EditorProps = {}): JSX.Element {
     return () => document.removeEventListener("keydown", onKey);
   }, [composer, findOpen, proposal, reviewOpen, undo, redo, readOnly]);
 
-  // The agent holds the turn (Turn mode, thinking) — this is the lock that offers "take back control".
-  const agentLocked = mode.locksEditor && agentThinking;
+  // The agent holds the turn — this is the lock that offers "take back control".
+  //
+  // Gated on the OUTSTANDING TURN, not on the current cadence. `agentThinking` is set only by Finish
+  // turn, which only renders in a locking mode, so it means exactly "we handed the turn over and the
+  // agent hasn't reported back". Reading `mode.locksEditor` here instead let a Turn→Instant switch
+  // mid-turn drop the lock and reopen the document for editing while the agent was still writing its
+  // revision. Switching cadence expresses a preference for the NEXT turn; it must not retroactively
+  // cancel the hand-off that is already in flight. (A stuck agent is still escapable via "take back
+  // control", which clears `agentThinking` directly.)
+  const agentLocked = agentThinking;
   // Any reason editing is blocked: the agent's turn, OR a host-declared read-only doc. Used to gate
   // all mutation (body edits, comments, accept/apply, finish turn). Read-only is NOT agent-turn, so
   // it must not surface the take-back affordance (see canTakeBack below).
@@ -1567,6 +1575,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         }
         forceSettingsOpen={forceSettingsOpen}
         locked={editingLocked}
+        agentThinking={agentThinking}
         nav={
           typeof hostApi().navigate === "function"
             ? { canBack: navState.canBack, canForward: navState.canForward, onBack: () => void hostApi().navigate?.("back"), onForward: () => void hostApi().navigate?.("forward") }
@@ -2187,6 +2196,8 @@ function TopBar(props: {
   onReplayTutorial?: () => void; // settings menu: re-run the first-run tour
   forceSettingsOpen?: boolean; // onboarding: hold the ⚙ menu open on the settings step
   locked: boolean;
+  /** The agent holds the turn (we handed it over and it hasn't reported back). */
+  agentThinking?: boolean;
   nav?: { canBack: boolean; canForward: boolean; onBack: () => void; onForward: () => void };
 }): JSX.Element {
   const { cadence, acceptance, panes, onMode } = props;
@@ -2197,7 +2208,12 @@ function TopBar(props: {
   // flagged `agentAvailable` (entitled + auto policy), OR an agent is connected (`agentLocation`, e.g.
   // a local CLI). Only when neither holds is there genuinely no agent. The desktop's local agent is
   // implicit (not presence-aware), so these stay enabled there.
-  const noAgent = profile?.presenceAware === true && profile.agentAvailable !== true && profile.agentLocation == null;
+  //
+  // A turn-based local agent is NOT a persistent peer either: its CLI exits between turns, so
+  // `agentLocation` goes null for exactly as long as the agent is busy working. Treat "we handed it
+  // the turn and it hasn't answered" as an attached agent, or Finish-turn greys out mid-handoff and
+  // the human is stranded by the very act of handing over.
+  const noAgent = profile?.presenceAware === true && profile.agentAvailable !== true && profile.agentLocation == null && props.agentThinking !== true;
   const noAgentTitle = noAgent ? t("topbar.noAgent") : undefined;
   return (
     <header className="ap-topbar">
@@ -2304,11 +2320,14 @@ function TopBar(props: {
       {profile?.presenceAware && (
         <AgentIndicator
           location={profile.agentLocation}
+          working={props.agentThinking === true}
           model={profile.agentModel}
           quota={profile.agentQuota}
           byoKey={profile.agentByoKey}
           policy={profile.agentPolicy}
           onSetPolicy={profile.onSetAgentPolicy}
+          localEntitled={profile.agentLocalEntitled}
+          onUpgrade={profile.onUpgrade}
           localCommand={hostApi().localAgentCommand}
         />
       )}

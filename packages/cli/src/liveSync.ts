@@ -97,3 +97,54 @@ export function trackGateDegradations(
     },
   };
 }
+
+/** What a wait cycle did. `exiting` means it SCHEDULED a fail-fast exit (confirm_required /
+ *  integrity_error) that fires from an async stdout flush rather than immediately. */
+export type WaitOutcome = "ok" | "exiting";
+
+/** What the gate path must do with the working copy once a turn ends. */
+export type PostTurnAction =
+  /** Touch nothing — a fail-fast exit is pending. */
+  | "stop"
+  /** The hub dropped mid-turn: keep the local edits and re-sync on a later run. */
+  | "keep-local"
+  /** Healthy turn: pull the fresh canonical so the agent's next turn builds on it. */
+  | "resync";
+
+/**
+ * Decide the post-turn action from the wait's outcome and the hub's health.
+ *
+ * `stop` comes FIRST and unconditionally. A fail-fast turn's exit is only scheduled — it fires from
+ * an async stdout flush — so without this the caller would keep running and pull a fresh hub
+ * canonical over the working copy. On `confirm_required` that copy holds the agent's edit awaiting
+ * the human's confirmation and exists nowhere else, so the pull can destroy exactly what the turn
+ * asked to have fixed. (A bare `process.exit` used to make that unreachable; a flush-safe exit does
+ * not, which is why the stop must be explicit.)
+ */
+export function postTurnAction(outcome: WaitOutcome, degraded: { readFailed: boolean; writeFailed: boolean }): PostTurnAction {
+  if (outcome === "exiting") return "stop";
+  return degraded.readFailed || degraded.writeFailed ? "keep-local" : "resync";
+}
+
+/** Where `demote` should take the body it writes over the user's original file. */
+export type DemoteSource =
+  /** The hub canonical — authoritative whenever it can be read. */
+  | { use: "hub" }
+  /** The server copy, explicitly accepted by the user despite being unverifiable. */
+  | { use: "store" }
+  /** Write nothing and keep the doc in the cloud. */
+  | { use: "abort"; reason: "hub_unreadable" };
+
+/**
+ * Choose `demote`'s source, defaulting to refusing rather than guessing.
+ *
+ * `gate.applyRevision` never writes `live.store`, so when the hub can't be read there is no way to
+ * tell a store copy that is current from one missing every edit a local agent made through the hub.
+ * Demotion overwrites the user's original file AND flips the doc to local — irreversible together —
+ * so an unverifiable copy must not complete it silently. The user can still accept that copy with an
+ * explicit opt-in, which is a decision they can make and this code cannot.
+ */
+export function demoteSource({ hubReadable, fromStore }: { hubReadable: boolean; fromStore: boolean }): DemoteSource {
+  if (hubReadable) return { use: "hub" };
+  return fromStore ? { use: "store" } : { use: "abort", reason: "hub_unreadable" };
+}

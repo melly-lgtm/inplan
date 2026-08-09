@@ -30,14 +30,14 @@ import { gitProvenance } from "./provenance";
 import { authedSession, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, type AuthFile } from "./cliAuth";
 import { browserLogin } from "./cliLogin";
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
-import { checkForUpdate, selfUpdate, UPDATE_PKG } from "./update";
+import { checkForUpdate, selfUpdate, UPDATE_PKG, warnIfOutdated } from "./update";
 import { runningEditorPid } from "./editorProcess";
 import { applyGatedEdit } from "./applyEdit";
 import { evaluateAgentEdit } from "./gate";
 import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
-import { loadPluginGate, resolveHubUrl, type PluginGate } from "./pluginGate";
-import { shouldHydrateWorkFile, pendingRequiresReplay, trackGateDegradations } from "./liveSync";
+import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenceReason, type PluginGate } from "./pluginGate";
+import { demoteSource, shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
 import { announcePresence } from "./presence";
 import { wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
@@ -50,6 +50,30 @@ const VERSION = versionFromModule(import.meta.url);
 
 function output(obj: unknown): void {
   process.stdout.write(JSON.stringify(obj) + "\n");
+}
+
+/**
+ * Schedule an exit that waits for stdout to drain.
+ *
+ * Node's stdout is ASYNCHRONOUS when piped — the normal case, since the CLI runs as a coding agent's
+ * subprocess — and `process.exit()` discards whatever is still buffered. An `output(...)` immediately
+ * followed by `process.exit(n)` therefore delivers the exit code with no payload: exactly the
+ * machine-readable status these coded exits exist to carry. Stream writes are ordered, so this
+ * zero-length write's callback runs only once everything queued before it has been flushed.
+ *
+ * BOTH streams are drained. stderr is buffered when piped too, so draining stdout alone could still
+ * drop the human-facing explanation — on the deny paths that message is the *only* thing telling
+ * someone how to fix their situation.
+ *
+ * Callers MUST `return` straight after: this SCHEDULES the exit, it does not perform it.
+ */
+export function exitAfterFlush(
+  code: number,
+  out: Pick<NodeJS.WriteStream, "write"> = process.stdout,
+  exit: (c: number) => void = process.exit,
+  err: Pick<NodeJS.WriteStream, "write"> = process.stderr,
+): void {
+  out.write("", () => err.write("", () => exit(code)));
 }
 
 function getFlag(args: string[], name: string): string | undefined {
@@ -347,7 +371,7 @@ function logWaitExit(p: DocPaths, reason: string): void {
  * cursor, else "start from now" (current max). It is persisted on return so the
  * agent never hand-manages it and turns can't be skipped.
  */
-async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string, gate: PluginGate | null = null): Promise<void> {
+async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string, gate: PluginGate | null = null): Promise<WaitOutcome> {
   const { channel, store } = backend;
   const history = await backend.history();
 
@@ -387,11 +411,13 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
       message: "Edit removes anchored comment(s). Re-run wait with --confirmed-comment-deletion=<ids> to proceed.",
       lost: ev.unconfirmed.map((c) => ({ id: c.id, text: c.text, author: c.author })),
     });
-    process.exit(3);
+    exitAfterFlush(3);
+    return "exiting";
   }
   if (!ev.integrityOk) {
     output({ status: "integrity_error", errors: ev.integrityErrors });
-    process.exit(2);
+    exitAfterFlush(2);
+    return "exiting";
   }
   // In Review mode an agent **body** change is quarantined as a proposal rather
   // than applied: the working file + canonical stay put, the agent's version is
@@ -432,7 +458,7 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
   if (result.superseded) {
     backend.logExit("superseded");
     output({ status: "superseded" });
-    return;
+    return "ok";
   }
 
   // Cloud→local handoff: a human on the web asked us to bring the doc back to disk.
@@ -444,7 +470,7 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
   if (backend.onSaveLocally && result.entries.some((e) => e.type === LogEventType.SaveLocallyRequested)) {
     backend.logExit("save_locally");
     await backend.onSaveLocally();
-    return;
+    return "ok";
   }
 
   await channel.setCursor(result.cursor); // advance the persisted cursor so the next call continues here
@@ -457,7 +483,7 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
     const path = (navEntry.payload as { path?: string } | undefined)?.path;
     backend.logExit("navigated");
     output({ status: "navigated", ...(path ? { path } : {}), cursor: result.cursor, closed: false });
-    return;
+    return "ok";
   }
 
   // The editor logs WHY it closed (completed / window_closed); a crash logs nothing.
@@ -497,6 +523,7 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
     closed: status === "closed",
     entries: result.entries,
   });
+  return "ok";
 }
 
 /**
@@ -595,6 +622,58 @@ function defaultBrowserLogin(): Promise<AuthFile> {
   return browserLogin({ onUrl: (u) => process.stderr.write(`Opening your browser to sign in:\n  ${u}\nIf it didn't open, paste that URL into your browser.\n`) });
 }
 
+/** Where the staleness check parks its verdict, so it costs one registry hit per TTL, not per turn. */
+function stalenessCache(): { readCache: () => string | null; writeCache: (v: string) => void } {
+  const path = join(sidecarRoot(), ".update-check.json");
+  return {
+    readCache: () => (existsSync(path) ? readFileSync(path, "utf8") : null),
+    writeCache: (v) => {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, v);
+    },
+  };
+}
+
+/** `wait --remote` on a plan that doesn't include the local agent. Distinct from the generic 1 so a
+ *  wrapper can tell "buy something" from "retry later" without scraping stderr. */
+export const EXIT_UPGRADE_REQUIRED = 4;
+/** `wait --remote` when we couldn't get a verified answer (offline / server error / bad bundle). */
+export const EXIT_PLUGIN_UNAVAILABLE = 5;
+
+/**
+ * Explain, to a human and to the coding agent reading our JSON, why we can't serve this cloud doc.
+ *
+ * The two reasons need different words: `unentitled` is a plan limit the human can act on, while
+ * `unavailable` is a transient failure they should just retry. Telling a paying customer to upgrade
+ * because a server hiccuped is the worst outcome here, which is why the reason is only ever
+ * `unentitled` on an explicit server denial (see {@link resolvePluginOutcome}).
+ */
+/** POSIX single-quoting for a path we print inside a copy-pasteable command. An unquoted path with a
+ *  space produces a command that silently targets the wrong file, and one containing `$(…)`, backticks
+ *  or `;` would execute on paste. Single quotes suppress every expansion; the only character needing
+ *  care is `'` itself, closed and re-opened around an escaped one. */
+export function shellQuote(path: string): string {
+  return "'" + path.replaceAll("'", "'\\''") + "'";
+}
+
+export function explainNoGate(reason: PluginAbsenceReason, localFile?: string): void {
+  if (reason === "unentitled") {
+    process.stderr.write(
+      "inplan: this plan doesn't include the local agent on cloud documents.\n" +
+        "  Open the document in your browser and click the agent indicator to upgrade.\n" +
+        (localFile ? `  Or keep working offline for free: \`inplan demote ${shellQuote(localFile)}\` brings it back to disk.\n` : ""),
+    );
+    output({ status: "upgrade_required", reason, ...(localFile ? { localFile } : {}) });
+    return;
+  }
+  process.stderr.write(
+    "inplan: couldn't verify your plan for this cloud document (offline, or the service is down).\n" +
+      "  This is not a plan limit — retry in a moment.\n" +
+      (localFile ? `  To work offline meanwhile: \`inplan demote ${shellQuote(localFile)}\`.\n` : ""),
+  );
+  output({ status: "plugin_unavailable", reason, ...(localFile ? { localFile } : {}) });
+}
+
 /**
  * Drive a *cloud* document as the logged-in agent. There is no local editor to
  * spawn (a cloud doc opens in the browser), so `open`/`wait` both attach + wait
@@ -616,6 +695,7 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     process.stderr.write("inplan: not logged in (or session expired) — run `inplan login`\n");
     process.exit(1);
   }
+
 
   if (cmd === "signal") {
     if (hasFlag(rest, "done")) {
@@ -651,169 +731,162 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     return;
   }
 
+  // Cloud docs are the one place an out-of-date CLI fails *silently* — it attaches and looks fine
+  // while missing the code path the document needs. Deliberately BELOW the `signal`/`message` early
+  // returns: those run once per turn and must stay snappy, and a registry lookup only writes its
+  // cache on success — so on a degraded network every short op would re-pay the full timeout. Only
+  // the attaching path, which is the one that can silently misbehave, is worth the check.
+  await warnIfOutdated(UPDATE_PKG, VERSION, stalenessCache());
+
   // A `wait` can block for longer than the ~1h access-token lifetime (the human idles before taking
   // their turn). Poll through a self-refreshing backend so the token is re-minted — via the
   // lock-coordinated authedSession() path, never an off-lock auto-refresh — before it expires,
   // instead of silently 401ing mid-wait. Short ops above (signal/message) used the one-shot `backend`.
   const live = liveRemoteBackend(docId, "cli-agent");
 
-  // Save-locally handoff (only when following a promoted local file): download the
-  // live body to its original path, flip the status back to local, reopen the local
-  // editor, and report — the inverse of "Collaborate on Cloud". Reads through `live` since the
-  // handoff can fire after a long wait (the initial token may have expired by then).
-  const onSaveLocally = localFile
-    ? async () => {
-        const body = await live.store.loadDoc();
-        writeFileSync(localFile, body);
-        writeStatus(docPaths(localFile).statusPath, { location: "local", originalPath: localFile, lastSyncedHash: hashBody(body) });
-        const pid = spawnApp(localFile); // reopen the doc in the local editor
-        output({ status: "moved_local", path: localFile, reopened: pid !== null });
-      }
-    : undefined;
+  // Live collaboration (paid perk): if the user is entitled, load the signature-verified collab
+  // plugin and drive the agent's edits through the Yjs hub instead of a blind store overwrite. The
+  // agent's working surface is a local `.md` materialized from the hub's canonical on first attach
+  // (kept across turns so its edits survive); edits sync back via the gate.
+  //
+  // Resolved BEFORE announcing presence: an agent that is about to exit must never light up the
+  // web's "agent · your machine" badge, and `process.exit` below would skip any `finally` teardown.
+  const hubUrl = resolveHubUrl();
+  const hubSession = JSON.stringify({ url: hubUrl, docName: docId, token: backend.token });
+  const { gate, reason } = await loadPluginGateOutcome(hubSession, { token: backend.token });
+  // No gate ⇒ STOP. The turn-based `live.store` path exists for the managed cloud agent, which holds
+  // the body in memory; an out-of-process local agent needs a file, and the gate is what materializes
+  // one. Falling through would attach, consume the human's turns, and silently never be able to read
+  // or edit the document — so say why and exit non-zero instead.
+  if (!gate) {
+    explainNoGate(reason, localFile);
+    exitAfterFlush(reason === "unentitled" ? EXIT_UPGRADE_REQUIRED : EXIT_PLUGIN_UNAVAILABLE);
+    return;
+  }
 
-  // the web badge shows "agent · your machine"; clear it on exit (wraps both wait paths below).
+  // the web badge shows "agent · your machine"; clear it on exit.
   // (Presence is a cosmetic websocket on the initial token; the correctness-critical DB polling
   // rides `live` above and stays authenticated across the whole wait, even past the ~1h expiry.)
   const presence = announcePresence(docId, backend.token, model);
   try {
-    // Live collaboration (paid perk): if the user is entitled, load the signature-verified collab
-    // plugin and drive the agent's edits through the Yjs hub instead of a blind store overwrite. The
-    // agent's working surface is a local `.md` materialized from the hub's canonical on first attach
-    // (kept across turns so its edits survive); edits sync back via the gate. Not entitled /
-    // unverified / no plugin ⇒ null ⇒ the turn-based store path below.
-    const hubUrl = resolveHubUrl();
-    const hubSession = JSON.stringify({ url: hubUrl, docName: docId, token: backend.token });
-    const gate = await loadPluginGate(hubSession, { token: backend.token });
-    if (gate) {
-      const workFile = join(sidecarRoot(), "remote", `${docId}.plan.md`);
-      const pendingPath = `${workFile}.pending`; // marker: a local fallback edit awaits a hub push
-      const hashPath = `${workFile}.synced`; // hash of the working copy at our last write/sync
-      mkdirSync(dirname(workFile), { recursive: true });
-      const readIf = (p: string): string | null => (existsSync(p) ? readFileSync(p, "utf8") : null);
-      const recordSynced = (content: string) => writeFileSync(hashPath, hashBody(content));
+    const workFile = join(sidecarRoot(), "remote", `${docId}.plan.md`);
+    const pendingPath = `${workFile}.pending`; // marker: a local fallback edit awaits a hub push
+    const hashPath = `${workFile}.synced`; // hash of the working copy at our last write/sync
+    mkdirSync(dirname(workFile), { recursive: true });
+    const readIf = (p: string): string | null => (existsSync(p) ? readFileSync(p, "utf8") : null);
+    const recordSynced = (content: string) => writeFileSync(hashPath, hashBody(content));
 
-      // Probe the hub on EVERY run: if unreachable now, fall through to the turn-based `live.store`
-      // path (the documented fallback) rather than staying on the local-only gateStore and stranding
-      // cloud edits in the working copy.
-      let onGate = true;
-      let canonical = "";
-      try {
-        canonical = await gate.readCanonical();
-      } catch (e) {
-        process.stderr.write(`inplan: live-collab hub unreachable (${String(e)}); using turn-based sync\n`);
-        onGate = false;
-      }
-      if (onGate) {
-        // Decide whether to (re)hydrate the working copy from the freshly probed canonical. Seed if
-        // absent; keep it if a local fallback edit is pending (must push first); otherwise refresh it
-        // ONLY when the agent hasn't touched it since our last sync (hash match) — so we pull the
-        // human's edits without clobbering unsynced agent edits. This is also what lets a FAILED
-        // end-of-turn re-sync self-heal on the next run.
-        const exists = existsSync(workFile);
-        if (
-          shouldHydrateWorkFile({
-            exists,
-            pending: existsSync(pendingPath),
-            currentHash: exists ? hashBody(readFileSync(workFile, "utf8")) : null,
-            syncedHash: readIf(hashPath),
-          })
-        ) {
-          writeFileSync(workFile, canonical);
-          recordSynced(canonical);
-        }
-
-        // Working doc stays on the local file, but Review-mode PROPOSALS persist to the CLOUD doc's
-        // proposal store (via live.store) — otherwise a parked proposal would sit in this machine's
-        // sidecar, invisible to the human in the web editor who's meant to accept/reject it.
-        const localStore = fsBackend(workFile).store;
-        const gateStore: DocumentStore = {
-          loadDoc: () => localStore.loadDoc(),
-          saveDoc: (c) => localStore.saveDoc(c),
-          getCanonical: () => localStore.getCanonical(),
-          setCanonical: (c) => localStore.setCanonical(c),
-          backup: (c, m) => localStore.backup(c, m),
-          getProposed: () => live.store.getProposed(),
-          setProposed: (c) => live.store.setProposed(c),
-          clearProposed: () => live.store.clearProposed(),
-        };
-        // Save-local handoff on the gate path reads the HUB canonical (the source of truth here);
-        // live.store isn't updated by gate.applyRevision, so reading it would write a stale doc. If
-        // the hub read fails we throw BEFORE writing status, so the doc isn't switched to local.
-        const onSaveLocallyGate = localFile
-          ? async () => {
-              const body = await gate.readCanonical();
-              writeFileSync(localFile, body);
-              writeStatus(docPaths(localFile).statusPath, { location: "local", originalPath: localFile, lastSyncedHash: hashBody(body) });
-              const pid = spawnApp(localFile);
-              output({ status: "moved_local", path: localFile, reopened: pid !== null });
-            }
-          : undefined;
-
-        // Guard BOTH hub directions so any drop degrades gracefully instead of crashing the turn,
-        // tracking read and write failures separately (see trackGateDegradations): a read failure
-        // re-throws (waitCycle falls back to the local store); a write failure persists the edit
-        // locally and doesn't re-throw (the turn still emits a status). Any failure skips the
-        // end-of-turn re-sync; only a WRITE marks `.pending` — a read-only failure must not, or the
-        // next healthy run would skip hydration and risk reverting newer hub edits.
-        const tracked = trackGateDegradations(gate, localStore, (m) =>
-          process.stderr.write(`inplan: live-collab hub write failed (${m}); kept the edit locally to retry\n`),
-        );
-        process.stderr.write(`inplan: live-collab — plan at ${workFile}; read/edit it there, then re-run to sync\n`);
-        await waitCycle(
-          {
-            channel: live.channel, // turns/comments still ride the cloud control log (self-refreshing)…
-            store: gateStore, // …the agent reads/edits a local working copy; proposals go to the cloud…
-            history: async () => (await live.channel.readSince(0)).entries,
-            logExit: () => {},
-            ...(onSaveLocallyGate ? { onSaveLocally: onSaveLocallyGate } : {}),
-          },
-          explicitCursor,
-          confirmed,
-          model,
-          tracked.gate, // …and accepted edits apply through the hub, not the store.
-        );
-
-        if (tracked.readFailed() || tracked.writeFailed()) {
-          // The hub dropped mid-turn; DO NOT re-sync (that would overwrite a local edit with stale hub
-          // canonical). Mark `.pending` ONLY when a WRITE failed — that's the case with a local
-          // revision persisted off-hub that must be replayed. A read-only failure leaves the working
-          // copy either unchanged (clean) or hash-diverged (agent edited); both are handled by the
-          // start-of-turn hydration check, and a spurious `.pending` would wrongly skip it next run.
-          if (pendingRequiresReplay({ readFailed: tracked.readFailed(), writeFailed: tracked.writeFailed() })) {
-            writeFileSync(pendingPath, "1");
-          }
-          process.stderr.write("inplan: hub was unavailable this turn — keeping local edits (will sync next turn)\n");
-        } else {
-          // Turn applied to the hub. The working copy is now consistent with the hub for the agent's
-          // part, so record its hash (this makes a FAILED re-sync below self-heal: next run sees a
-          // matching hash and safely hydrates). Then re-sync the copy to the latest canonical (folding
-          // in the human's just-taken turn) so the agent's NEXT turn builds on it, and clear pending.
-          if (existsSync(pendingPath)) rmSync(pendingPath);
-          recordSynced(readFileSync(workFile, "utf8"));
-          try {
-            const fresh = await gate.readCanonical();
-            writeFileSync(workFile, fresh);
-            recordSynced(fresh);
-          } catch {
-            /* transient: leave the copy (its hash still matches) so the next run hydrates it */
-          }
-        }
-        return;
-      }
+    // Probe the hub on EVERY run. A failure here means we cannot materialize the working copy, so
+    // there is nothing for an out-of-process agent to read or edit — the same dead end the
+    // missing-gate branch above rejects, reached one step later. Falling back to the turn-based
+    // `live.store` path would just reinstate it silently, so stop and say so instead.
+    let canonical = "";
+    try {
+      canonical = await gate.readCanonical();
+    } catch (e) {
+      process.stderr.write(`inplan: live-collab hub unreachable (${String(e)})\n`);
+      explainNoGate("unavailable", localFile);
+      exitAfterFlush(EXIT_PLUGIN_UNAVAILABLE);
+      return; // the `finally` below tears presence down on the way out
+    }
+    // Decide whether to (re)hydrate the working copy from the freshly probed canonical. Seed if
+    // absent; keep it if a local fallback edit is pending (must push first); otherwise refresh it
+    // ONLY when the agent hasn't touched it since our last sync (hash match) — so we pull the
+    // human's edits without clobbering unsynced agent edits. This is also what lets a FAILED
+    // end-of-turn re-sync self-heal on the next run.
+    const exists = existsSync(workFile);
+    if (
+      shouldHydrateWorkFile({
+        exists,
+        pending: existsSync(pendingPath),
+        currentHash: exists ? hashBody(readFileSync(workFile, "utf8")) : null,
+        syncedHash: readIf(hashPath),
+      })
+    ) {
+      writeFileSync(workFile, canonical);
+      recordSynced(canonical);
     }
 
-    await waitCycle(
+    // Working doc stays on the local file, but Review-mode PROPOSALS persist to the CLOUD doc's
+    // proposal store (via live.store) — otherwise a parked proposal would sit in this machine's
+    // sidecar, invisible to the human in the web editor who's meant to accept/reject it.
+    const localStore = fsBackend(workFile).store;
+    const gateStore: DocumentStore = {
+      loadDoc: () => localStore.loadDoc(),
+      saveDoc: (c) => localStore.saveDoc(c),
+      getCanonical: () => localStore.getCanonical(),
+      setCanonical: (c) => localStore.setCanonical(c),
+      backup: (c, m) => localStore.backup(c, m),
+      getProposed: () => live.store.getProposed(),
+      setProposed: (c) => live.store.setProposed(c),
+      clearProposed: () => live.store.clearProposed(),
+    };
+    // Save-local handoff on the gate path reads the HUB canonical (the source of truth here);
+    // live.store isn't updated by gate.applyRevision, so reading it would write a stale doc. If
+    // the hub read fails we throw BEFORE writing status, so the doc isn't switched to local.
+    const onSaveLocallyGate = localFile
+      ? async () => {
+          const body = await gate.readCanonical();
+          writeFileSync(localFile, body);
+          writeStatus(docPaths(localFile).statusPath, { location: "local", originalPath: localFile, lastSyncedHash: hashBody(body) });
+          const pid = spawnApp(localFile);
+          output({ status: "moved_local", path: localFile, reopened: pid !== null });
+        }
+      : undefined;
+
+    // Guard BOTH hub directions so any drop degrades gracefully instead of crashing the turn,
+    // tracking read and write failures separately (see trackGateDegradations): a read failure
+    // re-throws (waitCycle falls back to the local store); a write failure persists the edit
+    // locally and doesn't re-throw (the turn still emits a status). Any failure skips the
+    // end-of-turn re-sync; only a WRITE marks `.pending` — a read-only failure must not, or the
+    // next healthy run would skip hydration and risk reverting newer hub edits.
+    const tracked = trackGateDegradations(gate, localStore, (m) =>
+      process.stderr.write(`inplan: live-collab hub write failed (${m}); kept the edit locally to retry\n`),
+    );
+    process.stderr.write(`inplan: live-collab — plan at ${workFile}; read/edit it there, then re-run to sync\n`);
+    const outcome = await waitCycle(
       {
-        channel: live.channel,
-        store: live.store,
+        channel: live.channel, // turns/comments still ride the cloud control log (self-refreshing)…
+        store: gateStore, // …the agent reads/edits a local working copy; proposals go to the cloud…
         history: async () => (await live.channel.readSince(0)).entries,
-        logExit: () => {}, // no local sidecar for a cloud doc
-        ...(onSaveLocally ? { onSaveLocally } : {}),
+        logExit: () => {},
+        ...(onSaveLocallyGate ? { onSaveLocally: onSaveLocallyGate } : {}),
       },
       explicitCursor,
       confirmed,
       model,
+      tracked.gate, // …and accepted edits apply through the hub, not the store.
     );
+
+    const action = postTurnAction(outcome, { readFailed: tracked.readFailed(), writeFailed: tracked.writeFailed() });
+    if (action === "stop") return; // a fail-fast exit is pending — never touch the working copy
+
+    if (action === "keep-local") {
+      // The hub dropped mid-turn; DO NOT re-sync (that would overwrite a local edit with stale hub
+      // canonical). Mark `.pending` ONLY when a WRITE failed — that's the case with a local
+      // revision persisted off-hub that must be replayed. A read-only failure leaves the working
+      // copy either unchanged (clean) or hash-diverged (agent edited); both are handled by the
+      // start-of-turn hydration check, and a spurious `.pending` would wrongly skip it next run.
+      if (pendingRequiresReplay({ readFailed: tracked.readFailed(), writeFailed: tracked.writeFailed() })) {
+        writeFileSync(pendingPath, "1");
+      }
+      process.stderr.write("inplan: hub was unavailable this turn — keeping local edits (will sync next turn)\n");
+    } else {
+      // Turn applied to the hub. The working copy is now consistent with the hub for the agent's
+      // part, so record its hash (this makes a FAILED re-sync below self-heal: next run sees a
+      // matching hash and safely hydrates). Then re-sync the copy to the latest canonical (folding
+      // in the human's just-taken turn) so the agent's NEXT turn builds on it, and clear pending.
+      if (existsSync(pendingPath)) rmSync(pendingPath);
+      recordSynced(readFileSync(workFile, "utf8"));
+      try {
+        const fresh = await gate.readCanonical();
+        writeFileSync(workFile, fresh);
+        recordSynced(fresh);
+      } catch {
+        /* transient: leave the copy (its hash still matches) so the next run hydrates it */
+      }
+    }
+    return;
   } finally {
     presence.destroy();
   }
@@ -851,6 +924,13 @@ function doPromote(file: string, args: string[]): void {
  * Bring a cloud doc back to disk — the CLI side of "Save locally" / "Download":
  * download the live body to its original path and flip the status to local, so
  * subsequent `open`/`wait` runs the file locally again.
+ *
+ * Reads the HUB canonical whenever a gate is available, exactly as `onSaveLocallyGate` does and for
+ * the same reason: `live.store` is NOT updated by `gate.applyRevision`, so on a doc a local agent has
+ * been editing through the hub it holds a stale body. Demoting from it would overwrite the original
+ * file with pre-hub content — silently losing every edit made since, which is the one thing a
+ * "bring it back to disk" command must never do. No gate (free plan, or the hub is down) ⇒ the store
+ * is the best source there is, and the caller is told what it got.
  */
 async function doDemote(file: string, args: string[]): Promise<void> {
   const p = docPaths(file);
@@ -864,11 +944,31 @@ async function doDemote(file: string, args: string[]): Promise<void> {
     process.stderr.write("inplan: not logged in (or session expired) — run `inplan login`\n");
     process.exit(1);
   }
-  const body = await backend.store.loadDoc();
+  const hubSession = JSON.stringify({ url: resolveHubUrl(), docName: st.cloudDocId, token: backend.token });
+  const { gate } = await loadPluginGateOutcome(hubSession, { token: backend.token });
+  let hubBody: string | null = null;
+  try {
+    if (gate) hubBody = await gate.readCanonical();
+  } catch {
+    hubBody = null; // hub unreachable — we cannot verify what the store copy is missing
+  }
   const dest = st.originalPath ?? file;
+  const choice = demoteSource({ hubReadable: hubBody !== null, fromStore: hasFlag(args, "from-store") });
+  if (choice.use === "abort") {
+    process.stderr.write(
+      "inplan demote: couldn't read the live document from the collab hub.\n" +
+        `  The server copy may be missing edits made through the hub, and demoting overwrites ${shellQuote(dest)}\n` +
+        "  and switches the document to local — together, that can't be undone.\n" +
+        "  Retry when the hub is reachable, or re-run with --from-store to accept the server copy as-is.\n",
+    );
+    output({ status: "demote_blocked", reason: choice.reason, path: dest });
+    exitAfterFlush(EXIT_PLUGIN_UNAVAILABLE);
+    return;
+  }
+  const body = choice.use === "hub" ? hubBody! : await backend.store.loadDoc();
   writeFileSync(dest, body);
   writeStatus(p.statusPath, { location: "local", originalPath: dest, lastSyncedHash: hashBody(body) });
-  output({ status: "demoted", location: "local", path: dest });
+  output({ status: "demoted", location: "local", path: dest, source: choice.use });
 }
 
 /** First Markdown H1 in the body, for a cloud doc's title (falls back to the filename). */
@@ -1637,7 +1737,7 @@ async function main(): Promise<void> {
         "       inplan status  <file>\n" +
         "       inplan upload  <file> [--org <slug>] [--repo <name>] [--path <p>] [--evict-lru]   (Collaborate on Cloud)\n" +
         "       inplan promote <file> --cloud-doc <docId> [--locator org/repo/path]\n" +
-        "       inplan demote  <file>\n" +
+        "       inplan demote  <file> [--from-store]   (bring a cloud doc back to disk; --from-store accepts the server copy when the hub is unreadable)\n" +
         "       inplan login   (opens the browser to sign in; or --url <url> --anon <key> --refresh <token> for scripts)\n" +
         "       inplan whoami | logout\n",
     );

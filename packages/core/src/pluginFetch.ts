@@ -128,15 +128,41 @@ async function fetchAndCache(bundleUrl: string, leaseToken: string, opts: Requir
 }
 
 /**
+ * Why a resolve produced no plugin. Callers that merely run without the plugin can ignore this, but
+ * anything that must EXPLAIN the absence to a human needs to tell a paywall from an outage:
+ *  - `unentitled` — the server answered definitively: this user's plan doesn't include the perk.
+ *    Only ever set by an explicit `entitled: false`, never inferred from a failure.
+ *  - `unavailable` — we couldn't get a verified answer: logged out, offline, server error, no
+ *    public key, or a bundle/lease that failed verification. Says nothing about the user's plan.
+ */
+export type PluginAbsenceReason = "unentitled" | "unavailable";
+
+/** A resolve attempt's full outcome: the plugin, or why there isn't one. */
+export type PluginOutcome = { plugin: ResolvedPlugin; reason: null } | { plugin: null; reason: PluginAbsenceReason };
+
+/**
  * Resolve the desktop plugin bundle for this user: prefer a fresh server check (catches a lapsed
  * entitlement), fall back to the cached bundle offline. Returns the verified lease + local file
- * paths + entry roles, or null (⇒ run without the plugin). Fail-closed on every error / missing key.
+ * paths + entry roles, or the reason there is none. Fail-closed on every error / missing key.
+ *
+ * Only an explicit `entitled: false` yields `unentitled` — every other miss is `unavailable`, so a
+ * transient outage can never be reported to the user as "your plan doesn't include this".
  */
-export async function resolveDesktopPlugin(options: ResolvePluginOptions): Promise<ResolvedPlugin | null> {
+export async function resolvePluginOutcome(options: ResolvePluginOptions): Promise<PluginOutcome> {
   const publicKey = options.publicKey ?? PLUGIN_PUBLIC_KEY;
   const now = options.now ?? Date.now();
   const fetchImpl = options.fetchImpl ?? fetch;
-  if (!publicKey) return null; // nothing can be verified ⇒ no plugin
+  const cached = (): PluginOutcome => {
+    // Offline (or the online path didn't yield a bundle): use the cached version while its lease holds.
+    try {
+      const current = readFileSync(join(options.cacheDir, "current.txt"), "utf8").trim();
+      const plugin = current ? loadCached(options.cacheDir, current, publicKey, now) : null;
+      return plugin ? { plugin, reason: null } : { plugin: null, reason: "unavailable" };
+    } catch {
+      return { plugin: null, reason: "unavailable" };
+    }
+  };
+  if (!publicKey) return { plugin: null, reason: "unavailable" }; // nothing can be verified ⇒ no plugin
 
   // 1. Online check (only when we have a token).
   if (options.token) {
@@ -144,14 +170,19 @@ export async function resolveDesktopPlugin(options: ResolvePluginOptions): Promi
       const res = await fetchImpl(`${base(options.apiBase)}api/v1/desktop-plugin`, { headers: { authorization: `Bearer ${options.token}` } });
       if (res.ok) {
         const grant = (await res.json()) as { entitled?: boolean; lease?: string; bundleUrl?: string };
-        if (grant.entitled === false) return null; // server says no — don't fall back to a stale cache
+        // Server says no — don't fall back to a stale cache. This is the ONE path that reports a
+        // paywall, because it's the only definitive answer about the user's plan we ever get.
+        if (grant.entitled === false) return { plugin: null, reason: "unentitled" };
         if (grant.entitled && grant.lease && grant.bundleUrl) {
           // A positive grant ships a fresh, signed lease. A lease that fails verification is a
           // tampering signal — fail closed rather than silently using the cache. (A transient
           // bundle-CDN miss still falls through to the independently re-verified cache below.)
-          if (!verifyLease(grant.lease, publicKey, now)) return null;
+          if (!verifyLease(grant.lease, publicKey, now)) return { plugin: null, reason: "unavailable" };
           const version = await fetchAndCache(grant.bundleUrl, grant.lease, { cacheDir: options.cacheDir, publicKey, fetchImpl });
-          if (version) return loadCached(options.cacheDir, version, publicKey, now);
+          if (version) {
+            const plugin = loadCached(options.cacheDir, version, publicKey, now);
+            if (plugin) return { plugin, reason: null };
+          }
         }
       }
     } catch {
@@ -159,11 +190,13 @@ export async function resolveDesktopPlugin(options: ResolvePluginOptions): Promi
     }
   }
 
-  // 2. Offline (or the online path didn't yield a bundle): use the cached version while its lease holds.
-  try {
-    const current = readFileSync(join(options.cacheDir, "current.txt"), "utf8").trim();
-    return current ? loadCached(options.cacheDir, current, publicKey, now) : null;
-  } catch {
-    return null;
-  }
+  return cached();
+}
+
+/**
+ * {@link resolvePluginOutcome} for callers that only need "plugin or not" — the app main and any
+ * path that silently runs without the perk. Returns the verified bundle, or null.
+ */
+export async function resolveDesktopPlugin(options: ResolvePluginOptions): Promise<ResolvedPlugin | null> {
+  return (await resolvePluginOutcome(options)).plugin;
 }

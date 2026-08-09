@@ -182,12 +182,15 @@ export const EN: Catalog = {
   "agent.dontConnect": "Don't auto-connect",
   "agent.remote": "remote",
   "agent.local": "local",
+  "agent.working": "working",
   "agent.disconnected": "disconnected",
   "agent.title": "Agent: {label}",
   "agent.connectionLabel": "Agent connection — {label}",
   "agent.whereCloud": "cloud",
   "agent.whereLocal": "your machine",
   "agent.detail": "Agent · {where}",
+  // Busy but with no presence peer, so we can't say where it runs — deliberately location-free.
+  "agent.workingNoWhere": "Agent · working",
   "agent.none": "No agent connected",
   "agent.plan": "Plan {pct}%",
   "agent.overIncluded": "— over included",
@@ -196,7 +199,12 @@ export const EN: Catalog = {
   "agent.atLimit": "Usage limit reached — turns are paused until your plan resets or you upgrade",
   "agent.connection": "Agent connection",
   "agent.localCmdHint": "Paste this to your coding agent:",
-  "agent.localCmdBody": "Collaborate with me on my inplan plan. Check the CLI with `inplan --version` (if missing, install it: `npm i -g inplan`), sign in with `inplan login` if you haven't yet, then run `{cmd}` and work with me through the comments.",
+  // Installs unconditionally rather than only when the CLI is missing: an out-of-date CLI attaches
+  // to a cloud doc and behaves plausibly while lacking the code path the document needs, so
+  // "install it if missing" left the one failure mode that has no symptom.
+  "agent.localCmdBody": "Collaborate with me on my inplan plan. Install or update the CLI with `npm i -g inplan@latest`, sign in with `inplan login` if you haven't yet, then run `{cmd}` and work with me through the comments.",
+  "agent.localLocked": "Connecting your own agent to a cloud document is on Pro and above.",
+  "agent.seePlans": "See plans",
   "agent.copy": "Copy",
   "agent.copied": "Copied",
   // comment rail
