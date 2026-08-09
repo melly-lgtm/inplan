@@ -639,12 +639,20 @@ export const EXIT_PLUGIN_UNAVAILABLE = 5;
  * because a server hiccuped is the worst outcome here, which is why the reason is only ever
  * `unentitled` on an explicit server denial (see {@link resolvePluginOutcome}).
  */
+/** POSIX single-quoting for a path we print inside a copy-pasteable command. An unquoted path with a
+ *  space produces a command that silently targets the wrong file, and one containing `$(…)`, backticks
+ *  or `;` would execute on paste. Single quotes suppress every expansion; the only character needing
+ *  care is `'` itself, closed and re-opened around an escaped one. */
+export function shellQuote(path: string): string {
+  return "'" + path.replaceAll("'", "'\\''") + "'";
+}
+
 export function explainNoGate(reason: PluginAbsenceReason, localFile?: string): void {
   if (reason === "unentitled") {
     process.stderr.write(
       "inplan: this plan doesn't include the local agent on cloud documents.\n" +
         "  Open the document in your browser and click the agent indicator to upgrade.\n" +
-        (localFile ? `  Or keep working offline for free: \`inplan demote ${localFile}\` brings it back to disk.\n` : ""),
+        (localFile ? `  Or keep working offline for free: \`inplan demote ${shellQuote(localFile)}\` brings it back to disk.\n` : ""),
     );
     output({ status: "upgrade_required", reason, ...(localFile ? { localFile } : {}) });
     return;
@@ -652,7 +660,7 @@ export function explainNoGate(reason: PluginAbsenceReason, localFile?: string): 
   process.stderr.write(
     "inplan: couldn't verify your plan for this cloud document (offline, or the service is down).\n" +
       "  This is not a plan limit — retry in a moment.\n" +
-      (localFile ? `  To work offline meanwhile: \`inplan demote ${localFile}\`.\n` : ""),
+      (localFile ? `  To work offline meanwhile: \`inplan demote ${shellQuote(localFile)}\`.\n` : ""),
   );
   output({ status: "plugin_unavailable", reason, ...(localFile ? { localFile } : {}) });
 }
@@ -907,6 +915,13 @@ function doPromote(file: string, args: string[]): void {
  * Bring a cloud doc back to disk — the CLI side of "Save locally" / "Download":
  * download the live body to its original path and flip the status to local, so
  * subsequent `open`/`wait` runs the file locally again.
+ *
+ * Reads the HUB canonical whenever a gate is available, exactly as `onSaveLocallyGate` does and for
+ * the same reason: `live.store` is NOT updated by `gate.applyRevision`, so on a doc a local agent has
+ * been editing through the hub it holds a stale body. Demoting from it would overwrite the original
+ * file with pre-hub content — silently losing every edit made since, which is the one thing a
+ * "bring it back to disk" command must never do. No gate (free plan, or the hub is down) ⇒ the store
+ * is the best source there is, and the caller is told what it got.
  */
 async function doDemote(file: string, args: string[]): Promise<void> {
   const p = docPaths(file);
@@ -920,11 +935,23 @@ async function doDemote(file: string, args: string[]): Promise<void> {
     process.stderr.write("inplan: not logged in (or session expired) — run `inplan login`\n");
     process.exit(1);
   }
-  const body = await backend.store.loadDoc();
+  const hubSession = JSON.stringify({ url: resolveHubUrl(), docName: st.cloudDocId, token: backend.token });
+  const { gate } = await loadPluginGateOutcome(hubSession, { token: backend.token });
+  let body: string;
+  let source: "hub" | "store" = "hub";
+  try {
+    if (!gate) throw new Error("no gate");
+    body = await gate.readCanonical();
+  } catch {
+    // Fall back rather than fail: a free plan never had hub writes of its own, so the store IS its
+    // document. Say so in the result, because for a doc that WAS on the hub this copy can lag.
+    body = await backend.store.loadDoc();
+    source = "store";
+  }
   const dest = st.originalPath ?? file;
   writeFileSync(dest, body);
   writeStatus(p.statusPath, { location: "local", originalPath: dest, lastSyncedHash: hashBody(body) });
-  output({ status: "demoted", location: "local", path: dest });
+  output({ status: "demoted", location: "local", path: dest, source });
 }
 
 /** First Markdown H1 in the body, for a cloud doc's title (falls back to the filename). */

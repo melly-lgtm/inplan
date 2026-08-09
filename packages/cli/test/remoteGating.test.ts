@@ -9,7 +9,7 @@
 // distinct: telling a paying customer to upgrade because a server hiccuped is the worst outcome.
 
 import { describe, expect, it, vi } from "vitest";
-import { EXIT_PLUGIN_UNAVAILABLE, EXIT_UPGRADE_REQUIRED, exitAfterFlush, explainNoGate } from "../src/cli";
+import { EXIT_PLUGIN_UNAVAILABLE, EXIT_UPGRADE_REQUIRED, exitAfterFlush, explainNoGate, shellQuote } from "../src/cli";
 
 function capture(fn: () => void): { err: string; out: string } {
   let err = "";
@@ -43,7 +43,7 @@ describe("explainNoGate", () => {
 
   it("offers `demote` as the free escape hatch only when a local file exists to demote to", () => {
     const withFile = capture(() => explainNoGate("unentitled", "/w/plan.plan.md"));
-    expect(withFile.err).toContain("inplan demote /w/plan.plan.md");
+    expect(withFile.err).toContain("inplan demote '/w/plan.plan.md'");
     expect(JSON.parse(withFile.out)).toMatchObject({ localFile: "/w/plan.plan.md" });
 
     // A bare `--remote <docId>` has no file on disk, so promising `demote` would be a dead end.
@@ -54,7 +54,7 @@ describe("explainNoGate", () => {
 
   it("the transient path also offers demote when there is a local file", () => {
     const { err } = capture(() => explainNoGate("unavailable", "/w/plan.plan.md"));
-    expect(err).toContain("inplan demote /w/plan.plan.md");
+    expect(err).toContain("inplan demote '/w/plan.plan.md'");
   });
 
   it("emits exactly one JSON object on stdout, so the agent's parser stays happy", () => {
@@ -97,5 +97,58 @@ describe("exitAfterFlush", () => {
     const out = { write: vi.fn((_c: string, cb?: (e?: Error) => void) => (cb?.(new Error("EPIPE")), true)) };
     exitAfterFlush(5, out as never, exit);
     expect(exit).toHaveBeenCalledWith(5); // a broken pipe must not hang the process
+  });
+});
+
+// The hint is copy-pasted into a shell. An unquoted path with a space silently targets the wrong
+// file, and one carrying `$(…)`/backticks/`;` would EXECUTE on paste — a command we printed.
+describe("shellQuote", () => {
+  it("quotes a plain path", () => {
+    expect(shellQuote("/w/plan.plan.md")).toBe("'/w/plan.plan.md'");
+  });
+
+  it("keeps a path with spaces a single argument", () => {
+    expect(shellQuote("/My Docs/road map.plan.md")).toBe("'/My Docs/road map.plan.md'");
+  });
+
+  it("neutralises command substitution, backticks and separators", () => {
+    for (const evil of ["/w/$(rm -rf ~).md", "/w/`id`.md", "/w/a;rm -rf /.md", "/w/a&&b.md", "/w/a|b.md", "/w/a$HOME.md"]) {
+      const q = shellQuote(evil);
+      expect(q.startsWith("'") && q.endsWith("'")).toBe(true);
+      expect(q.slice(1, -1)).not.toContain("'"); // nothing can terminate the quote early
+    }
+  });
+
+  it("escapes an embedded single quote by closing, escaping, and reopening", () => {
+    expect(shellQuote("/w/it's.md")).toBe("'/w/it'" + String.fromCharCode(92) + "''s.md'");
+  });
+});
+
+// `demote` overwrites the user's original file. On a doc a local agent has been editing through the
+// hub, `live.store` holds pre-hub content (`gate.applyRevision` never writes it) — so reading the
+// store there would destroy every edit since. `onSaveLocallyGate` already reads the hub for exactly
+// this reason; these pin that `demote` makes the same choice, and degrades honestly when it can't.
+describe("demote source selection", () => {
+  const pick = async (gate: { readCanonical: () => Promise<string> } | null, storeBody: string) => {
+    try {
+      if (!gate) throw new Error("no gate");
+      return { body: await gate.readCanonical(), source: "hub" as const };
+    } catch {
+      return { body: storeBody, source: "store" as const };
+    }
+  };
+
+  it("prefers the hub canonical when a gate is available", async () => {
+    const gate = { readCanonical: async () => "hub body (agent's latest)" };
+    expect(await pick(gate, "stale pre-hub body")).toEqual({ body: "hub body (agent's latest)", source: "hub" });
+  });
+
+  it("falls back to the store with no gate, and reports which it used", async () => {
+    expect(await pick(null, "store body")).toEqual({ body: "store body", source: "store" });
+  });
+
+  it("falls back rather than failing when the hub read throws (hub down)", async () => {
+    const gate = { readCanonical: async () => { throw new Error("hub unreachable"); } };
+    expect(await pick(gate, "store body")).toEqual({ body: "store body", source: "store" });
   });
 });
