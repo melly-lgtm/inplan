@@ -6,6 +6,26 @@ import { LogEventType, type ControlChannel, type LogEntry } from "@inplan/core/n
  *  claims it outlasts a full refresh cooldown asserts the REAL value rather than a copy of it. */
 export const DEFAULT_ERROR_GRACE_MS = 5 * 60_000;
 
+/** How long a single poll may take before it is abandoned. `SupabaseControlChannel.readSince` has no
+ *  client-side timeout, so without this a stalled request pins `busy` and the wait hangs. */
+export const DEFAULT_POLL_TIMEOUT_MS = 30_000;
+
+/** Reject if `p` hasn't settled within `ms`. The timer is always cleared, so a resolved poll never
+ *  leaves a pending handle holding the process open. */
+async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_res, rej) => {
+        timer = setTimeout(() => rej(new Error(`poll timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export interface WaitResult {
   /** Set when the wait gave up after repeated poll failures (expired session, network gone).
    *  A wait must END on this, never die — the agent's channel is JSON, not a stack trace. */
@@ -36,6 +56,11 @@ export interface WaitOptions {
   errorGraceMs?: number;
   /** Injectable clock (tests). */
   now?: () => number;
+  /** Abandon a single poll after this long. Default 30s. A hung read is NOT the same as a failing
+   *  one: `busy` stays true, the interval's next tick returns immediately, and the wait neither
+   *  progresses nor ever reaches `failed` — it just stops, silently, forever. Bounding each poll
+   *  turns that into an ordinary failure the grace budget can reason about. */
+  pollTimeoutMs?: number;
   /** Watch editor presence and resolve (editorGone) if a once-alive editor dies. Default true. */
   watchEditor?: boolean;
   /** This waiter's single-waiter token; if a newer waiter supersedes it, step down. */
@@ -75,6 +100,7 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
   const isActionable = opts.isActionable ?? defaultActionable;
   const watchEditor = opts.watchEditor ?? true;
   const errorGraceMs = opts.errorGraceMs ?? DEFAULT_ERROR_GRACE_MS;
+  const pollTimeoutMs = opts.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS;
   const now = opts.now ?? Date.now;
   const ch = opts.channel;
 
@@ -108,7 +134,7 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
       if (busy || done) return;
       busy = true;
       try {
-        const { entries, cursor } = await ch.readSince(opts.cursor);
+        const { entries, cursor } = await withTimeout(ch.readSince(opts.cursor), pollTimeoutMs);
         if (done) return;
 
         // Single-waiter lock: if a newer waiter claimed the doc, step down so only
@@ -156,8 +182,11 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
         // END the wait with a result. Before this, the rejection escaped `void tick()` as an
         // unhandled rejection and Node killed the process — printing a stack trace where the agent
         // expects one line of JSON, and losing the turn entirely.
-        failingSince ??= now();
-        if (now() - failingSince >= errorGraceMs) {
+        // ONE sample per failed poll: `now` is injectable, and a clock that advances per call would
+        // otherwise tick twice per failure and expire the budget early.
+        const at = now();
+        failingSince ??= at;
+        if (at - failingSince >= errorGraceMs) {
           finish({ entries: [], cursor: opts.cursor, failed: e instanceof Error ? e : new Error(String(e)) });
         }
       } finally {

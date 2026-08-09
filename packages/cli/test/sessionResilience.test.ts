@@ -10,7 +10,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { LIVE_REFRESH_SKEW_S, refreshBackoffMs } from "../src/cliAuth";
-import { DEFAULT_ERROR_GRACE_MS, waitForActions } from "../src/wait";
+import { DEFAULT_ERROR_GRACE_MS, DEFAULT_POLL_TIMEOUT_MS, waitForActions } from "../src/wait";
 import type { ControlChannel } from "@inplan/core";
 
 describe("refresh backoff", () => {
@@ -201,5 +201,55 @@ describe("give-up budget vs refresh backoff", () => {
       new Promise((r) => setTimeout(() => r("still waiting"), 300)),
     ]);
     expect(result).toBe("still waiting");
+  });
+});
+
+// A HUNG poll is not a failing one. `SupabaseControlChannel.readSince` has no client-side timeout, so
+// a stalled request left `busy` true forever: the interval kept firing and returning immediately, the
+// grace budget never advanced, and the wait neither progressed nor reported `failed`. It just stopped.
+describe("a hung poll", () => {
+  const neverSettles = () =>
+    ({
+      append: async () => {},
+      readSince: () => new Promise(() => {}), // never resolves, never rejects
+      subscribe: () => () => {},
+      getCursor: async () => 0,
+      setCursor: async () => {},
+      claimLock: async () => {},
+      isSuperseded: async () => false,
+      presence: async () => true,
+    }) as unknown as ControlChannel;
+
+  it("is abandoned and counted as a failure rather than stranding the loop", async () => {
+    const result = await waitForActions({
+      channel: neverSettles(),
+      cursor: 0,
+      pollMs: 1,
+      pollTimeoutMs: 10,
+      errorGraceMs: 0, // first timeout ends the wait
+      watchEditor: false,
+    });
+    expect(result.failed?.message).toMatch(/timed out after 10ms/);
+  });
+
+  it("does not fire the timeout for a poll that answers in time", async () => {
+    const ch = {
+      append: async () => {},
+      readSince: async (cursor: number) => ({ entries: [{ seq: 1, actor: "user", type: "turn_ended", ts: "" }], cursor: cursor + 1 }),
+      subscribe: () => () => {},
+      getCursor: async () => 0,
+      setCursor: async () => {},
+      claimLock: async () => {},
+      isSuperseded: async () => false,
+      presence: async () => true,
+    } as unknown as ControlChannel;
+    const result = await waitForActions({ channel: ch, cursor: 0, pollMs: 1, debounceMs: 1, pollTimeoutMs: 5_000, watchEditor: false });
+    expect(result.failed).toBeUndefined();
+    expect(result.entries.length).toBe(1);
+  });
+
+  it("the default bound is long enough for a real read but short of any human timescale", () => {
+    expect(DEFAULT_POLL_TIMEOUT_MS).toBeGreaterThanOrEqual(10_000);
+    expect(DEFAULT_POLL_TIMEOUT_MS).toBeLessThan(DEFAULT_ERROR_GRACE_MS);
   });
 });
