@@ -25,7 +25,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSy
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AuthFile } from "./cliAuth";
-import { resolveHubUrl } from "./pluginGate";
+import { hubHttpBase } from "./pluginGate";
 
 const subtle = webcrypto.subtle;
 
@@ -41,9 +41,10 @@ const NUDGE_MS = 30_000;
  *  the poll loop's deadline from ever being re-checked (poll). */
 const REQUEST_TIMEOUT_MS = 15_000;
 
-/** The collab server's HTTP base (same resolution as the plugin gate: ws(s) → http(s)). */
+/** The collab server's HTTP base — pluginGate's single ws(s)→http(s) mapping, so the login and
+ *  the plugin gate can never derive different endpoints from the same hub URL. */
 export function loginApiBase(): string {
-  return resolveHubUrl().replace(/^ws/, "http").replace(/\/+$/, "");
+  return hubHttpBase();
 }
 
 export interface RendezvousDeps {
@@ -93,6 +94,20 @@ export function clearPendingLogin(): void {
   } catch {
     /* already gone */
   }
+}
+
+/** Remove the sidecar ONLY if it still belongs to `sessionId`. A delayed poll of an OLD session
+ *  (expired, claimed, undecryptable) must never erase a NEWER pending login that replaced it —
+ *  that would make the replacement's printed URL impossible to resume. */
+function clearPendingLoginFor(sessionId: string): void {
+  const path = pendingLoginPath();
+  try {
+    const p = JSON.parse(readFileSync(path, "utf8")) as { sessionId?: unknown };
+    if (p.sessionId !== sessionId) return; // a newer login owns the slot now — leave it alone
+  } catch {
+    /* unreadable/absent → nothing to protect */
+  }
+  clearPendingLogin();
 }
 
 /** The pending login a previous invocation left behind, if it can still complete. An expired or
@@ -192,7 +207,7 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
 
   while (true) {
     if (now() >= pending.expiresAt) {
-      clearPendingLogin();
+      clearPendingLoginFor(pending.sessionId);
       throw new LoginSessionExpiredError("the sign-in link expired — run the command again for a fresh one");
     }
     if (now() >= deadline) throw new Error("login timed out — no response from the browser");
@@ -217,11 +232,19 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
     }
     if (res.status === 404) {
       // Unknown/expired/already-claimed server-side — this pending login can never complete.
-      clearPendingLogin();
+      clearPendingLoginFor(pending.sessionId);
       throw new LoginSessionExpiredError("the sign-in link expired — run the command again for a fresh one");
     }
     if (res.ok) {
-      const body = (await res.json()) as { status?: string; epk?: string; iv?: string; ct?: string };
+      let body: { status?: string; epk?: string; iv?: string; ct?: string };
+      try {
+        body = (await res.json()) as { status?: string; epk?: string; iv?: string; ct?: string };
+      } catch {
+        // A 200 with an empty/non-JSON body (proxy hiccup, captive portal) is as transient as a
+        // dropped connection — retry within the deadline instead of killing a valid session's wait.
+        await sleep(POLL_MS);
+        continue;
+      }
       if (body.status === "completed" && body.epk && body.iv && body.ct) {
         let auth: AuthFile;
         try {
@@ -231,10 +254,10 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
           // GET already consumed the row, so this session can NEVER complete. Clear the sidecar
           // and report it like an expiry, so the caller starts a FRESH session instead of
           // treating a permanently-dead login as a transient failure to retry.
-          clearPendingLogin();
+          clearPendingLoginFor(pending.sessionId);
           throw new LoginSessionExpiredError("the sign-in handoff could not be read — run the command again for a fresh link");
         }
-        clearPendingLogin();
+        clearPendingLoginFor(pending.sessionId);
         return auth;
       }
       // Still pending after the nudge window with the page never even loading? Tell the human —

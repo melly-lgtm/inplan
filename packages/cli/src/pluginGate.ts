@@ -22,8 +22,12 @@ export const DEFAULT_HUB_URL = "wss://inplan-collab.fly.dev";
  *  and this HTTP-base derivation — so the badge, the edits, and the entitlement probe can never
  *  target different hubs. `INPLAN_PLUGIN_URL` wins, then legacy `INPLAN_COLLAB_URL`, then the default. */
 export const resolveHubUrl = (): string => process.env.INPLAN_PLUGIN_URL || process.env.INPLAN_COLLAB_URL || DEFAULT_HUB_URL;
+
+/** The hub's HTTP(S) base — the ONE place the ws(s)→http(s) mapping lives, shared by the plugin
+ *  gate and the login rendezvous so the two derivations can never drift. */
+export const hubHttpBase = (): string => resolveHubUrl().replace(/^ws/, "http").replace(/\/+$/, "");
 /** Plugin server HTTP base (ws→http), shared with the desktop app's entitlement check. */
-const PLUGIN_HTTP = resolveHubUrl().replace(/^ws/, "http");
+const PLUGIN_HTTP = hubHttpBase();
 /** The same cache root the app uses, so a bundle fetched by either side is reused (and re-verified). */
 const defaultCacheDir = (): string => join(process.env.INPLAN_HOME || join(homedir(), ".inplan"), "plugin-cache");
 

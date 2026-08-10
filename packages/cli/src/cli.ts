@@ -752,17 +752,36 @@ async function pendingLoginExit(): Promise<void> {
     process.stderr.write(`inplan login: ${e instanceof Error ? e.message : String(e)}\n`);
     return;
   }
-  // Quote arguments that need it: the skill tells the agent to re-run `resume` VERBATIM, so an
-  // argument carrying a space or shell metacharacter (`inplan message doc "did X this turn"`,
-  // `--model "Opus 4.8"`) must survive re-parsing as ONE argument, not shatter into several.
-  const quoted = (a: string): string => (/^[A-Za-z0-9_@%+=:,.\/-]+$/.test(a) ? a : shellQuote(a));
+  // Quote arguments that need it FOR THE ACTIVE SHELL: the skill tells the agent to re-run
+  // `resume` VERBATIM, so an argument carrying a space or metacharacter must survive re-parsing
+  // as ONE argument. POSIX single-quoting is wrong on Windows (cmd/PowerShell treat ' as data) —
+  // there, wrap in double quotes with embedded quotes doubled, which both shells accept.
+  const quoted = (a: string): string => {
+    if (/^[A-Za-z0-9_@%+=:,.\/-]+$/.test(a)) return a;
+    return process.platform === "win32" ? `"${a.replaceAll('"', '""')}"` : shellQuote(a);
+  };
+  // Credential-bearing flags must NOT round-trip through stdout/agent logs: a partial
+  // `--refresh <token>` login that fell through to the browser path would otherwise serialize a
+  // bearer credential into the printed resume line. The browser sign-in replaces them anyway.
+  const argsSansCredentials: string[] = [];
+  const skipValueOf = new Set(["--refresh", "--anon", "--url"]);
+  const argv = process.argv.slice(2);
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (skipValueOf.has(a)) {
+      i++; // drop the flag AND its value
+      continue;
+    }
+    if ([...skipValueOf].some((f) => a.startsWith(`${f}=`))) continue;
+    argsSansCredentials.push(a);
+  }
   // The executable half must also be re-runnable from THIS environment: a bare `inplan` only
   // exists for global installs. When the entry script was invoked under another name (npx cache,
   // a repo checkout's dist/cli.js), rebuild the invocation from the running node + entry script.
   const entry = process.argv[1] ?? "";
   const invokedAsInplan = entry.split(/[\\/]/).pop()?.replace(/\.(cmd|ps1)$/i, "") === "inplan";
   const argv0 = invokedAsInplan ? ["inplan"] : [quoted(process.execPath), quoted(entry)];
-  const resume = [...argv0, ...process.argv.slice(2).map(quoted)].join(" ");
+  const resume = [...argv0, ...argsSansCredentials.map(quoted)].join(" ");
   process.stderr.write(
     "inplan: sign-in required.\n" +
       `  ACTION (human): open this URL in a browser and sign in:\n    ${url}\n` +
