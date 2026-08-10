@@ -21,7 +21,7 @@
 
 import { spawn } from "node:child_process";
 import { webcrypto } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AuthFile } from "./cliAuth";
@@ -96,18 +96,54 @@ export function clearPendingLogin(): void {
   }
 }
 
+/** Serialize sidecar ownership (read-check-delete-create) with a tiny advisory lock: an atomic
+ *  mkdir held for microseconds. Without it, a delayed poll's owner-check and unlink could
+ *  interleave with a fresh login's write and erase the newcomer. A lock outliving the spin
+ *  budget is stolen — a crashed holder must not brick logins forever. */
+function withSidecarLock<T>(fn: () => T): T {
+  const lock = pendingLoginPath() + ".lock";
+  const deadline = Date.now() + 2000;
+  for (;;) {
+    try {
+      mkdirSync(lock, { recursive: false });
+      break;
+    } catch {
+      if (Date.now() > deadline) {
+        try {
+          rmdirSync(lock); // steal a stale lock left by a crashed process
+        } catch {
+          /* already released */
+        }
+      }
+      /* busy-spin: the critical sections are file-touch sized */
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      rmdirSync(lock);
+    } catch {
+      /* already released */
+    }
+  }
+}
+
 /** Remove the sidecar ONLY if it still belongs to `sessionId`. A delayed poll of an OLD session
  *  (expired, claimed, undecryptable) must never erase a NEWER pending login that replaced it —
- *  that would make the replacement's printed URL impossible to resume. */
+ *  that would make the replacement's printed URL impossible to resume. Owner-check + unlink run
+ *  as one critical section, so the check can't go stale before the delete. */
 function clearPendingLoginFor(sessionId: string): void {
-  const path = pendingLoginPath();
-  try {
-    const p = JSON.parse(readFileSync(path, "utf8")) as { sessionId?: unknown };
-    if (p.sessionId !== sessionId) return; // a newer login owns the slot now — leave it alone
-  } catch {
-    /* unreadable/absent → nothing to protect */
-  }
-  clearPendingLogin();
+  withSidecarLock(() => {
+    const path = pendingLoginPath();
+    try {
+      const p = JSON.parse(readFileSync(path, "utf8")) as { sessionId?: unknown };
+      if (p.sessionId !== sessionId) return; // a newer login owns the slot now — leave it alone
+    } catch {
+      /* unreadable/absent → nothing to protect */
+    }
+    clearPendingLogin();
+  });
 }
 
 /** The pending login a previous invocation left behind, if it can still complete. An expired or
@@ -170,21 +206,17 @@ export async function createLoginSession(opts: RendezvousLoginOptions = {}): Pro
   };
   const path = pendingLoginPath();
   mkdirSync(dirname(path), { recursive: true });
-  // EXCLUSIVE create: two concurrent commands must not each mint a session with the second
+  // EXCLUSIVE ownership: two concurrent commands must not each mint a session with the second
   // overwriting the first (whose printed URL would then be unresumable — its private key gone).
-  // The loser adopts the winner's still-valid pending login instead; a stale/corrupt leftover is
-  // cleared and the write retried once.
-  try {
-    writeFileSync(path, JSON.stringify(pending, null, 2), { mode: 0o600, flag: "wx" });
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+  // Inside the lock: adopt a still-valid winner, otherwise take the slot — one critical section,
+  // so there is no second write race to lose.
+  return withSidecarLock(() => {
     const winner = loadPendingLogin(now());
     if (winner) return winner;
-    // The existing sidecar was expired/corrupt (loadPendingLogin cleared it) — take the slot.
-    writeFileSync(path, JSON.stringify(pending, null, 2), { mode: 0o600, flag: "wx" });
-  }
-  chmodSync(path, 0o600); // belt-and-braces: mode can be masked by umask
-  return pending;
+    writeFileSync(path, JSON.stringify(pending, null, 2), { mode: 0o600 });
+    chmodSync(path, 0o600); // belt-and-braces: mode can be masked by umask
+    return pending;
+  });
 }
 
 /** Distinguishes "this session can never complete" (sidecar cleared; start fresh) from a
@@ -204,8 +236,16 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
   const deadline = now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const nudgeAt = now() + NUDGE_MS;
   let nudged = false;
+  let sawOpened = false;
 
   while (true) {
+    // The nudge is a TIMER, not a response property: if the page hasn't acked `opened` by the
+    // window — including when the hub is unreachable or answering 5xx/garbage, exactly when the
+    // human is most likely staring at a browser that never opened — say so once.
+    if (!nudged && !sawOpened && now() >= nudgeAt) {
+      nudged = true;
+      opts.onNudge?.();
+    }
     if (now() >= pending.expiresAt) {
       clearPendingLoginFor(pending.sessionId);
       throw new LoginSessionExpiredError("the sign-in link expired — run the command again for a fresh one");
@@ -260,13 +300,7 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
         clearPendingLoginFor(pending.sessionId);
         return auth;
       }
-      // Still pending after the nudge window with the page never even loading? Tell the human —
-      // open() is fire-and-forget (a spawn "success" doesn't mean a browser appeared), so the
-      // page's own `opened` ack is the only trustworthy signal, and it works cross-machine.
-      if (!nudged && body.status === "pending" && now() >= nudgeAt) {
-        nudged = true;
-        opts.onNudge?.();
-      }
+      if (body.status === "opened" || body.status === "completed") sawOpened = true;
     }
     await sleep(POLL_MS);
   }

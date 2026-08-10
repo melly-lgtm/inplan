@@ -28,7 +28,7 @@ import {
 import { agentAuthorFor } from "./agentAuthor";
 import { gitProvenance } from "./provenance";
 import { authedSession, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, type AuthFile } from "./cliAuth";
-import { LoginSessionExpiredError, createLoginSession, loadPendingLogin, pollLoginSession, rendezvousLogin, type PendingLogin } from "./cliLogin";
+import { LoginSessionExpiredError, clearPendingLogin, createLoginSession, loadPendingLogin, pollLoginSession, rendezvousLogin, type PendingLogin } from "./cliLogin";
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
 import { checkForUpdate, selfUpdate, UPDATE_PKG, warnIfOutdated } from "./update";
 import { runningEditorPid } from "./editorProcess";
@@ -539,9 +539,10 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
 
 /**
  * Sign in to the cloud. Two paths:
- *  - Interactive (default): `inplan login` opens the web app's /cli-auth page in the browser
- *    and receives the project url/anon + refresh token back over a one-shot 127.0.0.1 listener
- *    (see cliLogin.ts). This is what a human runs.
+ *  - Interactive (default): `inplan login` runs the cloud-rendezvous handoff (cliLogin.ts) —
+ *    open /cli-auth?session=…#pub=…, the page seals the credentials to our ephemeral key and
+ *    posts them to the session, we poll and decrypt. Non-interactive callers get a pending
+ *    sidecar + EXIT_LOGIN_PENDING instead, and the next invocation resumes it.
  *  - Non-interactive: when `--url`/`--anon`/`--refresh` (or the matching env vars) are all
  *    supplied, store them directly — for scripts and the desktop app, which already hold a
  *    session. Flags win over env so a shell can pre-seed the deployment and pass only `--refresh`.
@@ -574,34 +575,37 @@ async function doLogin(args: string[]): Promise<void> {
     process.stderr.write("inplan login: non-interactive environment — pass --url/--anon/--refresh (or the matching INPLAN_* env vars).\n");
     process.exit(1);
   }
-  // A previous invocation may have already minted a session and exited pending (the coding-agent
-  // loop) — finish THAT login rather than minting a fresh URL the human never asked for.
-  const pending = loadPendingLogin();
-  if (pending) {
-    try {
-      process.stderr.write(`inplan: waiting for the pending browser sign-in to finish…\n  ${pending.url}\n`);
-      const auth = await pollLoginSession(pending, { onNudge: printLoginNudge });
-      saveAuth(auth);
-      await persistCloudIdentity();
-      output({ status: "logged_in", url: auth.url, ...(auth.email ? { email: auth.email } : {}) });
-      return;
-    } catch (e) {
-      if (!(e instanceof LoginSessionExpiredError)) {
-        process.stderr.write(`inplan login: ${e instanceof Error ? e.message : String(e)}\n`);
-        process.exit(1);
-      }
-      /* expired → fall through to a fresh flow */
-    }
-  }
-  // A coding agent (or any pipe) only reads our output when the process exits — start the
-  // session, hand over the URL + resume command, and get out of the way.
+  // Non-interactive callers (coding agents, pipes): resume a pending session a previous
+  // invocation minted — the agent loop's second half — or mint one and exit pending.
   if (!canInteractiveLogin(args) || isKnownAgentEnv()) {
+    const pending = loadPendingLogin();
+    if (pending) {
+      try {
+        process.stderr.write(`inplan: waiting for the pending browser sign-in to finish…\n  ${pending.url}\n`);
+        const auth = await pollLoginSession(pending, { onNudge: printLoginNudge });
+        saveAuth(auth);
+        await persistCloudIdentity();
+        output({ status: "logged_in", url: auth.url, ...(auth.email ? { email: auth.email } : {}) });
+        return;
+      } catch (e) {
+        if (!(e instanceof LoginSessionExpiredError)) {
+          process.stderr.write(`inplan login: ${e instanceof Error ? e.message : String(e)}\n`);
+          process.exit(1);
+        }
+        /* expired → fall through to a fresh pending session */
+      }
+    }
     await pendingLoginExit();
     // pendingLoginExit only returns when the session could not be minted (offline / hub down):
     // no credentials were stored, so this login FAILED — exit 1 like every other failure path
     // (returning here would exit 0 and a script branching on the code would think it signed in).
     process.exit(1);
   }
+  // An interactive human explicitly running `inplan login` means "sign me in NOW": don't block
+  // for minutes on a leftover-but-still-valid pending session from an aborted agent flow they may
+  // never have seen — drop it and mint fresh. (Auto-login's ensureLoggedIn still resumes first,
+  // which is the right default for the agent loop's re-run.)
+  clearPendingLogin();
   try {
     const auth = await defaultRendezvousLogin();
     saveAuth(auth);
@@ -769,7 +773,10 @@ async function pendingLoginExit(): Promise<void> {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (skipValueOf.has(a)) {
-      i++; // drop the flag AND its value
+      // Drop the flag AND its value — but only when the next token IS a value. A valueless
+      // `--refresh` (empty $TOKEN expansion) followed by another option must not swallow that
+      // option: `--refresh --remote doc` minus `--remote` would resume against a local path.
+      if (i + 1 < argv.length && !argv[i + 1]!.startsWith("-")) i++;
       continue;
     }
     if ([...skipValueOf].some((f) => a.startsWith(`${f}=`))) continue;
