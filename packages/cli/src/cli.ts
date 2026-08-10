@@ -782,7 +782,19 @@ function printLoginNudge(): void {
  * same resumable session.
  */
 export function isKnownAgentEnv(env: NodeJS.ProcessEnv = process.env): boolean {
-  return Boolean(env.CLAUDECODE) || Object.keys(env).some((k) => k.startsWith("CLAUDE_CODE_"));
+  return (
+    // Claude Code: sets CLAUDECODE=1 + a family of CLAUDE_CODE_* vars in its tool shell.
+    Boolean(env.CLAUDECODE) ||
+    Object.keys(env).some((k) => k.startsWith("CLAUDE_CODE_")) ||
+    // OpenAI Codex CLI: sets CODEX_SANDBOX for the sandboxed command run. Codex filters CODEX_*
+    // out of the shell env it inherits, so this can't leak in from a human's shell config.
+    Boolean(env.CODEX_SANDBOX) ||
+    // Pi (earendil-works/pi): PI_CODING_AGENT=true, set expressly so sub-processes can self-identify.
+    Boolean(env.PI_CODING_AGENT) ||
+    // Explicit opt-in for any other harness (e.g. set by the inplan skill) — never present in a
+    // human's terminal, so it's a safe catch-all as new agents appear.
+    Boolean(env.INPLAN_AGENT)
+  );
 }
 
 /**

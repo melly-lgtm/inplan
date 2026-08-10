@@ -23,7 +23,12 @@ let env: NodeJS.ProcessEnv;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "inplan-open-"));
-  env = { ...process.env, INPLAN_HOME: home, INPLAN_SIDECAR_DIR: join(home, "sidecars"), INPLAN_APP_CMD: FAKE_EDITOR };
+  // Hermetic auth env: these spawns assert the non-interactive "not logged in" path, so pin an
+  // unattended environment regardless of who runs the suite. CI=1 (loginOptOut) forces that path;
+  // scrubbing CLAUDECODE/CLAUDE_CODE_* stops an agent shell (e.g. Claude Code) from routing to the
+  // rendezvous pending-exit (exit 7) instead — which used to fail the suite when run from an agent.
+  env = { ...process.env, INPLAN_HOME: home, INPLAN_SIDECAR_DIR: join(home, "sidecars"), INPLAN_APP_CMD: FAKE_EDITOR, CI: "1" };
+  for (const k of Object.keys(env)) if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) delete env[k];
 });
 afterEach(() => {
   rmSync(home, { recursive: true, force: true });

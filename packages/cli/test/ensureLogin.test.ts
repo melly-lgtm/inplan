@@ -23,9 +23,12 @@ import { loadAuth, saveAuth, type AuthFile } from "../src/cliAuth";
 
 let home: string;
 const ttyDescriptors: Record<string, PropertyDescriptor | undefined> = {};
-// These tests may themselves run inside a coding agent's shell (CLAUDECODE/CLAUDE_CODE_* set),
-// which would trip the detection ladder's env rung — scrub and restore around each test.
+// These tests may themselves run inside a coding agent's shell (Claude Code / Codex / Pi markers
+// set), which would trip the detection ladder's env rung — scrub and restore around each test.
 const scrubbedAgentEnv = new Map<string, string>();
+/** Any env key isKnownAgentEnv keys on (kept in sync with cli.ts): Claude Code, Codex, Pi, opt-in. */
+const isAgentMarker = (k: string): boolean =>
+  k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_") || k === "CODEX_SANDBOX" || k === "PI_CODING_AGENT" || k === "INPLAN_AGENT";
 
 /** Force stdin/stdout's isTTY (a getter on the streams) so "interactive" is deterministic. */
 function setTTY(value: boolean): void {
@@ -65,7 +68,7 @@ beforeEach(() => {
   delete process.env.CI;
   delete process.env.INPLAN_NO_BROWSER;
   for (const k of Object.keys(process.env)) {
-    if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) {
+    if (isAgentMarker(k)) {
       scrubbedAgentEnv.set(k, process.env[k]!);
       delete process.env[k];
     }
@@ -80,7 +83,7 @@ afterEach(() => {
   delete process.env.CI;
   delete process.env.INPLAN_NO_BROWSER;
   for (const k of Object.keys(process.env)) {
-    if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) delete process.env[k];
+    if (isAgentMarker(k)) delete process.env[k];
   }
   for (const [k, v] of scrubbedAgentEnv) process.env[k] = v;
   scrubbedAgentEnv.clear();
@@ -254,5 +257,8 @@ describe("isKnownAgentEnv", () => {
     expect(isKnownAgentEnv({ TERM: "xterm", CURSOR_TRACE_ID: "x" })).toBe(false); // integrated-terminal humans have this
     expect(isKnownAgentEnv({ CLAUDECODE: "1" })).toBe(true);
     expect(isKnownAgentEnv({ CLAUDE_CODE_SESSION_ID: "abc" })).toBe(true);
+    expect(isKnownAgentEnv({ CODEX_SANDBOX: "seatbelt" })).toBe(true); // OpenAI Codex sandboxed run
+    expect(isKnownAgentEnv({ PI_CODING_AGENT: "true" })).toBe(true); // earendil-works/pi self-id
+    expect(isKnownAgentEnv({ INPLAN_AGENT: "1" })).toBe(true); // explicit opt-in for other harnesses
   });
 });

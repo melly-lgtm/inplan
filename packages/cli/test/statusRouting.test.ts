@@ -23,7 +23,11 @@ beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "inplan-route-"));
   file = join(home, "plan.md");
   writeFileSync(file, "# Plan\n\nbody\n");
-  env = { ...process.env, INPLAN_HOME: home, INPLAN_SIDECAR_DIR: join(home, "sidecars") };
+  // Hermetic auth env (see open.test.ts): assert the non-interactive "not logged in" path from any
+  // shell — CI=1 forces loginOptOut, and scrubbing CLAUDECODE/CLAUDE_CODE_* stops an agent shell from
+  // routing to the rendezvous pending-exit (exit 7).
+  env = { ...process.env, INPLAN_HOME: home, INPLAN_SIDECAR_DIR: join(home, "sidecars"), CI: "1" };
+  for (const k of Object.keys(env)) if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) delete env[k];
 });
 
 afterEach(() => {
