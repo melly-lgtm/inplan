@@ -42,3 +42,38 @@ jobs:
       - run: npm run build
       - run: npm run typecheck
       - run: npm test
+      # Release key-bake guard (0.1.27 regression): exercise the REAL tsup `define` wiring +
+      # build-release's isKeyBaked check against an actual build — the unit tests only cover the
+      # pure helper, so a reverted/mis-wired define would otherwise stay green until a release.
+      # Runs LAST: it rebuilds packages/cli/dist with a key baked in, which must not leak into the
+      # test steps above (they exercise the runtime-lookup dev build). Any valid P-256/Ed25519
+      # SPKI works here — this asserts the MECHANISM, not the production trust root.
+      - name: Release key-bake guard
+        env:
+          INPLAN_REQUIRE_PLUGIN_KEY: "1"
+          INPLAN_PLUGIN_PUBLIC_KEY: |
+            -----BEGIN PUBLIC KEY-----
+            MCowBQYDK2VwAyEAVP11te5E7xzNJ4reKg0+mAnrr91gcyD1bMr43Homq98=
+            -----END PUBLIC KEY-----
+        run: |
+          npm run build -w @inplan/cli
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { isKeyBaked } from "./scripts/lib/bakedKey.mjs";
+            const src = readFileSync("packages/cli/dist/cli.js", "utf8");
+            if (!isKeyBaked(src, process.env.INPLAN_PLUGIN_PUBLIC_KEY)) {
+              console.error("FAIL: the plugin verifier key was not baked into the CLI bundle (0.1.27 regression)");
+              process.exit(1);
+            }
+            if (/process\.env\.INPLAN_PLUGIN_PUBLIC_KEY/.test(src)) {
+              console.error("FAIL: the bundle still reads INPLAN_PLUGIN_PUBLIC_KEY at runtime — define not applied");
+              process.exit(1);
+            }
+            console.log("ok: verifier key baked; runtime lookup fully replaced");
+          '
+          # …and the require-guard must REFUSE a keyless build rather than shipping a dead gate.
+          if env -u INPLAN_PLUGIN_PUBLIC_KEY npm run build -w @inplan/cli; then
+            echo "FAIL: the CLI built without the key despite INPLAN_REQUIRE_PLUGIN_KEY=1"
+            exit 1
+          fi
+          echo "ok: keyless build refused under INPLAN_REQUIRE_PLUGIN_KEY"
