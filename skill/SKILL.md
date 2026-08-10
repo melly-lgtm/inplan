@@ -47,6 +47,22 @@ produces the headless message above, immediately, without attempting recovery. T
 works headless until a binary is present, but the human can't review in the GUI — surface the
 fix to them and proceed.
 
+## Signing in (cloud documents)
+
+Any cloud command (`wait --remote`, `login`, …) may exit with code 7 and a JSON line:
+`{"status":"login_required","url":…,"resume":…,"expiresInSec":…}`. Sign-in happens in the
+human's browser — never try to open the URL yourself, fetch it, or ask the human for
+credentials. Do exactly two things:
+
+1. Show the `url` to the human and ask them to open it in a browser and sign in.
+2. Immediately re-run the `resume` command (it is the command you just ran). It waits for the
+   sign-in to finish, then continues normally — you don't need to poll or sleep first.
+
+The wait in step 2 is bounded (~3 minutes). If the human hasn't finished by then, the command
+exits with a timeout message while the session is still valid — that is not a hard error: just
+re-run the same command and it resumes the same sign-in. If the link itself expires
+(`expiresInSec`, ~10 minutes), the re-run prints a fresh URL — repeat from 1.
+
 ## File convention
 
 Save plans as `<name>.plan.md`. The `inplan` CLI keeps its own working files under
