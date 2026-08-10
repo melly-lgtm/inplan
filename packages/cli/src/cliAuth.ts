@@ -426,7 +426,7 @@ export function liveRemoteBackend(docId: string, consumerId = "cli-agent"): Live
     setCursor: async (s) => (await need()).channel.setCursor(s),
     claimLock: async (t) => (await need()).channel.claimLock(t),
     isSuperseded: async (t) => (await need()).channel.isSuperseded(t),
-    presence: async () => (await need()).channel.presence(),
+    presence: async (sinceMs?: number) => (await need()).channel.presence(sinceMs),
   };
   const store: DocumentStore = {
     loadDoc: async () => (await need()).store.loadDoc(),

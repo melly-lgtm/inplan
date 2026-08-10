@@ -149,20 +149,30 @@ export async function awaitReopen(
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const deadline = now() + graceMs;
-  // Bound a probe by min(probeTimeoutMs, remaining grace): the race's loser keeps running but is
-  // abandoned — the grace budget, not the channel's health, decides when the watch ends.
-  const bounded = <T>(fn: () => Promise<T>): Promise<T> => {
-    const budget = Math.max(1, Math.min(opts.probeTimeoutMs ?? 10_000, deadline - now()));
-    return Promise.race([fn(), new Promise<never>((_, rej) => setTimeout(() => rej(new Error("probe timed out")), budget).unref?.())]);
-  };
+  // Only a heartbeat FRESHER than this counts as a reopen: a window_closed's presence heartbeat
+  // lingers for the backend's TTL, so a `presence()` read right after the close reports the OLD
+  // editor, not a return — which would resume a dead session (its stale heartbeat then expires and
+  // ends the wait, defeating the grace). Gate presence on "written since we started watching".
+  const graceStart = now();
+  // Per-probe bound = min(probeTimeoutMs, remaining grace): a probe that loses the race keeps
+  // running but is abandoned — the grace budget, not the channel's health, decides when to stop.
+  const budget = (): number => Math.max(1, Math.min(opts.probeTimeoutMs ?? 10_000, deadline - now()));
+  // Independent in-flight gates per probe. A probe that stalls during an outage times out for THIS
+  // iteration, but its underlying request is not cancellable and keeps pending — the gate skips
+  // launching another on top of it, so timed-out reads don't stack across the grace window.
+  const supersede = inFlightGate();
+  const reads = inFlightGate();
+  const presences = inFlightGate();
   while (now() < deadline) {
     try {
-      if (opts.token && (await bounded(() => channel.isSuperseded(opts.token!)))) return "superseded";
-      const { entries } = await bounded(() => channel.readSince(cursor));
-      if (entries.some((e) => e.actor === "user" && e.type !== LogEventType.SessionClosed)) return "reopened";
-      if (await bounded(() => channel.presence())) return "reopened";
+      if (opts.token && !supersede.busy() && (await supersede.run(() => channel.isSuperseded(opts.token!), budget()))) return "superseded";
+      if (!reads.busy()) {
+        const { entries } = await reads.run(() => channel.readSince(cursor), budget());
+        if (entries.some((e) => e.actor === "user" && e.type !== LogEventType.SessionClosed)) return "reopened";
+      }
+      if (!presences.busy() && (await presences.run(() => channel.presence(graceStart), budget()))) return "reopened";
     } catch {
-      /* transient read/presence failure — keep watching until the grace expires */
+      /* a probe timed out, or a read/presence failed transiently — keep watching until grace expires */
     }
     await sleep(Math.max(1, Math.min(pollMs, deadline - now())));
   }

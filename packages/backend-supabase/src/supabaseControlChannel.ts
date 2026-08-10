@@ -117,7 +117,7 @@ export class SupabaseControlChannel implements ControlChannel {
     return current != null && current !== token;
   }
 
-  async presence(): Promise<boolean> {
+  async presence(sinceMs?: number): Promise<boolean> {
     // TODO(M4.3): derive from live/Realtime presence on the doc's collaboration room.
     // Interim: an editor heartbeat row fresher than PRESENCE_TTL_MS.
     const { data, error } = await this.db
@@ -128,7 +128,11 @@ export class SupabaseControlChannel implements ControlChannel {
     if (error) throw new Error(`presence failed: ${error.message}`);
     const lastSeen = (data as { last_seen?: string } | null)?.last_seen;
     if (!lastSeen) return false;
-    return Date.now() - new Date(lastSeen).getTime() < PRESENCE_TTL_MS;
+    const lastSeenMs = new Date(lastSeen).getTime();
+    // With `sinceMs`, only a heartbeat written AFTER the caller started watching counts. The
+    // heartbeat outlives a window_closed by up to PRESENCE_TTL_MS, so without this a reopen-watch
+    // would read the just-closed editor's stale row as "still here" and resume a dead session.
+    return sinceMs !== undefined ? lastSeenMs > sinceMs : Date.now() - lastSeenMs < PRESENCE_TTL_MS;
   }
 }
 

@@ -371,7 +371,7 @@ function logWaitExit(p: DocPaths, reason: string): void {
  * cursor, else "start from now" (current max). It is persisted on return so the
  * agent never hand-manages it and turns can't be skipped.
  */
-async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string, gate: PluginGate | null = null): Promise<WaitOutcome> {
+async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string, gate: PluginGate | null = null, resumed = false): Promise<WaitOutcome> {
   const { channel, store } = backend;
   const history = await backend.history();
 
@@ -440,11 +440,17 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
   // Last writer wins — any older waiter sees the token change and steps down.
   const lockToken = `${process.pid}-${Date.now()}`;
   await channel.claimLock(lockToken);
-  for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"] as const) {
-    process.on(sig, () => {
-      backend.logExit(`signal:${sig}`);
-      process.exit(0);
-    });
+  // Register the exit-on-signal handlers ONCE per wait invocation. A resumed cycle (after a reopen)
+  // re-enters this function recursively; re-adding them each time leaks listeners across repeated
+  // reloads (Node's MaxListenersExceededWarning). The handler only needs `backend` (stable across
+  // cycles), so the first registration covers every subsequent resume.
+  if (!resumed) {
+    for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"] as const) {
+      process.on(sig, () => {
+        backend.logExit(`signal:${sig}`);
+        process.exit(0);
+      });
+    }
   }
 
   // Mode-aware wake from the recorded policy: a turn-end mode wakes only on turn-end /
@@ -520,7 +526,7 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
     }
     if (reopen === "reopened") {
       process.stderr.write("inplan: the editor is back — resuming the wait.\n");
-      return waitCycle(backend, result.cursor, confirmed, model, gate);
+      return waitCycle(backend, result.cursor, confirmed, model, gate, true);
     }
     process.stderr.write("inplan: the editor did not come back — treating the session as closed.\n");
   }

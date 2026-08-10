@@ -9,12 +9,12 @@ import { describe, expect, it, vi } from "vitest";
 import { LogEventType } from "@inplan/core/node";
 import { awaitReopen } from "../src/wait";
 
-function clock() {
-  let t = 0;
+function clock(t0 = 0) {
+  let t = t0;
   return { now: () => t, sleep: async (ms: number) => void (t += ms) };
 }
 
-type Chan = { readSince: (c: number) => Promise<{ entries: unknown[]; cursor: number }>; presence: () => Promise<boolean>; isSuperseded: (t: string) => Promise<boolean> };
+type Chan = { readSince: (c: number) => Promise<{ entries: unknown[]; cursor: number }>; presence: (sinceMs?: number) => Promise<boolean>; isSuperseded: (t: string) => Promise<boolean> };
 const chan = (over: Partial<Chan>): never =>
   ({ readSince: async () => ({ entries: [], cursor: 0 }), presence: async () => false, isSuperseded: async () => false, ...over }) as never;
 
@@ -31,6 +31,22 @@ describe("awaitReopen", () => {
     const ch = chan({ presence: async () => ++polls >= 3 }); // page back after a couple of polls
     await expect(awaitReopen(ch, 0, { ...c, graceMs: 60_000, pollMs: 1000 })).resolves.toBe("reopened");
     expect(polls).toBe(3);
+  });
+
+  it("ignores a pre-close heartbeat still inside its TTL — freshness-gated, not mere presence", async () => {
+    const c = clock(1_000_000);
+    // The just-closed editor's heartbeat lingers for the presence TTL. Written 5s BEFORE the watch
+    // began (< graceStart), it must NOT read as a reopen — otherwise a real close resumes a dead
+    // session until the stale row expires, then ends the wait, defeating the grace.
+    const ch = chan({ presence: async (sinceMs) => 995_000 > (sinceMs ?? 0) });
+    await expect(awaitReopen(ch, 0, { ...c, graceMs: 10_000, pollMs: 2000 })).resolves.toBe("expired");
+  });
+
+  it("resumes only once a heartbeat is written AFTER the watch begins (a genuine return)", async () => {
+    const c = clock(1_000_000);
+    // A fresh heartbeat (last_seen advances with the clock) crosses graceStart a few polls in.
+    const ch = chan({ presence: async (sinceMs) => c.now() > (sinceMs ?? 0) && c.now() >= 1_004_000 });
+    await expect(awaitReopen(ch, 0, { ...c, graceMs: 60_000, pollMs: 2000 })).resolves.toBe("reopened");
   });
 
   it("a trailing SessionClosed alone is NOT resumption", async () => {

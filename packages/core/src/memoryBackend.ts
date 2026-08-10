@@ -15,6 +15,7 @@ export class MemoryControlChannel implements ControlChannel {
   private cursor = 0;
   private lockToken: WaitToken | null = null;
   private present = false;
+  private presentAt = 0;
   private listeners = new Set<() => void>();
 
   /** Deterministic timestamp source (override in tests); defaults to wall clock. */
@@ -61,12 +62,14 @@ export class MemoryControlChannel implements ControlChannel {
     return Promise.resolve(this.lockToken !== null && this.lockToken !== token);
   }
 
-  presence(): Promise<boolean> {
-    return Promise.resolve(this.present);
+  presence(sinceMs?: number): Promise<boolean> {
+    return Promise.resolve(this.present && (sinceMs === undefined || this.presentAt >= sinceMs));
   }
-  /** Test hook: simulate the editor being present/absent. */
-  setPresent(present: boolean): void {
+  /** Test hook: simulate the editor being present/absent. `at` (epoch ms, default now) stamps when
+   *  the heartbeat was written, so a `presence(sinceMs)` freshness check can be exercised. */
+  setPresent(present: boolean, at: number = Date.now()): void {
     this.present = present;
+    if (present) this.presentAt = at;
   }
 }
 
