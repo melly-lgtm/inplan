@@ -37,6 +37,9 @@ const DEFAULT_TIMEOUT_MS = 3 * 60_000;
 const POLL_MS = 2_000;
 /** No `opened` ack by this long ⇒ the browser likely never opened — nudge the human. */
 const NUDGE_MS = 30_000;
+/** Per-request bound: a stalled TCP connection must not hang the CLI silently (create) or stop
+ *  the poll loop's deadline from ever being re-checked (poll). */
+const REQUEST_TIMEOUT_MS = 15_000;
 
 /** The collab server's HTTP base (same resolution as the plugin gate: ws(s) → http(s)). */
 export function loginApiBase(): string {
@@ -124,7 +127,7 @@ export async function createLoginSession(opts: RendezvousLoginOptions = {}): Pro
   const pub = Buffer.from(await subtle.exportKey("spki", keys.publicKey)).toString("base64");
   const priv = Buffer.from(await subtle.exportKey("pkcs8", keys.privateKey)).toString("base64");
 
-  const res = await fetchImpl(`${apiBase}/api/v1/cli-login`, { method: "POST" });
+  const res = await fetchImpl(`${apiBase}/api/v1/cli-login`, { method: "POST", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`could not start a sign-in session (HTTP ${res.status})`);
   const { sessionId, expiresInSec } = (await res.json()) as { sessionId: string; expiresInSec: number };
   if (typeof sessionId !== "string" || !sessionId) throw new Error("could not start a sign-in session (bad response)");
@@ -132,9 +135,15 @@ export async function createLoginSession(opts: RendezvousLoginOptions = {}): Pro
   const pending: PendingLogin = {
     sessionId,
     privateKeyPkcs8: priv,
-    url: `${webOrigin}/cli-auth?session=${encodeURIComponent(sessionId)}&pub=${encodeURIComponent(pub)}`,
+    // `pub` rides the URL FRAGMENT so it never reaches server access logs (a log reader holding
+    // session + pub could complete the session for their own account); the page reads it from
+    // location.hash. Public key or not, keep the whole capability out of logs.
+    url: `${webOrigin}/cli-auth?session=${encodeURIComponent(sessionId)}#pub=${encodeURIComponent(pub)}`,
     apiBase,
-    expiresAt: now() + (typeof expiresInSec === "number" ? expiresInSec : 600) * 1000,
+    // Guard against a bogus server TTL: NaN/Infinity/negative would make expiresAt a past
+    // timestamp — or one that NEVER expires (NaN compares false forever), leaving a dead sidecar
+    // that every later invocation resumes until the server 404s.
+    expiresAt: now() + (Number.isFinite(expiresInSec) && expiresInSec > 0 ? expiresInSec : 600) * 1000,
   };
   const path = pendingLoginPath();
   mkdirSync(dirname(path), { recursive: true });
@@ -168,7 +177,19 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
     }
     if (now() >= deadline) throw new Error("login timed out — no response from the browser");
 
-    const res = await fetchImpl(`${pending.apiBase}/api/v1/cli-login/${encodeURIComponent(pending.sessionId)}`, { method: "GET" });
+    let res: Awaited<ReturnType<typeof fetchImpl>>;
+    try {
+      res = await fetchImpl(`${pending.apiBase}/api/v1/cli-login/${encodeURIComponent(pending.sessionId)}`, {
+        method: "GET",
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch {
+      // Transient transport failure (DNS blip, dropped connection, a stalled request cut by the
+      // per-request timeout): retry like a 5xx — the session is still valid, and the foreground
+      // deadline above bounds the total wait. Only a 404 (below) ends the session for good.
+      await sleep(POLL_MS);
+      continue;
+    }
     if (res.status === 404) {
       // Unknown/expired/already-claimed server-side — this pending login can never complete.
       clearPendingLogin();

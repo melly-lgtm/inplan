@@ -28,7 +28,7 @@ import {
 import { agentAuthorFor } from "./agentAuthor";
 import { gitProvenance } from "./provenance";
 import { authedSession, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, type AuthFile } from "./cliAuth";
-import { LoginSessionExpiredError, createLoginSession, loadPendingLogin, pollLoginSession, rendezvousLogin } from "./cliLogin";
+import { LoginSessionExpiredError, createLoginSession, loadPendingLogin, pollLoginSession, rendezvousLogin, type PendingLogin } from "./cliLogin";
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
 import { checkForUpdate, selfUpdate, UPDATE_PKG, warnIfOutdated } from "./update";
 import { runningEditorPid } from "./editorProcess";
@@ -567,6 +567,13 @@ async function doLogin(args: string[]): Promise<void> {
   // Browser handoff (cloud rendezvous). No partial-credential mode: anything short of the full
   // non-interactive set above falls through here, which is the intended UX.
   //
+  // Explicit opt-outs first — BEFORE resuming or minting any session: an unattended run must use
+  // the non-interactive credential path above, never wait on a human (even on a stale sidecar),
+  // and never leave a dangling rendezvous session nobody will complete.
+  if (loginOptOut(args)) {
+    process.stderr.write("inplan login: non-interactive environment — pass --url/--anon/--refresh (or the matching INPLAN_* env vars).\n");
+    process.exit(1);
+  }
   // A previous invocation may have already minted a session and exited pending (the coding-agent
   // loop) — finish THAT login rather than minting a fresh URL the human never asked for.
   const pending = loadPendingLogin();
@@ -590,7 +597,10 @@ async function doLogin(args: string[]): Promise<void> {
   // session, hand over the URL + resume command, and get out of the way.
   if (!canInteractiveLogin(args) || isKnownAgentEnv()) {
     await pendingLoginExit();
-    return;
+    // pendingLoginExit only returns when the session could not be minted (offline / hub down):
+    // no credentials were stored, so this login FAILED — exit 1 like every other failure path
+    // (returning here would exit 0 and a script branching on the code would think it signed in).
+    process.exit(1);
   }
   try {
     const auth = await defaultRendezvousLogin();
@@ -649,14 +659,20 @@ export async function ensureLoggedIn(
   args: string[],
   login: () => Promise<AuthFile> = defaultRendezvousLogin,
   pendingExit: () => Promise<void> = pendingLoginExit,
+  pollPending: (p: PendingLogin) => Promise<AuthFile> = (p) => pollLoginSession(p, { onNudge: printLoginNudge }),
 ): Promise<boolean> {
   if (loadAuth()) return true; // credentials present → remoteBackend refreshes (expiry handled there)
+
+  // Explicit opt-outs FIRST — before resuming a sidecar or minting a session: both flags mean
+  // "never wait on a human", and a stale login-pending.json (e.g. a cached CI home dir) must not
+  // stall an unattended run for the whole poll window.
+  if (loginOptOut(args)) return false;
 
   const pending = loadPendingLogin();
   if (pending) {
     try {
       process.stderr.write(`inplan: waiting for the pending browser sign-in to finish…\n  ${pending.url}\n`);
-      saveAuth(await pollLoginSession(pending, { onNudge: printLoginNudge }));
+      saveAuth(await pollPending(pending));
       await persistCloudIdentity();
       return true;
     } catch (e) {
@@ -681,11 +697,15 @@ export async function ensureLoggedIn(
     }
   }
 
-  // Explicit opt-outs: an unattended run must not dangle a session nobody will ever complete.
-  if (hasFlag(args, "no-login") || process.env.CI) return false;
-
   await pendingExit();
   return false; // pendingLoginExit never returns in prod; injected test doubles do
+}
+
+/** The shared login opt-out — "never block on a human, never mint a session nobody will claim" —
+ *  applied identically by BOTH entry points (`inplan login` and auto-login) before any path that
+ *  resumes or creates a rendezvous session. */
+function loginOptOut(args: string[]): boolean {
+  return hasFlag(args, "no-login") || Boolean(process.env.CI);
 }
 
 /** The real browser handoff used by auto-login and `inplan login` (interactive-human path). */
@@ -732,7 +752,10 @@ async function pendingLoginExit(): Promise<void> {
     process.stderr.write(`inplan login: ${e instanceof Error ? e.message : String(e)}\n`);
     return;
   }
-  const resume = ["inplan", ...process.argv.slice(2)].join(" ");
+  // Quote arguments that need it: the skill tells the agent to re-run `resume` VERBATIM, so an
+  // argument carrying a space or shell metacharacter (`inplan message doc "did X this turn"`,
+  // `--model "Opus 4.8"`) must survive re-parsing as ONE argument, not shatter into several.
+  const resume = ["inplan", ...process.argv.slice(2).map((a) => (/^[A-Za-z0-9_@%+=:,.\/-]+$/.test(a) ? a : shellQuote(a)))].join(" ");
   process.stderr.write(
     "inplan: sign-in required.\n" +
       `  ACTION (human): open this URL in a browser and sign in:\n    ${url}\n` +

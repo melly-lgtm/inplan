@@ -58,7 +58,10 @@ credentials. Do exactly two things:
 2. Immediately re-run the `resume` command (it is the command you just ran). It waits for the
    sign-in to finish, then continues normally — you don't need to poll or sleep first.
 
-If the link expires before the human opens it, the re-run prints a fresh URL — repeat from 1.
+The wait in step 2 is bounded (~3 minutes). If the human hasn't finished by then, the command
+exits with a timeout message while the session is still valid — that is not a hard error: just
+re-run the same command and it resumes the same sign-in. If the link itself expires
+(`expiresInSec`, ~10 minutes), the re-run prints a fresh URL — repeat from 1.
 
 ## File convention
 

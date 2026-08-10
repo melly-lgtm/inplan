@@ -39,6 +39,25 @@ function setTTY(value: boolean): void {
 // after login fails fast (and swallows) rather than hitting the network in a unit test.
 const FAST_FAIL_AUTH: AuthFile = { url: "http://127.0.0.1:1", anonKey: "anon", refreshToken: "r" };
 
+const SIDE_SESSION = "11111111-2222-4333-8444-555555555555";
+/** Drop a valid pending-login sidecar into INPLAN_HOME so ensureLoggedIn's resume path engages. */
+async function writeSidecar(): Promise<void> {
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const { dirname } = await import("node:path");
+  const { pendingLoginPath } = await import("../src/cliLogin");
+  mkdirSync(dirname(pendingLoginPath()), { recursive: true });
+  writeFileSync(
+    pendingLoginPath(),
+    JSON.stringify({
+      sessionId: SIDE_SESSION,
+      privateKeyPkcs8: "AAAA",
+      url: `https://web.test/cli-auth?session=${SIDE_SESSION}#pub=y`,
+      apiBase: "http://127.0.0.1:1",
+      expiresAt: Date.now() + 600_000,
+    }),
+  );
+}
+
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "inplan-ensure-"));
   process.env.INPLAN_HOME = home;
@@ -55,6 +74,13 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.INPLAN_HOME;
   rmSync(home, { recursive: true, force: true });
+  // Delete everything a test BODY may have assigned (CI leaks into every later test in the worker
+  // otherwise — ensureLoggedIn branches on it), THEN restore the genuinely-scrubbed originals.
+  delete process.env.CI;
+  delete process.env.INPLAN_NO_BROWSER;
+  for (const k of Object.keys(process.env)) {
+    if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) delete process.env[k];
+  }
   for (const [k, v] of scrubbedAgentEnv) process.env[k] = v;
   scrubbedAgentEnv.clear();
   for (const stream of ["stdin", "stdout"] as const) {
@@ -149,29 +175,58 @@ describe("ensureLoggedIn", () => {
     expect(pendingExit).not.toHaveBeenCalled();
   });
 
-  it("resumes a pending sidecar before anything else (the agent loop's second half)", async () => {
+  it("resumes a pending sidecar and signs in when the human completes it (agent loop, half 2)", async () => {
     setTTY(true); // even interactive: the pending session the human may already have opened wins
-    const { mkdirSync, writeFileSync } = await import("node:fs");
-    const { dirname } = await import("node:path");
-    const { pendingLoginPath } = await import("../src/cliLogin");
-    const sidecar = {
-      sessionId: "11111111-2222-4333-8444-555555555555",
-      privateKeyPkcs8: "AAAA",
-      url: "https://web.test/cli-auth?session=x&pub=y",
-      apiBase: "http://127.0.0.1:1", // refuses instantly — proves the resume path ran (fetch throws)
-      expiresAt: Date.now() + 600_000,
-    };
-    mkdirSync(dirname(pendingLoginPath()), { recursive: true });
-    writeFileSync(pendingLoginPath(), JSON.stringify(sidecar));
+    await writeSidecar();
     const login = vi.fn();
     const pendingExit = vi.fn(async () => {});
-    // The resume attempt fails on transport (unreachable) → false, but neither a fresh browser
-    // login nor a fresh pending session was started, and the sidecar survives for the next run.
-    expect(await ensureLoggedIn([], login, pendingExit)).toBe(false);
+    const pollPending = vi.fn(async (p: { sessionId: string }) => (void p, FAST_FAIL_AUTH));
+    expect(await ensureLoggedIn([], login, pendingExit, pollPending)).toBe(true);
+    expect(pollPending).toHaveBeenCalledOnce();
+    expect(pollPending.mock.calls[0]![0]).toMatchObject({ sessionId: SIDE_SESSION });
     expect(login).not.toHaveBeenCalled();
     expect(pendingExit).not.toHaveBeenCalled();
-    const { existsSync } = await import("node:fs");
-    expect(existsSync(pendingLoginPath())).toBe(true);
+    expect(loadAuth()).toEqual(FAST_FAIL_AUTH);
+  });
+
+  it("a transient resume failure returns false without starting any fresh flow", async () => {
+    setTTY(true);
+    await writeSidecar();
+    const login = vi.fn();
+    const pendingExit = vi.fn(async () => {});
+    const pollPending = vi.fn(async () => {
+      throw new Error("login timed out — no response from the browser");
+    });
+    // Timeout/transport → false; neither a fresh browser login nor a fresh pending session was
+    // started (pollLoginSession keeps the sidecar in this case, so the next run resumes it).
+    expect(await ensureLoggedIn([], login, pendingExit, pollPending)).toBe(false);
+    expect(login).not.toHaveBeenCalled();
+    expect(pendingExit).not.toHaveBeenCalled();
+  });
+
+  it("an EXPIRED pending session falls through to a fresh flow", async () => {
+    setTTY(true);
+    await writeSidecar();
+    const { LoginSessionExpiredError } = await import("../src/cliLogin");
+    const login = vi.fn(async () => FAST_FAIL_AUTH);
+    const pollPending = vi.fn(async () => {
+      throw new LoginSessionExpiredError("expired");
+    });
+    expect(await ensureLoggedIn([], login, vi.fn(async () => {}), pollPending)).toBe(true);
+    expect(login).toHaveBeenCalledOnce(); // interactive human → fresh inline login
+  });
+
+  it("the opt-outs run BEFORE the sidecar resume — a stale sidecar must not stall CI", async () => {
+    setTTY(true);
+    process.env.CI = "true";
+    await writeSidecar();
+    const login = vi.fn();
+    const pendingExit = vi.fn(async () => {});
+    const pollPending = vi.fn();
+    expect(await ensureLoggedIn([], login, pendingExit, pollPending)).toBe(false);
+    expect(pollPending).not.toHaveBeenCalled(); // never waits on a human, not even a pending one
+    expect(login).not.toHaveBeenCalled();
+    expect(pendingExit).not.toHaveBeenCalled();
   });
 
   it("runs the login handoff and persists credentials when interactive with none stored", async () => {

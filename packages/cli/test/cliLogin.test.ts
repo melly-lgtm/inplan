@@ -26,6 +26,9 @@ const subtle = webcrypto.subtle;
 const SESSION = "11111111-2222-4333-8444-555555555555";
 const payload = { url: "https://proj.supabase.co", anon: "anon-key", refresh: "refresh-token", email: "a@b.co" };
 
+/** The CLI public key rides the URL fragment (never server logs) — parse it the way the page does. */
+const pubOf = (url: string) => decodeURIComponent(url.split("#pub=")[1]!);
+
 let home: string;
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "inplan-login-"));
@@ -87,7 +90,7 @@ describe("createLoginSession", () => {
     const c = clock();
     const pending = await createLoginSession({ ...OPTS, fetchImpl, now: c.now });
     expect(pending.sessionId).toBe(SESSION);
-    expect(pending.url).toMatch(new RegExp(`^https://web\\.test/cli-auth\\?session=${SESSION}&pub=`));
+    expect(pending.url).toMatch(new RegExp(`^https://web\\.test/cli-auth\\?session=${SESSION}#pub=`)); // pub in the FRAGMENT — never in server logs
     expect(pending.expiresAt).toBe(600_000);
     expect(existsSync(pendingLoginPath())).toBe(true);
     expect(loadPendingLogin(c.now())).toEqual(pending);
@@ -105,7 +108,7 @@ describe("pollLoginSession", () => {
     const c = clock();
     const { fetchImpl: createFetch } = fakeServer([]);
     const pending = await createLoginSession({ ...OPTS, fetchImpl: createFetch, now: c.now });
-    const pub = new URL(pending.url).searchParams.get("pub")!;
+    const pub = pubOf(pending.url);
     const { fetchImpl } = fakeServer([
       () => ({ status: "pending" }),
       () => ({ status: "opened" }),
@@ -120,7 +123,7 @@ describe("pollLoginSession", () => {
     const c = clock();
     const { fetchImpl: createFetch } = fakeServer([]);
     const pending = await createLoginSession({ ...OPTS, fetchImpl: createFetch, now: c.now });
-    const pub = new URL(pending.url).searchParams.get("pub")!;
+    const pub = pubOf(pending.url);
     const polls: Array<() => Promise<unknown> | unknown> = Array.from({ length: 20 }, () => () => ({ status: "pending" }));
     polls.push(async () => ({ status: "completed", ...(await sealLikeThePage(pub, payload)) }));
     const { fetchImpl } = fakeServer(polls);
@@ -133,7 +136,7 @@ describe("pollLoginSession", () => {
     const c = clock();
     const { fetchImpl: createFetch } = fakeServer([]);
     const pending = await createLoginSession({ ...OPTS, fetchImpl: createFetch, now: c.now });
-    const pub = new URL(pending.url).searchParams.get("pub")!;
+    const pub = pubOf(pending.url);
     const polls: Array<() => Promise<unknown> | unknown> = Array.from({ length: 20 }, () => () => ({ status: "opened" }));
     polls.push(async () => ({ status: "completed", ...(await sealLikeThePage(pub, payload)) }));
     const { fetchImpl } = fakeServer(polls);
@@ -183,6 +186,35 @@ describe("pollLoginSession", () => {
   });
 });
 
+describe("pollLoginSession — resilience", () => {
+  it("tolerates transient transport failures (retries like a 5xx; the deadline bounds the wait)", async () => {
+    const c = clock();
+    const { fetchImpl: createFetch } = fakeServer([]);
+    const pending = await createLoginSession({ ...OPTS, fetchImpl: createFetch, now: c.now });
+    const pub = pubOf(pending.url);
+    let calls = 0;
+    const fetchImpl = (async (input: unknown, init?: { method?: string }) => {
+      const url = String(input);
+      if (init?.method === "POST") return res(200, { sessionId: SESSION, expiresInSec: 600 });
+      calls++;
+      if (calls <= 2) throw new TypeError("fetch failed"); // DNS blip / dropped connection
+      return res(200, { status: "completed", ...(await sealLikeThePage(pub, payload)) });
+    }) as unknown as typeof fetch;
+    const auth = await pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep });
+    expect(auth.refreshToken).toBe(payload.refresh);
+    expect(calls).toBe(3); // two failures retried, third answered
+  });
+
+  it("normalizes a bogus server TTL (NaN/negative) instead of minting a never-expiring sidecar", async () => {
+    const c = clock();
+    for (const bad of [Number.NaN, -5] as number[]) {
+      const { fetchImpl } = fakeServer([], bad);
+      const pending = await createLoginSession({ ...OPTS, fetchImpl, now: c.now });
+      expect(pending.expiresAt).toBe(c.now() + 600_000); // default TTL, still expirable
+    }
+  });
+});
+
 describe("loadPendingLogin", () => {
   it("returns null (and clears) an expired sidecar", async () => {
     const c = clock();
@@ -210,7 +242,7 @@ describe("rendezvousLogin", () => {
       () => ({ status: "opened" }),
       async () => ({ status: "completed", ...(await sealLikeThePage(pub, payload)) }),
     ]);
-    const open = vi.fn((u: string) => void (pub = new URL(u).searchParams.get("pub")!));
+    const open = vi.fn((u: string) => void (pub = pubOf(u)));
     const onUrl = vi.fn();
     const auth = await rendezvousLogin({ ...OPTS, fetchImpl, now: c.now, sleep: c.sleep, open, onUrl });
     expect(open).toHaveBeenCalledTimes(1);
