@@ -115,6 +115,41 @@ export function wakePredicate(wake: "turn-end" | "any-action"): (e: LogEntry) =>
     : (e) => e.type === LogEventType.TurnEnded || e.type === LogEventType.SessionClosed || e.type === LogEventType.SaveLocallyRequested || e.type === LogEventType.NavigatedTo;
 }
 
+/** How long a `window_closed` close may linger before it is believed. A page RELOAD tears the
+ *  editor down (which logs the close) and is typically back within seconds; ending the agent's
+ *  wait on that signal alone strands the returning human with nobody attached. */
+export const REOPEN_GRACE_MS = 3 * 60_000;
+
+/**
+ * After a `window_closed` session-close: watch for the human coming BACK within `graceMs` —
+ * either a NEW user-authored entry past `cursor`, or editor presence turning alive again (a
+ * reload appends no events, so the presence heartbeat is the only signal for a silent return).
+ * Resolves true on resumption, false when the grace passes in silence (they really left).
+ * Transient read failures don't abort the watch; the grace bounds everything.
+ */
+export async function awaitReopen(
+  channel: ControlChannel,
+  cursor: number,
+  opts: { graceMs?: number; pollMs?: number; now?: () => number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<boolean> {
+  const graceMs = opts.graceMs ?? REOPEN_GRACE_MS;
+  const pollMs = opts.pollMs ?? 2000;
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const deadline = now() + graceMs;
+  while (now() < deadline) {
+    try {
+      const { entries } = await channel.readSince(cursor);
+      if (entries.some((e) => e.actor === "user" && e.type !== LogEventType.SessionClosed)) return true;
+      if (await channel.presence()) return true;
+    } catch {
+      /* transient read/presence failure — keep watching until the grace expires */
+    }
+    await sleep(pollMs);
+  }
+  return false;
+}
+
 /**
  * Block until the control log gains a new actionable entry past `cursor`, then —
  * after a debounce window of quiescence — resolve with all new entries and the
