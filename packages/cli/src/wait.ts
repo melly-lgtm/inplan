@@ -124,30 +124,49 @@ export const REOPEN_GRACE_MS = 3 * 60_000;
  * After a `window_closed` session-close: watch for the human coming BACK within `graceMs` —
  * either a NEW user-authored entry past `cursor`, or editor presence turning alive again (a
  * reload appends no events, so the presence heartbeat is the only signal for a silent return).
- * Resolves true on resumption, false when the grace passes in silence (they really left).
- * Transient read failures don't abort the watch; the grace bounds everything.
+ * Resolves "reopened" on resumption, "expired" when the grace passes in silence (they really
+ * left), and "superseded" the moment a NEWER waiter claims the doc's wait-lock — the grace must
+ * not let a stale waiter outlive its replacement and steal the lock back on resume. Every probe
+ * is bounded by the REMAINING grace (a stalled channel read must not park the watch forever),
+ * and transient failures don't abort it.
  */
 export async function awaitReopen(
   channel: ControlChannel,
   cursor: number,
-  opts: { graceMs?: number; pollMs?: number; now?: () => number; sleep?: (ms: number) => Promise<void> } = {},
-): Promise<boolean> {
+  opts: {
+    graceMs?: number;
+    pollMs?: number;
+    /** Per-probe bound; additionally capped to the remaining grace. Default 10s. */
+    probeTimeoutMs?: number;
+    /** This waiter's wait-lock token; when set, a newer claimant resolves "superseded". */
+    token?: string;
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<"reopened" | "expired" | "superseded"> {
   const graceMs = opts.graceMs ?? REOPEN_GRACE_MS;
   const pollMs = opts.pollMs ?? 2000;
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const deadline = now() + graceMs;
+  // Bound a probe by min(probeTimeoutMs, remaining grace): the race's loser keeps running but is
+  // abandoned — the grace budget, not the channel's health, decides when the watch ends.
+  const bounded = <T>(fn: () => Promise<T>): Promise<T> => {
+    const budget = Math.max(1, Math.min(opts.probeTimeoutMs ?? 10_000, deadline - now()));
+    return Promise.race([fn(), new Promise<never>((_, rej) => setTimeout(() => rej(new Error("probe timed out")), budget).unref?.())]);
+  };
   while (now() < deadline) {
     try {
-      const { entries } = await channel.readSince(cursor);
-      if (entries.some((e) => e.actor === "user" && e.type !== LogEventType.SessionClosed)) return true;
-      if (await channel.presence()) return true;
+      if (opts.token && (await bounded(() => channel.isSuperseded(opts.token!)))) return "superseded";
+      const { entries } = await bounded(() => channel.readSince(cursor));
+      if (entries.some((e) => e.actor === "user" && e.type !== LogEventType.SessionClosed)) return "reopened";
+      if (await bounded(() => channel.presence())) return "reopened";
     } catch {
       /* transient read/presence failure — keep watching until the grace expires */
     }
-    await sleep(pollMs);
+    await sleep(Math.max(1, Math.min(pollMs, deadline - now())));
   }
-  return false;
+  return "expired";
 }
 
 /**

@@ -497,18 +497,28 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
     return "ok";
   }
 
-  // The editor logs WHY it closed (completed / window_closed); a crash logs nothing.
-  const closeEntry = result.entries.find((e) => e.type === LogEventType.SessionClosed);
+  // The editor logs WHY it closed (completed / window_closed); a crash logs nothing. The LAST
+  // close is the terminal one: a batch may hold window_closed (a reload) followed by completed
+  // (the human came back and did the build handoff) — grace must key on the final word, not
+  // delay an explicit handoff by three minutes.
+  const closeEntry = [...result.entries].reverse().find((e) => e.type === LogEventType.SessionClosed);
   // A `window_closed` is routinely just a page RELOAD — the web editor tears down (logging the
   // close) and is back seconds later — or a stray second surface (an old desktop window) closing
   // while the live session goes on. Exiting on that signal alone strands the returning human
   // with no agent attached, and nothing restarts the wait. So: linger, and if the human shows
   // signs of being back within the grace (a new user action, or the editor presence heartbeat
   // returning), resume the wait as if the close never happened. An explicit `completed` (the
-  // build handoff) still ends the session immediately.
+  // build handoff) still ends the session immediately, and a NEWER waiter supersedes this one
+  // mid-grace exactly as it would mid-wait.
   if (closeEntry && ((closeEntry.payload as { reason?: string } | undefined)?.reason ?? "completed") === "window_closed") {
     process.stderr.write("inplan: the editor closed — often just a page reload. Watching for it to come back…\n");
-    if (await awaitReopen(channel, result.cursor)) {
+    const reopen = await awaitReopen(channel, result.cursor, { token: lockToken });
+    if (reopen === "superseded") {
+      backend.logExit("superseded");
+      output({ status: "superseded" });
+      return "ok";
+    }
+    if (reopen === "reopened") {
       process.stderr.write("inplan: the editor is back — resuming the wait.\n");
       return waitCycle(backend, result.cursor, confirmed, model, gate);
     }
