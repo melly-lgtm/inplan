@@ -189,3 +189,45 @@ describe("probe failures are isolated", () => {
     await expect(awaitReopen(ch, 0, { ...c, graceMs: 5_000, pollMs: 500, token: "t" })).resolves.toMatchObject({ kind: "expired" });
   });
 });
+
+describe("the grace read reports what actually happened", () => {
+  it("carries the reason the editor logged, not a fixed \"completed\"", async () => {
+    // awaitReopen treats ANY explicit non-window_closed reason as terminal, so hard-coding the
+    // report would relabel some other close as the build handoff — and the agent switches to build
+    // mode on that reason.
+    const c = clock();
+    const ch = chan({
+      readSince: async () => ({ entries: [{ seq: 9, actor: "user", type: LogEventType.SessionClosed, payload: { reason: "archived" } }], cursor: 9 }),
+    });
+    await expect(awaitReopen(ch, 8, { ...c, graceMs: 60_000, pollMs: 1000 })).resolves.toMatchObject({ kind: "completed", reason: "archived" });
+  });
+
+  it("still reports `completed` for the build handoff itself", async () => {
+    const c = clock();
+    const ch = chan({
+      readSince: async () => ({ entries: [{ seq: 9, actor: "user", type: LogEventType.SessionClosed, payload: { reason: "completed" } }], cursor: 9 }),
+    });
+    await expect(awaitReopen(ch, 8, { ...c, graceMs: 60_000, pollMs: 1000 })).resolves.toMatchObject({ kind: "completed", reason: "completed" });
+  });
+
+  it("reads only the DELTA each poll, but reports every entry the grace saw", async () => {
+    const c = clock();
+    const asked: number[] = [];
+    let poll = 0;
+    const ch = chan({
+      readSince: async (from: number) => {
+        asked.push(from);
+        poll += 1;
+        // Agent-authored: does NOT prove a reopen, so the loop continues to a second poll.
+        if (poll === 1) return { entries: [{ seq: 9, actor: "agent", type: LogEventType.AgentRevised }], cursor: 9 };
+        return { entries: [{ seq: 10, actor: "user", type: LogEventType.SessionClosed, payload: { reason: "completed" } }], cursor: 10 };
+      },
+    });
+    const r = await awaitReopen(ch, 8, { ...c, graceMs: 60_000, pollMs: 1000 });
+    // The cursor advanced rather than re-reading from 8 forever…
+    expect(asked).toEqual([8, 9]);
+    // …and the report still contains BOTH polls' entries, not just the last delta.
+    expect(r).toMatchObject({ kind: "completed", cursor: 10 });
+    expect((r as { entries: { seq: number }[] }).entries.map((e) => e.seq)).toEqual([9, 10]);
+  });
+});

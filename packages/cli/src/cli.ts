@@ -558,8 +558,8 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
       // grace began, so reporting the pre-grace one would leave the terminating SessionClosed
       // unrecorded and the next wait would re-read and re-report the completed session.
       await channel.setCursor(reopen.cursor);
-      backend.logExit("completed");
-      output({ status: "closed", reason: "completed", cursor: reopen.cursor, closed: true, entries: [...result.entries, ...reopen.entries] });
+      backend.logExit(reopen.reason);
+      output({ status: "closed", reason: reopen.reason, cursor: reopen.cursor, closed: true, entries: [...result.entries, ...reopen.entries] });
       return "ok";
     }
     // A reopen deliberately resumes from the PRE-grace cursor: the user entries that proved the

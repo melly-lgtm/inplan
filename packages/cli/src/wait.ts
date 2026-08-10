@@ -139,12 +139,14 @@ export const REOPEN_GRACE_MS = 3 * 60_000;
  *  `isSuperseded(token)` check steps a superseded waiter down on its first tick. */
 /** What the grace watch concluded. `completed` carries the cursor and entries FROM THE GRACE READ:
  *  the caller persisted its cursor before the grace began, so without these the SessionClosed that
- *  ended the session is never recorded and the next wait re-reads and re-reports it. */
+ *  ended the session is never recorded and the next wait re-reads and re-reports it. `reason` is the
+ *  one the editor actually logged — this path is terminal for ANY explicit non-window_closed reason,
+ *  so reporting a fixed "completed" would relabel a different close as the build handoff. */
 export type ReopenOutcome =
   | { kind: "reopened" }
   | { kind: "expired" }
   | { kind: "superseded" }
-  | { kind: "completed"; cursor: number; entries: LogEntry[] };
+  | { kind: "completed"; cursor: number; entries: LogEntry[]; reason: string };
 
 export function lockForCycle(resumeToken: string | undefined, mint: () => string): { token: string; claim: boolean } {
   return resumeToken ? { token: resumeToken, claim: false } : { token: mint(), claim: true };
@@ -183,6 +185,13 @@ export async function awaitReopen(
   const supersede = inFlightGate();
   const reads = inFlightGate();
   const presences = inFlightGate();
+  // The probe cursor ADVANCES: re-reading from the pre-grace cursor every poll re-fetches the whole
+  // post-close range ~90 times over the default grace, growing with the doc's traffic. Reading only
+  // the delta is equivalent for both checks (an entry is seen on the poll it appears in) — but the
+  // entries must be ACCUMULATED, or a `completed` report would carry only the final delta and lose
+  // everything the earlier polls saw, undoing the reason this returns entries at all.
+  let probeCursor = cursor;
+  const seen: LogEntry[] = [];
   while (now() < deadline) {
     // Each probe gets its OWN try/catch. A single catch around all three meant a timing-out lock or
     // log read skipped the healthy ones for that iteration — so during a read outage a returning
@@ -196,7 +205,9 @@ export async function awaitReopen(
     }
     if (!reads.busy()) {
       try {
-        const { entries, cursor: readCursor } = await reads.run(() => channel.readSince(cursor), budget());
+        const { entries, cursor: readCursor } = await reads.run(() => channel.readSince(probeCursor), budget());
+        probeCursor = readCursor;
+        seen.push(...entries);
         // An explicit `completed` (the build handoff) logged DURING the grace ends it immediately.
         // Without this it was ignored for the full window and then reported as `window_closed` —
         // the deliberate handoff both delayed by minutes and mislabelled. A newer `window_closed`
@@ -210,7 +221,10 @@ export async function awaitReopen(
           const reason = (e.payload as { reason?: string } | undefined)?.reason;
           return reason !== undefined && reason !== "window_closed";
         });
-        if (closed) return { kind: "completed", cursor: readCursor, entries };
+        if (closed) {
+          const reason = (closed.payload as { reason?: string } | undefined)?.reason ?? "completed";
+          return { kind: "completed", cursor: readCursor, entries: seen, reason };
+        }
         if (entries.some((e) => e.actor === "user" && e.type !== LogEventType.SessionClosed)) return { kind: "reopened" };
       } catch {
         /* log read timed out or failed transiently — presence below can still prove the return */
