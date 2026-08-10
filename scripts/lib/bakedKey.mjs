@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// Pure helper for the release regression guard (scripts/build-release.mjs): confirm the plugin
+// verifier PUBLIC key was actually BAKED into the built CLI bundle, not left as an empty runtime
+// `process.env.INPLAN_PLUGIN_PUBLIC_KEY` lookup — the 0.1.27 bug that failed the live-collab gate
+// closed for every user. Node-stdlib only, so packages/cli/test/bakedKey.test.ts can unit-test it.
+
+import { createPublicKey } from "node:crypto";
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Every non-empty line of the PEM (header, base64 body, footer), trimmed. */
+function pemLines(pem) {
+  return String(pem ?? "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+}
+
+/** The base64 body lines of an SPKI PEM — header/footer and blank lines removed. */
+export function spkiBodyLines(pem) {
+  return pemLines(pem).filter((l) => !l.startsWith("-----"));
+}
+
+/**
+ * True iff the COMPLETE serialized PEM — header, every base64 body line IN ORDER, footer — appears
+ * as an ENTIRE string literal in `bundleSrc`: opened by a quote (", ', or backtick) immediately
+ * before the header and closed by the SAME quote immediately after the footer, with each newline
+ * in either its escaped string-literal form (`\n` as backslash-n, which is what esbuild's
+ * `define` emits) or literal form (a template literal). The delimiter anchoring matters: a
+ * polluted bake like "junk-----BEGIN…" still CONTAINS the PEM subsequence, but
+ * `crypto.createPublicKey` would reject the runtime value — the guard must only accept a literal
+ * that actually loads. Out-of-order fragments, scattered substrings, truncation, and
+ * degenerate/missing bodies are all rejected.
+ */
+export function isKeyBaked(bundleSrc, pem) {
+  // The configured value must BE a loadable public key before any string matching means anything:
+  // a 40+-character garbage env value between matching delimiters would otherwise satisfy the
+  // pattern while shipping a trust root createPublicKey rejects at runtime.
+  try {
+    createPublicKey(String(pem ?? ""));
+  } catch {
+    return false;
+  }
+  const lines = pemLines(pem);
+  if (spkiBodyLines(pem).join("").length < 40) return false; // belt-and-braces; unreachable past the parse gate
+  const NL = String.raw`(?:(?:\\r)?\\n|\r?\n)`;
+  // Between the delimiters and the PEM, tolerate exactly what crypto.createPublicKey tolerates:
+  // surrounding whitespace (escaped or literal). The release workflow's YAML block scalar leaves a
+  // trailing newline in the env value, so the baked literal legitimately ends "…KEY-----\n". Any
+  // NON-whitespace padding still fails — that is the polluted bake createPublicKey would reject.
+  const WS = String.raw`(?:(?:\\r)?\\n|\\t|\r?\n|[ \t])*`;
+  const DELIM = "([\"'`])";
+  return new RegExp(DELIM + WS + lines.map(escapeRe).join(NL) + WS + String.raw`\1`).test(String(bundleSrc ?? ""));
+}
