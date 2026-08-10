@@ -130,6 +130,17 @@ export const REOPEN_GRACE_MS = 3 * 60_000;
  * is bounded by the REMAINING grace (a stalled channel read must not park the watch forever),
  * and transient failures don't abort it.
  */
+/** The wait-lock a cycle should use, and whether it must CLAIM it.
+ *
+ *  A fresh cycle mints a token and claims the doc. A RESUMED cycle (after a reopen grace) carries
+ *  its original token and must NOT claim: claiming would overwrite a newer waiter's token — a stale
+ *  waiter stealing the lock back from its replacement, exactly what the grace is documented never to
+ *  allow. Keeping the old token means the worst case is losing, since the poll loop's
+ *  `isSuperseded(token)` check steps a superseded waiter down on its first tick. */
+export function lockForCycle(resumeToken: string | undefined, mint: () => string): { token: string; claim: boolean } {
+  return resumeToken ? { token: resumeToken, claim: false } : { token: mint(), claim: true };
+}
+
 export async function awaitReopen(
   channel: ControlChannel,
   cursor: number,
@@ -143,7 +154,7 @@ export async function awaitReopen(
     now?: () => number;
     sleep?: (ms: number) => Promise<void>;
   } = {},
-): Promise<"reopened" | "expired" | "superseded"> {
+): Promise<"reopened" | "expired" | "superseded" | "completed"> {
   const graceMs = opts.graceMs ?? REOPEN_GRACE_MS;
   const pollMs = opts.pollMs ?? 2000;
   const now = opts.now ?? Date.now;
@@ -168,6 +179,19 @@ export async function awaitReopen(
       if (opts.token && !supersede.busy() && (await supersede.run(() => channel.isSuperseded(opts.token!), budget()))) return "superseded";
       if (!reads.busy()) {
         const { entries } = await reads.run(() => channel.readSince(cursor), budget());
+        // An explicit `completed` (the build handoff) logged DURING the grace ends it immediately.
+        // Without this it was ignored for the full window and then reported as `window_closed` —
+        // the deliberate handoff both delayed by minutes and mislabelled. A newer `window_closed`
+        // is NOT terminal: that is still just another reload.
+        // Requires an EXPLICIT non-window_closed reason. Defaulting a bare SessionClosed to
+        // "completed" would end the grace on an ambiguous signal; when in doubt keep watching, since
+        // the grace can only expire naturally, whereas ending early strands a returning human.
+        const closed = entries.find((e) => {
+          if (e.type !== LogEventType.SessionClosed) return false;
+          const reason = (e.payload as { reason?: string } | undefined)?.reason;
+          return reason !== undefined && reason !== "window_closed";
+        });
+        if (closed) return "completed";
         if (entries.some((e) => e.actor === "user" && e.type !== LogEventType.SessionClosed)) return "reopened";
       }
       if (!presences.busy() && (await presences.run(() => channel.presence(graceStart), budget()))) return "reopened";

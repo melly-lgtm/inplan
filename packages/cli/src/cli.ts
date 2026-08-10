@@ -39,7 +39,7 @@ import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenceReason, type PluginGate } from "./pluginGate";
 import { demoteSource, shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
 import { announcePresence } from "./presence";
-import { awaitReopen, wakePredicate, waitForActions } from "./wait";
+import { awaitReopen, lockForCycle, wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
 import { toolActivityText } from "./relayActivity";
 import { ensureDocFile } from "./ensureDoc";
@@ -371,7 +371,7 @@ function logWaitExit(p: DocPaths, reason: string): void {
  * cursor, else "start from now" (current max). It is persisted on return so the
  * agent never hand-manages it and turns can't be skipped.
  */
-async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string, gate: PluginGate | null = null, resumed = false): Promise<WaitOutcome> {
+async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string, gate: PluginGate | null = null, resumed = false, resumeToken?: string): Promise<WaitOutcome> {
   const { channel, store } = backend;
   const history = await backend.history();
 
@@ -438,8 +438,14 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
   // double-waiters). Log the exit reason — including OS signals — so a reaped
   // waiter is diagnosable instead of "vanishing" silently.
   // Last writer wins — any older waiter sees the token change and steps down.
-  const lockToken = `${process.pid}-${Date.now()}`;
-  await channel.claimLock(lockToken);
+  // A RESUMED cycle keeps its original token and does NOT re-claim. Claiming would overwrite a
+  // newer waiter's token — a stale waiter stealing the lock back from its replacement, which is
+  // exactly what the grace is documented never to allow. Keeping the old token instead means the
+  // worst case is losing: `waitForActions` polls `isSuperseded(lockToken)` and steps down on its
+  // first tick. A stale waiter can only discover it lost, never take.
+  const lock = lockForCycle(resumeToken, () => `${process.pid}-${Date.now()}`);
+  const lockToken = lock.token;
+  if (lock.claim) await channel.claimLock(lockToken);
   // Register the exit-on-signal handlers ONCE per wait invocation. A resumed cycle (after a reopen)
   // re-enters this function recursively; re-adding them each time leaks listeners across repeated
   // reloads (Node's MaxListenersExceededWarning). The handler only needs `backend` (stable across
@@ -517,6 +523,13 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
   // build handoff) still ends the session immediately, and a NEWER waiter supersedes this one
   // mid-grace exactly as it would mid-wait.
   if (closeEntry && ((closeEntry.payload as { reason?: string } | undefined)?.reason ?? "completed") === "window_closed") {
+    // The editor may already be demonstrably back: a debounced batch can carry the close AND the
+    // user actions that followed it. Waiting out the grace in that case reports a live editor as
+    // closed minutes later, on evidence we are holding.
+    if (result.entries.some((e) => e.seq > closeEntry.seq && e.actor === "user" && e.type !== LogEventType.SessionClosed)) {
+      process.stderr.write("inplan: the editor closed and is already active again — resuming the wait.\n");
+      return waitCycle(backend, result.cursor, confirmed, model, gate, true, lockToken);
+    }
     process.stderr.write("inplan: the editor closed — often just a page reload. Watching for it to come back…\n");
     const reopen = await awaitReopen(channel, result.cursor, { token: lockToken });
     if (reopen === "superseded") {
@@ -524,9 +537,15 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
       output({ status: "superseded" });
       return "ok";
     }
+    if (reopen === "completed") {
+      // An explicit build handoff arrived mid-grace: end now, with ITS reason, not window_closed.
+      backend.logExit("completed");
+      output({ status: "closed", reason: "completed", cursor: result.cursor, closed: true, entries: result.entries });
+      return "ok";
+    }
     if (reopen === "reopened") {
       process.stderr.write("inplan: the editor is back — resuming the wait.\n");
-      return waitCycle(backend, result.cursor, confirmed, model, gate, true);
+      return waitCycle(backend, result.cursor, confirmed, model, gate, true, lockToken);
     }
     process.stderr.write("inplan: the editor did not come back — treating the session as closed.\n");
   }

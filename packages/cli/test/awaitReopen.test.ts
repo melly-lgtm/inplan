@@ -7,7 +7,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { LogEventType } from "@inplan/core/node";
-import { awaitReopen } from "../src/wait";
+import { awaitReopen, lockForCycle } from "../src/wait";
 
 function clock(t0 = 0) {
   let t = t0;
@@ -44,9 +44,31 @@ describe("awaitReopen", () => {
 
   it("resumes only once a heartbeat is written AFTER the watch begins (a genuine return)", async () => {
     const c = clock(1_000_000);
-    // A fresh heartbeat (last_seen advances with the clock) crosses graceStart a few polls in.
-    const ch = chan({ presence: async (sinceMs) => c.now() > (sinceMs ?? 0) && c.now() >= 1_004_000 });
+    // The mock's answer depends on the ARGUMENT it received, not on the clock alone: it reports a
+    // heartbeat only when told to count ones newer than a time at/after the grace start. Deriving it
+    // from `c.now()` instead would return true even if `awaitReopen` stopped passing `graceStart`
+    // (sinceMs would default to 0 and still satisfy it) — the test would then pass with the very
+    // gate it claims to cover removed.
+    const ch = chan({ presence: async (sinceMs) => (sinceMs ?? 0) >= 1_000_000 && c.now() >= 1_004_000 });
     await expect(awaitReopen(ch, 0, { ...c, graceMs: 60_000, pollMs: 2000 })).resolves.toBe("reopened");
+  });
+
+  it("an explicit `completed` during the grace ends it NOW, not after the full window", async () => {
+    // The build handoff. Before this it was ignored for the whole grace and then surfaced as
+    // `window_closed` — the deliberate action both delayed by minutes and mislabelled.
+    const c = clock();
+    const ch = chan({
+      readSince: async () => ({ entries: [{ seq: 9, actor: "user", type: LogEventType.SessionClosed, payload: { reason: "completed" } }], cursor: 9 }),
+    });
+    await expect(awaitReopen(ch, 8, { ...c, graceMs: 600_000, pollMs: 1000 })).resolves.toBe("completed");
+  });
+
+  it("a NEWER window_closed during the grace is just another reload, not an end", async () => {
+    const c = clock();
+    const ch = chan({
+      readSince: async () => ({ entries: [{ seq: 9, actor: "user", type: LogEventType.SessionClosed, payload: { reason: "window_closed" } }], cursor: 9 }),
+    });
+    await expect(awaitReopen(ch, 8, { ...c, graceMs: 10_000, pollMs: 1000 })).resolves.toBe("expired");
   });
 
   it("a trailing SessionClosed alone is NOT resumption", async () => {
@@ -92,5 +114,31 @@ describe("awaitReopen", () => {
       presence: async () => n >= 4,
     });
     await expect(awaitReopen(ch, 0, { ...c, graceMs: 60_000, pollMs: 1000 })).resolves.toBe("reopened");
+  });
+});
+
+// The reopen grace promises that a stale waiter cannot outlive its replacement and steal the lock
+// back. That promise lives entirely in whether a RESUMED cycle re-claims.
+describe("lockForCycle", () => {
+  it("a fresh cycle mints a token and claims", () => {
+    expect(lockForCycle(undefined, () => "pid-1")).toEqual({ token: "pid-1", claim: true });
+  });
+
+  it("a resumed cycle keeps its token and does NOT claim", () => {
+    // Claiming here would overwrite whatever a newer waiter wrote during the grace.
+    expect(lockForCycle("original-token", () => "pid-2")).toEqual({ token: "original-token", claim: false });
+  });
+
+  it("never mints a replacement token on resume, even if asked", () => {
+    let minted = 0;
+    lockForCycle("original-token", () => `pid-${++minted}`);
+    expect(minted).toBe(0); // the mint function is not even called
+  });
+
+  it("the resumed token is the ORIGINAL, so isSuperseded can detect the loss", () => {
+    // Keeping the old token is what makes losing detectable: the poll loop asks
+    // isSuperseded(token), which is only meaningful for the token this waiter actually held.
+    const { token } = lockForCycle("t-original", () => "t-new");
+    expect(token).toBe("t-original");
   });
 });
