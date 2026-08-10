@@ -14,6 +14,7 @@ import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync } from "node:fs";
 import { builtinModules } from "node:module";
 import { fileURLToPath } from "node:url";
+import { isKeyBaked } from "./lib/bakedKey.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const p = (rel) => fileURLToPath(new URL(`../${rel}`, import.meta.url));
@@ -58,13 +59,12 @@ const bundleSrc = readFileSync(cliBundle, "utf8");
 // Regression guard (0.1.27): the plugin verifier PUBLIC key must be BAKED into the shipped bundle,
 // not left as a `process.env.INPLAN_PLUGIN_PUBLIC_KEY` lookup that resolves to "" on a user's machine
 // — an empty key fails the live-collab gate closed for EVERYONE. The tsup `define` bakes it; here we
-// assert it actually landed in cli.js (catches a missing env AND a mis-wired define). We match the
-// SPKI base64 body, which is whitespace-free so it survives JSON string-escaping of the PEM newlines.
+// assert the COMPLETE key actually landed in cli.js (catches a missing env AND a mis-wired define).
+// isKeyBaked checks every base64 line of the SPKI body, so a truncated/partial bake can't pass.
 if (process.env.INPLAN_REQUIRE_PLUGIN_KEY) {
-  const b64 = (process.env.INPLAN_PLUGIN_PUBLIC_KEY ?? "").match(/[A-Za-z0-9+/=]{40,}/)?.[0];
-  if (!b64 || !bundleSrc.includes(b64)) {
+  if (!isKeyBaked(bundleSrc, process.env.INPLAN_PLUGIN_PUBLIC_KEY)) {
     throw new Error(
-      "cli bundle is missing the baked plugin verifier key — the live-collab gate would fail closed for every user (0.1.27 regression). Check packages/cli/tsup.config.ts `define`.",
+      "cli bundle is missing the fully-baked plugin verifier key — the live-collab gate would fail closed for every user (0.1.27 regression). Check packages/cli/tsup.config.ts `define`.",
     );
   }
   console.log("• plugin verifier key baked into cli bundle ✓");
