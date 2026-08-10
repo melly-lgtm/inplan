@@ -1,0 +1,349 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// A real session died mid-`wait` and took the process with it: the access token lasts exactly one
+// hour, the refresh was attempted 2 minutes before expiry, it failed, and the poll loop then retried
+// it every 200ms until the token expired — replaying a SINGLE-USE refresh token hundreds of times,
+// which is how a token family gets revoked. The final failure escaped `void tick()` as an unhandled
+// rejection, so Node printed a stack trace where the agent expects one line of JSON.
+//
+// These pin the four things that changed.
+
+import { describe, expect, it, vi } from "vitest";
+import { LIVE_REFRESH_SKEW_S, refreshBackoffMs } from "../src/cliAuth";
+import { DEFAULT_ERROR_GRACE_MS, DEFAULT_POLL_TIMEOUT_MS, waitForActions } from "../src/wait";
+import type { ControlChannel } from "@inplan/core";
+
+/** Assert a wait is STILL RUNNING after `ms`, then stop it.
+ *
+ *  A bare `Promise.race` only abandons the caller's view: `waitForActions` keeps its interval alive,
+ *  and with a 1ms poll and an injected clock it spins at ~1kHz past the end of the test. Aborting
+ *  clears the interval deterministically, so the assertion costs one timer instead of thousands. */
+async function stillWaitingAfter(ms: number, run: (signal: AbortSignal) => Promise<unknown>): Promise<void> {
+  const ctl = new AbortController();
+  const wait = run(ctl.signal).then(
+    (r) => ({ settled: r }),
+    (e) => ({ rejected: e as Error }),
+  );
+  const outcome = await Promise.race([wait, new Promise((r) => setTimeout(() => r("pending"), ms))]);
+  expect(outcome).toBe("pending"); // it must not have finished on its own
+  ctl.abort();
+  await wait; // the abort rejection is the expected end; awaiting it proves the loop stopped
+}
+
+describe("refresh backoff", () => {
+  it("grows exponentially instead of hammering a single-use token", () => {
+    expect(refreshBackoffMs(1)).toBe(1_000);
+    expect(refreshBackoffMs(2)).toBe(2_000);
+    expect(refreshBackoffMs(3)).toBe(4_000);
+    expect(refreshBackoffMs(4)).toBe(8_000);
+  });
+
+  it("caps so a long outage still retries, but only about once a minute", () => {
+    expect(refreshBackoffMs(20)).toBe(60_000);
+    expect(refreshBackoffMs(1000)).toBe(60_000);
+  });
+
+  it("never returns a delay shorter than the 200ms poll — the whole point is to be slower", () => {
+    for (let f = 1; f <= 50; f++) expect(refreshBackoffMs(f)).toBeGreaterThan(200);
+  });
+
+  it("is monotonic, so consecutive failures can only slow down", () => {
+    for (let f = 1; f < 30; f++) expect(refreshBackoffMs(f + 1)).toBeGreaterThanOrEqual(refreshBackoffMs(f));
+  });
+
+  // The incident: an unthrottled retry replays the token once per poll, so a 2-minute window is
+  // hundreds of replays. Both sides are DERIVED — the throttled count from the real schedule, the
+  // unthrottled from the real poll cadence — so the contrast can actually fail if either changes.
+  it("collapses a 2-minute failure window from hundreds of attempts to a handful", () => {
+    const windowMs = 120_000;
+    const POLL_MS = 200; // the wait loop's cadence, which the old code retried on
+    const attemptsWith = (delay: (n: number) => number) => {
+      let elapsed = 0;
+      let n = 0;
+      while (elapsed < windowMs) {
+        n += 1;
+        elapsed += delay(n);
+      }
+      return n;
+    };
+    const throttled = attemptsWith(refreshBackoffMs);
+    const unthrottled = attemptsWith(() => POLL_MS);
+    expect(throttled).toBeLessThan(10);
+    expect(unthrottled / throttled).toBeGreaterThan(50); // orders of magnitude, not a tweak
+  });
+});
+
+describe("proactive refresh margin", () => {
+  it("gives a long wait real retry budget instead of one shot at the cliff", () => {
+    expect(LIVE_REFRESH_SKEW_S).toBe(600);
+    // Enough room for the backoff to exhaust several attempts before the token actually expires.
+    let elapsed = 0;
+    let attempts = 0;
+    while (elapsed < LIVE_REFRESH_SKEW_S * 1000) {
+      attempts += 1;
+      elapsed += refreshBackoffMs(attempts);
+    }
+    expect(attempts).toBeGreaterThanOrEqual(9);
+  });
+});
+
+/** A channel whose reads reject, to drive the poll loop's failure path. */
+function failingChannel(err: Error, failAfter = 0): ControlChannel {
+  let reads = 0;
+  return {
+    append: async () => {},
+    readSince: async (cursor: number) => {
+      reads += 1;
+      if (reads > failAfter) throw err;
+      return { entries: [], cursor };
+    },
+    subscribe: () => () => {},
+    getCursor: async () => 0,
+    setCursor: async () => {},
+    claimLock: async () => {},
+    isSuperseded: async () => false,
+    presence: async () => true,
+  } as unknown as ControlChannel;
+}
+
+describe("wait survives a failing poll", () => {
+  it("ends with `failed` instead of dying of an unhandled rejection", async () => {
+    const err = new Error("inplan: not logged in (or session expired) — run `inplan login`");
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      const result = await waitForActions({
+        channel: failingChannel(err),
+        cursor: 0,
+        pollMs: 1,
+        errorGraceMs: 0, // give up on the first failure — deterministic, no wall-clock dependence
+        watchEditor: false,
+      });
+      expect(result.failed?.message).toContain("session expired");
+      await new Promise((r) => setTimeout(r, 20)); // let any stray rejection surface
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
+
+  it("tolerates a streak shorter than the threshold rather than giving up on a blip", async () => {
+    let reads = 0;
+    const ch = {
+      append: async () => {},
+      readSince: async (cursor: number) => {
+        reads += 1;
+        if (reads <= 2) throw new Error("transient 503");
+        return { entries: [{ seq: 1, actor: "user", type: "turn_ended", ts: "" }], cursor: 1 };
+      },
+      subscribe: () => () => {},
+      getCursor: async () => 0,
+      setCursor: async () => {},
+      claimLock: async () => {},
+      isSuperseded: async () => false,
+      presence: async () => true,
+    } as unknown as ControlChannel;
+
+    const result = await waitForActions({ channel: ch, cursor: 0, pollMs: 1, debounceMs: 1, errorGraceMs: 60_000, watchEditor: false });
+    expect(result.failed).toBeUndefined(); // recovered
+    expect(result.entries.length).toBe(1);
+  });
+
+  it("a recovery resets the streak, so scattered blips never accumulate into a give-up", async () => {
+    let reads = 0;
+    const ch = {
+      append: async () => {},
+      readSince: async (cursor: number) => {
+        reads += 1;
+        if (reads % 2 === 1 && reads < 12) throw new Error("flaky");
+        if (reads < 12) return { entries: [], cursor };
+        return { entries: [{ seq: 1, actor: "user", type: "turn_ended", ts: "" }], cursor: 1 };
+      },
+      subscribe: () => () => {},
+      getCursor: async () => 0,
+      setCursor: async () => {},
+      claimLock: async () => {},
+      isSuperseded: async () => false,
+      presence: async () => true,
+    } as unknown as ControlChannel;
+
+    // A fake clock makes the reset observable: without it, the run that starts at t=0 would exceed
+    // the 150ms grace long before the channel recovers.
+    let t = 0;
+    const result = await waitForActions({ channel: ch, cursor: 0, pollMs: 1, debounceMs: 1, errorGraceMs: 150, now: () => (t += 100), watchEditor: false });
+    expect(result.failed).toBeUndefined();
+  });
+});
+
+// The backoff and the give-up budget are two of this PR's own fixes, and they interact: a refresh
+// cooldown of up to 60s means EVERY poll in that window fails for one underlying reason. A tick-count
+// budget would read that single cooldown as hundreds of independent failures and abandon a wait
+// seconds into a backoff designed to outlast it — so the budget is expressed in time.
+describe("give-up budget vs refresh backoff", () => {
+  it("survives a full 60s refresh cooldown on the REAL default", () => {
+    // Asserted against wait.ts's exported constant, not a copy: a local literal would keep passing
+    // while the shipped default drifted, which is the opposite of what this test is for.
+    expect(DEFAULT_ERROR_GRACE_MS).toBeGreaterThan(refreshBackoffMs(1000)); // one max-length cooldown…
+    expect(DEFAULT_ERROR_GRACE_MS / refreshBackoffMs(1000)).toBeGreaterThanOrEqual(5); // …and several more
+  });
+
+  it("applies that default when the caller passes no budget", async () => {
+    let t = 0;
+    const ch = {
+      append: async () => {},
+      readSince: async () => { throw new Error("cooling off"); },
+      subscribe: () => () => {},
+      getCursor: async () => 0,
+      setCursor: async () => {},
+      claimLock: async () => {},
+      isSuperseded: async () => false,
+      presence: async () => true,
+    } as unknown as ControlChannel;
+    // No errorGraceMs: the shipped default must carry it past a full cooldown without giving up.
+    await stillWaitingAfter(250, (signal) => waitForActions({ channel: ch, cursor: 0, pollMs: 1, now: () => (t += 1_000), watchEditor: false, signal }));
+  });
+
+  it("does not give up early just because the poll cadence is fast", async () => {
+    // 200ms polls over a 60s cooldown = ~300 failing ticks. Time-based, that is one failure run.
+    let t = 0;
+    const ch = {
+      append: async () => {},
+      readSince: async () => { throw new Error("session refresh cooling off"); },
+      subscribe: () => () => {},
+      getCursor: async () => 0,
+      setCursor: async () => {},
+      claimLock: async () => {},
+      isSuperseded: async () => false,
+      presence: async () => true,
+    } as unknown as ControlChannel;
+    // 300 ticks of 200ms advance 60s of fake time — under the 5-minute grace, so it must NOT give up.
+    await stillWaitingAfter(300, (signal) =>
+      waitForActions({ channel: ch, cursor: 0, pollMs: 1, errorGraceMs: 5 * 60_000, now: () => (t += 200), watchEditor: false, signal }),
+    );
+  });
+});
+
+// A HUNG poll is not a failing one. `SupabaseControlChannel.readSince` has no client-side timeout, so
+// a stalled request left `busy` true forever: the interval kept firing and returning immediately, the
+// grace budget never advanced, and the wait neither progressed nor reported `failed`. It just stopped.
+describe("a hung poll", () => {
+  const neverSettles = () =>
+    ({
+      append: async () => {},
+      readSince: () => new Promise(() => {}), // never resolves, never rejects
+      subscribe: () => () => {},
+      getCursor: async () => 0,
+      setCursor: async () => {},
+      claimLock: async () => {},
+      isSuperseded: async () => false,
+      presence: async () => true,
+    }) as unknown as ControlChannel;
+
+  it("is abandoned and counted as a failure rather than stranding the loop", async () => {
+    const result = await waitForActions({
+      channel: neverSettles(),
+      cursor: 0,
+      pollMs: 1,
+      pollTimeoutMs: 10,
+      errorGraceMs: 0, // first timeout ends the wait
+      watchEditor: false,
+    });
+    expect(result.failed?.message).toMatch(/timed out after 10ms/);
+  });
+
+  // Bounding only `readSince` would have MOVED the hang rather than removed it: `isSuperseded` and
+  // `presence` are awaited in the same tick and are equally unbounded on the Supabase channel.
+  // "Still waiting" is NOT the assertion here — a FROZEN wait is also still waiting, so that would
+  //  pass with the bug present. The discriminator is whether the tick recycles: a stalled probe that
+  //  pins `busy` lets `readSince` run exactly ONCE, ever.
+  const pollsDuring = async (ms: number, stall: "lock" | "presence") => {
+    let reads = 0;
+    const ch = {
+      append: async () => {},
+      readSince: async (cursor: number) => ((reads += 1), { entries: [], cursor }),
+      subscribe: () => () => {},
+      getCursor: async () => 0,
+      setCursor: async () => {},
+      claimLock: async () => {},
+      isSuperseded: stall === "lock" ? () => new Promise(() => {}) : async () => false,
+      presence: stall === "presence" ? () => new Promise(() => {}) : async () => true,
+    } as unknown as ControlChannel;
+    await stillWaitingAfter(ms, (signal) =>
+      waitForActions({ channel: ch, cursor: 0, pollMs: 1, pollTimeoutMs: 10, token: "lock-1", watchEditor: stall === "presence", signal }),
+    );
+    return reads;
+  };
+
+  it("keeps polling when the LOCK probe stalls, instead of freezing on it", async () => {
+    // A stalled lock read means "unknown", which must not END the wait — but must not freeze it.
+    expect(await pollsDuring(120, "lock")).toBeGreaterThan(1);
+  });
+
+  it("keeps polling when the PRESENCE probe stalls", async () => {
+    expect(await pollsDuring(120, "presence")).toBeGreaterThan(1);
+  });
+
+  it("does not fire the timeout for a poll that answers in time", async () => {
+    const ch = {
+      append: async () => {},
+      readSince: async (cursor: number) => ({ entries: [{ seq: 1, actor: "user", type: "turn_ended", ts: "" }], cursor: cursor + 1 }),
+      subscribe: () => () => {},
+      getCursor: async () => 0,
+      setCursor: async () => {},
+      claimLock: async () => {},
+      isSuperseded: async () => false,
+      presence: async () => true,
+    } as unknown as ControlChannel;
+    const result = await waitForActions({ channel: ch, cursor: 0, pollMs: 1, debounceMs: 1, pollTimeoutMs: 5_000, watchEditor: false });
+    expect(result.failed).toBeUndefined();
+    expect(result.entries.length).toBe(1);
+  });
+
+  it("the default bound is long enough for a real read but short of any human timescale", () => {
+    expect(DEFAULT_POLL_TIMEOUT_MS).toBeGreaterThanOrEqual(10_000);
+    expect(DEFAULT_POLL_TIMEOUT_MS).toBeLessThan(DEFAULT_ERROR_GRACE_MS);
+  });
+});
+
+// Both reviewers independently flagged this: `alive` starting at `false` meant a presence call that
+// THREW read as "the editor is gone". Harmless while presence only rejected on real errors; once the
+// poll gained a timeout, a single 30s stall could end a live session after one earlier success.
+describe("presence: unknown is not absent", () => {
+  const channelWithPresence = (presence: () => Promise<boolean>) =>
+    ({
+      append: async () => {},
+      readSince: async (cursor: number) => ({ entries: [], cursor }),
+      subscribe: () => () => {},
+      getCursor: async () => 0,
+      setCursor: async () => {},
+      claimLock: async () => {},
+      isSuperseded: async () => false,
+      presence,
+    }) as unknown as ControlChannel;
+
+  it("does not report editorGone when presence stalls after a successful read", async () => {
+    let calls = 0;
+    const ch = channelWithPresence(() => {
+      calls += 1;
+      return calls === 1 ? Promise.resolve(true) : new Promise(() => {}); // alive once, then stalls
+    });
+    await stillWaitingAfter(150, (signal) => waitForActions({ channel: ch, cursor: 0, pollMs: 1, pollTimeoutMs: 5, watchEditor: true, signal }));
+  });
+
+  it("does not report editorGone when presence throws after a successful read", async () => {
+    let calls = 0;
+    const ch = channelWithPresence(async () => {
+      calls += 1;
+      if (calls === 1) return true;
+      throw new Error("presence unreadable");
+    });
+    await stillWaitingAfter(80, (signal) => waitForActions({ channel: ch, cursor: 0, pollMs: 1, watchEditor: true, signal }));
+  });
+
+  it("STILL reports editorGone when presence deterministically answers false", async () => {
+    let calls = 0;
+    const ch = channelWithPresence(async () => ++calls === 1); // true once, then a real false
+    const r = await waitForActions({ channel: ch, cursor: 0, pollMs: 1, watchEditor: true });
+    expect(r.editorGone).toBe(true); // the real signal must survive the fix
+  });
+});
