@@ -96,7 +96,7 @@ describe("createLoginSession", () => {
     expect(pending.url).toMatch(new RegExp(`^https://web\\.test/cli-auth\\?session=${SESSION}#pub=`)); // pub in the FRAGMENT — never in server logs
     expect(pending.expiresAt).toBe(600_000);
     expect(existsSync(pendingLoginPath())).toBe(true);
-    expect(loadPendingLogin(c.now())).toEqual(pending);
+    expect(await loadPendingLogin(c.now())).toEqual(pending);
   });
 
   it("throws on a server error and leaves no sidecar", async () => {
@@ -166,7 +166,7 @@ describe("pollLoginSession", () => {
     const { fetchImpl } = fakeServer(Array.from({ length: 200 }, () => () => ({ status: "pending" })));
     await expect(pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep, timeoutMs: 10_000 })).rejects.toThrow(/timed out/);
     expect(existsSync(pendingLoginPath())).toBe(true);
-    expect(loadPendingLogin(c.now())).toEqual(pending);
+    expect(await loadPendingLogin(c.now())).toEqual(pending);
   });
 
   it("server-side 404 (expired/claimed) throws LoginSessionExpiredError and clears the sidecar", async () => {
@@ -261,7 +261,7 @@ describe("loadPendingLogin", () => {
     const c = clock();
     const { fetchImpl } = fakeServer([]);
     await createLoginSession({ ...OPTS, fetchImpl, now: c.now });
-    expect(loadPendingLogin(600_001)).toBeNull();
+    expect(await loadPendingLogin(600_001)).toBeNull();
     expect(existsSync(pendingLoginPath())).toBe(false);
   });
 
@@ -270,7 +270,7 @@ describe("loadPendingLogin", () => {
     const { fetchImpl } = fakeServer([]);
     const pending = await createLoginSession({ ...OPTS, fetchImpl, now: c.now });
     writeFileSync(pendingLoginPath(), JSON.stringify({ ...pending, privateKeyPkcs8: 42 }));
-    expect(loadPendingLogin(c.now())).toBeNull();
+    expect(await loadPendingLogin(c.now())).toBeNull();
     expect(existsSync(pendingLoginPath())).toBe(false);
   });
 });

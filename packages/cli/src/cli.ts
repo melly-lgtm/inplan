@@ -577,8 +577,18 @@ async function doLogin(args: string[]): Promise<void> {
   }
   // Non-interactive callers (coding agents, pipes): resume a pending session a previous
   // invocation minted — the agent loop's second half — or mint one and exit pending.
-  if (!canInteractiveLogin(args) || isKnownAgentEnv()) {
-    const pending = loadPendingLogin();
+  // A human at a TTY who set INPLAN_NO_BROWSER is still INTERACTIVE — they just don't want a
+  // popup. Route them to the inline flow with the auto-open disabled (URL printed, poll inline)
+  // instead of the agent's pending-exit, which would block on a stale sidecar or exit 7 with
+  // nothing polling.
+  const noBrowserHuman =
+    !canInteractiveLogin(args) &&
+    Boolean(process.env.INPLAN_NO_BROWSER) &&
+    Boolean(process.stdin.isTTY && process.stdout.isTTY) &&
+    !process.env.CI &&
+    !isKnownAgentEnv();
+  if ((!canInteractiveLogin(args) && !noBrowserHuman) || isKnownAgentEnv()) {
+    const pending = await loadPendingLogin();
     if (pending) {
       try {
         process.stderr.write(`inplan: waiting for the pending browser sign-in to finish…\n  ${pending.url}\n`);
@@ -607,7 +617,13 @@ async function doLogin(args: string[]): Promise<void> {
   // which is the right default for the agent loop's re-run.)
   clearPendingLogin();
   try {
-    const auth = await defaultRendezvousLogin();
+    const auth = noBrowserHuman
+      ? await rendezvousLogin({
+          onUrl: (u) => process.stderr.write(`Open this URL in your browser to sign in:\n  ${u}\n`),
+          onNudge: printLoginNudge,
+          open: () => {}, // INPLAN_NO_BROWSER: never launch one — the printed URL is the flow
+        })
+      : await defaultRendezvousLogin();
     saveAuth(auth);
     await persistCloudIdentity();
     output({ status: "logged_in", url: auth.url, ...(auth.email ? { email: auth.email } : {}) });
@@ -672,7 +688,7 @@ export async function ensureLoggedIn(
   // stall an unattended run for the whole poll window.
   if (loginOptOut(args)) return false;
 
-  const pending = loadPendingLogin();
+  const pending = await loadPendingLogin();
   if (pending) {
     try {
       process.stderr.write(`inplan: waiting for the pending browser sign-in to finish…\n  ${pending.url}\n`);
@@ -773,10 +789,12 @@ async function pendingLoginExit(): Promise<void> {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (skipValueOf.has(a)) {
-      // Drop the flag AND its value — but only when the next token IS a value. A valueless
-      // `--refresh` (empty $TOKEN expansion) followed by another option must not swallow that
-      // option: `--refresh --remote doc` minus `--remote` would resume against a local path.
-      if (i + 1 < argv.length && !argv[i + 1]!.startsWith("-")) i++;
+      // Drop the flag AND its value — but only when the next token IS a value. Options in this
+      // CLI are `--`-prefixed (getFlag's boundary), so a token starting with a SINGLE hyphen is
+      // a legitimate credential value (tokens can begin with '-') and must be dropped with its
+      // flag; only another `--option` means the flag was valueless (empty $TOKEN expansion) and
+      // that option must survive.
+      if (i + 1 < argv.length && !argv[i + 1]!.startsWith("--")) i++;
       continue;
     }
     if ([...skipValueOf].some((f) => a.startsWith(`${f}=`))) continue;

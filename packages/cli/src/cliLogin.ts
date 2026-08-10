@@ -21,7 +21,7 @@
 
 import { spawn } from "node:child_process";
 import { webcrypto } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AuthFile } from "./cliAuth";
@@ -100,26 +100,36 @@ export function clearPendingLogin(): void {
  *  mkdir held for microseconds. Without it, a delayed poll's owner-check and unlink could
  *  interleave with a fresh login's write and erase the newcomer. A lock outliving the spin
  *  budget is stolen — a crashed holder must not brick logins forever. */
-function withSidecarLock<T>(fn: () => T): T {
+const LOCK_WAIT_MS = 2000;
+const LOCK_RETRY_MS = 25;
+/** A lock this old belongs to a dead process — the real critical sections are file-touch sized. */
+const LOCK_STALE_MS = 5000;
+
+async function withSidecarLock<T>(fn: () => T | Promise<T>): Promise<T> {
   const lock = pendingLoginPath() + ".lock";
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
     try {
       mkdirSync(lock, { recursive: false });
       break;
-    } catch {
-      if (Date.now() > deadline) {
-        try {
-          rmdirSync(lock); // steal a stale lock left by a crashed process
-        } catch {
-          /* already released */
-        }
+    } catch (e) {
+      // Only contention is retryable — an unwritable path or a pre-existing regular file would
+      // otherwise spin forever with no way out.
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      // Steal only a lock that is provably STALE (holder long dead), never one that is merely
+      // slower than our patience — stealing a live lock would re-open the very race this
+      // serializes. Our own wait is bounded separately.
+      try {
+        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmdirSync(lock);
+      } catch {
+        /* the holder released it between our checks — loop and retry */
       }
-      /* busy-spin: the critical sections are file-touch sized */
+      if (Date.now() > deadline) throw new Error("could not acquire the login lock — another inplan process is holding it");
+      await new Promise((r) => setTimeout(r, LOCK_RETRY_MS)); // yield, don't burn a core
     }
   }
   try {
-    return fn();
+    return await fn();
   } finally {
     try {
       rmdirSync(lock);
@@ -133,8 +143,8 @@ function withSidecarLock<T>(fn: () => T): T {
  *  (expired, claimed, undecryptable) must never erase a NEWER pending login that replaced it —
  *  that would make the replacement's printed URL impossible to resume. Owner-check + unlink run
  *  as one critical section, so the check can't go stale before the delete. */
-function clearPendingLoginFor(sessionId: string): void {
-  withSidecarLock(() => {
+async function clearPendingLoginFor(sessionId: string): Promise<void> {
+  await withSidecarLock(() => {
     const path = pendingLoginPath();
     try {
       const p = JSON.parse(readFileSync(path, "utf8")) as { sessionId?: unknown };
@@ -146,9 +156,8 @@ function clearPendingLoginFor(sessionId: string): void {
   });
 }
 
-/** The pending login a previous invocation left behind, if it can still complete. An expired or
- *  unreadable sidecar is cleared and reads as absent. */
-export function loadPendingLogin(now: number = Date.now()): PendingLogin | null {
+/** Lock-free read + cleanup — ONLY for use inside withSidecarLock (the lock is not re-entrant). */
+function loadPendingLoginLocked(now: number): PendingLogin | null {
   const path = pendingLoginPath();
   if (!existsSync(path)) return null;
   try {
@@ -172,10 +181,23 @@ export function loadPendingLogin(now: number = Date.now()): PendingLogin | null 
   }
 }
 
+/** The pending login a previous invocation left behind, if it can still complete. An expired or
+ *  unreadable sidecar is cleared and reads as absent — the read and that cleanup run under the
+ *  sidecar lock, so a delayed reader of an OLD sidecar can never delete a fresh replacement that
+ *  landed in between. */
+export function loadPendingLogin(now: number = Date.now()): Promise<PendingLogin | null> {
+  return withSidecarLock(() => loadPendingLoginLocked(now));
+}
+
 /** Create a rendezvous session + the sidecar that lets ANY later invocation finish it. */
 export async function createLoginSession(opts: RendezvousLoginOptions = {}): Promise<PendingLogin> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const now = opts.now ?? Date.now;
+  // Adopt an existing valid pending login BEFORE minting anything: the common repeat-invocation
+  // path must not burn a keypair + a server session row just to throw them away in the locked
+  // adoption check below (which stays, for the true concurrent race).
+  const existing = await loadPendingLogin(now());
+  if (existing) return existing;
   const apiBase = opts.apiBase ?? loginApiBase();
   const webOrigin = (opts.webOrigin ?? DEFAULT_WEB_ORIGIN).replace(/\/$/, "");
 
@@ -211,7 +233,7 @@ export async function createLoginSession(opts: RendezvousLoginOptions = {}): Pro
   // Inside the lock: adopt a still-valid winner, otherwise take the slot — one critical section,
   // so there is no second write race to lose.
   return withSidecarLock(() => {
-    const winner = loadPendingLogin(now());
+    const winner = loadPendingLoginLocked(now());
     if (winner) return winner;
     writeFileSync(path, JSON.stringify(pending, null, 2), { mode: 0o600 });
     chmodSync(path, 0o600); // belt-and-braces: mode can be masked by umask
@@ -247,7 +269,7 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
       opts.onNudge?.();
     }
     if (now() >= pending.expiresAt) {
-      clearPendingLoginFor(pending.sessionId);
+      await clearPendingLoginFor(pending.sessionId);
       throw new LoginSessionExpiredError("the sign-in link expired — run the command again for a fresh one");
     }
     if (now() >= deadline) throw new Error("login timed out — no response from the browser");
@@ -272,7 +294,7 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
     }
     if (res.status === 404) {
       // Unknown/expired/already-claimed server-side — this pending login can never complete.
-      clearPendingLoginFor(pending.sessionId);
+      await clearPendingLoginFor(pending.sessionId);
       throw new LoginSessionExpiredError("the sign-in link expired — run the command again for a fresh one");
     }
     if (res.ok) {
@@ -294,10 +316,10 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
           // GET already consumed the row, so this session can NEVER complete. Clear the sidecar
           // and report it like an expiry, so the caller starts a FRESH session instead of
           // treating a permanently-dead login as a transient failure to retry.
-          clearPendingLoginFor(pending.sessionId);
+          await clearPendingLoginFor(pending.sessionId);
           throw new LoginSessionExpiredError("the sign-in handoff could not be read — run the command again for a fresh link");
         }
-        clearPendingLoginFor(pending.sessionId);
+        await clearPendingLoginFor(pending.sessionId);
         return auth;
       }
       if (body.status === "opened" || body.status === "completed") sawOpened = true;
