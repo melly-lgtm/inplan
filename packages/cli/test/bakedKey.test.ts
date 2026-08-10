@@ -55,6 +55,12 @@ describe("isKeyBaked", () => {
     expect(isKeyBaked(`var k = "-----BEGIN PUBLIC KEY-----\\n${l1}\\n-----END PUBLIC KEY-----";`, MULTI)).toBe(false);
   });
 
+  it("rejects a polluted literal — junk inside the delimiters means createPublicKey would fail", () => {
+    // The PEM subsequence is PRESENT, but the runtime string is "junk-----BEGIN…" — unloadable.
+    expect(isKeyBaked(`var k = ${JSON.stringify("junk" + ED)};`, ED)).toBe(false);
+    expect(isKeyBaked(`var k = ${JSON.stringify(ED + "trailing")};`, ED)).toBe(false);
+  });
+
   it("rejects a missing or degenerate key body", () => {
     expect(isKeyBaked("anything", "")).toBe(false);
     expect(isKeyBaked("anything", "-----BEGIN PUBLIC KEY-----\n-----END PUBLIC KEY-----")).toBe(false);
