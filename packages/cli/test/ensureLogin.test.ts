@@ -18,11 +18,14 @@ vi.mock("../src/cliAuth", async (importOriginal) => ({
   currentUser: vi.fn(async () => null),
 }));
 
-import { canInteractiveLogin, ensureLoggedIn } from "../src/cli";
+import { canInteractiveLogin, ensureLoggedIn, isKnownAgentEnv } from "../src/cli";
 import { loadAuth, saveAuth, type AuthFile } from "../src/cliAuth";
 
 let home: string;
 const ttyDescriptors: Record<string, PropertyDescriptor | undefined> = {};
+// These tests may themselves run inside a coding agent's shell (CLAUDECODE/CLAUDE_CODE_* set),
+// which would trip the detection ladder's env rung — scrub and restore around each test.
+const scrubbedAgentEnv = new Map<string, string>();
 
 /** Force stdin/stdout's isTTY (a getter on the streams) so "interactive" is deterministic. */
 function setTTY(value: boolean): void {
@@ -41,11 +44,19 @@ beforeEach(() => {
   process.env.INPLAN_HOME = home;
   delete process.env.CI;
   delete process.env.INPLAN_NO_BROWSER;
+  for (const k of Object.keys(process.env)) {
+    if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) {
+      scrubbedAgentEnv.set(k, process.env[k]!);
+      delete process.env[k];
+    }
+  }
 });
 
 afterEach(() => {
   delete process.env.INPLAN_HOME;
   rmSync(home, { recursive: true, force: true });
+  for (const [k, v] of scrubbedAgentEnv) process.env[k] = v;
+  scrubbedAgentEnv.clear();
   for (const stream of ["stdin", "stdout"] as const) {
     if (ttyDescriptors[stream]) {
       Object.defineProperty(process[stream], "isTTY", ttyDescriptors[stream]!);
@@ -99,27 +110,68 @@ describe("ensureLoggedIn", () => {
     expect(login).not.toHaveBeenCalled();
   });
 
-  it("does NOT open a browser when headless (no TTY) — the caller errors instead", async () => {
+  it("headless (no TTY): no browser — routes to the pending-login exit for the agent loop", async () => {
     setTTY(false);
     const login = vi.fn();
-    expect(await ensureLoggedIn([], login)).toBe(false);
+    const pendingExit = vi.fn(async () => {});
+    expect(await ensureLoggedIn([], login, pendingExit)).toBe(false);
     expect(login).not.toHaveBeenCalled();
+    expect(pendingExit).toHaveBeenCalledOnce();
     expect(loadAuth()).toBeNull();
   });
 
-  it("does NOT open a browser under --no-login even when interactive", async () => {
+  it("routes to the pending exit even on a TTY when a coding-agent env marker is present", async () => {
     setTTY(true);
+    process.env.CLAUDECODE = "1";
     const login = vi.fn();
-    expect(await ensureLoggedIn(["--no-login"], login)).toBe(false);
+    const pendingExit = vi.fn(async () => {});
+    expect(await ensureLoggedIn([], login, pendingExit)).toBe(false);
     expect(login).not.toHaveBeenCalled();
+    expect(pendingExit).toHaveBeenCalledOnce();
   });
 
-  it("does NOT open a browser under CI even when interactive", async () => {
+  it("--no-login: no browser AND no pending session (explicit opt-out keeps the old contract)", async () => {
+    setTTY(true);
+    const login = vi.fn();
+    const pendingExit = vi.fn(async () => {});
+    expect(await ensureLoggedIn(["--no-login"], login, pendingExit)).toBe(false);
+    expect(login).not.toHaveBeenCalled();
+    expect(pendingExit).not.toHaveBeenCalled();
+  });
+
+  it("CI: no browser AND no pending session (nobody will ever complete it)", async () => {
     setTTY(true);
     process.env.CI = "true";
     const login = vi.fn();
-    expect(await ensureLoggedIn([], login)).toBe(false);
+    const pendingExit = vi.fn(async () => {});
+    expect(await ensureLoggedIn([], login, pendingExit)).toBe(false);
     expect(login).not.toHaveBeenCalled();
+    expect(pendingExit).not.toHaveBeenCalled();
+  });
+
+  it("resumes a pending sidecar before anything else (the agent loop's second half)", async () => {
+    setTTY(true); // even interactive: the pending session the human may already have opened wins
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const { dirname } = await import("node:path");
+    const { pendingLoginPath } = await import("../src/cliLogin");
+    const sidecar = {
+      sessionId: "11111111-2222-4333-8444-555555555555",
+      privateKeyPkcs8: "AAAA",
+      url: "https://web.test/cli-auth?session=x&pub=y",
+      apiBase: "http://127.0.0.1:1", // refuses instantly — proves the resume path ran (fetch throws)
+      expiresAt: Date.now() + 600_000,
+    };
+    mkdirSync(dirname(pendingLoginPath()), { recursive: true });
+    writeFileSync(pendingLoginPath(), JSON.stringify(sidecar));
+    const login = vi.fn();
+    const pendingExit = vi.fn(async () => {});
+    // The resume attempt fails on transport (unreachable) → false, but neither a fresh browser
+    // login nor a fresh pending session was started, and the sidecar survives for the next run.
+    expect(await ensureLoggedIn([], login, pendingExit)).toBe(false);
+    expect(login).not.toHaveBeenCalled();
+    expect(pendingExit).not.toHaveBeenCalled();
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(pendingLoginPath())).toBe(true);
   });
 
   it("runs the login handoff and persists credentials when interactive with none stored", async () => {
@@ -137,5 +189,14 @@ describe("ensureLoggedIn", () => {
     });
     expect(await ensureLoggedIn([], login)).toBe(false);
     expect(loadAuth()).toBeNull();
+  });
+});
+
+describe("isKnownAgentEnv", () => {
+  it("matches only agent-exclusive markers (a human's plain env stays interactive)", () => {
+    expect(isKnownAgentEnv({})).toBe(false);
+    expect(isKnownAgentEnv({ TERM: "xterm", CURSOR_TRACE_ID: "x" })).toBe(false); // integrated-terminal humans have this
+    expect(isKnownAgentEnv({ CLAUDECODE: "1" })).toBe(true);
+    expect(isKnownAgentEnv({ CLAUDE_CODE_SESSION_ID: "abc" })).toBe(true);
   });
 });

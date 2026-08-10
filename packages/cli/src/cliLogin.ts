@@ -1,47 +1,209 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// Interactive `inplan login`: the browser handoff. The CLI can't safely prompt for a
-// password (and OAuth providers reject headless flows), so login is delegated to the web
-// app's /cli-auth page, exactly as the desktop app does. We spin up a one-shot
-// 127.0.0.1 listener, open the browser at /cli-auth?port=<port>&state=<nonce>, and the page
-// POSTs the project url/anon + the freshly-minted refresh token back over the loopback once a
-// session exists. The token only ever crosses localhost; `state` is echoed back so a stray
-// local request can't inject a session.
+// `inplan login` — the cloud-rendezvous browser handoff. The CLI can't safely prompt for a
+// password (and OAuth providers reject headless flows), so login is delegated to the web app's
+// /cli-auth page. Historically the page POSTed the credentials to a one-shot 127.0.0.1 listener;
+// that breaks exactly where agent workflows live — a coding agent only reads output when the
+// process exits, and a CLI on a remote box can never receive a loopback POST from the human's
+// browser on another machine. So the handoff now rides a short-lived CLOUD session instead
+// (the collab server's /api/v1/cli-login routes):
+//
+//   1. Generate an ephemeral ECDH P-256 keypair; create a session; persist a pending-login
+//      sidecar (0600) so a LATER invocation can finish what this one starts.
+//   2. Send the human to /cli-auth?session=<id>&pub=<publicKey>. On load the page acks
+//      `opened` (the cross-machine-safe "the browser really opened" signal — no ack within
+//      30 s ⇒ tell the human to open the URL manually). After sign-in the page seals
+//      {url, anon, refresh, email} to our public key (ECDH → HKDF-SHA256 → AES-256-GCM)
+//      and posts the ciphertext to the session.
+//   3. Poll the session; on completion decrypt locally (the server only ever stores bytes it
+//      cannot read), persist the credentials, delete the sidecar. Sessions are single-use and
+//      expire server-side in ~10 minutes.
 
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { webcrypto } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { AuthFile } from "./cliAuth";
+import { resolveHubUrl } from "./pluginGate";
+
+const subtle = webcrypto.subtle;
 
 /** The web app origin that hosts /cli-auth. Overridable for self-hosted / dev. */
 const DEFAULT_WEB_ORIGIN = process.env.INPLAN_WEB_URL || "https://inplan.ai";
+/** HKDF domain separation — MUST match the /cli-auth page's sealer exactly. */
+const HKDF_INFO = "inplan cli-login v1";
 const DEFAULT_TIMEOUT_MS = 3 * 60_000;
-const MAX_BODY_BYTES = 64 * 1024; // a refresh token is small; cap to refuse junk.
+const POLL_MS = 2_000;
+/** No `opened` ack by this long ⇒ the browser likely never opened — nudge the human. */
+const NUDGE_MS = 30_000;
 
-export interface BrowserLoginOptions {
-  /** Origin hosting /cli-auth (default https://inplan.ai or $INPLAN_WEB_URL). */
-  webOrigin?: string;
-  /** How long to wait for the browser handoff before giving up. */
-  timeoutMs?: number;
-  /** Launch the system browser at `url`. Overridable in tests. Default: OS opener. */
-  open?: (url: string) => void;
-  /** Notified with the handoff URL so the caller can print a manual fallback. */
-  onUrl?: (url: string) => void;
+/** The collab server's HTTP base (same resolution as the plugin gate: ws(s) → http(s)). */
+export function loginApiBase(): string {
+  return resolveHubUrl().replace(/^ws/, "http").replace(/\/+$/, "");
 }
 
-/** The JSON the /cli-auth page POSTs back over the loopback once signed in. */
-interface Handoff {
-  state: string;
+export interface RendezvousDeps {
+  fetchImpl?: typeof fetch;
+  /** Launch the system browser at `url`. Overridable in tests. Default: OS opener. */
+  open?: (url: string) => void;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export interface RendezvousLoginOptions extends RendezvousDeps {
+  webOrigin?: string;
+  apiBase?: string;
+  /** How long the foreground command waits before giving up (the session itself lives longer,
+   *  so a follow-up invocation can still resume it). */
+  timeoutMs?: number;
+  /** Notified with the handoff URL so the caller can print a manual fallback. */
+  onUrl?: (url: string) => void;
+  /** Fired once if the page hasn't acked `opened` within NUDGE_MS — "open the URL manually". */
+  onNudge?: () => void;
+}
+
+/** A login this process started (or a previous one left behind): everything a later invocation
+ *  needs to finish the handoff. The private key never leaves this machine. */
+export interface PendingLogin {
+  sessionId: string;
+  /** Our ephemeral ECDH private key (PKCS#8, base64) — decrypts the sealed handoff. */
+  privateKeyPkcs8: string;
   url: string;
-  anon: string;
-  refresh: string;
-  email?: string;
+  apiBase: string;
+  expiresAt: number; // epoch ms
+}
+
+/** `~/.inplan/login-pending.json` — `INPLAN_HOME` overrides the base dir (tests). */
+export function pendingLoginPath(): string {
+  const base = process.env.INPLAN_HOME || join(homedir(), ".inplan");
+  return join(base, "login-pending.json");
+}
+
+export function clearPendingLogin(): void {
+  try {
+    unlinkSync(pendingLoginPath());
+  } catch {
+    /* already gone */
+  }
+}
+
+/** The pending login a previous invocation left behind, if it can still complete. An expired or
+ *  unreadable sidecar is cleared and reads as absent. */
+export function loadPendingLogin(now: number = Date.now()): PendingLogin | null {
+  const path = pendingLoginPath();
+  if (!existsSync(path)) return null;
+  try {
+    const p = JSON.parse(readFileSync(path, "utf8")) as PendingLogin;
+    if (
+      typeof p.sessionId !== "string" ||
+      typeof p.privateKeyPkcs8 !== "string" ||
+      typeof p.url !== "string" ||
+      typeof p.apiBase !== "string" ||
+      typeof p.expiresAt !== "number" ||
+      p.expiresAt <= now
+    ) {
+      clearPendingLogin();
+      return null;
+    }
+    return p;
+  } catch {
+    clearPendingLogin();
+    return null;
+  }
+}
+
+/** Create a rendezvous session + the sidecar that lets ANY later invocation finish it. */
+export async function createLoginSession(opts: RendezvousLoginOptions = {}): Promise<PendingLogin> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const now = opts.now ?? Date.now;
+  const apiBase = opts.apiBase ?? loginApiBase();
+  const webOrigin = (opts.webOrigin ?? DEFAULT_WEB_ORIGIN).replace(/\/$/, "");
+
+  const keys = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  const pub = Buffer.from(await subtle.exportKey("spki", keys.publicKey)).toString("base64");
+  const priv = Buffer.from(await subtle.exportKey("pkcs8", keys.privateKey)).toString("base64");
+
+  const res = await fetchImpl(`${apiBase}/api/v1/cli-login`, { method: "POST" });
+  if (!res.ok) throw new Error(`could not start a sign-in session (HTTP ${res.status})`);
+  const { sessionId, expiresInSec } = (await res.json()) as { sessionId: string; expiresInSec: number };
+  if (typeof sessionId !== "string" || !sessionId) throw new Error("could not start a sign-in session (bad response)");
+
+  const pending: PendingLogin = {
+    sessionId,
+    privateKeyPkcs8: priv,
+    url: `${webOrigin}/cli-auth?session=${encodeURIComponent(sessionId)}&pub=${encodeURIComponent(pub)}`,
+    apiBase,
+    expiresAt: now() + (typeof expiresInSec === "number" ? expiresInSec : 600) * 1000,
+  };
+  const path = pendingLoginPath();
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(pending, null, 2), { mode: 0o600 });
+  chmodSync(path, 0o600); // writeFileSync mode is ignored when the file pre-existed
+  return pending;
+}
+
+/** Distinguishes "this session can never complete" (sidecar cleared; start fresh) from a
+ *  foreground timeout (sidecar kept; a later invocation resumes). */
+export class LoginSessionExpiredError extends Error {}
+
+/**
+ * Poll `pending` until the page posts the sealed handoff, then decrypt + return the credentials
+ * (the sidecar is deleted on success — sessions are single-use). Throws LoginSessionExpiredError
+ * when the session is gone server-side (also clears the sidecar), or a plain Error on foreground
+ * timeout (the sidecar survives so the NEXT invocation picks the login up — the coding-agent loop).
+ */
+export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLoginOptions = {}): Promise<AuthFile> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const deadline = now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const nudgeAt = now() + NUDGE_MS;
+  let nudged = false;
+
+  while (true) {
+    if (now() >= pending.expiresAt) {
+      clearPendingLogin();
+      throw new LoginSessionExpiredError("the sign-in link expired — run the command again for a fresh one");
+    }
+    if (now() >= deadline) throw new Error("login timed out — no response from the browser");
+
+    const res = await fetchImpl(`${pending.apiBase}/api/v1/cli-login/${encodeURIComponent(pending.sessionId)}`, { method: "GET" });
+    if (res.status === 404) {
+      // Unknown/expired/already-claimed server-side — this pending login can never complete.
+      clearPendingLogin();
+      throw new LoginSessionExpiredError("the sign-in link expired — run the command again for a fresh one");
+    }
+    if (res.ok) {
+      const body = (await res.json()) as { status?: string; epk?: string; iv?: string; ct?: string };
+      if (body.status === "completed" && body.epk && body.iv && body.ct) {
+        const auth = await unsealHandoff(pending.privateKeyPkcs8, { epk: body.epk, iv: body.iv, ct: body.ct });
+        clearPendingLogin();
+        return auth;
+      }
+      // Still pending after the nudge window with the page never even loading? Tell the human —
+      // open() is fire-and-forget (a spawn "success" doesn't mean a browser appeared), so the
+      // page's own `opened` ack is the only trustworthy signal, and it works cross-machine.
+      if (!nudged && body.status === "pending" && now() >= nudgeAt) {
+        nudged = true;
+        opts.onNudge?.();
+      }
+    }
+    await sleep(POLL_MS);
+  }
+}
+
+/** The one-command human flow: create a session, open the browser, poll to completion inline. */
+export async function rendezvousLogin(opts: RendezvousLoginOptions = {}): Promise<AuthFile> {
+  const pending = await createLoginSession(opts);
+  opts.onUrl?.(pending.url);
+  (opts.open ?? openInBrowser)(pending.url);
+  return pollLoginSession(pending, opts);
 }
 
 /** Best-effort: open `url` in the OS browser. Errors are swallowed — the URL is also
- *  printed so the user can open it by hand. */
-function openInBrowser(url: string): void {
+ *  printed so the user can open it by hand (and the 30 s no-`opened` nudge re-prompts). */
+export function openInBrowser(url: string): void {
   const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
   const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
   try {
@@ -55,103 +217,26 @@ function openInBrowser(url: string): void {
   }
 }
 
-function isHandoff(v: unknown): v is Handoff {
-  if (typeof v !== "object" || v === null) return false;
-  const o = v as Record<string, unknown>;
-  return (
-    typeof o.state === "string" &&
-    typeof o.url === "string" &&
-    typeof o.anon === "string" &&
-    typeof o.refresh === "string" &&
-    (o.email === undefined || typeof o.email === "string")
+/** Decrypt the page's sealed handoff: ECDH(P-256) → HKDF-SHA256(salt=∅, info=HKDF_INFO) →
+ *  AES-256-GCM — the exact inverse of the page's `sealCliLogin`. */
+async function unsealHandoff(privateKeyPkcs8: string, sealed: { epk: string; iv: string; ct: string }): Promise<AuthFile> {
+  const privateKey = await subtle.importKey("pkcs8", Buffer.from(privateKeyPkcs8, "base64"), { name: "ECDH", namedCurve: "P-256" }, false, [
+    "deriveBits",
+  ]);
+  const epk = await subtle.importKey("spki", Buffer.from(sealed.epk, "base64"), { name: "ECDH", namedCurve: "P-256" }, false, []);
+  const shared = await subtle.deriveBits({ name: "ECDH", public: epk }, privateKey, 256);
+  const hkdfKey = await subtle.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
+  const aes = await subtle.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: new TextEncoder().encode(HKDF_INFO) },
+    hkdfKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["decrypt"],
   );
-}
-
-/**
- * Run the browser login handoff and resolve with the credentials to persist. Rejects on
- * timeout or if the listener fails. The caller is responsible for `saveAuth` + identity.
- */
-export function browserLogin(opts: BrowserLoginOptions = {}): Promise<AuthFile> {
-  const webOrigin = (opts.webOrigin ?? DEFAULT_WEB_ORIGIN).replace(/\/$/, "");
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const open = opts.open ?? openInBrowser;
-  const state = randomBytes(16).toString("hex");
-
-  return new Promise<AuthFile>((resolve, reject) => {
-    let settled = false;
-    const finish = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      server.close();
-      fn();
-    };
-
-    // CORS: the page lives on an https origin and fetches this http://127.0.0.1 listener, so a
-    // JSON POST is preflighted. Echo the caller's Origin (the page) and allow the JSON content-type.
-    const cors = (req: IncomingMessage, res: ServerResponse) => {
-      res.setHeader("Access-Control-Allow-Origin", req.headers.origin || webOrigin);
-      res.setHeader("Vary", "Origin");
-      res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "content-type");
-    };
-
-    const server = createServer((req, res) => {
-      const url = req.url ?? "";
-      if (req.method === "OPTIONS" && url.startsWith("/cb")) {
-        cors(req, res);
-        res.writeHead(204).end();
-        return;
-      }
-      if (req.method !== "POST" || !url.startsWith("/cb")) {
-        res.writeHead(404).end();
-        return;
-      }
-      cors(req, res);
-      let body = "";
-      let tooBig = false;
-      req.on("data", (chunk: Buffer) => {
-        body += chunk.toString("utf8");
-        if (body.length > MAX_BODY_BYTES) {
-          tooBig = true;
-          req.destroy();
-        }
-      });
-      req.on("end", () => {
-        if (tooBig) {
-          res.writeHead(413).end();
-          return;
-        }
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(body);
-        } catch {
-          res.writeHead(400).end();
-          return;
-        }
-        if (!isHandoff(parsed) || parsed.state !== state) {
-          // Not our handoff (mismatched/missing state) — reject but keep listening; a stray
-          // local request must not end the real flow.
-          res.writeHead(403).end();
-          return;
-        }
-        // Acknowledge so the page can show "you can close this tab", then finish.
-        res.writeHead(200, { "content-type": "text/plain" }).end("inplan: signed in — you can close this tab.");
-        const { url: projUrl, anon, refresh, email } = parsed;
-        finish(() => resolve({ url: projUrl, anonKey: anon, refreshToken: refresh, ...(email ? { email } : {}) }));
-      });
-    });
-
-    server.on("error", (err) => finish(() => reject(err)));
-
-    const timer = setTimeout(() => finish(() => reject(new Error("login timed out — no response from the browser"))), timeoutMs);
-    if (typeof timer.unref === "function") timer.unref();
-
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address() as AddressInfo;
-      const target = `${webOrigin}/cli-auth?port=${port}&state=${state}`;
-      opts.onUrl?.(target);
-      open(target);
-    });
-  });
+  const pt = await subtle.decrypt({ name: "AES-GCM", iv: Buffer.from(sealed.iv, "base64") }, aes, Buffer.from(sealed.ct, "base64"));
+  const parsed = JSON.parse(new TextDecoder().decode(pt)) as { url?: string; anon?: string; refresh?: string; email?: string };
+  if (typeof parsed.url !== "string" || typeof parsed.anon !== "string" || typeof parsed.refresh !== "string") {
+    throw new Error("sign-in handoff was malformed");
+  }
+  return { url: parsed.url, anonKey: parsed.anon, refreshToken: parsed.refresh, ...(parsed.email ? { email: parsed.email } : {}) };
 }
