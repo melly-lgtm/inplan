@@ -54,6 +54,22 @@ const IMPORT_FORMS = [
   /(?:^|[^.\w$])require\s*\(\s*["']([^"']+)["']/g, // require      require("x")
 ];
 const bundleSrc = readFileSync(cliBundle, "utf8");
+
+// Regression guard (0.1.27): the plugin verifier PUBLIC key must be BAKED into the shipped bundle,
+// not left as a `process.env.INPLAN_PLUGIN_PUBLIC_KEY` lookup that resolves to "" on a user's machine
+// — an empty key fails the live-collab gate closed for EVERYONE. The tsup `define` bakes it; here we
+// assert it actually landed in cli.js (catches a missing env AND a mis-wired define). We match the
+// SPKI base64 body, which is whitespace-free so it survives JSON string-escaping of the PEM newlines.
+if (process.env.INPLAN_REQUIRE_PLUGIN_KEY) {
+  const b64 = (process.env.INPLAN_PLUGIN_PUBLIC_KEY ?? "").match(/[A-Za-z0-9+/=]{40,}/)?.[0];
+  if (!b64 || !bundleSrc.includes(b64)) {
+    throw new Error(
+      "cli bundle is missing the baked plugin verifier key — the live-collab gate would fail closed for every user (0.1.27 regression). Check packages/cli/tsup.config.ts `define`.",
+    );
+  }
+  console.log("• plugin verifier key baked into cli bundle ✓");
+}
+
 const externals = new Set();
 for (const re of IMPORT_FORMS) {
   let m;
