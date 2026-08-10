@@ -800,20 +800,36 @@ function printLoginNudge(): void {
  * allocate one for streaming); misdetection is safe either way because both paths converge on the
  * same resumable session.
  */
+/** THE list of agent markers, so detection and scrubbing can never drift apart. Exact names, plus
+ *  prefixes for families (Claude Code sets a whole CLAUDE_CODE_* family). */
+const AGENT_ENV_VARS = ["CLAUDECODE", "CODEX_SANDBOX", "PI_CODING_AGENT", "INPLAN_AGENT"] as const;
+const AGENT_ENV_PREFIXES = ["CLAUDE_CODE_"] as const;
+
 export function isKnownAgentEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  // Claude Code: CLAUDECODE=1 + a CLAUDE_CODE_* family. Codex CLI: CODEX_SANDBOX for the sandboxed
+  // run (Codex filters CODEX_* out of the inherited shell env, so it can't leak from a human's
+  // config). Pi: PI_CODING_AGENT=true, set expressly for self-identification. INPLAN_AGENT: the
+  // explicit opt-in for any other harness, never present in a human's terminal.
   return (
-    // Claude Code: sets CLAUDECODE=1 + a family of CLAUDE_CODE_* vars in its tool shell.
-    Boolean(env.CLAUDECODE) ||
-    Object.keys(env).some((k) => k.startsWith("CLAUDE_CODE_")) ||
-    // OpenAI Codex CLI: sets CODEX_SANDBOX for the sandboxed command run. Codex filters CODEX_*
-    // out of the shell env it inherits, so this can't leak in from a human's shell config.
-    Boolean(env.CODEX_SANDBOX) ||
-    // Pi (earendil-works/pi): PI_CODING_AGENT=true, set expressly so sub-processes can self-identify.
-    Boolean(env.PI_CODING_AGENT) ||
-    // Explicit opt-in for any other harness (e.g. set by the inplan skill) — never present in a
-    // human's terminal, so it's a safe catch-all as new agents appear.
-    Boolean(env.INPLAN_AGENT)
+    AGENT_ENV_VARS.some((k) => Boolean(env[k])) || Object.keys(env).some((k) => AGENT_ENV_PREFIXES.some((p) => k.startsWith(p)))
   );
+}
+
+/**
+ * A copy of `env` with every marker {@link isKnownAgentEnv} recognises removed.
+ *
+ * Tests that spawn the CLI and assert the NON-interactive path need this: a marker inherited from
+ * whichever agent shell runs the suite routes the subprocess to the rendezvous pending-exit
+ * instead. Sharing one list with the detector is the point — scrubbing a hand-written subset is
+ * how the tests came to cover Claude's markers only, and would silently rot again the next time a
+ * harness is added to the detector.
+ */
+export function scrubAgentEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out = { ...env };
+  for (const k of Object.keys(out)) {
+    if ((AGENT_ENV_VARS as readonly string[]).includes(k) || AGENT_ENV_PREFIXES.some((p) => k.startsWith(p))) delete out[k];
+  }
+  return out;
 }
 
 /**

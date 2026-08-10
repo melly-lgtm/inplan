@@ -9,7 +9,7 @@
 // distinct: telling a paying customer to upgrade because a server hiccuped is the worst outcome.
 
 import { describe, expect, it, vi } from "vitest";
-import { EXIT_PLUGIN_UNAVAILABLE, EXIT_UPGRADE_REQUIRED, exitAfterFlush, explainNoGate, shellQuote } from "../src/cli";
+import { EXIT_PLUGIN_UNAVAILABLE, EXIT_UPGRADE_REQUIRED, exitAfterFlush, explainNoGate, isKnownAgentEnv, scrubAgentEnv, shellQuote } from "../src/cli";
 
 function capture(fn: () => void): { err: string; out: string } {
   let err = "";
@@ -128,5 +128,40 @@ describe("shellQuote", () => {
 
   it("escapes an embedded single quote by closing, escaping, and reopening", () => {
     expect(shellQuote("/w/it's.md")).toBe("'/w/it'" + String.fromCharCode(92) + "''s.md'");
+  });
+});
+
+// The scrub and the detector must agree. They came apart once already: the spawn tests removed only
+// Claude's markers while isKnownAgentEnv also recognised Codex, Pi and the INPLAN_AGENT opt-in, so a
+// suite run from those shells routed the subprocess to the rendezvous pending-exit instead of the
+// asserted path. Sharing one list is the fix; this is what keeps it shared.
+describe("scrubAgentEnv ⇄ isKnownAgentEnv", () => {
+  const MARKERS = { CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli", CODEX_SANDBOX: "seatbelt", PI_CODING_AGENT: "true", INPLAN_AGENT: "1" };
+
+  it("an env carrying EVERY known marker is detected", () => {
+    expect(isKnownAgentEnv({ ...MARKERS })).toBe(true);
+  });
+
+  it("scrubbing that env makes it undetectable — the property that must hold for any new marker", () => {
+    expect(isKnownAgentEnv(scrubAgentEnv({ ...MARKERS }))).toBe(false);
+  });
+
+  it("each marker alone is both detected and scrubbed", () => {
+    for (const [k, v] of Object.entries(MARKERS)) {
+      expect(isKnownAgentEnv({ [k]: v }), `${k} detected`).toBe(true);
+      expect(isKnownAgentEnv(scrubAgentEnv({ [k]: v })), `${k} scrubbed`).toBe(false);
+    }
+  });
+
+  it("leaves unrelated variables alone", () => {
+    const env = { PATH: "/usr/bin", HOME: "/home/x", CURSOR_TRACE_ID: "keep-me", ...MARKERS };
+    const out = scrubAgentEnv(env);
+    expect(out).toEqual({ PATH: "/usr/bin", HOME: "/home/x", CURSOR_TRACE_ID: "keep-me" });
+  });
+
+  it("does not mutate the env it was given", () => {
+    const env = { ...MARKERS };
+    scrubAgentEnv(env);
+    expect(env.CLAUDECODE).toBe("1"); // the caller's process.env must be untouched
   });
 });

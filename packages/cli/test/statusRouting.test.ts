@@ -12,6 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { scrubAgentEnv } from "../src/cli";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.js");
 
@@ -24,10 +25,9 @@ beforeEach(() => {
   file = join(home, "plan.md");
   writeFileSync(file, "# Plan\n\nbody\n");
   // Hermetic auth env (see open.test.ts): assert the non-interactive "not logged in" path from any
-  // shell — CI=1 forces loginOptOut, and scrubbing CLAUDECODE/CLAUDE_CODE_* stops an agent shell from
-  // routing to the rendezvous pending-exit (exit 7).
-  env = { ...process.env, INPLAN_HOME: home, INPLAN_SIDECAR_DIR: join(home, "sidecars"), CI: "1" };
-  for (const k of Object.keys(env)) if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) delete env[k];
+  // shell — CI=1 forces loginOptOut, and scrubAgentEnv removes every marker isKnownAgentEnv knows,
+  // so no agent shell routes the subprocess to the rendezvous pending-exit (exit 7).
+  env = { ...scrubAgentEnv(process.env), INPLAN_HOME: home, INPLAN_SIDECAR_DIR: join(home, "sidecars"), CI: "1" };
 });
 
 afterEach(() => {
