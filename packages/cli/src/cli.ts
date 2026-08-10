@@ -39,7 +39,7 @@ import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenceReason, type PluginGate } from "./pluginGate";
 import { demoteSource, shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
 import { announcePresence } from "./presence";
-import { awaitReopen, lockForCycle, wakePredicate, waitForActions } from "./wait";
+import { awaitReopen, lockForCycle, verifyResumedLock, wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
 import { toolActivityText } from "./relayActivity";
 import { ensureDocFile } from "./ensureDoc";
@@ -433,10 +433,23 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
   // notices supersession on its first poll — so a recovery that lost the doc while it was watching
   // would already have applied an edit and announced itself on behalf of a waiter that no longer
   // owns the document. Not claiming the lock stops it stealing; this stops it acting.
-  if (resumeToken && (await channel.isSuperseded(resumeToken))) {
-    backend.logExit("superseded");
-    output({ status: "superseded" });
-    return "ok";
+  if (resumeToken) {
+    const owns = await verifyResumedLock(channel, resumeToken);
+    if (owns === "lost") {
+      backend.logExit("superseded");
+      output({ status: "superseded" });
+      return "ok";
+    }
+    if (owns === "unverifiable") {
+      // The lock read itself failed. Ending here is deliberate: an unverifiable lock must not be
+      // treated as ours, and letting the rejection escape would reject waitCycle — a stack trace
+      // with no JSON on the agent's channel, the failure mode this codebase already removed once.
+      backend.logExit("lock_unverifiable");
+      process.stderr.write("inplan: couldn't confirm this wait still owns the document — ending rather than risking a double write.\n  Re-attach to continue.\n");
+      output({ status: "wait_failed", message: "resumed wait could not verify its lock" });
+      exitAfterFlush(EXIT_WAIT_FAILED);
+      return "exiting";
+    }
   }
 
   await applyGatedEdit(store, channel, ev, { current, canonicalText, quarantine, gate: usePlugin ? gate : null });

@@ -148,6 +148,20 @@ export type ReopenOutcome =
   | { kind: "superseded" }
   | { kind: "completed"; cursor: number; entries: LogEntry[]; reason: string };
 
+/** Whether a RESUMED cycle still owns the document, for the check that must run before it mutates.
+ *
+ *  `unverifiable` is its own answer on purpose. `isSuperseded` rejects when the lock read fails, and
+ *  an unverifiable lock must not be read as "still ours": acting could double-write on behalf of a
+ *  waiter that lost the doc during the grace. Declining merely ends this cycle — the agent's next
+ *  `wait` re-attaches — so the asymmetry favours refusing. */
+export async function verifyResumedLock(channel: Pick<ControlChannel, "isSuperseded">, token: string): Promise<"ours" | "lost" | "unverifiable"> {
+  try {
+    return (await channel.isSuperseded(token)) ? "lost" : "ours";
+  } catch {
+    return "unverifiable";
+  }
+}
+
 export function lockForCycle(resumeToken: string | undefined, mint: () => string): { token: string; claim: boolean } {
   return resumeToken ? { token: resumeToken, claim: false } : { token: mint(), claim: true };
 }

@@ -7,7 +7,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { LogEventType } from "@inplan/core/node";
-import { awaitReopen, lockForCycle } from "../src/wait";
+import { awaitReopen, lockForCycle, verifyResumedLock } from "../src/wait";
 
 function clock(t0 = 0) {
   let t = t0;
@@ -229,5 +229,38 @@ describe("the grace read reports what actually happened", () => {
     // …and the report still contains BOTH polls' entries, not just the last delta.
     expect(r).toMatchObject({ kind: "completed", cursor: 10 });
     expect((r as { entries: { seq: number }[] }).entries.map((e) => e.seq)).toEqual([9, 10]);
+  });
+});
+
+// The guard that stops a lost recovery from mutating can itself fail: SupabaseControlChannel rejects
+// when its lock query fails. A bare `await` would reject waitCycle and surface as a stack trace with
+// no JSON — the failure mode this codebase already removed once.
+describe("verifyResumedLock", () => {
+  it("reports ours when the lock is still held", async () => {
+    expect(await verifyResumedLock({ isSuperseded: async () => false }, "t")).toBe("ours");
+  });
+
+  it("reports lost when a newer waiter claimed it", async () => {
+    expect(await verifyResumedLock({ isSuperseded: async () => true }, "t")).toBe("lost");
+  });
+
+  it("reports unverifiable — NOT ours — when the lock read rejects", async () => {
+    // Fail closed: acting on an unverifiable lock risks a double write on behalf of a waiter that
+    // lost the doc; declining merely ends this cycle and the agent re-attaches.
+    const ch = {
+      isSuperseded: async () => {
+        throw new Error("locks read failed");
+      },
+    };
+    expect(await verifyResumedLock(ch, "t")).toBe("unverifiable");
+  });
+
+  it("never rejects, whatever the channel does", async () => {
+    const throwsSync = {
+      isSuperseded: () => {
+        throw new Error("sync boom");
+      },
+    } as unknown as Parameters<typeof verifyResumedLock>[0];
+    await expect(verifyResumedLock(throwsSync, "t")).resolves.toBe("unverifiable");
   });
 });
