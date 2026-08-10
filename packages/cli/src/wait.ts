@@ -184,14 +184,24 @@ export async function awaitReopen(
   const reads = inFlightGate();
   const presences = inFlightGate();
   while (now() < deadline) {
-    try {
-      if (opts.token && !supersede.busy() && (await supersede.run(() => channel.isSuperseded(opts.token!), budget()))) return { kind: "superseded" };
-      if (!reads.busy()) {
+    // Each probe gets its OWN try/catch. A single catch around all three meant a timing-out lock or
+    // log read skipped the healthy ones for that iteration — so during a read outage a returning
+    // editor's presence heartbeat could not resume the wait, which is the one signal that matters.
+    if (opts.token && !supersede.busy()) {
+      try {
+        if (await supersede.run(() => channel.isSuperseded(opts.token!), budget())) return { kind: "superseded" };
+      } catch {
+        /* lock unreadable this iteration — keep watching; a missed supersede is retried next poll */
+      }
+    }
+    if (!reads.busy()) {
+      try {
         const { entries, cursor: readCursor } = await reads.run(() => channel.readSince(cursor), budget());
         // An explicit `completed` (the build handoff) logged DURING the grace ends it immediately.
         // Without this it was ignored for the full window and then reported as `window_closed` —
         // the deliberate handoff both delayed by minutes and mislabelled. A newer `window_closed`
         // is NOT terminal: that is still just another reload.
+        //
         // Requires an EXPLICIT non-window_closed reason. Defaulting a bare SessionClosed to
         // "completed" would end the grace on an ambiguous signal; when in doubt keep watching, since
         // the grace can only expire naturally, whereas ending early strands a returning human.
@@ -202,10 +212,16 @@ export async function awaitReopen(
         });
         if (closed) return { kind: "completed", cursor: readCursor, entries };
         if (entries.some((e) => e.actor === "user" && e.type !== LogEventType.SessionClosed)) return { kind: "reopened" };
+      } catch {
+        /* log read timed out or failed transiently — presence below can still prove the return */
       }
-      if (!presences.busy() && (await presences.run(() => channel.presence(graceStart), budget()))) return { kind: "reopened" };
-    } catch {
-      /* a probe timed out, or a read/presence failed transiently — keep watching until grace expires */
+    }
+    if (!presences.busy()) {
+      try {
+        if (await presences.run(() => channel.presence(graceStart), budget())) return { kind: "reopened" };
+      } catch {
+        /* presence unreadable this iteration — keep watching until the grace expires */
+      }
     }
     await sleep(Math.max(1, Math.min(pollMs, deadline - now())));
   }

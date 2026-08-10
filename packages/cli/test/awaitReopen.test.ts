@@ -142,3 +142,50 @@ describe("lockForCycle", () => {
     expect(token).toBe("t-original");
   });
 });
+
+// One catch around all three probes meant a timing-out lock or log read skipped the healthy ones for
+// that iteration. During a read outage the presence heartbeat is the ONLY signal that a human came
+// back, so swallowing it there defeats the grace exactly when it is needed.
+describe("probe failures are isolated", () => {
+  it("a failing lock probe does not stop presence from proving the return", async () => {
+    const c = clock();
+    const ch = chan({
+      isSuperseded: async () => {
+        throw new Error("locks table unreachable");
+      },
+      presence: async () => true,
+    });
+    await expect(awaitReopen(ch, 0, { ...c, graceMs: 10_000, pollMs: 500, token: "t" })).resolves.toMatchObject({ kind: "reopened" });
+  });
+
+  it("a failing log read does not stop presence from proving the return", async () => {
+    const c = clock();
+    const ch = chan({
+      readSince: async () => {
+        throw new Error("events read timed out");
+      },
+      presence: async () => true,
+    });
+    await expect(awaitReopen(ch, 0, { ...c, graceMs: 10_000, pollMs: 500 })).resolves.toMatchObject({ kind: "reopened" });
+  });
+
+  it("a failing presence probe does not stop a user entry from proving the return", async () => {
+    const c = clock();
+    const ch = chan({
+      readSince: async () => ({ entries: [{ seq: 9, actor: "user", type: LogEventType.TurnEnded }], cursor: 9 }),
+      presence: async () => {
+        throw new Error("presence unreadable");
+      },
+    });
+    await expect(awaitReopen(ch, 0, { ...c, graceMs: 10_000, pollMs: 500 })).resolves.toMatchObject({ kind: "reopened" });
+  });
+
+  it("all three failing still expires cleanly rather than hanging", async () => {
+    const c = clock();
+    const boom = async () => {
+      throw new Error("outage");
+    };
+    const ch = chan({ isSuperseded: boom, readSince: boom, presence: boom });
+    await expect(awaitReopen(ch, 0, { ...c, graceMs: 5_000, pollMs: 500, token: "t" })).resolves.toMatchObject({ kind: "expired" });
+  });
+});

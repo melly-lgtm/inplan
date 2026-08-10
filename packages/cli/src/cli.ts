@@ -428,6 +428,17 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
   const acceptance = acceptanceFrom(history);
   const quarantine = acceptance === "review" && parse(canonicalText).body !== parse(current).body;
   // `usePlugin ? gate : null` — only route through the plugin when its read succeeded.
+  // A RESUMED cycle checks the lock BEFORE it mutates anything. The edit pipeline and the
+  // `agent_revised` append below both run ahead of any lock handling, and `waitForActions` only
+  // notices supersession on its first poll — so a recovery that lost the doc while it was watching
+  // would already have applied an edit and announced itself on behalf of a waiter that no longer
+  // owns the document. Not claiming the lock stops it stealing; this stops it acting.
+  if (resumeToken && (await channel.isSuperseded(resumeToken))) {
+    backend.logExit("superseded");
+    output({ status: "superseded" });
+    return "ok";
+  }
+
   await applyGatedEdit(store, channel, ev, { current, canonicalText, quarantine, gate: usePlugin ? gate : null });
 
   // Signal the agent has (re)engaged this round so the editor can clear its
@@ -528,7 +539,11 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
     // closed minutes later, on evidence we are holding.
     if (result.entries.some((e) => e.seq > closeEntry.seq && e.actor === "user" && e.type !== LogEventType.SessionClosed)) {
       process.stderr.write("inplan: the editor closed and is already active again — resuming the wait.\n");
-      return waitCycle(backend, result.cursor, confirmed, model, gate, true, lockToken);
+      // Resume from the CLOSE, not from `result.cursor`. The cursor is this batch's max seq, so the
+      // very actions that proved the editor is back sit at or below it and would be skipped —
+      // silently dropping the user's work on a reload. Rewinding to `closeEntry.seq` re-reads them
+      // so they wake the resumed cycle, matching the grace path's documented behaviour.
+      return waitCycle(backend, closeEntry.seq, confirmed, model, gate, true, lockToken);
     }
     process.stderr.write("inplan: the editor closed — often just a page reload. Watching for it to come back…\n");
     const reopen = await awaitReopen(channel, result.cursor, { token: lockToken });
