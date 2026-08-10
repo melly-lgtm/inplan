@@ -22,14 +22,14 @@ describe("awaitReopen", () => {
   it("resumes on a NEW user-authored entry past the cursor", async () => {
     const c = clock();
     const ch = chan({ readSince: async () => ({ entries: [{ seq: 9, actor: "user", type: LogEventType.CommentCreated }], cursor: 9 }) });
-    await expect(awaitReopen(ch, 8, { ...c, graceMs: 60_000 })).resolves.toBe("reopened");
+    await expect(awaitReopen(ch, 8, { ...c, graceMs: 60_000 })).resolves.toMatchObject({ kind: "reopened" });
   });
 
   it("resumes on the editor presence heartbeat — a silent reload appends no events", async () => {
     const c = clock();
     let polls = 0;
     const ch = chan({ presence: async () => ++polls >= 3 }); // page back after a couple of polls
-    await expect(awaitReopen(ch, 0, { ...c, graceMs: 60_000, pollMs: 1000 })).resolves.toBe("reopened");
+    await expect(awaitReopen(ch, 0, { ...c, graceMs: 60_000, pollMs: 1000 })).resolves.toMatchObject({ kind: "reopened" });
     expect(polls).toBe(3);
   });
 
@@ -39,7 +39,7 @@ describe("awaitReopen", () => {
     // began (< graceStart), it must NOT read as a reopen — otherwise a real close resumes a dead
     // session until the stale row expires, then ends the wait, defeating the grace.
     const ch = chan({ presence: async (sinceMs) => 995_000 > (sinceMs ?? 0) });
-    await expect(awaitReopen(ch, 0, { ...c, graceMs: 10_000, pollMs: 2000 })).resolves.toBe("expired");
+    await expect(awaitReopen(ch, 0, { ...c, graceMs: 10_000, pollMs: 2000 })).resolves.toMatchObject({ kind: "expired" });
   });
 
   it("resumes only once a heartbeat is written AFTER the watch begins (a genuine return)", async () => {
@@ -50,7 +50,7 @@ describe("awaitReopen", () => {
     // (sinceMs would default to 0 and still satisfy it) — the test would then pass with the very
     // gate it claims to cover removed.
     const ch = chan({ presence: async (sinceMs) => (sinceMs ?? 0) >= 1_000_000 && c.now() >= 1_004_000 });
-    await expect(awaitReopen(ch, 0, { ...c, graceMs: 60_000, pollMs: 2000 })).resolves.toBe("reopened");
+    await expect(awaitReopen(ch, 0, { ...c, graceMs: 60_000, pollMs: 2000 })).resolves.toMatchObject({ kind: "reopened" });
   });
 
   it("an explicit `completed` during the grace ends it NOW, not after the full window", async () => {
@@ -60,7 +60,7 @@ describe("awaitReopen", () => {
     const ch = chan({
       readSince: async () => ({ entries: [{ seq: 9, actor: "user", type: LogEventType.SessionClosed, payload: { reason: "completed" } }], cursor: 9 }),
     });
-    await expect(awaitReopen(ch, 8, { ...c, graceMs: 600_000, pollMs: 1000 })).resolves.toBe("completed");
+    await expect(awaitReopen(ch, 8, { ...c, graceMs: 600_000, pollMs: 1000 })).resolves.toMatchObject({ kind: "completed" });
   });
 
   it("a NEWER window_closed during the grace is just another reload, not an end", async () => {
@@ -68,20 +68,20 @@ describe("awaitReopen", () => {
     const ch = chan({
       readSince: async () => ({ entries: [{ seq: 9, actor: "user", type: LogEventType.SessionClosed, payload: { reason: "window_closed" } }], cursor: 9 }),
     });
-    await expect(awaitReopen(ch, 8, { ...c, graceMs: 10_000, pollMs: 1000 })).resolves.toBe("expired");
+    await expect(awaitReopen(ch, 8, { ...c, graceMs: 10_000, pollMs: 1000 })).resolves.toMatchObject({ kind: "expired" });
   });
 
   it("a trailing SessionClosed alone is NOT resumption", async () => {
     const c = clock();
     const ch = chan({ readSince: async () => ({ entries: [{ seq: 9, actor: "user", type: LogEventType.SessionClosed }], cursor: 9 }) });
-    await expect(awaitReopen(ch, 8, { ...c, graceMs: 10_000, pollMs: 1000 })).resolves.toBe("expired");
+    await expect(awaitReopen(ch, 8, { ...c, graceMs: 10_000, pollMs: 1000 })).resolves.toMatchObject({ kind: "expired" });
   });
 
   it("gives up after a silent grace — the human really left", async () => {
     const c = clock();
     const reads = vi.fn(async () => ({ entries: [], cursor: 0 }));
     const ch = chan({ readSince: reads });
-    await expect(awaitReopen(ch, 0, { ...c, graceMs: 10_000, pollMs: 2000 })).resolves.toBe("expired");
+    await expect(awaitReopen(ch, 0, { ...c, graceMs: 10_000, pollMs: 2000 })).resolves.toMatchObject({ kind: "expired" });
     expect(reads.mock.calls.length).toBeGreaterThanOrEqual(4); // it genuinely kept watching
   });
 
@@ -89,7 +89,7 @@ describe("awaitReopen", () => {
     const c = clock();
     let checks = 0;
     const ch = chan({ isSuperseded: async () => ++checks >= 2 });
-    await expect(awaitReopen(ch, 0, { ...c, graceMs: 60_000, pollMs: 1000, token: "tok" })).resolves.toBe("superseded");
+    await expect(awaitReopen(ch, 0, { ...c, graceMs: 60_000, pollMs: 1000, token: "tok" })).resolves.toMatchObject({ kind: "superseded" });
   });
 
   it("a stalled channel probe cannot park the watch past the grace (bounded per-probe)", async () => {
@@ -99,7 +99,7 @@ describe("awaitReopen", () => {
     const ch = chan({ readSince: () => never as never });
     const start = Date.now();
     const r = await awaitReopen(ch, 0, { graceMs: 300, pollMs: 50, probeTimeoutMs: 50 });
-    expect(r).toBe("expired");
+    expect(r).toMatchObject({ kind: "expired" });
     expect(Date.now() - start).toBeLessThan(5_000); // returned promptly despite the forever-pending read
   });
 
@@ -113,7 +113,7 @@ describe("awaitReopen", () => {
       },
       presence: async () => n >= 4,
     });
-    await expect(awaitReopen(ch, 0, { ...c, graceMs: 60_000, pollMs: 1000 })).resolves.toBe("reopened");
+    await expect(awaitReopen(ch, 0, { ...c, graceMs: 60_000, pollMs: 1000 })).resolves.toMatchObject({ kind: "reopened" });
   });
 });
 

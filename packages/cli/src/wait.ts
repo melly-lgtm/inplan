@@ -137,6 +137,15 @@ export const REOPEN_GRACE_MS = 3 * 60_000;
  *  waiter stealing the lock back from its replacement, exactly what the grace is documented never to
  *  allow. Keeping the old token means the worst case is losing, since the poll loop's
  *  `isSuperseded(token)` check steps a superseded waiter down on its first tick. */
+/** What the grace watch concluded. `completed` carries the cursor and entries FROM THE GRACE READ:
+ *  the caller persisted its cursor before the grace began, so without these the SessionClosed that
+ *  ended the session is never recorded and the next wait re-reads and re-reports it. */
+export type ReopenOutcome =
+  | { kind: "reopened" }
+  | { kind: "expired" }
+  | { kind: "superseded" }
+  | { kind: "completed"; cursor: number; entries: LogEntry[] };
+
 export function lockForCycle(resumeToken: string | undefined, mint: () => string): { token: string; claim: boolean } {
   return resumeToken ? { token: resumeToken, claim: false } : { token: mint(), claim: true };
 }
@@ -154,7 +163,7 @@ export async function awaitReopen(
     now?: () => number;
     sleep?: (ms: number) => Promise<void>;
   } = {},
-): Promise<"reopened" | "expired" | "superseded" | "completed"> {
+): Promise<ReopenOutcome> {
   const graceMs = opts.graceMs ?? REOPEN_GRACE_MS;
   const pollMs = opts.pollMs ?? 2000;
   const now = opts.now ?? Date.now;
@@ -176,9 +185,9 @@ export async function awaitReopen(
   const presences = inFlightGate();
   while (now() < deadline) {
     try {
-      if (opts.token && !supersede.busy() && (await supersede.run(() => channel.isSuperseded(opts.token!), budget()))) return "superseded";
+      if (opts.token && !supersede.busy() && (await supersede.run(() => channel.isSuperseded(opts.token!), budget()))) return { kind: "superseded" };
       if (!reads.busy()) {
-        const { entries } = await reads.run(() => channel.readSince(cursor), budget());
+        const { entries, cursor: readCursor } = await reads.run(() => channel.readSince(cursor), budget());
         // An explicit `completed` (the build handoff) logged DURING the grace ends it immediately.
         // Without this it was ignored for the full window and then reported as `window_closed` —
         // the deliberate handoff both delayed by minutes and mislabelled. A newer `window_closed`
@@ -191,16 +200,16 @@ export async function awaitReopen(
           const reason = (e.payload as { reason?: string } | undefined)?.reason;
           return reason !== undefined && reason !== "window_closed";
         });
-        if (closed) return "completed";
-        if (entries.some((e) => e.actor === "user" && e.type !== LogEventType.SessionClosed)) return "reopened";
+        if (closed) return { kind: "completed", cursor: readCursor, entries };
+        if (entries.some((e) => e.actor === "user" && e.type !== LogEventType.SessionClosed)) return { kind: "reopened" };
       }
-      if (!presences.busy() && (await presences.run(() => channel.presence(graceStart), budget()))) return "reopened";
+      if (!presences.busy() && (await presences.run(() => channel.presence(graceStart), budget()))) return { kind: "reopened" };
     } catch {
       /* a probe timed out, or a read/presence failed transiently — keep watching until grace expires */
     }
     await sleep(Math.max(1, Math.min(pollMs, deadline - now())));
   }
-  return "expired";
+  return { kind: "expired" };
 }
 
 /**

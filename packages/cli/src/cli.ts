@@ -532,18 +532,24 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
     }
     process.stderr.write("inplan: the editor closed — often just a page reload. Watching for it to come back…\n");
     const reopen = await awaitReopen(channel, result.cursor, { token: lockToken });
-    if (reopen === "superseded") {
+    if (reopen.kind === "superseded") {
       backend.logExit("superseded");
       output({ status: "superseded" });
       return "ok";
     }
-    if (reopen === "completed") {
+    if (reopen.kind === "completed") {
       // An explicit build handoff arrived mid-grace: end now, with ITS reason, not window_closed.
+      // Persist the GRACE read's cursor and report its entries — the cursor was advanced before the
+      // grace began, so reporting the pre-grace one would leave the terminating SessionClosed
+      // unrecorded and the next wait would re-read and re-report the completed session.
+      await channel.setCursor(reopen.cursor);
       backend.logExit("completed");
-      output({ status: "closed", reason: "completed", cursor: result.cursor, closed: true, entries: result.entries });
+      output({ status: "closed", reason: "completed", cursor: reopen.cursor, closed: true, entries: [...result.entries, ...reopen.entries] });
       return "ok";
     }
-    if (reopen === "reopened") {
+    // A reopen deliberately resumes from the PRE-grace cursor: the user entries that proved the
+    // return are then re-read by the resumed cycle and handled as the actionable wake they are.
+    if (reopen.kind === "reopened") {
       process.stderr.write("inplan: the editor is back — resuming the wait.\n");
       return waitCycle(backend, result.cursor, confirmed, model, gate, true, lockToken);
     }
@@ -802,8 +808,8 @@ function printLoginNudge(): void {
  */
 /** THE list of agent markers, so detection and scrubbing can never drift apart. Exact names, plus
  *  prefixes for families (Claude Code sets a whole CLAUDE_CODE_* family). */
-const AGENT_ENV_VARS = ["CLAUDECODE", "CODEX_SANDBOX", "PI_CODING_AGENT", "INPLAN_AGENT"] as const;
-const AGENT_ENV_PREFIXES = ["CLAUDE_CODE_"] as const;
+export const AGENT_ENV_VARS = ["CLAUDECODE", "CODEX_SANDBOX", "PI_CODING_AGENT", "INPLAN_AGENT"] as const;
+export const AGENT_ENV_PREFIXES = ["CLAUDE_CODE_"] as const;
 
 export function isKnownAgentEnv(env: NodeJS.ProcessEnv = process.env): boolean {
   // Claude Code: CLAUDECODE=1 + a CLAUDE_CODE_* family. Codex CLI: CODEX_SANDBOX for the sandboxed
