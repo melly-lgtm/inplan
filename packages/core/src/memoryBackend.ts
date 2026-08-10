@@ -63,7 +63,9 @@ export class MemoryControlChannel implements ControlChannel {
   }
 
   presence(sinceMs?: number): Promise<boolean> {
-    return Promise.resolve(this.present && (sinceMs === undefined || this.presentAt >= sinceMs));
+    // Strict `>`: the signal must be fresher than `sinceMs` (a heartbeat exactly at the grace-start
+    // was not written AFTER watching began). Matches SupabaseControlChannel.presence.
+    return Promise.resolve(this.present && (sinceMs === undefined || this.presentAt > sinceMs));
   }
   /** Test hook: simulate the editor being present/absent. `at` (epoch ms, default now) stamps when
    *  the heartbeat was written, so a `presence(sinceMs)` freshness check can be exercised. */
