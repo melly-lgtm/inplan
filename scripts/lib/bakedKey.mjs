@@ -3,7 +3,9 @@
 // Pure helper for the release regression guard (scripts/build-release.mjs): confirm the plugin
 // verifier PUBLIC key was actually BAKED into the built CLI bundle, not left as an empty runtime
 // `process.env.INPLAN_PLUGIN_PUBLIC_KEY` lookup — the 0.1.27 bug that failed the live-collab gate
-// closed for every user. Dependency-free so packages/cli/test/bakedKey.test.ts can unit-test it.
+// closed for every user. Node-stdlib only, so packages/cli/test/bakedKey.test.ts can unit-test it.
+
+import { createPublicKey } from "node:crypto";
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -32,8 +34,16 @@ export function spkiBodyLines(pem) {
  * degenerate/missing bodies are all rejected.
  */
 export function isKeyBaked(bundleSrc, pem) {
+  // The configured value must BE a loadable public key before any string matching means anything:
+  // a 40+-character garbage env value between matching delimiters would otherwise satisfy the
+  // pattern while shipping a trust root createPublicKey rejects at runtime.
+  try {
+    createPublicKey(String(pem ?? ""));
+  } catch {
+    return false;
+  }
   const lines = pemLines(pem);
-  if (spkiBodyLines(pem).join("").length < 40) return false; // no/degenerate key → not a real trust root
+  if (spkiBodyLines(pem).join("").length < 40) return false; // belt-and-braces; unreachable past the parse gate
   const NL = String.raw`(?:(?:\\r)?\\n|\r?\n)`;
   // Between the delimiters and the PEM, tolerate exactly what crypto.createPublicKey tolerates:
   // surrounding whitespace (escaped or literal). The release workflow's YAML block scalar leaves a

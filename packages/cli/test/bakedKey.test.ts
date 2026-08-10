@@ -11,8 +11,10 @@ import { isKeyBaked, spkiBodyLines } from "../../../scripts/lib/bakedKey.mjs";
 // The real single-line Ed25519 trust root, and a synthetic multi-line (RSA-style) SPKI to prove the
 // guard validates the COMPLETE serialization across wrapped lines, contiguous and in order.
 const ED = "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAVP11te5E7xzNJ4reKg0+mAnrr91gcyD1bMr43Homq98=\n-----END PUBLIC KEY-----";
+// A REAL multi-line SPKI (RSA-2048): isKeyBaked parse-gates the configured key with
+// createPublicKey, so a synthetic base64 blob would fail before the matcher even ran.
 const MULTI =
-  "-----BEGIN PUBLIC KEY-----\nAAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKK\nLLLLMMMMNNNNOOOOPPPPQQQQRRRRSSSSTTTTUUUUVVVV\n-----END PUBLIC KEY-----";
+  "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAkZbA4lx2KQSZMCNcDU35\nkdc/t/+/YYpg6vP9IYXyJk+kAzFmYSpO1S37GkUQgDYpxz+MzTvTPou4FW6wNEX0\nJpdQxUOyyjCmhXF9dN51WMn+hJNxM04Vh1gMfb2EpIHdykebgi9ii1zP+KUxN19m\ndoAg8Ci9lP19kZkuGUlkN+FTdyzW2GK7H1t9hL3NG4CkV2SU6DOhGxe0fhAYz3Mg\nYcvgwKusGSGispUqc926e09t85NMZERVnVXAUGbqOjvJL2xfU49TOu1jOkaz4yv9\njvkiX+5pyhYR2UaEbtSGWvZ+QxR5S1R5izsehzVPBviAa3gvOF/C6l62Rpbkrzv5\nSwIDAQAB\n-----END PUBLIC KEY-----";
 
 // How the key appears once esbuild `define` bakes it: ONE JS string literal, PEM newlines escaped.
 const bakedLike = (pem: string) => `var PLUGIN_PUBLIC_KEY = ${JSON.stringify(pem)};`;
@@ -71,5 +73,14 @@ describe("isKeyBaked", () => {
   it("rejects a missing or degenerate key body", () => {
     expect(isKeyBaked("anything", "")).toBe(false);
     expect(isKeyBaked("anything", "-----BEGIN PUBLIC KEY-----\n-----END PUBLIC KEY-----")).toBe(false);
+  });
+
+  it("rejects a configured value that isn't a loadable public key, even when baked verbatim", () => {
+    // The guard must validate the KEY, not just the string plumbing: a garbage env value baked
+    // perfectly between delimiters still ships a trust root createPublicKey rejects at runtime.
+    const garbage = "not-a-public-key-with-more-than-forty-characters-of-payload";
+    expect(isKeyBaked(`var k = ${JSON.stringify(garbage)};`, garbage)).toBe(false);
+    const fakePem = "-----BEGIN PUBLIC KEY-----\nAAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKK\n-----END PUBLIC KEY-----";
+    expect(isKeyBaked(`var k = ${JSON.stringify(fakePem)};`, fakePem)).toBe(false);
   });
 });
