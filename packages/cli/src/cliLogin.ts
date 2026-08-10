@@ -72,6 +72,10 @@ export interface PendingLogin {
   sessionId: string;
   /** Our ephemeral ECDH private key (PKCS#8, base64) — decrypts the sealed handoff. */
   privateKeyPkcs8: string;
+  /** The CLI-only poll credential (returned once at create; the server stores only its hash).
+   *  Polling requires it, so the browser-facing session id in the URL is not a claim capability
+   *  — a leaked URL can neither read nor destroy the handoff. Sent via an unlogged header. */
+  pollToken: string;
   url: string;
   apiBase: string;
   expiresAt: number; // epoch ms
@@ -101,6 +105,7 @@ export function loadPendingLogin(now: number = Date.now()): PendingLogin | null 
     if (
       typeof p.sessionId !== "string" ||
       typeof p.privateKeyPkcs8 !== "string" ||
+      typeof p.pollToken !== "string" ||
       typeof p.url !== "string" ||
       typeof p.apiBase !== "string" ||
       typeof p.expiresAt !== "number" ||
@@ -129,12 +134,15 @@ export async function createLoginSession(opts: RendezvousLoginOptions = {}): Pro
 
   const res = await fetchImpl(`${apiBase}/api/v1/cli-login`, { method: "POST", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`could not start a sign-in session (HTTP ${res.status})`);
-  const { sessionId, expiresInSec } = (await res.json()) as { sessionId: string; expiresInSec: number };
-  if (typeof sessionId !== "string" || !sessionId) throw new Error("could not start a sign-in session (bad response)");
+  const { sessionId, pollToken, expiresInSec } = (await res.json()) as { sessionId: string; pollToken: string; expiresInSec: number };
+  if (typeof sessionId !== "string" || !sessionId || typeof pollToken !== "string" || !pollToken) {
+    throw new Error("could not start a sign-in session (bad response)");
+  }
 
   const pending: PendingLogin = {
     sessionId,
     privateKeyPkcs8: priv,
+    pollToken,
     // `pub` rides the URL FRAGMENT so it never reaches server access logs (a log reader holding
     // session + pub could complete the session for their own account); the page reads it from
     // location.hash. Public key or not, keep the whole capability out of logs.
@@ -181,6 +189,9 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
     try {
       res = await fetchImpl(`${pending.apiBase}/api/v1/cli-login/${encodeURIComponent(pending.sessionId)}`, {
         method: "GET",
+        // The poll credential rides a header (never a URL, so never an access log) — see
+        // PendingLogin.pollToken: the session id alone must not read or destroy the handoff.
+        headers: { "x-inplan-poll-token": pending.pollToken },
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch {

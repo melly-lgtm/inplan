@@ -51,6 +51,7 @@ async function writeSidecar(): Promise<void> {
     JSON.stringify({
       sessionId: SIDE_SESSION,
       privateKeyPkcs8: "AAAA",
+      pollToken: "poll-tok",
       url: `https://web.test/cli-auth?session=${SIDE_SESSION}#pub=y`,
       apiBase: "http://127.0.0.1:1",
       expiresAt: Date.now() + 600_000,

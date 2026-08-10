@@ -65,15 +65,17 @@ const res = (status: number, json: unknown) => ({ ok: status >= 200 && status < 
  *  (an exhausted script answers 404, the server's "unknown or expired session"). */
 function fakeServer(polls: Array<() => Promise<unknown> | unknown>, expiresInSec = 600) {
   const seen: string[] = [];
-  const fetchImpl = (async (input: unknown, init?: { method?: string }) => {
+  const polledTokens: string[] = [];
+  const fetchImpl = (async (input: unknown, init?: { method?: string; headers?: Record<string, string> }) => {
     const url = String(input);
     seen.push(`${init?.method ?? "GET"} ${url}`);
-    if (init?.method === "POST" && url.endsWith("/api/v1/cli-login")) return res(200, { sessionId: SESSION, expiresInSec });
+    if (init?.method !== "POST") polledTokens.push(init?.headers?.["x-inplan-poll-token"] ?? "");
+    if (init?.method === "POST" && url.endsWith("/api/v1/cli-login")) return res(200, { sessionId: SESSION, pollToken: "poll-tok", expiresInSec });
     const next = polls.shift();
     if (!next) return res(404, { error: "unknown or expired session" });
     return res(200, await next());
   }) as unknown as typeof fetch;
-  return { fetchImpl, seen };
+  return { fetchImpl, seen, polledTokens };
 }
 
 /** Deterministic clock: sleep() advances it, so poll cadence and deadlines are exact. */
@@ -117,6 +119,17 @@ describe("pollLoginSession", () => {
     const auth = await pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep });
     expect(auth).toEqual({ url: payload.url, anonKey: payload.anon, refreshToken: payload.refresh, email: payload.email });
     expect(existsSync(pendingLoginPath())).toBe(false); // single-use — a resume must not replay it
+  });
+
+  it("every poll carries the CLI-only token in the unlogged header (the URL alone can't claim)", async () => {
+    const c = clock();
+    const { fetchImpl: createFetch } = fakeServer([]);
+    const pending = await createLoginSession({ ...OPTS, fetchImpl: createFetch, now: c.now });
+    expect(pending.pollToken).toBe("poll-tok");
+    const pub = pubOf(pending.url);
+    const srv = fakeServer([() => ({ status: "opened" }), async () => ({ status: "completed", ...(await sealLikeThePage(pub, payload)) })]);
+    await pollLoginSession(pending, { fetchImpl: srv.fetchImpl, now: c.now, sleep: c.sleep });
+    expect(srv.polledTokens).toEqual(["poll-tok", "poll-tok"]);
   });
 
   it("nudges exactly once when the page never acked `opened` within 30 s", async () => {
@@ -195,7 +208,7 @@ describe("pollLoginSession — resilience", () => {
     let calls = 0;
     const fetchImpl = (async (input: unknown, init?: { method?: string }) => {
       const url = String(input);
-      if (init?.method === "POST") return res(200, { sessionId: SESSION, expiresInSec: 600 });
+      if (init?.method === "POST") return res(200, { sessionId: SESSION, pollToken: "poll-tok", expiresInSec: 600 });
       calls++;
       if (calls <= 2) throw new TypeError("fetch failed"); // DNS blip / dropped connection
       return res(200, { status: "completed", ...(await sealLikeThePage(pub, payload)) });
@@ -256,6 +269,6 @@ describe("pending sidecar shape", () => {
     const { fetchImpl } = fakeServer([]);
     const pending: PendingLogin = await createLoginSession({ ...OPTS, fetchImpl, now: clock().now });
     expect(JSON.stringify(pending)).not.toContain("refresh-token");
-    expect(Object.keys(pending).sort()).toEqual(["apiBase", "expiresAt", "privateKeyPkcs8", "sessionId", "url"]);
+    expect(Object.keys(pending).sort()).toEqual(["apiBase", "expiresAt", "pollToken", "privateKeyPkcs8", "sessionId", "url"]);
   });
 });
