@@ -55,6 +55,13 @@ describe("isKeyBaked", () => {
     expect(isKeyBaked(`var k = "-----BEGIN PUBLIC KEY-----\\n${l1}\\n-----END PUBLIC KEY-----";`, MULTI)).toBe(false);
   });
 
+  it("tolerates surrounding whitespace inside the literal — the YAML block scalar's trailing newline", () => {
+    // release.yml passes the key via a `|` block scalar, so the env value (and thus the baked
+    // literal) ends with \n — createPublicKey accepts surrounding whitespace, so must the guard.
+    expect(isKeyBaked(`var k = ${JSON.stringify(ED + "\n")};`, ED)).toBe(true);
+    expect(isKeyBaked(`var k = ${JSON.stringify("\n" + ED + "\n")};`, ED)).toBe(true);
+  });
+
   it("rejects a polluted literal — junk inside the delimiters means createPublicKey would fail", () => {
     // The PEM subsequence is PRESENT, but the runtime string is "junk-----BEGIN…" — unloadable.
     expect(isKeyBaked(`var k = ${JSON.stringify("junk" + ED)};`, ED)).toBe(false);

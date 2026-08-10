@@ -35,6 +35,11 @@ export function isKeyBaked(bundleSrc, pem) {
   const lines = pemLines(pem);
   if (spkiBodyLines(pem).join("").length < 40) return false; // no/degenerate key → not a real trust root
   const NL = String.raw`(?:(?:\\r)?\\n|\r?\n)`;
+  // Between the delimiters and the PEM, tolerate exactly what crypto.createPublicKey tolerates:
+  // surrounding whitespace (escaped or literal). The release workflow's YAML block scalar leaves a
+  // trailing newline in the env value, so the baked literal legitimately ends "…KEY-----\n". Any
+  // NON-whitespace padding still fails — that is the polluted bake createPublicKey would reject.
+  const WS = String.raw`(?:(?:\\r)?\\n|\\t|\r?\n|[ \t])*`;
   const DELIM = "([\"'`])";
-  return new RegExp(DELIM + lines.map(escapeRe).join(NL) + String.raw`\1`).test(String(bundleSrc ?? ""));
+  return new RegExp(DELIM + WS + lines.map(escapeRe).join(NL) + WS + String.raw`\1`).test(String(bundleSrc ?? ""));
 }
