@@ -755,7 +755,14 @@ async function pendingLoginExit(): Promise<void> {
   // Quote arguments that need it: the skill tells the agent to re-run `resume` VERBATIM, so an
   // argument carrying a space or shell metacharacter (`inplan message doc "did X this turn"`,
   // `--model "Opus 4.8"`) must survive re-parsing as ONE argument, not shatter into several.
-  const resume = ["inplan", ...process.argv.slice(2).map((a) => (/^[A-Za-z0-9_@%+=:,.\/-]+$/.test(a) ? a : shellQuote(a)))].join(" ");
+  const quoted = (a: string): string => (/^[A-Za-z0-9_@%+=:,.\/-]+$/.test(a) ? a : shellQuote(a));
+  // The executable half must also be re-runnable from THIS environment: a bare `inplan` only
+  // exists for global installs. When the entry script was invoked under another name (npx cache,
+  // a repo checkout's dist/cli.js), rebuild the invocation from the running node + entry script.
+  const entry = process.argv[1] ?? "";
+  const invokedAsInplan = entry.split(/[\\/]/).pop()?.replace(/\.(cmd|ps1)$/i, "") === "inplan";
+  const argv0 = invokedAsInplan ? ["inplan"] : [quoted(process.execPath), quoted(entry)];
+  const resume = [...argv0, ...process.argv.slice(2).map(quoted)].join(" ");
   process.stderr.write(
     "inplan: sign-in required.\n" +
       `  ACTION (human): open this URL in a browser and sign in:\n    ${url}\n` +

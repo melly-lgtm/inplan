@@ -88,9 +88,10 @@ const OPTS = { apiBase: "http://hub.test", webOrigin: "https://web.test" };
 
 describe("createLoginSession", () => {
   it("mints a session, builds the /cli-auth URL, and persists a resumable sidecar", async () => {
-    const { fetchImpl } = fakeServer([]);
+    const { fetchImpl, seen } = fakeServer([]);
     const c = clock();
     const pending = await createLoginSession({ ...OPTS, fetchImpl, now: c.now });
+    expect(seen).toEqual(["POST http://hub.test/api/v1/cli-login"]); // exactly one create, right route
     expect(pending.sessionId).toBe(SESSION);
     expect(pending.url).toMatch(new RegExp(`^https://web\\.test/cli-auth\\?session=${SESSION}#pub=`)); // pub in the FRAGMENT — never in server logs
     expect(pending.expiresAt).toBe(600_000);
@@ -188,14 +189,17 @@ describe("pollLoginSession", () => {
     expect(existsSync(pendingLoginPath())).toBe(false);
   });
 
-  it("rejects a handoff sealed to the WRONG key (the crypto actually guards the payload)", async () => {
+  it("a handoff sealed to the WRONG key is terminal: sidecar cleared, expiry-class error", async () => {
     const c = clock();
     const { fetchImpl: createFetch } = fakeServer([]);
     const pending = await createLoginSession({ ...OPTS, fetchImpl: createFetch, now: c.now });
     const kp = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]);
     const otherPub = Buffer.from(await subtle.exportKey("spki", kp.publicKey)).toString("base64");
     const { fetchImpl } = fakeServer([async () => ({ status: "completed", ...(await sealLikeThePage(otherPub, payload)) })]);
-    await expect(pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep })).rejects.toThrow();
+    // The claim-once GET consumed the row, so this session can never complete — it must read as
+    // an expiry (start fresh), not as a transient failure the caller would keep resuming.
+    await expect(pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep })).rejects.toThrow(LoginSessionExpiredError);
+    expect(existsSync(pendingLoginPath())).toBe(false);
   });
 });
 
@@ -225,6 +229,30 @@ describe("pollLoginSession — resilience", () => {
       const pending = await createLoginSession({ ...OPTS, fetchImpl, now: c.now });
       expect(pending.expiresAt).toBe(c.now() + 600_000); // default TTL, still expirable
     }
+  });
+});
+
+describe("createLoginSession — concurrency", () => {
+  it("a second concurrent create adopts the existing pending login instead of clobbering it", async () => {
+    const c = clock();
+    const { fetchImpl } = fakeServer([]);
+    const first = await createLoginSession({ ...OPTS, fetchImpl, now: c.now });
+    // Second invocation while the first is still valid: same session comes back — the first
+    // command's printed URL stays resumable (its private key was NOT overwritten).
+    const second = await createLoginSession({ ...OPTS, fetchImpl, now: c.now });
+    expect(second).toEqual(first);
+  });
+
+  it("a stale leftover sidecar is replaced, not adopted", async () => {
+    const c = clock();
+    const { fetchImpl } = fakeServer([]);
+    const first = await createLoginSession({ ...OPTS, fetchImpl, now: c.now });
+    c.set(700_000); // past the first session's expiry
+    const { fetchImpl: freshFetch } = fakeServer([]);
+    const second = await createLoginSession({ ...OPTS, fetchImpl: freshFetch, now: c.now });
+    expect(second.sessionId).toBe(SESSION);
+    expect(second.expiresAt).toBe(700_000 + 600_000);
+    expect(second).not.toEqual(first);
   });
 });
 

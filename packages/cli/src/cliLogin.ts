@@ -155,8 +155,20 @@ export async function createLoginSession(opts: RendezvousLoginOptions = {}): Pro
   };
   const path = pendingLoginPath();
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(pending, null, 2), { mode: 0o600 });
-  chmodSync(path, 0o600); // writeFileSync mode is ignored when the file pre-existed
+  // EXCLUSIVE create: two concurrent commands must not each mint a session with the second
+  // overwriting the first (whose printed URL would then be unresumable — its private key gone).
+  // The loser adopts the winner's still-valid pending login instead; a stale/corrupt leftover is
+  // cleared and the write retried once.
+  try {
+    writeFileSync(path, JSON.stringify(pending, null, 2), { mode: 0o600, flag: "wx" });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    const winner = loadPendingLogin(now());
+    if (winner) return winner;
+    // The existing sidecar was expired/corrupt (loadPendingLogin cleared it) — take the slot.
+    writeFileSync(path, JSON.stringify(pending, null, 2), { mode: 0o600, flag: "wx" });
+  }
+  chmodSync(path, 0o600); // belt-and-braces: mode can be masked by umask
   return pending;
 }
 
@@ -192,7 +204,9 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
         // The poll credential rides a header (never a URL, so never an access log) — see
         // PendingLogin.pollToken: the session id alone must not read or destroy the handoff.
         headers: { "x-inplan-poll-token": pending.pollToken },
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        // Capped to the REMAINING deadline: an in-flight request must not let the foreground
+        // wait overrun its budget by a whole request-timeout.
+        signal: AbortSignal.timeout(Math.max(1, Math.min(REQUEST_TIMEOUT_MS, deadline - now()))),
       });
     } catch {
       // Transient transport failure (DNS blip, dropped connection, a stalled request cut by the
@@ -209,7 +223,17 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
     if (res.ok) {
       const body = (await res.json()) as { status?: string; epk?: string; iv?: string; ct?: string };
       if (body.status === "completed" && body.epk && body.iv && body.ct) {
-        const auth = await unsealHandoff(pending.privateKeyPkcs8, { epk: body.epk, iv: body.iv, ct: body.ct });
+        let auth: AuthFile;
+        try {
+          auth = await unsealHandoff(pending.privateKeyPkcs8, { epk: body.epk, iv: body.iv, ct: body.ct });
+        } catch {
+          // The handoff can't be decrypted (wrong key / corrupt ciphertext) — and the claim-once
+          // GET already consumed the row, so this session can NEVER complete. Clear the sidecar
+          // and report it like an expiry, so the caller starts a FRESH session instead of
+          // treating a permanently-dead login as a transient failure to retry.
+          clearPendingLogin();
+          throw new LoginSessionExpiredError("the sign-in handoff could not be read — run the command again for a fresh link");
+        }
         clearPendingLogin();
         return auth;
       }
