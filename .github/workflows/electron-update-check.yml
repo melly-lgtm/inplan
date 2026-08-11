@@ -94,6 +94,14 @@ jobs:
           mkdir -p /tmp/gk-check && cd /tmp/gk-check
           npm init -y >/dev/null
           npm install --no-save "electron@${LATEST}"
+          # Some npm/runner combos don't run electron's postinstall for a transient `--no-save`
+          # install, which leaves the platform binary un-fetched and the next step misreads it as a
+          # failed download (issue #82). Fetch it explicitly — idempotent: a no-op if the postinstall
+          # already ran, and it fails loudly here (not silently as a "missing app") if the download
+          # genuinely can't complete.
+          if [ ! -d node_modules/electron/dist/Electron.app ]; then
+            node node_modules/electron/install.js
+          fi
       - id: spctl
         # Fail CLOSED: only the two patterns confirmed by hand (a clean accept, and the
         # ad-hoc-signed dev binary's harmless "no resources" quirk — both 31.7.7 and 43.2.0
