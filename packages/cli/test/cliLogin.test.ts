@@ -8,7 +8,7 @@
 // way the /cli-auth page does, so parameter drift between the two halves fails here).
 
 import { webcrypto } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -103,6 +103,16 @@ describe("createLoginSession", () => {
     const fetchImpl = (async () => res(503, { error: "nope" })) as unknown as typeof fetch;
     await expect(createLoginSession({ ...OPTS, fetchImpl })).rejects.toThrow(/HTTP 503/);
     expect(existsSync(pendingLoginPath())).toBe(false);
+  });
+
+  it("creates a never-existed base dir owner-only (0o700) rather than ENOENT on the lock", async () => {
+    // First-ever run: the base dir doesn't exist. The sidecar lock must not ENOENT, and the dir —
+    // which will hold the refresh token — must be created owner-only.
+    process.env.INPLAN_HOME = join(home, "never-run", ".inplan");
+    const { fetchImpl } = fakeServer([]);
+    await createLoginSession({ ...OPTS, fetchImpl, now: clock().now });
+    expect(existsSync(pendingLoginPath())).toBe(true);
+    if (process.platform !== "win32") expect(statSync(process.env.INPLAN_HOME).mode & 0o777).toBe(0o700);
   });
 });
 
