@@ -42,8 +42,11 @@ export interface ControlChannel {
   claimLock(token: WaitToken): Promise<void>;
   /** True once a newer waiter has claimed the lock away from `token`. */
   isSuperseded(token: WaitToken): Promise<boolean>;
-  /** Editor liveness — true if an editor is currently present for this doc. */
-  presence(): Promise<boolean>;
+  /** Editor liveness. With no argument: true if an editor is present now (within the backend's
+   *  heartbeat TTL). With `sinceMs` (epoch ms): true only if the liveness signal is FRESHER than
+   *  `sinceMs` — used when watching for a reopen so a pre-close heartbeat still lingering inside
+   *  its TTL isn't mistaken for the editor coming back. */
+  presence(sinceMs?: number): Promise<boolean>;
 }
 
 /**

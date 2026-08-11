@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { scrubAgentEnv } from "../src/cli";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.js");
 // A throwaway "editor" that just stays alive: open() records its pid and blocks in waitCycle, so
@@ -23,7 +24,12 @@ let env: NodeJS.ProcessEnv;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "inplan-open-"));
-  env = { ...process.env, INPLAN_HOME: home, INPLAN_SIDECAR_DIR: join(home, "sidecars"), INPLAN_APP_CMD: FAKE_EDITOR };
+  // Hermetic auth env: these spawns assert the non-interactive "not logged in" path, so pin an
+  // unattended environment regardless of who runs the suite. CI=1 (loginOptOut) forces that path;
+  // scrubAgentEnv removes EVERY marker isKnownAgentEnv recognises, so an agent shell (Claude Code,
+  // Codex, Pi, or an INPLAN_AGENT opt-in) can't route the subprocess to the rendezvous pending-exit
+  // (exit 7) instead — which used to fail the suite when run from an agent.
+  env = { ...scrubAgentEnv(process.env), INPLAN_HOME: home, INPLAN_SIDECAR_DIR: join(home, "sidecars"), INPLAN_APP_CMD: FAKE_EDITOR, CI: "1" };
 });
 afterEach(() => {
   rmSync(home, { recursive: true, force: true });

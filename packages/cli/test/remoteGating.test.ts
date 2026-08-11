@@ -9,7 +9,7 @@
 // distinct: telling a paying customer to upgrade because a server hiccuped is the worst outcome.
 
 import { describe, expect, it, vi } from "vitest";
-import { EXIT_PLUGIN_UNAVAILABLE, EXIT_UPGRADE_REQUIRED, exitAfterFlush, explainNoGate, shellQuote } from "../src/cli";
+import { AGENT_ENV_PREFIXES, AGENT_ENV_VARS, EXIT_PLUGIN_UNAVAILABLE, EXIT_UPGRADE_REQUIRED, exitAfterFlush, explainNoGate, isKnownAgentEnv, scrubAgentEnv, shellQuote } from "../src/cli";
 
 function capture(fn: () => void): { err: string; out: string } {
   let err = "";
@@ -128,5 +128,66 @@ describe("shellQuote", () => {
 
   it("escapes an embedded single quote by closing, escaping, and reopening", () => {
     expect(shellQuote("/w/it's.md")).toBe("'/w/it'" + String.fromCharCode(92) + "''s.md'");
+  });
+});
+
+// The scrub and the detector must agree. They came apart once already: the spawn tests removed only
+// Claude's markers while isKnownAgentEnv also recognised Codex, Pi and the INPLAN_AGENT opt-in, so a
+// suite run from those shells routed the subprocess to the rendezvous pending-exit instead of the
+// asserted path.
+//
+// Every case below is BUILT FROM the source's own lists. A hand-written copy of the markers would
+// reintroduce the same failure one level up: add a harness to AGENT_ENV_VARS and a stale literal here
+// would keep passing while the scrub missed it. Driving off the exports means a new marker is covered
+// the moment it is declared.
+describe("scrubAgentEnv ⇄ isKnownAgentEnv", () => {
+  const everyMarker = (): NodeJS.ProcessEnv => ({
+    ...Object.fromEntries(AGENT_ENV_VARS.map((k) => [k, "1"])),
+    ...Object.fromEntries(AGENT_ENV_PREFIXES.map((p) => [`${p}MARKER`, "1"])),
+  });
+
+  it("covers every marker the source declares (the lists are non-empty and used)", () => {
+    expect(AGENT_ENV_VARS.length + AGENT_ENV_PREFIXES.length).toBeGreaterThan(0);
+    expect(Object.keys(everyMarker()).length).toBe(AGENT_ENV_VARS.length + AGENT_ENV_PREFIXES.length);
+  });
+
+  it("an env carrying EVERY declared marker is detected", () => {
+    expect(isKnownAgentEnv(everyMarker())).toBe(true);
+  });
+
+  it("scrubbing that env makes it undetectable — the property that must hold for any new marker", () => {
+    expect(isKnownAgentEnv(scrubAgentEnv(everyMarker()))).toBe(false);
+  });
+
+  it("each declared marker alone is both detected and scrubbed", () => {
+    for (const [k, v] of Object.entries(everyMarker())) {
+      expect(isKnownAgentEnv({ [k]: v }), `${k} detected`).toBe(true);
+      expect(isKnownAgentEnv(scrubAgentEnv({ [k]: v })), `${k} scrubbed`).toBe(false);
+    }
+  });
+
+  // What this suite does NOT prove: that the detector consults only these lists. A hardcoded check
+  // added inside isKnownAgentEnv for some name absent from them is invisible to any env built from
+  // them — no black-box test can enumerate the unknown. The structural guarantee is that the
+  // function reads the lists and nothing else; this case just pins that ordinary and adjacent-looking
+  // variables stay undetected.
+  it("does not detect variables that are not declared markers", () => {
+    expect(isKnownAgentEnv({ PATH: "/usr/bin", HOME: "/home/x" })).toBe(false);
+    // Cursor sets CURSOR_* in its integrated terminal, where a real human types — deliberately not a
+    // marker, and the nearest thing to a false positive.
+    expect(isKnownAgentEnv({ CURSOR_TRACE_ID: "abc" })).toBe(false);
+    expect(isKnownAgentEnv({ CLAUDE_SOMETHING_ELSE: "1" })).toBe(false); // CLAUDE_ but not CLAUDE_CODE_
+  });
+
+  it("leaves unrelated variables alone", () => {
+    // CURSOR_* is deliberately NOT a marker (Cursor's integrated terminal is where a human types).
+    const env = { PATH: "/usr/bin", HOME: "/home/x", CURSOR_TRACE_ID: "keep-me", ...everyMarker() };
+    expect(scrubAgentEnv(env)).toEqual({ PATH: "/usr/bin", HOME: "/home/x", CURSOR_TRACE_ID: "keep-me" });
+  });
+
+  it("does not mutate the env it was given", () => {
+    const env = everyMarker();
+    scrubAgentEnv(env);
+    expect(Object.keys(env).length).toBe(AGENT_ENV_VARS.length + AGENT_ENV_PREFIXES.length);
   });
 });

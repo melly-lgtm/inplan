@@ -124,7 +124,9 @@ export class FsControlChannel implements ControlChannel {
     return Promise.resolve(readFileSync(this.paths.waitLockPath, "utf8").trim() !== token);
   }
 
-  presence(): Promise<boolean> {
+  // `sinceMs` is ignored: liveness here is "is the editor PROCESS alive", which flips to false the
+  // instant the window closes — there's no lingering-heartbeat TTL window to disambiguate.
+  presence(_sinceMs?: number): Promise<boolean> {
     const log = readLog(this.paths.logPath);
     for (let i = log.length - 1; i >= 0; i--) {
       if (log[i]!.type === LogEventType.EditorPid) {

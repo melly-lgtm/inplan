@@ -39,7 +39,7 @@ import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenceReason, type PluginGate } from "./pluginGate";
 import { demoteSource, shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
 import { announcePresence } from "./presence";
-import { wakePredicate, waitForActions } from "./wait";
+import { awaitReopen, wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
 import { toolActivityText } from "./relayActivity";
 import { ensureDocFile } from "./ensureDoc";
@@ -88,8 +88,6 @@ function hasFlag(args: string[], name: string): boolean {
   return args.includes(`--${name}`);
 }
 
-const debounceMs = Number(process.env.INPLAN_DEBOUNCE_MS ?? 3000);
-const pollMs = Number(process.env.INPLAN_POLL_MS ?? 200);
 /**
  * Result of locating the Electron editor bundled alongside this CLI in the published
  * `inplan` package (layout: `bin/cli.js` + `app/main/index.cjs`, with `electron` as a
@@ -330,7 +328,7 @@ function maxSeqFrom(entries: LogEntry[]): number {
  * over either, since it consumes only the {@link ControlChannel}/{@link DocumentStore}
  * interfaces.
  */
-interface WaitBackend {
+export interface WaitBackend {
   channel: ControlChannel;
   store: DocumentStore;
   /** Full protocol history, for deriving cadence/acceptance/settings/start cursor. */
@@ -371,7 +369,7 @@ function logWaitExit(p: DocPaths, reason: string): void {
  * cursor, else "start from now" (current max). It is persisted on return so the
  * agent never hand-manages it and turns can't be skipped.
  */
-async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string, gate: PluginGate | null = null): Promise<WaitOutcome> {
+export async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string, gate: PluginGate | null = null): Promise<WaitOutcome> {
   const { channel, store } = backend;
   const history = await backend.history();
 
@@ -434,10 +432,24 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
   // "Agent is thinking…" indicator even when the agent made no body change.
   await channel.append({ actor: "agent", type: LogEventType.AgentRevised });
 
-  // Single-waiter lock: claim the doc so any older waiter steps down (no racing
-  // double-waiters). Log the exit reason — including OS signals — so a reaped
-  // waiter is diagnosable instead of "vanishing" silently.
-  // Last writer wins — any older waiter sees the token change and steps down.
+  // ── Everything below only READS, WAITS, and REPORTS. ──────────────────────────────────────────
+  //
+  // The turn processing above ran exactly once; the wait below may cycle through any number of
+  // editor reloads without coming back up here. A reopen-resume is a `continue`, not a recursive
+  // call — and that STRUCTURE, not a guard, is what enforces the reopen invariants that were being
+  // patched one review round at a time:
+  //   • a resume cannot re-run the edit pipeline. Under recursion every reload re-appended
+  //     agent_revised, and on the PLUGIN path — where quarantine does not revert the working copy
+  //     to canonical — a pending Review proposal was re-parked and agent_revision_proposed
+  //     re-appended, duplicating agent events the editor renders;
+  //   • a resume cannot re-claim or re-mint the lock, so a stale waiter returning from a grace can
+  //     only DISCOVER it lost — waitForActions polls isSuperseded(lockToken) every tick — never
+  //     overwrite the newer waiter's token, and it mutates nothing on the way to finding out;
+  //   • the signal handlers are registered once, so repeated reloads cannot leak listeners.
+
+  // Single-waiter lock: claim the doc so any older waiter steps down (no racing double-waiters).
+  // Last writer wins — any older waiter sees the token change and steps down. Log the exit reason —
+  // including OS signals — so a reaped waiter is diagnosable instead of "vanishing" silently.
   const lockToken = `${process.pid}-${Date.now()}`;
   await channel.claimLock(lockToken);
   for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"] as const) {
@@ -447,94 +459,153 @@ async function waitCycle(backend: WaitBackend, explicitCursor: number | null, co
     });
   }
 
-  // Mode-aware wake from the recorded policy: a turn-end mode wakes only on turn-end /
-  // session-close; an any-action mode wakes on any user action.
-  const mode = modeFrom(history);
-  const isActionable = wakePredicate(mode.wake);
-  const result = await waitForActions({ channel, cursor, debounceMs, pollMs, isActionable, token: lockToken });
+  const debounceMs = Number(process.env.INPLAN_DEBOUNCE_MS ?? 3000);
+  const pollMs = Number(process.env.INPLAN_POLL_MS ?? 200);
 
-  // The wait gave up after a streak of failed polls — an expired session is the common cause. Report
-  // it as a status the agent can act on and exit non-zero. It used to reach here as an unhandled
-  // rejection that killed the process mid-poll: a stack trace on stderr, nothing on stdout.
-  if (result.failed) {
-    backend.logExit("poll_failed");
-    process.stderr.write(`inplan: lost contact with the document (${result.failed.message}).\n  If your session expired, run \`inplan login\` and re-attach.\n`);
-    output({ status: "wait_failed", message: result.failed.message });
-    exitAfterFlush(EXIT_WAIT_FAILED);
-    return "exiting";
-  }
+  let waitCursor = cursor;
+  let historyForMode = history;
+  for (;;) {
+    // Mode-aware wake from the recorded policy: a turn-end mode wakes only on turn-end /
+    // session-close; an any-action mode wakes on any user action. Re-derived each iteration
+    // (history is re-read on resume), so a mode switched just before the reload is honoured.
+    const mode = modeFrom(historyForMode);
+    const isActionable = wakePredicate(mode.wake);
+    const result = await waitForActions({ channel, cursor: waitCursor, debounceMs, pollMs, isActionable, token: lockToken });
 
-  // Superseded: a newer waiter owns the doc now. Step down quietly without
-  // advancing the cursor (the live waiter handles it).
-  if (result.superseded) {
-    backend.logExit("superseded");
-    output({ status: "superseded" });
+    // The wait gave up after a streak of failed polls — an expired session is the common cause.
+    // Report it as a status the agent can act on and exit non-zero. It used to reach here as an
+    // unhandled rejection that killed the process mid-poll: a stack trace on stderr, nothing on stdout.
+    if (result.failed) {
+      backend.logExit("poll_failed");
+      process.stderr.write(`inplan: lost contact with the document (${result.failed.message}).\n  If your session expired, run \`inplan login\` and re-attach.\n`);
+      output({ status: "wait_failed", message: result.failed.message });
+      exitAfterFlush(EXIT_WAIT_FAILED);
+      return "exiting";
+    }
+
+    // Superseded: a newer waiter owns the doc now. Step down quietly without
+    // advancing the cursor (the live waiter handles it).
+    if (result.superseded) {
+      backend.logExit("superseded");
+      output({ status: "superseded" });
+      return "ok";
+    }
+
+    // Cloud→local handoff: a human on the web asked us to bring the doc back to disk.
+    // The backend's handler downloads + relocates + flips status and emits its own
+    // result, so we hand off instead of printing the normal turn status. Do this BEFORE advancing
+    // the cursor: if the handler throws (e.g. the gate path's hub read fails), the
+    // SaveLocallyRequested event stays unconsumed so the next run retries — otherwise the handoff
+    // would be lost. On success the doc becomes local, so the cloud cursor is moot.
+    if (backend.onSaveLocally && result.entries.some((e) => e.type === LogEventType.SaveLocallyRequested)) {
+      backend.logExit("save_locally");
+      await backend.onSaveLocally();
+      return "ok";
+    }
+
+    await channel.setCursor(result.cursor); // advance the persisted cursor so the next call continues here
+
+    // In-window navigation: the editor followed a link to a sibling doc and parked a
+    // `navigated_to {path}`. Step down here and report the new path so the agent loop
+    // re-attaches there (`wait <path>`), following the human across docs.
+    const navEntry = result.entries.find((e) => e.type === LogEventType.NavigatedTo);
+    if (navEntry) {
+      const path = (navEntry.payload as { path?: string } | undefined)?.path;
+      backend.logExit("navigated");
+      output({ status: "navigated", ...(path ? { path } : {}), cursor: result.cursor, closed: false });
+      return "ok";
+    }
+
+    // The editor logs WHY it closed (completed / window_closed); a crash logs nothing. The LAST
+    // close is the terminal one: a batch may hold window_closed (a reload) followed by completed
+    // (the human came back and did the build handoff) — grace must key on the final word, not
+    // delay an explicit handoff by three minutes.
+    const closeEntry = [...result.entries].reverse().find((e) => e.type === LogEventType.SessionClosed);
+    // A `window_closed` is routinely just a page RELOAD — the web editor tears down (logging the
+    // close) and is back seconds later — or a stray second surface (an old desktop window) closing
+    // while the live session goes on. Exiting on that signal alone strands the returning human
+    // with no agent attached, and nothing restarts the wait. So: linger, and if the human shows
+    // signs of being back within the grace (a new user action, or the editor presence heartbeat
+    // returning), loop back to waiting as if the close never happened. An explicit `completed`
+    // (the build handoff) still ends the session immediately, and a NEWER waiter supersedes this
+    // one mid-grace exactly as it would mid-wait.
+    if (closeEntry && ((closeEntry.payload as { reason?: string } | undefined)?.reason ?? "completed") === "window_closed") {
+      // The editor may already be demonstrably back: a debounced batch can carry the close AND the
+      // user actions that followed it. Waiting out the grace in that case reports a live editor as
+      // closed minutes later, on evidence we are holding. Resume from the CLOSE, not from
+      // `result.cursor` — the cursor is this batch's max seq, so the very actions that proved the
+      // editor is back sit at or below it and would be skipped, silently dropping the user's work.
+      if (result.entries.some((e) => e.seq > closeEntry.seq && e.actor === "user" && e.type !== LogEventType.SessionClosed)) {
+        process.stderr.write("inplan: the editor closed and is already active again — resuming the wait.\n");
+        waitCursor = closeEntry.seq;
+        historyForMode = await backend.history();
+        continue;
+      }
+      process.stderr.write("inplan: the editor closed — often just a page reload. Watching for it to come back…\n");
+      const reopen = await awaitReopen(channel, result.cursor, { token: lockToken });
+      if (reopen.kind === "superseded") {
+        backend.logExit("superseded");
+        output({ status: "superseded" });
+        return "ok";
+      }
+      if (reopen.kind === "completed") {
+        // An explicit build handoff arrived mid-grace: end now, with ITS reason, not window_closed.
+        // Persist the GRACE read's cursor and report its entries — the cursor was advanced before
+        // the grace began, so reporting the pre-grace one would leave the terminating SessionClosed
+        // unrecorded and the next wait would re-read and re-report the completed session.
+        await channel.setCursor(reopen.cursor);
+        backend.logExit(reopen.reason);
+        output({ status: "closed", reason: reopen.reason, cursor: reopen.cursor, closed: true, entries: [...result.entries, ...reopen.entries] });
+        return "ok";
+      }
+      // A grace reopen deliberately resumes from the PRE-grace cursor: the user entries that proved
+      // the return are then re-read by the next iteration and handled as the actionable wake they are.
+      if (reopen.kind === "reopened") {
+        process.stderr.write("inplan: the editor is back — resuming the wait.\n");
+        waitCursor = result.cursor;
+        historyForMode = await backend.history();
+        continue;
+      }
+      process.stderr.write("inplan: the editor did not come back — treating the session as closed.\n");
+    }
+
+    // One status per situation:
+    //   your_turn — Turn mode: human finished their turn and is LOCKED; revise, then
+    //               call wait to hand control back.
+    //   activity  — Instant mode: human is editing LIVE and is NOT blocked.
+    //   closed    — the session ended; stop. `reason` says how: completed / window_closed
+    //               / crashed_or_killed.
+    let status: string;
+    let reason: string | undefined;
+    if (closeEntry) {
+      status = "closed";
+      reason = (closeEntry.payload as { reason?: string } | undefined)?.reason ?? "completed";
+    } else if (result.editorGone) {
+      status = "closed";
+      reason = "crashed_or_killed";
+    } else {
+      // A locking mode means the human's editor is locked waiting for the agent (your_turn);
+      // a non-locking (live) mode means they keep editing (activity).
+      status = mode.locksEditor ? "your_turn" : "activity";
+    }
+    backend.logExit(`status:${status}${reason ? `/${reason}` : ""}`);
+    output({
+      status,
+      mode: mode.cadence,
+      humanLocked: status === "your_turn",
+      // Materialized current settings (global file + this session's settings_changed),
+      // so the agent always has them without scanning the log history.
+      settings: settingsFromEntries(historyForMode),
+      // The canonical name the agent should author comments under (model-qualified
+      // when --model was passed), so presence + authorship stay consistent.
+      agentAuthor: agentAuthorFor(model),
+      ...(reason ? { reason } : {}),
+      cursor: result.cursor,
+      closed: status === "closed",
+      entries: result.entries,
+    });
     return "ok";
   }
-
-  // Cloud→local handoff: a human on the web asked us to bring the doc back to disk.
-  // The backend's handler downloads + relocates + flips status and emits its own
-  // result, so we hand off instead of printing the normal turn status. Do this BEFORE advancing the
-  // cursor: if the handler throws (e.g. the gate path's hub read fails), the SaveLocallyRequested
-  // event stays unconsumed so the next run retries — otherwise the handoff would be lost. On success
-  // the doc becomes local, so the cloud cursor is moot.
-  if (backend.onSaveLocally && result.entries.some((e) => e.type === LogEventType.SaveLocallyRequested)) {
-    backend.logExit("save_locally");
-    await backend.onSaveLocally();
-    return "ok";
-  }
-
-  await channel.setCursor(result.cursor); // advance the persisted cursor so the next call continues here
-
-  // In-window navigation: the editor followed a link to a sibling doc and parked a
-  // `navigated_to {path}`. Step down here and report the new path so the agent loop
-  // re-attaches there (`wait <path>`), following the human across docs.
-  const navEntry = result.entries.find((e) => e.type === LogEventType.NavigatedTo);
-  if (navEntry) {
-    const path = (navEntry.payload as { path?: string } | undefined)?.path;
-    backend.logExit("navigated");
-    output({ status: "navigated", ...(path ? { path } : {}), cursor: result.cursor, closed: false });
-    return "ok";
-  }
-
-  // The editor logs WHY it closed (completed / window_closed); a crash logs nothing.
-  const closeEntry = result.entries.find((e) => e.type === LogEventType.SessionClosed);
-  // One status per situation:
-  //   your_turn — Turn mode: human finished their turn and is LOCKED; revise, then
-  //               call wait to hand control back.
-  //   activity  — Instant mode: human is editing LIVE and is NOT blocked.
-  //   closed    — the session ended; stop. `reason` says how: completed / window_closed
-  //               / crashed_or_killed.
-  let status: string;
-  let reason: string | undefined;
-  if (closeEntry) {
-    status = "closed";
-    reason = (closeEntry.payload as { reason?: string } | undefined)?.reason ?? "completed";
-  } else if (result.editorGone) {
-    status = "closed";
-    reason = "crashed_or_killed";
-  } else {
-    // A locking mode means the human's editor is locked waiting for the agent (your_turn);
-    // a non-locking (live) mode means they keep editing (activity).
-    status = mode.locksEditor ? "your_turn" : "activity";
-  }
-  backend.logExit(`status:${status}${reason ? `/${reason}` : ""}`);
-  output({
-    status,
-    mode: mode.cadence,
-    humanLocked: status === "your_turn",
-    // Materialized current settings (global file + this session's settings_changed),
-    // so the agent always has them without scanning the log history.
-    settings: settingsFromEntries(history),
-    // The canonical name the agent should author comments under (model-qualified
-    // when --model was passed), so presence + authorship stay consistent.
-    agentAuthor: agentAuthorFor(model),
-    ...(reason ? { reason } : {}),
-    cursor: result.cursor,
-    closed: status === "closed",
-    entries: result.entries,
-  });
-  return "ok";
 }
 
 /**
@@ -750,8 +821,36 @@ function printLoginNudge(): void {
  * allocate one for streaming); misdetection is safe either way because both paths converge on the
  * same resumable session.
  */
+/** THE list of agent markers, so detection and scrubbing can never drift apart. Exact names, plus
+ *  prefixes for families (Claude Code sets a whole CLAUDE_CODE_* family). */
+export const AGENT_ENV_VARS = ["CLAUDECODE", "CODEX_SANDBOX", "PI_CODING_AGENT", "INPLAN_AGENT"] as const;
+export const AGENT_ENV_PREFIXES = ["CLAUDE_CODE_"] as const;
+
 export function isKnownAgentEnv(env: NodeJS.ProcessEnv = process.env): boolean {
-  return Boolean(env.CLAUDECODE) || Object.keys(env).some((k) => k.startsWith("CLAUDE_CODE_"));
+  // Claude Code: CLAUDECODE=1 + a CLAUDE_CODE_* family. Codex CLI: CODEX_SANDBOX for the sandboxed
+  // run (Codex filters CODEX_* out of the inherited shell env, so it can't leak from a human's
+  // config). Pi: PI_CODING_AGENT=true, set expressly for self-identification. INPLAN_AGENT: the
+  // explicit opt-in for any other harness, never present in a human's terminal.
+  return (
+    AGENT_ENV_VARS.some((k) => Boolean(env[k])) || Object.keys(env).some((k) => AGENT_ENV_PREFIXES.some((p) => k.startsWith(p)))
+  );
+}
+
+/**
+ * A copy of `env` with every marker {@link isKnownAgentEnv} recognises removed.
+ *
+ * Tests that spawn the CLI and assert the NON-interactive path need this: a marker inherited from
+ * whichever agent shell runs the suite routes the subprocess to the rendezvous pending-exit
+ * instead. Sharing one list with the detector is the point — scrubbing a hand-written subset is
+ * how the tests came to cover Claude's markers only, and would silently rot again the next time a
+ * harness is added to the detector.
+ */
+export function scrubAgentEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out = { ...env };
+  for (const k of Object.keys(out)) {
+    if ((AGENT_ENV_VARS as readonly string[]).includes(k) || AGENT_ENV_PREFIXES.some((p) => k.startsWith(p))) delete out[k];
+  }
+  return out;
 }
 
 /**

@@ -115,6 +115,122 @@ export function wakePredicate(wake: "turn-end" | "any-action"): (e: LogEntry) =>
     : (e) => e.type === LogEventType.TurnEnded || e.type === LogEventType.SessionClosed || e.type === LogEventType.SaveLocallyRequested || e.type === LogEventType.NavigatedTo;
 }
 
+/** How long a `window_closed` close may linger before it is believed. A page RELOAD tears the
+ *  editor down (which logs the close) and is typically back within seconds; ending the agent's
+ *  wait on that signal alone strands the returning human with nobody attached. */
+export const REOPEN_GRACE_MS = 3 * 60_000;
+
+/**
+ * After a `window_closed` session-close: watch for the human coming BACK within `graceMs` —
+ * either a NEW user-authored entry past `cursor`, or editor presence turning alive again (a
+ * reload appends no events, so the presence heartbeat is the only signal for a silent return).
+ * Resolves "reopened" on resumption, "expired" when the grace passes in silence (they really
+ * left), and "superseded" the moment a NEWER waiter claims the doc's wait-lock — the grace must
+ * not let a stale waiter outlive its replacement and steal the lock back on resume. Every probe
+ * is bounded by the REMAINING grace (a stalled channel read must not park the watch forever),
+ * and transient failures don't abort it.
+ */
+/** What the grace watch concluded. `completed` carries the cursor and entries FROM THE GRACE READ:
+ *  the caller persisted its cursor before the grace began, so without these the SessionClosed that
+ *  ended the session is never recorded and the next wait re-reads and re-reports it. `reason` is the
+ *  one the editor actually logged — this path is terminal for ANY explicit non-window_closed reason,
+ *  so reporting a fixed "completed" would relabel a different close as the build handoff. */
+export type ReopenOutcome =
+  | { kind: "reopened" }
+  | { kind: "expired" }
+  | { kind: "superseded" }
+  | { kind: "completed"; cursor: number; entries: LogEntry[]; reason: string };
+
+export async function awaitReopen(
+  channel: ControlChannel,
+  cursor: number,
+  opts: {
+    graceMs?: number;
+    pollMs?: number;
+    /** Per-probe bound; additionally capped to the remaining grace. Default 10s. */
+    probeTimeoutMs?: number;
+    /** This waiter's wait-lock token; when set, a newer claimant resolves "superseded". */
+    token?: string;
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<ReopenOutcome> {
+  const graceMs = opts.graceMs ?? REOPEN_GRACE_MS;
+  const pollMs = opts.pollMs ?? 2000;
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const deadline = now() + graceMs;
+  // Only a heartbeat FRESHER than this counts as a reopen: a window_closed's presence heartbeat
+  // lingers for the backend's TTL, so a `presence()` read right after the close reports the OLD
+  // editor, not a return — which would resume a dead session (its stale heartbeat then expires and
+  // ends the wait, defeating the grace). Gate presence on "written since we started watching".
+  const graceStart = now();
+  // Per-probe bound = min(probeTimeoutMs, remaining grace): a probe that loses the race keeps
+  // running but is abandoned — the grace budget, not the channel's health, decides when to stop.
+  const budget = (): number => Math.max(1, Math.min(opts.probeTimeoutMs ?? 10_000, deadline - now()));
+  // Independent in-flight gates per probe. A probe that stalls during an outage times out for THIS
+  // iteration, but its underlying request is not cancellable and keeps pending — the gate skips
+  // launching another on top of it, so timed-out reads don't stack across the grace window.
+  const supersede = inFlightGate();
+  const reads = inFlightGate();
+  const presences = inFlightGate();
+  // The probe cursor ADVANCES: re-reading from the pre-grace cursor every poll re-fetches the whole
+  // post-close range ~90 times over the default grace, growing with the doc's traffic. Reading only
+  // the delta is equivalent for both checks (an entry is seen on the poll it appears in) — but the
+  // entries must be ACCUMULATED, or a `completed` report would carry only the final delta and lose
+  // everything the earlier polls saw, undoing the reason this returns entries at all.
+  let probeCursor = cursor;
+  const seen: LogEntry[] = [];
+  while (now() < deadline) {
+    // Each probe gets its OWN try/catch. A single catch around all three meant a timing-out lock or
+    // log read skipped the healthy ones for that iteration — so during a read outage a returning
+    // editor's presence heartbeat could not resume the wait, which is the one signal that matters.
+    if (opts.token && !supersede.busy()) {
+      try {
+        if (await supersede.run(() => channel.isSuperseded(opts.token!), budget())) return { kind: "superseded" };
+      } catch {
+        /* lock unreadable this iteration — keep watching; a missed supersede is retried next poll */
+      }
+    }
+    if (!reads.busy()) {
+      try {
+        const { entries, cursor: readCursor } = await reads.run(() => channel.readSince(probeCursor), budget());
+        probeCursor = readCursor;
+        seen.push(...entries);
+        // An explicit `completed` (the build handoff) logged DURING the grace ends it immediately.
+        // Without this it was ignored for the full window and then reported as `window_closed` —
+        // the deliberate handoff both delayed by minutes and mislabelled. A newer `window_closed`
+        // is NOT terminal: that is still just another reload.
+        //
+        // Requires an EXPLICIT non-window_closed reason. Defaulting a bare SessionClosed to
+        // "completed" would end the grace on an ambiguous signal; when in doubt keep watching, since
+        // the grace can only expire naturally, whereas ending early strands a returning human.
+        const closed = entries.find((e) => {
+          if (e.type !== LogEventType.SessionClosed) return false;
+          const reason = (e.payload as { reason?: string } | undefined)?.reason;
+          return reason !== undefined && reason !== "window_closed";
+        });
+        if (closed) {
+          const reason = (closed.payload as { reason?: string } | undefined)?.reason ?? "completed";
+          return { kind: "completed", cursor: readCursor, entries: seen, reason };
+        }
+        if (entries.some((e) => e.actor === "user" && e.type !== LogEventType.SessionClosed)) return { kind: "reopened" };
+      } catch {
+        /* log read timed out or failed transiently — presence below can still prove the return */
+      }
+    }
+    if (!presences.busy()) {
+      try {
+        if (await presences.run(() => channel.presence(graceStart), budget())) return { kind: "reopened" };
+      } catch {
+        /* presence unreadable this iteration — keep watching until the grace expires */
+      }
+    }
+    await sleep(Math.max(1, Math.min(pollMs, deadline - now())));
+  }
+  return { kind: "expired" };
+}
+
 /**
  * Block until the control log gains a new actionable entry past `cursor`, then —
  * after a debounce window of quiescence — resolve with all new entries and the
