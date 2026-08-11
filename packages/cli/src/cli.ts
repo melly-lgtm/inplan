@@ -621,6 +621,18 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
  *    would expose it).
  */
 async function doLogin(args: string[]): Promise<void> {
+  // `--help` prints usage and exits BEFORE any rendezvous/sidecar work — asking how to sign in must
+  // never mint a login session or touch the ~/.inplan lock.
+  if (args.includes("--help") || args.includes("-h")) {
+    process.stdout.write(
+      "inplan login — sign in to the cloud\n" +
+        "  inplan login                                              browser rendezvous handoff (interactive)\n" +
+        "  inplan login --url <URL> --anon <KEY> --refresh <TOKEN> [--email <EMAIL>]\n" +
+        "                                                           store credentials directly (scripts / desktop)\n" +
+        "  env equivalents: INPLAN_SUPABASE_URL, INPLAN_SUPABASE_ANON_KEY, INPLAN_REFRESH_TOKEN\n",
+    );
+    return;
+  }
   const url = getFlag(args, "url") ?? process.env.INPLAN_SUPABASE_URL;
   const anonKey = getFlag(args, "anon") ?? process.env.INPLAN_SUPABASE_ANON_KEY;
   const refreshToken = getFlag(args, "refresh") ?? process.env.INPLAN_REFRESH_TOKEN;

@@ -107,6 +107,10 @@ const LOCK_STALE_MS = 5000;
 
 async function withSidecarLock<T>(fn: () => T | Promise<T>): Promise<T> {
   const lock = pendingLoginPath() + ".lock";
+  // Ensure the base dir exists first. On a machine that has never run inplan, ~/.inplan/ is absent,
+  // so the lock mkdir below would throw ENOENT (not the retryable EEXIST) and bubble up — breaking
+  // first-ever login, and any `inplan login` that reaches the sidecar before a dir-creating write.
+  mkdirSync(dirname(lock), { recursive: true });
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
     try {
