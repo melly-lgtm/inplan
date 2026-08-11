@@ -52,9 +52,16 @@ async function waitUntil(cond: () => Promise<boolean>, timeoutMs = 5_000): Promi
   }
 }
 
+const SIGNALS = ["SIGTERM", "SIGHUP", "SIGINT"] as const;
+
 function harness(initialDoc: string) {
   const channel = new MemoryControlChannel();
   const store = new MemoryDocumentStore(initialDoc);
+  // waitCycle installs real signal handlers that call process.exit(0) — process-global state in the
+  // shared Vitest worker. Left in place, four tests stack twelve handlers, and a Ctrl+C or a CI
+  // cancellation would exit the worker 0 — before afterEach — masking an interrupted run as a pass.
+  // Snapshot the listeners now; restore() removes exactly what a run added.
+  const preListeners = new Map(SIGNALS.map((sig) => [sig, new Set(process.listeners(sig))]));
   const backend: WaitBackend = {
     channel,
     store,
@@ -75,6 +82,9 @@ function harness(initialDoc: string) {
     restore: () => {
       so.mockRestore();
       se.mockRestore();
+      for (const sig of SIGNALS) {
+        for (const l of process.listeners(sig)) if (!preListeners.get(sig)!.has(l)) process.off(sig, l);
+      }
     },
   };
 }
@@ -162,6 +172,21 @@ describe("waitCycle resume is a loop, not a re-entry", () => {
       h.restore();
     }
   }, 10_000); // the grace's read probe re-polls at its own 2s cadence — give the slow path headroom
+
+  it("the harness tears down the signal handlers waitCycle installs", async () => {
+    const before = process.listeners("SIGTERM").length;
+    const h = harness(DOC_A);
+    try {
+      const run = waitCycle(h.backend, null, new Set());
+      await waitUntil(async () => (await countEvents(h.channel, LogEventType.AgentRevised)) >= 1);
+      expect(process.listeners("SIGTERM").length).toBe(before + 1); // installed by the wait
+      await h.channel.append({ actor: "user", type: LogEventType.SessionClosed, payload: { reason: "completed" } });
+      await run;
+    } finally {
+      h.restore();
+    }
+    expect(process.listeners("SIGTERM").length).toBe(before); // and removed with the harness
+  });
 
   it("an explicit completed close still ends the wait (the loop does not swallow terminal batches)", async () => {
     const h = harness(DOC_A);
