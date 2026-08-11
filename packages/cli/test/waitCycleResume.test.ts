@@ -20,13 +20,18 @@ import { waitCycle, type WaitBackend } from "../src/cli";
 const DOC_A = "# Plan\n\nOriginal body.\n\n<!--inplan\n[]\n-->\n";
 const DOC_B = "# Plan\n\nAgent-edited body.\n\n<!--inplan\n[]\n-->\n";
 
+// One source for the cadence: the env the wait reads and every timing decision below derive from
+// these, so slowing the suite down for a loaded CI is a one-line change.
+const DEBOUNCE_MS = 25;
+const POLL_MS = 2;
+
 let home: string;
 beforeEach(() => {
   // Isolate settings (acceptance defaults to "review" with no settings file) and run the wait fast.
   home = mkdtempSync(join(tmpdir(), "inplan-resume-"));
   process.env.INPLAN_HOME = home;
-  process.env.INPLAN_DEBOUNCE_MS = "25";
-  process.env.INPLAN_POLL_MS = "2";
+  process.env.INPLAN_DEBOUNCE_MS = String(DEBOUNCE_MS);
+  process.env.INPLAN_POLL_MS = String(POLL_MS);
 });
 afterEach(() => {
   delete process.env.INPLAN_HOME;
@@ -37,6 +42,15 @@ afterEach(() => {
 });
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Poll until `cond` holds — the deterministic replacement for "sleep long enough". */
+async function waitUntil(cond: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await cond())) {
+    if (Date.now() > deadline) throw new Error("waitUntil: condition not reached");
+    await sleep(POLL_MS);
+  }
+}
 
 function harness(initialDoc: string) {
   const channel = new MemoryControlChannel();
@@ -68,9 +82,15 @@ function harness(initialDoc: string) {
 const countEvents = async (channel: MemoryControlChannel, type: string): Promise<number> =>
   (await channel.readSince(0)).entries.filter((e) => e.type === type).length;
 
-/** Reload mid-wait: window_closed followed by a user action in the same debounced batch. */
+/** Reload mid-wait: window_closed followed by a user action.
+ *
+ *  Ordering is by OBSERVATION, not by sleeping: the pipeline's agent_revised append proves waitCycle
+ *  has long since read its initial history (so cursor 0 covers these appends), which is the only
+ *  ordering the test needs. Whether the two appends land in one debounced batch or split across two
+ *  is the scheduler's business — the in-batch branch and the grace branch must both resume, and the
+ *  assertions below accept either. */
 async function reloadThenAct(channel: MemoryControlChannel): Promise<void> {
-  await sleep(80); // the wait has claimed the lock and is polling
+  await waitUntil(async () => (await countEvents(channel, LogEventType.AgentRevised)) >= 1);
   await channel.append({ actor: "user", type: LogEventType.SessionClosed, payload: { reason: "window_closed" } });
   await channel.append({ actor: "user", type: LogEventType.TurnEnded });
 }
@@ -84,8 +104,11 @@ describe("waitCycle resume is a loop, not a re-entry", () => {
       await expect(run).resolves.toBe("ok");
 
       // The resume continued the SAME invocation: it re-read the post-close user action and
-      // reported it as the wake, instead of ending the session…
-      expect(h.stderr()).toContain("already active again");
+      // reported it as the wake, instead of ending the session. Both resume branches print
+      // "resuming the wait" — which branch fired depends on whether the scheduler split the two
+      // appends across debounce batches, and the invariant under test is the resume, not the batch.
+      expect(h.stderr()).toContain("resuming the wait");
+      expect(h.stderr()).not.toContain("did not come back");
       const last = h.lastJson();
       expect(last.status).toBe("your_turn");
       expect(last.entries.some((e) => e.type === LogEventType.TurnEnded)).toBe(true);
@@ -116,11 +139,35 @@ describe("waitCycle resume is a loop, not a re-entry", () => {
     }
   });
 
+  it("a batch-split reload (the close fires alone) resumes via the grace, pipeline still once", async () => {
+    // The case the in-batch branch cannot see: the debounce fires between the close and the user's
+    // next action, so the batch carries only window_closed. The grace watch must then catch the
+    // action and loop back — same invariant, other branch. Forced deterministically by waiting for
+    // the grace to begin before appending the action.
+    const h = harness(DOC_A);
+    try {
+      const run = waitCycle(h.backend, null, new Set());
+      await waitUntil(async () => (await countEvents(h.channel, LogEventType.AgentRevised)) >= 1);
+      await h.channel.append({ actor: "user", type: LogEventType.SessionClosed, payload: { reason: "window_closed" } });
+      await waitUntil(async () => h.stderr().includes("Watching for it to come back"));
+      await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
+
+      await expect(run).resolves.toBe("ok");
+      expect(h.stderr()).toContain("resuming the wait");
+      const last = h.lastJson();
+      expect(last.status).toBe("your_turn");
+      expect(last.entries.some((e) => e.type === LogEventType.TurnEnded)).toBe(true);
+      expect(await countEvents(h.channel, LogEventType.AgentRevised)).toBe(1);
+    } finally {
+      h.restore();
+    }
+  }, 10_000); // the grace's read probe re-polls at its own 2s cadence — give the slow path headroom
+
   it("an explicit completed close still ends the wait (the loop does not swallow terminal batches)", async () => {
     const h = harness(DOC_A);
     try {
       const run = waitCycle(h.backend, null, new Set());
-      await sleep(80);
+      await waitUntil(async () => (await countEvents(h.channel, LogEventType.AgentRevised)) >= 1);
       await h.channel.append({ actor: "user", type: LogEventType.SessionClosed, payload: { reason: "completed" } });
       await expect(run).resolves.toBe("ok");
       const last = h.lastJson() as unknown as { status: string; reason: string };
