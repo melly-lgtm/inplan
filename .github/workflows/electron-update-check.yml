@@ -96,12 +96,11 @@ jobs:
           npm install --no-save "electron@${LATEST}"
           # Some npm/runner combos don't run electron's postinstall for a transient `--no-save`
           # install, which leaves the platform binary un-fetched and the next step misreads it as a
-          # failed download (issue #82). Fetch it explicitly — idempotent: a no-op if the postinstall
-          # already ran, and it fails loudly here (not silently as a "missing app") if the download
-          # genuinely can't complete.
-          if [ ! -d node_modules/electron/dist/Electron.app ]; then
-            node node_modules/electron/install.js
-          fi
+          # failed download (issue #82). Fetch it explicitly. `install.js` is idempotent (a no-op if
+          # the postinstall already ran) and platform-aware — it pulls the right binary on macOS,
+          # Windows, or Linux — so this stays correct if the job is ever run on another OS. It fails
+          # loudly here if the download genuinely can't complete, rather than silently as a missing app.
+          node node_modules/electron/install.js
       - id: spctl
         # Fail CLOSED: only the two patterns confirmed by hand (a clean accept, and the
         # ad-hoc-signed dev binary's harmless "no resources" quirk — both 31.7.7 and 43.2.0
