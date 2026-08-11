@@ -130,13 +130,6 @@ export const REOPEN_GRACE_MS = 3 * 60_000;
  * is bounded by the REMAINING grace (a stalled channel read must not park the watch forever),
  * and transient failures don't abort it.
  */
-/** The wait-lock a cycle should use, and whether it must CLAIM it.
- *
- *  A fresh cycle mints a token and claims the doc. A RESUMED cycle (after a reopen grace) carries
- *  its original token and must NOT claim: claiming would overwrite a newer waiter's token — a stale
- *  waiter stealing the lock back from its replacement, exactly what the grace is documented never to
- *  allow. Keeping the old token means the worst case is losing, since the poll loop's
- *  `isSuperseded(token)` check steps a superseded waiter down on its first tick. */
 /** What the grace watch concluded. `completed` carries the cursor and entries FROM THE GRACE READ:
  *  the caller persisted its cursor before the grace began, so without these the SessionClosed that
  *  ended the session is never recorded and the next wait re-reads and re-reports it. `reason` is the
@@ -147,24 +140,6 @@ export type ReopenOutcome =
   | { kind: "expired" }
   | { kind: "superseded" }
   | { kind: "completed"; cursor: number; entries: LogEntry[]; reason: string };
-
-/** Whether a RESUMED cycle still owns the document, for the check that must run before it mutates.
- *
- *  `unverifiable` is its own answer on purpose. `isSuperseded` rejects when the lock read fails, and
- *  an unverifiable lock must not be read as "still ours": acting could double-write on behalf of a
- *  waiter that lost the doc during the grace. Declining merely ends this cycle — the agent's next
- *  `wait` re-attaches — so the asymmetry favours refusing. */
-export async function verifyResumedLock(channel: Pick<ControlChannel, "isSuperseded">, token: string): Promise<"ours" | "lost" | "unverifiable"> {
-  try {
-    return (await channel.isSuperseded(token)) ? "lost" : "ours";
-  } catch {
-    return "unverifiable";
-  }
-}
-
-export function lockForCycle(resumeToken: string | undefined, mint: () => string): { token: string; claim: boolean } {
-  return resumeToken ? { token: resumeToken, claim: false } : { token: mint(), claim: true };
-}
 
 export async function awaitReopen(
   channel: ControlChannel,

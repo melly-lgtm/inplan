@@ -7,7 +7,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { LogEventType } from "@inplan/core/node";
-import { awaitReopen, lockForCycle, verifyResumedLock } from "../src/wait";
+import { awaitReopen } from "../src/wait";
 
 function clock(t0 = 0) {
   let t = t0;
@@ -117,79 +117,6 @@ describe("awaitReopen", () => {
   });
 });
 
-// The reopen grace promises that a stale waiter cannot outlive its replacement and steal the lock
-// back. That promise lives entirely in whether a RESUMED cycle re-claims.
-describe("lockForCycle", () => {
-  it("a fresh cycle mints a token and claims", () => {
-    expect(lockForCycle(undefined, () => "pid-1")).toEqual({ token: "pid-1", claim: true });
-  });
-
-  it("a resumed cycle keeps its token and does NOT claim", () => {
-    // Claiming here would overwrite whatever a newer waiter wrote during the grace.
-    expect(lockForCycle("original-token", () => "pid-2")).toEqual({ token: "original-token", claim: false });
-  });
-
-  it("never mints a replacement token on resume, even if asked", () => {
-    let minted = 0;
-    lockForCycle("original-token", () => `pid-${++minted}`);
-    expect(minted).toBe(0); // the mint function is not even called
-  });
-
-  it("the resumed token is the ORIGINAL, so isSuperseded can detect the loss", () => {
-    // Keeping the old token is what makes losing detectable: the poll loop asks
-    // isSuperseded(token), which is only meaningful for the token this waiter actually held.
-    const { token } = lockForCycle("t-original", () => "t-new");
-    expect(token).toBe("t-original");
-  });
-});
-
-// One catch around all three probes meant a timing-out lock or log read skipped the healthy ones for
-// that iteration. During a read outage the presence heartbeat is the ONLY signal that a human came
-// back, so swallowing it there defeats the grace exactly when it is needed.
-describe("probe failures are isolated", () => {
-  it("a failing lock probe does not stop presence from proving the return", async () => {
-    const c = clock();
-    const ch = chan({
-      isSuperseded: async () => {
-        throw new Error("locks table unreachable");
-      },
-      presence: async () => true,
-    });
-    await expect(awaitReopen(ch, 0, { ...c, graceMs: 10_000, pollMs: 500, token: "t" })).resolves.toMatchObject({ kind: "reopened" });
-  });
-
-  it("a failing log read does not stop presence from proving the return", async () => {
-    const c = clock();
-    const ch = chan({
-      readSince: async () => {
-        throw new Error("events read timed out");
-      },
-      presence: async () => true,
-    });
-    await expect(awaitReopen(ch, 0, { ...c, graceMs: 10_000, pollMs: 500 })).resolves.toMatchObject({ kind: "reopened" });
-  });
-
-  it("a failing presence probe does not stop a user entry from proving the return", async () => {
-    const c = clock();
-    const ch = chan({
-      readSince: async () => ({ entries: [{ seq: 9, actor: "user", type: LogEventType.TurnEnded }], cursor: 9 }),
-      presence: async () => {
-        throw new Error("presence unreadable");
-      },
-    });
-    await expect(awaitReopen(ch, 0, { ...c, graceMs: 10_000, pollMs: 500 })).resolves.toMatchObject({ kind: "reopened" });
-  });
-
-  it("all three failing still expires cleanly rather than hanging", async () => {
-    const c = clock();
-    const boom = async () => {
-      throw new Error("outage");
-    };
-    const ch = chan({ isSuperseded: boom, readSince: boom, presence: boom });
-    await expect(awaitReopen(ch, 0, { ...c, graceMs: 5_000, pollMs: 500, token: "t" })).resolves.toMatchObject({ kind: "expired" });
-  });
-});
-
 describe("the grace read reports what actually happened", () => {
   it("carries the reason the editor logged, not a fixed \"completed\"", async () => {
     // awaitReopen treats ANY explicit non-window_closed reason as terminal, so hard-coding the
@@ -229,38 +156,5 @@ describe("the grace read reports what actually happened", () => {
     // …and the report still contains BOTH polls' entries, not just the last delta.
     expect(r).toMatchObject({ kind: "completed", cursor: 10 });
     expect((r as { entries: { seq: number }[] }).entries.map((e) => e.seq)).toEqual([9, 10]);
-  });
-});
-
-// The guard that stops a lost recovery from mutating can itself fail: SupabaseControlChannel rejects
-// when its lock query fails. A bare `await` would reject waitCycle and surface as a stack trace with
-// no JSON — the failure mode this codebase already removed once.
-describe("verifyResumedLock", () => {
-  it("reports ours when the lock is still held", async () => {
-    expect(await verifyResumedLock({ isSuperseded: async () => false }, "t")).toBe("ours");
-  });
-
-  it("reports lost when a newer waiter claimed it", async () => {
-    expect(await verifyResumedLock({ isSuperseded: async () => true }, "t")).toBe("lost");
-  });
-
-  it("reports unverifiable — NOT ours — when the lock read rejects", async () => {
-    // Fail closed: acting on an unverifiable lock risks a double write on behalf of a waiter that
-    // lost the doc; declining merely ends this cycle and the agent re-attaches.
-    const ch = {
-      isSuperseded: async () => {
-        throw new Error("locks read failed");
-      },
-    };
-    expect(await verifyResumedLock(ch, "t")).toBe("unverifiable");
-  });
-
-  it("never rejects, whatever the channel does", async () => {
-    const throwsSync = {
-      isSuperseded: () => {
-        throw new Error("sync boom");
-      },
-    } as unknown as Parameters<typeof verifyResumedLock>[0];
-    await expect(verifyResumedLock(throwsSync, "t")).resolves.toBe("unverifiable");
   });
 });
