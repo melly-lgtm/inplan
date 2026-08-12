@@ -99,7 +99,7 @@ describe("inplan asset-upload → doc-images bucket", () => {
     await doAssetUpload(file, ["--bytes-file", bytesFile, "--ext", "png"]);
     expect(upload).toHaveBeenCalledTimes(1);
     const [path, , opts] = upload.mock.calls[0]!;
-    expect(path).toMatch(/^org-1\/doc-9\/image-\d{14}\.png$/);
+    expect(path).toMatch(/^org-1\/doc-9\/image-\d{14}-[0-9a-f]{8}\.png$/);
     expect(opts).toEqual({ contentType: "image/png" });
     expect(lastJson()).toEqual({ status: "uploaded", relPath: `https://cdn.test/doc-images/${path}` });
   });
@@ -117,7 +117,10 @@ describe("inplan asset-upload → doc-images bucket", () => {
     upload.mockImplementationOnce(async () => ({ error: { status: 409, message: "duplicate" } })).mockImplementationOnce(async () => ({ error: null }));
     await doAssetUpload(file, ["--bytes-file", bytesFile, "--ext", "png"]);
     expect(upload).toHaveBeenCalledTimes(2);
-    expect(upload.mock.calls[1]![0]).toMatch(/-1\.png$/); // second attempt's disambiguated name
+    // Each attempt carries its own unguessable suffix (not a sequential counter), so a retry
+    // after a collision lands on a genuinely different path rather than a predictable "-1".
+    expect(upload.mock.calls[1]![0]).toMatch(/^org-1\/doc-9\/image-\d{14}-[0-9a-f]{8}\.png$/);
+    expect(upload.mock.calls[1]![0]).not.toBe(upload.mock.calls[0]![0]);
     expect(lastJson()).toMatchObject({ status: "uploaded" });
   });
 

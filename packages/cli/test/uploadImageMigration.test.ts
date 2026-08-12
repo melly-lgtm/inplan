@@ -102,7 +102,7 @@ describe("inplan upload → local image migration", () => {
 
     expect(upload).toHaveBeenCalledTimes(1);
     const [path] = upload.mock.calls[0]!;
-    expect(path).toMatch(/^org-1\/doc-new\/image-\d{14}\.png$/);
+    expect(path).toMatch(/^org-1\/doc-new\/image-\d{14}-[0-9a-f]{8}\.png$/);
 
     const url = `https://cdn.test/doc-images/${path}`;
     expect(readFileSync(file, "utf8")).toContain(`![](${url})`);
@@ -217,5 +217,27 @@ describe("inplan upload → local image migration", () => {
     // rewritten either — otherwise lastSyncedHash (computed from whatever's now on disk) would
     // match a body the cloud never actually received.
     expect(readFileSync(file, "utf8")).toBe(original);
+  });
+
+  it("migrates more than 6 same-second images without exhausting the retry budget", async () => {
+    // Regression for the old scheme, where every image in the same second shared ONE base name
+    // (`image-<second>`) and only n<=5 disambiguating retries existed — a 7th image in the same
+    // second had nowhere left to go and stayed a dangling local link. Each upload now carries its
+    // own unguessable suffix, so a same-second batch never depends on the retry loop at all.
+    mkdirSync(join(home, "PLAN.assets"), { recursive: true });
+    const n = 7;
+    const lines = Array.from({ length: n }, (_, i) => {
+      writeFileSync(join(home, "PLAN.assets", `image-${i}.png`), Buffer.from([i]));
+      return `![](<PLAN.assets/image-${i}.png>)`;
+    });
+    writeFileSync(file, `# My Plan\n\n${lines.join("\n\n")}\n`);
+
+    await doUpload(file, []);
+
+    expect(upload).toHaveBeenCalledTimes(n);
+    const paths = upload.mock.calls.map((c) => c[0] as string);
+    expect(new Set(paths).size).toBe(n); // every image landed on a distinct path
+    const rewritten = readFileSync(file, "utf8");
+    expect(rewritten).not.toContain("PLAN.assets"); // none left dangling locally
   });
 });

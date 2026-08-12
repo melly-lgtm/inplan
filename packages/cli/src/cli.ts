@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -2002,8 +2002,15 @@ async function uploadAssetBytes(db: SupabaseClient, orgId: string, docId: string
   const safeExt = Object.prototype.hasOwnProperty.call(ASSET_MIME_BY_EXT, ext) ? ext : "png";
   const contentType = ASSET_MIME_BY_EXT[safeExt]!;
   const stamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14); // YYYYMMDDHHMMSS
+  // An unguessable per-attempt suffix, not just a small counter: `stamp` only has 1s resolution,
+  // so a batch (migrateLocalImages promoting several pre-existing images at once) can easily put
+  // more than a handful of uploads in the same second — a fixed n<=5 counter-only name would run
+  // out of retries and silently strand the 7th+ image as a still-local, still-broken-in-the-cloud
+  // link (flagged in review: coderabbitai on PR #91). The loop remains only as a defensive
+  // fallback for the now-vanishingly-rare case of two random suffixes actually colliding.
   for (let n = 0; n <= 5; n++) {
-    const name = n === 0 ? `image-${stamp}.${safeExt}` : `image-${stamp}-${n}.${safeExt}`;
+    const suffix = randomBytes(4).toString("hex");
+    const name = `image-${stamp}-${suffix}.${safeExt}`;
     const path = `${orgId}/${docId}/${name}`;
     const { error } = await db.storage.from(ASSET_BUCKET).upload(path, bytes, { contentType });
     if (!error) return db.storage.from(ASSET_BUCKET).getPublicUrl(path).data.publicUrl;
