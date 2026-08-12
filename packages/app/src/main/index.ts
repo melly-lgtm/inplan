@@ -3,11 +3,13 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from "electron";
 import { APP_ICON_DATA_URL } from "./appIcon";
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import type { Acceptance, Cadence, SaveOptions, Settings } from "@inplan/renderer";
-import { isOnboarded, markOnboarded, parse, serialize, type Comment } from "@inplan/core/node";
+import { isOnboarded, markOnboarded, parse, readStatus, serialize, type Comment } from "@inplan/core/node";
 import { Session } from "./session";
 import { createI18nController } from "./i18nController";
 import { track, type TelemetryProps } from "./telemetry";
@@ -114,6 +116,36 @@ function runCli(args: string[], extraEnv?: Record<string, string>): Promise<{ co
       },
     );
   });
+}
+
+/** An image pasted/picked while the doc is live-connected to the cloud (Collaborate on Cloud):
+ *  hand the bytes to `inplan asset-upload` so they land in the cloud's `doc-images` bucket
+ *  directly, instead of writing them to a local `.assets/` folder that would need migrating
+ *  later. The bytes cross the process boundary via a temp file (IPC args are JSON-only) — this
+ *  function owns that file's whole lifecycle, cleaning it up whether the upload succeeds or not.
+ *  Returns null on any failure (network, auth, upload) so the caller falls back the same way a
+ *  local write failure does. */
+async function uploadAssetToCloud(docFile: string, bytes: ArrayBuffer, ext: string): Promise<{ relPath: string } | null> {
+  const tmp = join(tmpdir(), `inplan-asset-${randomUUID()}`);
+  try {
+    writeFileSync(tmp, Buffer.from(bytes));
+    const r = await runCli(["asset-upload", docFile, "--bytes-file", tmp, "--ext", ext]);
+    const out = JSON.parse(r.stdout.trim() || "{}") as { status?: string; relPath?: string };
+    if (out.status !== "uploaded" || !out.relPath) {
+      process.stderr.write(`[inplan] asset-upload failed: ${r.stderr.trim() || out.status || "unknown error"}\n`);
+      return null;
+    }
+    return { relPath: out.relPath };
+  } catch (e) {
+    process.stderr.write(`[inplan] asset-upload failed: ${(e as Error).message}\n`);
+    return null;
+  } finally {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* best-effort cleanup — a leaked temp file is harmless */
+    }
+  }
 }
 
 /** Base URL of the cloud edition (inplan.ai), for the reachability probe + cloud links. */
@@ -543,11 +575,18 @@ function registerIpc(): void {
     }
     return { linkTarget: toPosix(relative(dirname(session.paths.file), abs)) };
   });
-  // An image (pasted or picked via the Source toolbar): written into a `<docname>.assets/`
-  // folder next to the doc (Typora-style), committed to git alongside it — never the sidecar
-  // dir, so the Markdown link it produces stays valid for anyone who clones the repo.
-  ipcMain.handle("asset:save", (_e, bytes: ArrayBuffer, ext: string) => {
+  // An image (pasted or picked via the Source toolbar). When the doc is live-connected to the
+  // cloud (Collaborate on Cloud), it goes straight to the cloud's doc-images bucket, so both
+  // sides see it immediately and no local-only image is ever left needing a later migration.
+  // Otherwise (the local-first default) it's written into a `<docname>.assets/` folder next to
+  // the doc (Typora-style), committed to git alongside it — never the sidecar dir, so the
+  // Markdown link it produces stays valid for anyone who clones the repo.
+  ipcMain.handle("asset:save", async (_e, bytes: ArrayBuffer, ext: string) => {
     if (!session) return null;
+    const status = readStatus(session.paths.statusPath);
+    if (status.location === "cloud" && status.cloudDocId) {
+      return uploadAssetToCloud(session.paths.file, bytes, ext);
+    }
     const docDir = dirname(session.paths.file);
     const assetsDir = join(docDir, `${basename(session.paths.file).replace(/\.md$/i, "")}.assets`);
     const safeExt = /^[a-z0-9]{1,5}$/i.test(ext) ? ext.toLowerCase() : "png";
