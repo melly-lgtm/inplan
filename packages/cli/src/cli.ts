@@ -6,8 +6,9 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   type ControlChannel,
   CONTROL_LOG_VERSION,
@@ -28,6 +29,7 @@ import {
 import { agentAuthorFor } from "./agentAuthor";
 import { gitProvenance } from "./provenance";
 import { authedSession, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, type AuthFile } from "./cliAuth";
+import { SupabaseDocumentStore } from "@inplan/backend-supabase";
 import { LoginSessionExpiredError, clearPendingLogin, createLoginSession, loadPendingLogin, pollLoginSession, rendezvousLogin, type PendingLogin } from "./cliLogin";
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
 import { checkForUpdate, selfUpdate, UPDATE_PKG, warnIfOutdated } from "./update";
@@ -1928,15 +1930,157 @@ export async function doUpload(file: string, args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  // Migrate any pre-existing local images (pasted while the doc was still local, so they're
+  // relative links into a sibling `.assets/` folder) into the cloud bucket, and rewrite the body's
+  // links to the resulting public URLs — otherwise the doc arrives in the cloud with links into a
+  // folder that has no counterpart there. Applied to the file on disk too so the local copy's hash
+  // matches what's now stored in the cloud (status.lastSyncedHash below), keeping the next
+  // local⇄cloud reconcile check honest. Best-effort: a migration failure must not fail the promote
+  // itself — the doc is already created; the human can always fall back to re-pasting the images
+  // once collaborating in the cloud.
+  let finalBody = body;
+  try {
+    const migrated = await migrateLocalImages(body, dirname(file), s.db, pick.org_id, cloudDocId);
+    if (migrated.migrated > 0) {
+      finalBody = migrated.body;
+      writeFileSync(file, finalBody);
+      await new SupabaseDocumentStore(s.db, cloudDocId).saveDoc(finalBody);
+    }
+  } catch (e) {
+    process.stderr.write(`inplan upload: image migration failed (${e instanceof Error ? e.message : String(e)}) — the doc uploaded, but its local images weren't moved to the cloud\n`);
+  }
+
   const status: DocStatus = {
     location: "cloud",
     cloudDocId,
     originalPath: file,
-    lastSyncedHash: hashBody(body),
+    lastSyncedHash: hashBody(finalBody),
     ...(org?.slug ? { cloudLocator: { org: org.slug, repo, path } } : {}),
   };
   writeStatus(docPaths(file).statusPath, status);
   output({ status: "uploaded", cloudDocId, ...(org?.slug ? { locator: { org: org.slug, repo, path } } : {}) });
+}
+
+/** Extensions this uploader accepts, mapped to their Storage `Content-Type` — mirrors the cloud
+ *  web app's ASSET_MIME_BY_EXT and the `doc-images` bucket's allowed_mime_types (inplan-cloud's
+ *  `20260804000000_doc_images_bucket.sql`). Anything else falls back to png, same as the local
+ *  `asset:save` write path. */
+const ASSET_MIME_BY_EXT: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  avif: "image/avif",
+  svg: "image/svg+xml",
+};
+const ASSET_BUCKET = "doc-images";
+
+/** Upload one image's bytes to the `doc-images` bucket at `orgId/docId/image-<stamp>[-n].<ext>`,
+ *  disambiguating on a name collision (409) — shared by `doAssetUpload` (a single live paste) and
+ *  {@link migrateLocalImages} (a promote-time batch). Returns the public URL, or null on a real
+ *  (non-collision) failure. */
+async function uploadAssetBytes(db: SupabaseClient, orgId: string, docId: string, bytes: Buffer, ext: string): Promise<string | null> {
+  // hasOwnProperty, not a truthy lookup — see the identical guard in the cloud web app's
+  // saveAsset (ASSET_MIME_BY_EXT[ext] is truthy for inherited Object.prototype names too).
+  const safeExt = Object.prototype.hasOwnProperty.call(ASSET_MIME_BY_EXT, ext) ? ext : "png";
+  const contentType = ASSET_MIME_BY_EXT[safeExt]!;
+  const stamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14); // YYYYMMDDHHMMSS
+  for (let n = 0; n <= 5; n++) {
+    const name = n === 0 ? `image-${stamp}.${safeExt}` : `image-${stamp}-${n}.${safeExt}`;
+    const path = `${orgId}/${docId}/${name}`;
+    const { error } = await db.storage.from(ASSET_BUCKET).upload(path, bytes, { contentType });
+    if (!error) return db.storage.from(ASSET_BUCKET).getPublicUrl(path).data.publicUrl;
+    if (error.status !== 409) return null; // not a name collision — a real failure, don't retry
+  }
+  return null; // exhausted collision retries
+}
+
+/**
+ * Upload a pasted/picked image straight to the cloud `doc-images` bucket instead of writing it
+ * next to the local file — the desktop app calls this when it's live-connected to a cloud doc
+ * (Collaborate on Cloud), so a locally pasted image never needs a later migration. `--bytes-file`
+ * points at a temp file the caller (Electron main) wrote the raw bytes to; this command only
+ * reads it — the caller owns its lifecycle (creation + cleanup).
+ */
+export async function doAssetUpload(file: string, args: string[]): Promise<void> {
+  const status = readStatus(docPaths(file).statusPath);
+  if (status.location !== "cloud" || !status.cloudDocId) {
+    process.stderr.write("inplan asset-upload: document is not in the cloud\n");
+    process.exit(1);
+  }
+  const bytesFile = getFlag(args, "bytes-file");
+  if (!bytesFile) {
+    process.stderr.write("inplan asset-upload: usage: inplan asset-upload <file> --bytes-file <path> [--ext <ext>]\n");
+    process.exit(64);
+  }
+  const s = await authedSession();
+  if (!s) {
+    process.stderr.write("inplan: not logged in (or session expired) — run `inplan login`\n");
+    process.exit(1);
+  }
+  // The bucket's insert policy checks the path's org segment against `documents.org_id` itself
+  // (20260804000000_doc_images_bucket.sql), so this lookup doubles as the ownership check — an
+  // upload for a doc this session can't write to fails the RLS check with the wrong org anyway.
+  const { data: doc, error: docErr } = await s.db.from("documents").select("org_id").eq("id", status.cloudDocId).maybeSingle();
+  const orgId = (doc as { org_id?: string } | null)?.org_id;
+  if (docErr || !orgId) {
+    process.stderr.write(`inplan asset-upload: ${docErr?.message ?? "could not resolve the document's organization"}\n`);
+    process.exit(1);
+  }
+  const requestedExt = (getFlag(args, "ext") ?? "png").toLowerCase();
+  const bytes = readFileSync(bytesFile);
+  const relPath = await uploadAssetBytes(s.db, orgId, status.cloudDocId, bytes, requestedExt);
+  if (!relPath) {
+    process.stderr.write("inplan asset-upload: upload failed\n");
+    process.exit(1);
+  }
+  output({ status: "uploaded", relPath });
+}
+
+/** A Markdown image reference: `![alt](<dest>)` (the angle-bracket form the editor writes for
+ *  asset:save — needed because `<docname>.assets/…` can contain spaces) or the bare `![alt](dest)`
+ *  form (no unescaped whitespace/parens, which the bracket-less destination syntax can't carry). */
+const IMAGE_REF_RE = /!\[([^\]]*)\]\(\s*(?:<([^>]+)>|([^()\s]+))\s*\)/g;
+
+/** True for a relative path (not a URL) — mirrors the renderer's image-src resolver
+ *  (`markdown.ts`) so promote-time migration and live rendering agree on what counts as "local". */
+function isLocalRelativePath(dest: string): boolean {
+  return !/^[a-z][a-z0-9+.-]*:/i.test(dest) && !dest.startsWith("//") && !dest.startsWith("/");
+}
+
+/**
+ * Scan `body` for local relative image links, upload each referenced file (resolved against
+ * `docDir`) to the cloud `doc-images` bucket, and rewrite the links to the resulting public URLs.
+ * Run at promote time (`inplan upload`) so a doc pasted into while still local doesn't arrive in
+ * the cloud with links into a `.assets/` folder that has no counterpart there — otherwise the CLI
+ * command genuinely would be pointless, since nothing would ever call it for the images that
+ * matter most (the ones already in the doc when it's promoted). Best-effort per image: a missing
+ * file or a failed upload just leaves that one link untouched rather than losing the reference.
+ */
+async function migrateLocalImages(body: string, docDir: string, db: SupabaseClient, orgId: string, docId: string): Promise<{ body: string; migrated: number }> {
+  const replacements = new Map<string, string>(); // matched destination → new public URL
+  for (const m of body.matchAll(IMAGE_REF_RE)) {
+    const dest = m[2] ?? m[3] ?? "";
+    if (!dest || !isLocalRelativePath(dest) || replacements.has(dest)) continue;
+    const abs = resolve(docDir, dest);
+    if (!existsSync(abs)) continue; // already dangling — nothing to migrate
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(abs);
+    } catch {
+      continue;
+    }
+    const ext = extname(abs).slice(1).toLowerCase() || "png";
+    const url = await uploadAssetBytes(db, orgId, docId, bytes, ext);
+    if (url) replacements.set(dest, url);
+  }
+  if (replacements.size === 0) return { body, migrated: 0 };
+  const newBody = body.replace(IMAGE_REF_RE, (whole, _alt: string, bracketed?: string, bare?: string) => {
+    const url = replacements.get(bracketed ?? bare ?? "");
+    return url ? whole.replace(/\(\s*(?:<[^>]+>|[^()\s]+)\s*\)/, `(${url})`) : whole;
+  });
+  return { body: newBody, migrated: replacements.size };
 }
 
 /** `comment` (see ./commentAdd.ts) only knows how to rewrite a local file — reject it before
@@ -2041,7 +2185,7 @@ async function main(): Promise<void> {
       .filter(Boolean),
   );
 
-  if (!cmd || !["open", "wait", "signal", "message", "comment", "relay", "status", "promote", "demote", "upload"].includes(cmd)) {
+  if (!cmd || !["open", "wait", "signal", "message", "comment", "relay", "status", "promote", "demote", "upload", "asset-upload"].includes(cmd)) {
     process.stderr.write(
       "usage: inplan open  <file>   (create/open a local plan in the editor)\n" +
         "       inplan wait   <file|--remote DOC_ID> [--model NAME] [--cursor N] [--confirmed-comment-deletion=a,b] [--done] [--reload]\n" +
@@ -2053,6 +2197,7 @@ async function main(): Promise<void> {
         "       inplan upload  <file> [--org <slug>] [--repo <name>] [--path <p>] [--evict-lru]   (Collaborate on Cloud)\n" +
         "       inplan promote <file> --cloud-doc <docId> [--locator org/repo/path]\n" +
         "       inplan demote  <file> [--from-store]   (bring a cloud doc back to disk; --from-store accepts the server copy when the hub is unreadable)\n" +
+        "       inplan asset-upload <file> --bytes-file <path> [--ext <ext>]   (cloud doc: paste/pick an image straight to storage)\n" +
         "       inplan login   (opens the browser to sign in; or --url <url> --anon <key> --refresh <token> for scripts)\n" +
         "       inplan whoami | logout\n",
     );
@@ -2105,6 +2250,10 @@ async function main(): Promise<void> {
   }
   if (cmd === "demote") {
     await doDemote(file, args);
+    return;
+  }
+  if (cmd === "asset-upload") {
+    await doAssetUpload(file, args);
     return;
   }
 
