@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 let rpcResult: { data: unknown; error: unknown } = { data: { status: "created", id: "doc-new" }, error: null };
 let memberships: { data: unknown; error: unknown } = { data: [{ org_id: "org-1", orgs: { slug: "acme", name: "Acme" } }], error: null };
+let existingDocId: string | null = null; // the "exists" (re-upload) path's lookup result
 const rpc = vi.fn(async (_name: string, _params: Record<string, unknown>) => rpcResult);
 let uploadResult: { error: { status: number; message: string } | null } = { error: null };
 const upload = vi.fn(async (_path: string, _bytes: unknown, _opts: unknown) => uploadResult);
@@ -29,7 +30,7 @@ function fakeDb() {
   const documentsQ: Record<string, unknown> = {};
   documentsQ.select = () => documentsQ;
   documentsQ.eq = () => documentsQ;
-  documentsQ.maybeSingle = () => Promise.resolve({ data: null, error: null });
+  documentsQ.maybeSingle = () => Promise.resolve({ data: existingDocId ? { id: existingDocId } : null, error: null });
   documentsQ.update = update;
 
   return {
@@ -80,6 +81,7 @@ beforeEach(() => {
   rpcResult = { data: { status: "created", id: "doc-new" }, error: null };
   memberships = { data: [{ org_id: "org-1", orgs: { slug: "acme", name: "Acme" } }], error: null };
   uploadResult = { error: null };
+  existingDocId = null;
 });
 afterEach(() => {
   delete process.env.INPLAN_SIDECAR_DIR;
@@ -165,5 +167,36 @@ describe("inplan upload → local image migration", () => {
     await doUpload(file, []);
     expect(upload).not.toHaveBeenCalled();
     expect(readFileSync(file, "utf8")).toContain("PLAN.assets/id_ed25519");
+  });
+
+  it("rewrites the URL, not parenthesized alt text, into the link", async () => {
+    mkdirSync(join(home, "PLAN.assets"), { recursive: true });
+    writeFileSync(join(home, "PLAN.assets", "image-1.png"), Buffer.from([1, 2, 3]));
+    writeFileSync(file, "# My Plan\n\n![a (x) b](<PLAN.assets/image-1.png>)\n");
+
+    await doUpload(file, []);
+
+    const [path] = upload.mock.calls[0]!;
+    const url = `https://cdn.test/doc-images/${path}`;
+    const rewritten = readFileSync(file, "utf8");
+    expect(rewritten).toContain(`![a (x) b](${url})`); // alt text preserved verbatim, destination replaced
+    expect(rewritten).not.toContain("PLAN.assets"); // the real destination didn't stay local
+  });
+
+  it("never writes documents.body on a re-upload of an already-existing doc, even with a local image", async () => {
+    mkdirSync(join(home, "PLAN.assets"), { recursive: true });
+    writeFileSync(join(home, "PLAN.assets", "image-1.png"), Buffer.from([1, 2, 3]));
+    writeFileSync(file, "# My Plan\n\n![](<PLAN.assets/image-1.png>)\n");
+    rpcResult = { data: { status: "exists" }, error: null };
+    existingDocId = "doc-existing";
+
+    await doUpload(file, []);
+
+    // Under the unified-Yjs model the collab hub is the sole writer of documents.body once a doc
+    // exists — migrating (and so writing the body) here would race it and can clobber live edits.
+    expect(upload).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect(readFileSync(file, "utf8")).toContain("PLAN.assets/image-1.png"); // left as-is, not "fixed"
+    expect(lastJson()).toMatchObject({ status: "uploaded", cloudDocId: "doc-existing" });
   });
 });

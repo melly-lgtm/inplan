@@ -1938,16 +1938,25 @@ export async function doUpload(file: string, args: string[]): Promise<void> {
   // local⇄cloud reconcile check honest. Best-effort: a migration failure must not fail the promote
   // itself — the doc is already created; the human can always fall back to re-pasting the images
   // once collaborating in the cloud.
+  //
+  // Only for a brand-new row (out0.status === "created"): under the unified-Yjs model the collab
+  // hub is the SOLE writer of `documents.body` (materialized from the live CRDT) once a doc has
+  // ever been touched there. A freshly-created row has no hub session yet, so writing its body
+  // here is safe; re-running `upload` against an EXISTING doc (out0.status === "exists") must
+  // never do this write — it would race the hub and can silently clobber edits made in the cloud
+  // that this local file hasn't pulled (flagged in review: cubic-dev-ai + melly-lgtm on PR #91).
   let finalBody = body;
-  try {
-    const migrated = await migrateLocalImages(body, dirname(file), s.db, pick.org_id, cloudDocId);
-    if (migrated.migrated > 0) {
-      finalBody = migrated.body;
-      writeFileSync(file, finalBody);
-      await new SupabaseDocumentStore(s.db, cloudDocId).saveDoc(finalBody);
+  if (out0.status === "created") {
+    try {
+      const migrated = await migrateLocalImages(body, dirname(file), s.db, pick.org_id, cloudDocId);
+      if (migrated.migrated > 0) {
+        finalBody = migrated.body;
+        writeFileSync(file, finalBody);
+        await new SupabaseDocumentStore(s.db, cloudDocId).saveDoc(finalBody);
+      }
+    } catch (e) {
+      process.stderr.write(`inplan upload: image migration failed (${e instanceof Error ? e.message : String(e)}) — the doc uploaded, but its local images weren't moved to the cloud\n`);
     }
-  } catch (e) {
-    process.stderr.write(`inplan upload: image migration failed (${e instanceof Error ? e.message : String(e)}) — the doc uploaded, but its local images weren't moved to the cloud\n`);
   }
 
   const status: DocStatus = {
@@ -2103,9 +2112,13 @@ async function migrateLocalImages(body: string, docDir: string, db: SupabaseClie
     if (url) replacements.set(dest, url);
   }
   if (replacements.size === 0) return { body, migrated: 0 };
-  const newBody = body.replace(IMAGE_REF_RE, (whole, _alt: string, bracketed?: string, bare?: string) => {
+  // Rebuild from the captured groups rather than doing regex surgery on `whole`: alt text can
+  // itself contain parens (`![a (x) b](img.png)`), and a second "find the first (...)" pass over
+  // the whole match would rewrite the URL into the alt text's parens instead of the destination,
+  // corrupting the link and leaving the real destination still pointing at the local file.
+  const newBody = body.replace(IMAGE_REF_RE, (whole, alt: string, bracketed?: string, bare?: string) => {
     const url = replacements.get(bracketed ?? bare ?? "");
-    return url ? whole.replace(/\(\s*(?:<[^>]+>|[^()\s]+)\s*\)/, `(${url})`) : whole;
+    return url ? `![${alt}](${url})` : whole;
   });
   return { body: newBody, migrated: replacements.size };
 }
