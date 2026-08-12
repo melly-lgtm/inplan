@@ -128,7 +128,9 @@ function runCli(args: string[], extraEnv?: Record<string, string>): Promise<{ co
 async function uploadAssetToCloud(docFile: string, bytes: ArrayBuffer, ext: string): Promise<{ relPath: string } | null> {
   const tmp = join(tmpdir(), `inplan-asset-${randomUUID()}`);
   try {
-    writeFileSync(tmp, Buffer.from(bytes));
+    // 0o600: the OS temp dir is shared system-wide — a permissive umask-derived mode would let
+    // another local user read the pasted image bytes before cleanup.
+    writeFileSync(tmp, Buffer.from(bytes), { mode: 0o600 });
     const r = await runCli(["asset-upload", docFile, "--bytes-file", tmp, "--ext", ext]);
     const out = JSON.parse(r.stdout.trim() || "{}") as { status?: string; relPath?: string };
     if (out.status !== "uploaded" || !out.relPath) {
