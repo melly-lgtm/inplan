@@ -68,4 +68,15 @@ describe("App onPasteImage wiring", () => {
 
     expect(onPasteImage).toBeUndefined();
   });
+
+  it("reports a failed save (host resolves null, e.g. a cloud upload rejected) instead of leaving the paste silently dropped", async () => {
+    const saveAsset = vi.fn(async () => null);
+    (window as unknown as { api: { saveAsset: unknown } }).api.saveAsset = saveAsset;
+    await mountApp();
+
+    const result = await onPasteImage!(new ArrayBuffer(3), "image/png");
+
+    expect(result).toBeNull();
+    await waitFor(() => expect(document.body.textContent).toContain("couldn't paste image"));
+  });
 });

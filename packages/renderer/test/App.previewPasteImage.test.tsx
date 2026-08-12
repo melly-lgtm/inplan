@@ -158,6 +158,19 @@ describe("preview pane image paste", () => {
     expect(document.querySelector(".ap-rendered")!.innerHTML).toBe(before);
   });
 
+  it("when the host resolves null instead of throwing (e.g. a cloud upload rejected), still reports it — not just a caught exception", async () => {
+    (window as unknown as { api: { saveAsset: unknown } }).api.saveAsset = vi.fn(async () => null);
+    await mountApp();
+    const rendered = document.querySelector(".ap-rendered")!;
+    const before = document.querySelector(".ap-rendered")!.innerHTML;
+
+    await act(async () => firePasteImage(rendered, PNG));
+    await waitFor(() => expect(document.body.textContent).toContain("couldn't paste image"));
+
+    // No image link was inserted — the doc is untouched.
+    expect(document.querySelector(".ap-rendered")!.innerHTML).toBe(before);
+  });
+
   it("does not apply the image link to a doc the user navigated to WHILE the save was still in flight", async () => {
     let resolveSave!: (v: { relPath: string }) => void;
     const session = createMemoryApi({ content: DOC }) as unknown as {

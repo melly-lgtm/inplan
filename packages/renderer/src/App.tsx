@@ -712,16 +712,24 @@ export function App(props: EditorProps = {}): JSX.Element {
   // raw bytes to the host, which writes them next to the open doc (e.g.
   // `<docname>.assets/image-...png`) and returns the relative link to embed. Absent `saveAsset`
   // (a host with nowhere to write a sibling file, e.g. a cloud doc) ⇒ no-op.
-  const onPickImage = useCallback(async (bytes: ArrayBuffer, mime: string): Promise<string | null> => {
-    const saveAsset = hostApi().saveAsset;
-    if (!saveAsset) return null;
-    // Not just `mime.split("/")[1]`: some subtypes aren't valid filename extensions on their own
-    // (e.g. "svg+xml"), and the host's asset:save rejects anything that doesn't look like one —
-    // silently falling back to ".png" on an SVG's actual bytes, breaking the image.
-    const ext = IMAGE_EXT_BY_MIME[mime] ?? "png";
-    const saved = await saveAsset(bytes, ext);
-    return saved?.relPath ?? null;
-  }, []);
+  const onPickImage = useCallback(
+    async (bytes: ArrayBuffer, mime: string): Promise<string | null> => {
+      const saveAsset = hostApi().saveAsset;
+      if (!saveAsset) return null;
+      // Not just `mime.split("/")[1]`: some subtypes aren't valid filename extensions on their own
+      // (e.g. "svg+xml"), and the host's asset:save rejects anything that doesn't look like one —
+      // silently falling back to ".png" on an SVG's actual bytes, breaking the image.
+      const ext = IMAGE_EXT_BY_MIME[mime] ?? "png";
+      const saved = await saveAsset(bytes, ext);
+      // `saveAsset` resolving to null is a real failure (e.g. the cloud upload rejected, or the
+      // local write threw) — every caller (source-paste, preview-paste, toolbar file picker)
+      // routes through here, so surfacing it once in this shared spot covers all three, instead
+      // of it disappearing into main-process stderr with nothing visible in the editor.
+      if (!saved) setStatus(t("msg.imagePasteFailed"));
+      return saved?.relPath ?? null;
+    },
+    [t],
+  );
 
   // Pasting an image directly into the (read-only) preview: insert the link on a new line
   // right after the active (blue-highlighted) block — its data-end-line, not just data-line, so
