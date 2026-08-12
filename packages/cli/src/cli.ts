@@ -1080,9 +1080,25 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
   }
 
   // the web badge shows "agent · your machine"; clear it on exit.
-  // (Presence is a cosmetic websocket on the initial token; the correctness-critical DB polling
-  // rides `live` above and stays authenticated across the whole wait, even past the ~1h expiry.)
-  const presence = announcePresence(docId, backend.token, model);
+  // (Presence is a cosmetic websocket; the correctness-critical DB polling rides `live` above.)
+  // Its connection is LONG-lived — a wait can span hours and hub restarts — so hand it a token
+  // RESOLVER, not a string frozen at attach: the provider re-resolves on every reconnect, where a
+  // stale ~1h JWT would otherwise fail auth. On a transient re-mint failure, fall back to the last
+  // good token (presence must never break the wait).
+  let lastPresenceToken = backend.token;
+  const presence = announcePresence(
+    docId,
+    async () => {
+      try {
+        const fresh = await remoteBackend(docId, "cli-agent");
+        if (fresh) lastPresenceToken = fresh.token;
+      } catch {
+        /* transient — reuse the last good token */
+      }
+      return lastPresenceToken;
+    },
+    model,
+  );
   try {
     const workFile = join(sidecarRoot(), "remote", `${docId}.plan.md`);
     const pendingPath = `${workFile}.pending`; // marker: a local fallback edit awaits a hub push

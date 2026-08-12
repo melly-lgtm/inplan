@@ -10,6 +10,7 @@ let destroyedSocket = false;
 let destroyedDoc = false;
 let lastWebsocketConfig: unknown;
 let lastProviderConfig: unknown;
+let lastProviderInstance: { isAuthenticated: boolean } | undefined;
 
 vi.mock("@hocuspocus/provider", () => ({
   HocuspocusProviderWebsocket: class {
@@ -21,6 +22,7 @@ vi.mock("@hocuspocus/provider", () => ({
     }
   },
   HocuspocusProvider: class {
+    isAuthenticated = false;
     awareness = {
       setLocalStateField: (field: string, value: unknown) => {
         localState[field] = value;
@@ -28,6 +30,7 @@ vi.mock("@hocuspocus/provider", () => ({
     };
     constructor(config: unknown) {
       lastProviderConfig = config;
+      lastProviderInstance = this;
     }
     destroy() {
       destroyedProvider = true;
@@ -64,6 +67,46 @@ describe("announcePresence", () => {
     expect(destroyedProvider).toBe(true);
     expect(destroyedSocket).toBe(true);
     expect(destroyedDoc).toBe(true);
+  });
+
+  it("passes a token RESOLVER through to the provider (reconnects re-resolve; a frozen string goes stale)", () => {
+    const resolver = async () => "fresh-jwt";
+    announcePresence("doc-1", resolver);
+    expect((lastProviderConfig as { token: unknown }).token).toBe(resolver);
+  });
+
+  it("surfaces an auth rejection on stderr, marked cosmetic-only", () => {
+    const err = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    announcePresence("doc-1", "jwt-token");
+    (lastProviderConfig as { onAuthenticationFailed: (d: { reason: string }) => void }).onAuthenticationFailed({ reason: "permission-denied" });
+    expect(err).toHaveBeenCalledWith(expect.stringContaining("presence badge auth failed (permission-denied)"));
+    expect(err).toHaveBeenCalledWith(expect.stringContaining("cosmetic only"));
+    err.mockRestore();
+  });
+
+  it("reports a channel that never authenticates (the silent Unauthorized death — issue #88)", () => {
+    vi.useFakeTimers();
+    const err = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    announcePresence("doc-1", "jwt-token");
+    vi.advanceTimersByTime(15_000);
+    expect(err).toHaveBeenCalledWith(expect.stringContaining("did not authenticate"));
+    err.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it("stays silent when authenticated in time; destroy() cancels the pending check", () => {
+    vi.useFakeTimers();
+    const err = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    announcePresence("doc-1", "jwt-token");
+    lastProviderInstance!.isAuthenticated = true; // authenticated before the grace elapses
+    vi.advanceTimersByTime(15_000);
+    expect(err).not.toHaveBeenCalled();
+    const p2 = announcePresence("doc-2", "jwt-token");
+    p2.destroy(); // teardown before the grace elapses must cancel the report
+    vi.advanceTimersByTime(15_000);
+    expect(err).not.toHaveBeenCalled();
+    err.mockRestore();
+    vi.useRealTimers();
   });
 
   it("is best-effort: a construction failure returns a no-op handle instead of throwing", async () => {
