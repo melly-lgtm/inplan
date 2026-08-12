@@ -10,7 +10,7 @@
 
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 let rpcResult: { data: unknown; error: unknown } = { data: { status: "created", id: "doc-new" }, error: null };
@@ -141,5 +141,29 @@ describe("inplan upload → local image migration", () => {
     expect(update).not.toHaveBeenCalled(); // nothing migrated → no cloud body rewrite
     expect(readFileSync(file, "utf8")).toContain("PLAN.assets/image-1.png"); // local link left as-is
     expect(lastJson()).toMatchObject({ status: "uploaded" }); // promote itself still succeeded
+  });
+
+  it("never reads or uploads a file outside the doc's own directory (path traversal)", async () => {
+    // A sibling directory to `home` (the doc's own dir) — a `../` link must not escape into it.
+    const outside = mkdtempSync(join(tmpdir(), "inplan-upload-migrate-outside-"));
+    const secretFile = join(outside, "secret.png");
+    writeFileSync(secretFile, Buffer.from("not actually yours"));
+    const rel = relative(home, secretFile).replace(/\\/g, "/");
+    expect(rel.startsWith("..")).toBe(true); // sanity: this really is outside the doc's dir
+    writeFileSync(file, `# My Plan\n\n![](<${rel}>)\n`);
+
+    await doUpload(file, []);
+    expect(upload).not.toHaveBeenCalled(); // never read, never uploaded
+    expect(readFileSync(file, "utf8")).toContain(rel); // link left untouched — not "fixed" into a URL
+  });
+
+  it("skips a local file whose extension isn't a recognized image type (no png fallback)", async () => {
+    mkdirSync(join(home, "PLAN.assets"), { recursive: true });
+    writeFileSync(join(home, "PLAN.assets", "id_ed25519"), "not an image, definitely not");
+    writeFileSync(file, "# My Plan\n\n![](<PLAN.assets/id_ed25519>)\n");
+
+    await doUpload(file, []);
+    expect(upload).not.toHaveBeenCalled();
+    expect(readFileSync(file, "utf8")).toContain("PLAN.assets/id_ed25519");
   });
 });

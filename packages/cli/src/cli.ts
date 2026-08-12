@@ -2060,18 +2060,45 @@ function isLocalRelativePath(dest: string): boolean {
  */
 async function migrateLocalImages(body: string, docDir: string, db: SupabaseClient, orgId: string, docId: string): Promise<{ body: string; migrated: number }> {
   const replacements = new Map<string, string>(); // matched destination → new public URL
+  // A doc body isn't trusted-solely-authored input (cloned repos, collaborators, agents write
+  // it), so a crafted `../../.ssh/id_ed25519`-style link must not let this read a file outside
+  // the doc's own directory and publish it to the (public) bucket. Resolve symlinks on the root
+  // once, up front — a missing docDir (shouldn't happen; the doc file itself was just read) means
+  // nothing here can be verified as contained, so no image gets migrated rather than trusting an
+  // unresolved path.
+  let docDirReal: string;
+  try {
+    docDirReal = realpathSync(docDir);
+  } catch {
+    return { body, migrated: 0 };
+  }
   for (const m of body.matchAll(IMAGE_REF_RE)) {
     const dest = m[2] ?? m[3] ?? "";
     if (!dest || !isLocalRelativePath(dest) || replacements.has(dest)) continue;
     const abs = resolve(docDir, dest);
     if (!existsSync(abs)) continue; // already dangling — nothing to migrate
+    // Containment: resolve symlinks on this side too, so a symlink that LOOKS like it's inside
+    // docDir can't point at a file outside it.
+    let absReal: string;
+    try {
+      absReal = realpathSync(abs);
+    } catch {
+      continue;
+    }
+    const rel = relative(docDirReal, absReal);
+    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) continue;
+    // Only a recognized image extension — never fall back to png here. Unlike the live-paste path
+    // (doAssetUpload), where the bytes are known to be an image the user just picked, this reads
+    // an arbitrary file off disk; an unrecognized extension is a reason to skip it, not to guess
+    // and publish it as one anyway.
+    const ext = extname(abs).slice(1).toLowerCase();
+    if (!Object.prototype.hasOwnProperty.call(ASSET_MIME_BY_EXT, ext)) continue;
     let bytes: Buffer;
     try {
       bytes = readFileSync(abs);
     } catch {
       continue;
     }
-    const ext = extname(abs).slice(1).toLowerCase() || "png";
     const url = await uploadAssetBytes(db, orgId, docId, bytes, ext);
     if (url) replacements.set(dest, url);
   }
