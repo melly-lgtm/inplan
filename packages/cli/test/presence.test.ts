@@ -81,16 +81,27 @@ describe("announcePresence", () => {
     p.destroy(); // cancel the pending auth check — it must not fire into a later test's stderr
   });
 
-  it("surfaces an auth rejection on stderr, marked cosmetic-only", () => {
+  it("surfaces an auth rejection once, cosmetic-marked — the pending generic check is suppressed", () => {
+    vi.useFakeTimers();
     const err = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     const p = announcePresence("doc-1", "jwt-token");
     try {
       (lastProviderConfig as { onAuthenticationFailed: (d: { reason: string }) => void }).onAuthenticationFailed({ reason: "permission-denied" });
       expect(err).toHaveBeenCalledWith(expect.stringContaining("presence badge auth failed (permission-denied)"));
       expect(err).toHaveBeenCalledWith(expect.stringContaining("cosmetic only"));
+      // The rejection landed BEFORE the grace elapsed: the pending generic check must not fire a
+      // second, vaguer warning for the same failure.
+      vi.advanceTimersByTime(AUTH_REPORT_DELAY_MS);
+      expect(err.mock.calls.map((c) => String(c[0])).join("")).not.toContain("did not authenticate");
+      expect(err).toHaveBeenCalledTimes(1);
+      // …and a successful retry afterwards still corrects the record.
+      lastProviderInstance!.isAuthenticated = true;
+      (lastProviderConfig as { onAuthenticated: () => void }).onAuthenticated();
+      expect(err).toHaveBeenCalledWith(expect.stringContaining("authenticated after all"));
     } finally {
       p.destroy();
       err.mockRestore();
+      vi.useRealTimers();
     }
   });
 

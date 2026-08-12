@@ -113,7 +113,11 @@ export function announcePresence(docId: string, token: string | (() => Promise<s
           process.stderr.write(`inplan: presence badge authenticated after all — ${COSMETIC_NOTE}\n`);
         }
       },
-      onAuthenticationFailed: ({ reason }) => process.stderr.write(`inplan: presence badge auth failed (${reason}) — ${COSMETIC_NOTE}\n`),
+      onAuthenticationFailed: ({ reason }) => {
+        if (authCheck) clearTimeout(authCheck); // the specific reason supersedes the pending generic check — one failure, one line
+        reported = true; // a later successful retry still corrects the record ("authenticated after all")
+        process.stderr.write(`inplan: presence badge auth failed (${reason}) — ${COSMETIC_NOTE}\n`);
+      },
     });
     armAuthCheck(); // attach-time arm: covers a connection that never even opens
     // CROSS-REPO CONTRACT: this exact shape — {kind:"agent", agentLocation:"local", model?} — is
