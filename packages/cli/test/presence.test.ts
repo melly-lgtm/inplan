@@ -128,6 +128,7 @@ describe("announcePresence", () => {
     const err = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     const p1 = announcePresence("doc-1", "jwt-token");
     lastProviderInstance!.isAuthenticated = true; // authenticated before the grace elapses
+    (lastProviderConfig as { onAuthenticated: () => void }).onAuthenticated(); // …which also clears the timer
     vi.advanceTimersByTime(AUTH_REPORT_DELAY_MS);
     expect(err).not.toHaveBeenCalled();
     const p2 = announcePresence("doc-2", "jwt-token");
@@ -135,6 +136,38 @@ describe("announcePresence", () => {
     vi.advanceTimersByTime(AUTH_REPORT_DELAY_MS);
     expect(err).not.toHaveBeenCalled();
     p1.destroy();
+    err.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it("corrects a false alarm: a slow-but-successful auth after the grace emits a recovery line", () => {
+    vi.useFakeTimers();
+    const err = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const p = announcePresence("doc-1", "jwt-token");
+    vi.advanceTimersByTime(AUTH_REPORT_DELAY_MS); // grace elapses unauthenticated → report fires
+    expect(err).toHaveBeenCalledWith(expect.stringContaining("did not authenticate"));
+    lastProviderInstance!.isAuthenticated = true;
+    (lastProviderConfig as { onAuthenticated: () => void }).onAuthenticated(); // auth lands late
+    expect(err).toHaveBeenCalledWith(expect.stringContaining("authenticated after all"));
+    p.destroy();
+    err.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it("re-arms the check per reconnect: a silent death at hour 2 is still reported", () => {
+    vi.useFakeTimers();
+    const err = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const p = announcePresence("doc-1", "jwt-token");
+    lastProviderInstance!.isAuthenticated = true;
+    (lastProviderConfig as { onAuthenticated: () => void }).onAuthenticated(); // initial connect: fine
+    vi.advanceTimersByTime(AUTH_REPORT_DELAY_MS);
+    expect(err).not.toHaveBeenCalled();
+    // Hub restart hours later: the provider reconnects but never re-authenticates (the 4401 death).
+    lastProviderInstance!.isAuthenticated = false;
+    (lastProviderConfig as { onOpen: () => void }).onOpen(); // reconnect re-arms its own grace window
+    vi.advanceTimersByTime(AUTH_REPORT_DELAY_MS);
+    expect(err).toHaveBeenCalledWith(expect.stringContaining("did not authenticate"));
+    p.destroy();
     err.mockRestore();
     vi.useRealTimers();
   });

@@ -27,7 +27,7 @@ import {
 } from "@inplan/core/node";
 import { agentAuthorFor } from "./agentAuthor";
 import { gitProvenance } from "./provenance";
-import { authedSession, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, type AuthFile } from "./cliAuth";
+import { authedSession, authPath, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, type AuthFile } from "./cliAuth";
 import { LoginSessionExpiredError, clearPendingLogin, createLoginSession, loadPendingLogin, pollLoginSession, rendezvousLogin, type PendingLogin } from "./cliLogin";
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
 import { checkForUpdate, selfUpdate, UPDATE_PKG, warnIfOutdated } from "./update";
@@ -1091,10 +1091,11 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       const fresh = await remoteBackend(docId, "cli-agent");
       if (fresh) return fresh;
       // remoteBackend's null conflates "signed out" with "refresh failed". Only a MISSING auth file
-      // is definitive sign-out; credentials still on disk mean a transient failure, which must take
-      // the resolver's last-good-token fallback rather than kill the badge for the rest of an
-      // otherwise recoverable outage.
-      if (!loadAuth()) return null;
+      // is definitive sign-out (a pure existence check — loadAuth() also nulls on a transiently
+      // unreadable or corrupt file, which must NOT read as logout); anything still on disk means a
+      // transient failure, which takes the resolver's last-good-token fallback (itself bounded by
+      // the token's expiry) rather than killing the badge for a recoverable outage.
+      if (!existsSync(authPath())) return null;
       throw new Error("transient token refresh failure");
     }),
     model,

@@ -84,19 +84,38 @@ export function announcePresence(docId: string, token: string | (() => Promise<s
     const ydoc = new Y.Doc();
     // Node has no DOM WebSocket; hand the socket the `ws` polyfill.
     const socket = new HocuspocusProviderWebsocket({ url: COLLAB_URL, WebSocketPolyfill: WebSocket });
+    // The did-not-authenticate check follows the CONNECTION lifecycle, not just attach: re-armed on
+    // every (re)connect so a silent death at hour 2 — after a hub restart — is still reported, and
+    // cleared on a successful auth so a slow-but-successful connect can't leave a false alarm as
+    // the channel's last word (a "recovered" line corrects one that already fired).
+    let reported = false;
+    let authCheck: ReturnType<typeof setTimeout> | undefined;
+    const armAuthCheck = (): void => {
+      if (authCheck) clearTimeout(authCheck);
+      authCheck = setTimeout(() => {
+        if (!provider.isAuthenticated) {
+          reported = true;
+          process.stderr.write(`inplan: presence badge channel did not authenticate — ${COSMETIC_NOTE}\n`);
+        }
+      }, AUTH_REPORT_DELAY_MS);
+      authCheck.unref?.(); // a cosmetic check must never keep the process alive
+    };
     const provider = new HocuspocusProvider({
       websocketProvider: socket,
       name: docId,
       document: ydoc,
       token,
+      onOpen: () => armAuthCheck(), // every (re)connect gets its own grace window
+      onAuthenticated: () => {
+        if (authCheck) clearTimeout(authCheck);
+        if (reported) {
+          reported = false;
+          process.stderr.write(`inplan: presence badge authenticated after all — ${COSMETIC_NOTE}\n`);
+        }
+      },
       onAuthenticationFailed: ({ reason }) => process.stderr.write(`inplan: presence badge auth failed (${reason}) — ${COSMETIC_NOTE}\n`),
     });
-    const authCheck = setTimeout(() => {
-      if (!provider.isAuthenticated) {
-        process.stderr.write(`inplan: presence badge channel did not authenticate — ${COSMETIC_NOTE}\n`);
-      }
-    }, AUTH_REPORT_DELAY_MS);
-    authCheck.unref?.(); // a cosmetic check must never keep the process alive
+    armAuthCheck(); // attach-time arm: covers a connection that never even opens
     // CROSS-REPO CONTRACT: this exact shape — {kind:"agent", agentLocation:"local", model?} — is
     // read verbatim by two places in the proprietary `inplan-cloud` repo: the web's
     // computeAgent() in packages/web/src/supabaseApi.ts (drives the connected-agent badge +
@@ -108,7 +127,7 @@ export function announcePresence(docId: string, token: string | (() => Promise<s
     provider.awareness?.setLocalStateField("inplanPresence", { kind: "agent", agentLocation: "local", ...(model ? { model } : {}) });
     return {
       destroy: () => {
-        clearTimeout(authCheck);
+        if (authCheck) clearTimeout(authCheck);
         try {
           provider.destroy();
           socket.destroy();
