@@ -28,7 +28,7 @@ export interface PresenceHandle {
  *  - `mint` THROWS (network blip, lock contention) → transient: reuse the last good token, the
  *    session may well still be valid and presence must never break the wait;
  *  - `mint` returns NULL (signed out / refresh definitively failed) → throw: knowingly re-sending a
- *    stale or revoked token invites the server's Unauthorized close — the permanent-silent-death
+ *    stale or revoked token invites the hub's Unauthorized close — the permanent-silent-death
  *    path this fix exists to prevent. The rejection surfaces via the presence failure handlers. */
 export function presenceTokenResolver(initial: string, mint: () => Promise<{ token: string } | null>): () => Promise<string> {
   let last = initial;
