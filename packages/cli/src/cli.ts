@@ -1969,8 +1969,12 @@ export async function doUpload(file: string, args: string[]): Promise<void> {
           .eq("id", cloudDocId)
           .eq("updated_at", baselineUpdatedAt)
           .select("id");
-        if (updateErr) throw new Error(`cloud write failed: ${updateErr.message}`);
+        if (updateErr) {
+          await cleanupOrphanedUploads(s.db, migrated.uploadedPaths);
+          throw new Error(`cloud write failed: ${updateErr.message}`);
+        }
         if (!updatedRows || updatedRows.length === 0) {
+          await cleanupOrphanedUploads(s.db, migrated.uploadedPaths);
           throw new Error("the document changed in the cloud while migrating images (a live session attached first) — not overwriting it; re-run `inplan upload` to retry");
         }
         // The cloud write succeeded — a failure past this point is a DIFFERENT failure (the
@@ -2018,9 +2022,10 @@ const ASSET_BUCKET = "doc-images";
 
 /** Upload one image's bytes to the `doc-images` bucket at `orgId/docId/image-<stamp>[-n].<ext>`,
  *  disambiguating on a name collision (409) — shared by `doAssetUpload` (a single live paste) and
- *  {@link migrateLocalImages} (a promote-time batch). Returns the public URL, or null on a real
+ *  {@link migrateLocalImages} (a promote-time batch). Returns the storage path (needed to clean up
+ *  an orphaned upload if the caller's body commit doesn't land) and public URL, or null on a real
  *  (non-collision) failure. */
-async function uploadAssetBytes(db: SupabaseClient, orgId: string, docId: string, bytes: Buffer, ext: string): Promise<string | null> {
+async function uploadAssetBytes(db: SupabaseClient, orgId: string, docId: string, bytes: Buffer, ext: string): Promise<{ path: string; url: string } | null> {
   // hasOwnProperty, not a truthy lookup — see the identical guard in the cloud web app's
   // saveAsset (ASSET_MIME_BY_EXT[ext] is truthy for inherited Object.prototype names too).
   const safeExt = Object.prototype.hasOwnProperty.call(ASSET_MIME_BY_EXT, ext) ? ext : "png";
@@ -2037,10 +2042,24 @@ async function uploadAssetBytes(db: SupabaseClient, orgId: string, docId: string
     const name = `image-${stamp}-${suffix}.${safeExt}`;
     const path = `${orgId}/${docId}/${name}`;
     const { error } = await db.storage.from(ASSET_BUCKET).upload(path, bytes, { contentType });
-    if (!error) return db.storage.from(ASSET_BUCKET).getPublicUrl(path).data.publicUrl;
+    if (!error) return { path, url: db.storage.from(ASSET_BUCKET).getPublicUrl(path).data.publicUrl };
     if (error.status !== 409) return null; // not a name collision — a real failure, don't retry
   }
   return null; // exhausted collision retries
+}
+
+/** Best-effort delete of images that {@link migrateLocalImages} already uploaded but whose body
+ *  commit didn't land (lost the CAS race, or the update itself failed) — otherwise they'd sit in
+ *  the bucket forever, unreferenced by any document (flagged in review: cubic-dev-ai on PR #91).
+ *  Never throws: this runs while already handling one failure, and a cleanup error here must not
+ *  mask or replace it — a stranded object is a much smaller problem than losing the real error. */
+async function cleanupOrphanedUploads(db: SupabaseClient, paths: string[]): Promise<void> {
+  if (paths.length === 0) return;
+  try {
+    await db.storage.from(ASSET_BUCKET).remove(paths);
+  } catch {
+    // best-effort — swallow
+  }
 }
 
 /**
@@ -2077,12 +2096,12 @@ export async function doAssetUpload(file: string, args: string[]): Promise<void>
   }
   const requestedExt = (getFlag(args, "ext") ?? "png").toLowerCase();
   const bytes = readFileSync(bytesFile);
-  const relPath = await uploadAssetBytes(s.db, orgId, status.cloudDocId, bytes, requestedExt);
-  if (!relPath) {
+  const uploaded = await uploadAssetBytes(s.db, orgId, status.cloudDocId, bytes, requestedExt);
+  if (!uploaded) {
     process.stderr.write("inplan asset-upload: upload failed\n");
     process.exit(1);
   }
-  output({ status: "uploaded", relPath });
+  output({ status: "uploaded", relPath: uploaded.url });
 }
 
 /** A Markdown image reference: `![alt](<dest>)` (the angle-bracket form the editor writes for
@@ -2143,13 +2162,20 @@ function inRange(ranges: Array<[number, number]>, index: number): boolean {
  * matter most (the ones already in the doc when it's promoted). Best-effort per image: a missing
  * file or a failed upload just leaves that one link untouched rather than losing the reference.
  */
-async function migrateLocalImages(body: string, docDir: string, db: SupabaseClient, orgId: string, docId: string): Promise<{ body: string; migrated: number }> {
+async function migrateLocalImages(
+  body: string,
+  docDir: string,
+  db: SupabaseClient,
+  orgId: string,
+  docId: string,
+): Promise<{ body: string; migrated: number; uploadedPaths: string[] }> {
   const excluded = codeRanges(body); // fenced/inline code — example text, never a real asset
   // Matches to actually migrate, keyed by their position (not just their destination string) —
   // position-keying is what lets the rewrite pass below leave a CODE EXAMPLE alone even when it
   // happens to name the exact same path as a real, migrated image elsewhere in the doc.
   const migrations = new Map<number, { dest: string; url: string }>();
-  const uploadedUrlByDest = new Map<string, string>(); // dest → url, so a repeated real ref reuses one upload
+  const uploadedByDest = new Map<string, { path: string; url: string }>(); // dest → upload, so a repeated real ref reuses one
+  const uploadedPaths: string[] = []; // every bucket object actually created — the caller cleans these up on a failed body commit
   // A doc body isn't trusted-solely-authored input (cloned repos, collaborators, agents write
   // it), so a crafted `../../.ssh/id_ed25519`-style link must not let this read a file outside
   // the doc's own directory and publish it to the (public) bucket. Resolve symlinks on the root
@@ -2160,14 +2186,14 @@ async function migrateLocalImages(body: string, docDir: string, db: SupabaseClie
   try {
     docDirReal = realpathSync(docDir);
   } catch {
-    return { body, migrated: 0 };
+    return { body, migrated: 0, uploadedPaths };
   }
   for (const m of body.matchAll(IMAGE_REF_RE)) {
     const dest = m[2] ?? m[3] ?? "";
     if (!dest || inRange(excluded, m.index) || !isLocalRelativePath(dest)) continue;
-    const cached = uploadedUrlByDest.get(dest);
+    const cached = uploadedByDest.get(dest);
     if (cached) {
-      migrations.set(m.index, { dest, url: cached });
+      migrations.set(m.index, { dest, url: cached.url });
       continue;
     }
     const abs = resolve(docDir, dest);
@@ -2194,12 +2220,13 @@ async function migrateLocalImages(body: string, docDir: string, db: SupabaseClie
     } catch {
       continue;
     }
-    const url = await uploadAssetBytes(db, orgId, docId, bytes, ext);
-    if (!url) continue;
-    uploadedUrlByDest.set(dest, url);
-    migrations.set(m.index, { dest, url });
+    const uploaded = await uploadAssetBytes(db, orgId, docId, bytes, ext);
+    if (!uploaded) continue;
+    uploadedByDest.set(dest, uploaded);
+    uploadedPaths.push(uploaded.path);
+    migrations.set(m.index, { dest, url: uploaded.url });
   }
-  if (migrations.size === 0) return { body, migrated: 0 };
+  if (migrations.size === 0) return { body, migrated: 0, uploadedPaths };
   // Rebuild by position rather than a global body.replace: alt text can itself contain parens
   // (`![a (x) b](img.png)`), so regex surgery on the whole match would rewrite the URL into the
   // alt text's parens instead of the destination; and a string-keyed replace would also rewrite a
@@ -2214,7 +2241,7 @@ async function migrateLocalImages(body: string, docDir: string, db: SupabaseClie
     cursor = m.index + m[0].length;
   }
   newBody += body.slice(cursor);
-  return { body: newBody, migrated: migrations.size };
+  return { body: newBody, migrated: migrations.size, uploadedPaths };
 }
 
 /** `comment` (see ./commentAdd.ts) only knows how to rewrite a local file — reject it before

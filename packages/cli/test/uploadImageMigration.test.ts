@@ -21,6 +21,9 @@ const rpc = vi.fn(async (_name: string, _params: Record<string, unknown>) => rpc
 let uploadResult: { error: { status: number; message: string } | null } = { error: null };
 const upload = vi.fn(async (_path: string, _bytes: unknown, _opts: unknown) => uploadResult);
 const getPublicUrl = vi.fn((path: string) => ({ data: { publicUrl: `https://cdn.test/doc-images/${path}` } }));
+// Cleanup for images uploaded but then orphaned by a body commit that didn't land (lost the CAS
+// race, or the update itself errored) — asserted directly in those two tests below.
+const remove = vi.fn(async (_paths: string[]) => ({ data: null, error: null }));
 
 // The optimistic-concurrency write: `.update(patch).eq("id", …).eq("updated_at", baseline).select("id")`.
 // `updateMatches` simulates whether the CAS condition matched (true = nobody else touched the row
@@ -68,7 +71,7 @@ function fakeDb() {
   return {
     from: (table: string) => (table === "memberships" ? membershipsQ : documentsQ),
     rpc,
-    storage: { from: () => ({ upload, getPublicUrl }) },
+    storage: { from: () => ({ upload, getPublicUrl, remove }) },
   };
 }
 
@@ -129,6 +132,7 @@ beforeEach(() => {
   upload.mockClear();
   getPublicUrl.mockClear();
   update.mockClear();
+  remove.mockClear();
   rpcResult = { data: { status: "created", id: "doc-new" }, error: null };
   memberships = { data: [{ org_id: "org-1", orgs: { slug: "acme", name: "Acme" } }], error: null };
   uploadResult = { error: null };
@@ -273,6 +277,10 @@ describe("inplan upload → local image migration", () => {
     // match a body the cloud never actually received.
     expect(readFileSync(file, "utf8")).toBe(original);
     expect(lastSyncedHash()).toBe(hashBody(original));
+    // The body commit never landed, so the image that already made it into the bucket is now
+    // unreferenced by any document — it must be cleaned up rather than left stranded there.
+    const [uploadedPath] = upload.mock.calls[0]!;
+    expect(remove).toHaveBeenCalledWith([uploadedPath]);
   });
 
   it("does not overwrite the cloud body when it changed since the baseline read (lost the CAS race)", async () => {
@@ -298,6 +306,10 @@ describe("inplan upload → local image migration", () => {
     expect(readFileSync(file, "utf8")).toBe(original);
     expect(lastSyncedHash()).toBe(hashBody(original));
     expect(lastJson()).toMatchObject({ status: "uploaded" }); // the promote itself still succeeded
+    // The image already made it into the bucket before the race was lost — it's now unreferenced
+    // by any document (the winning writer's body doesn't know about it) and must be cleaned up.
+    const [uploadedPath] = upload.mock.calls[0]!;
+    expect(remove).toHaveBeenCalledWith([uploadedPath]);
   });
 
   it("re-reads whatever's actually on disk when the cloud write succeeds but the local write fails", async () => {
@@ -315,6 +327,9 @@ describe("inplan upload → local image migration", () => {
     // be the migrated body because the write was "supposed to" succeed.
     expect(readFileSync(file, "utf8")).toBe(original);
     expect(lastSyncedHash()).toBe(hashBody(original));
+    // The cloud write DID succeed here — the image is correctly referenced by the cloud body, so
+    // it must not be cleaned up (only the local file, not the upload, is what's stale).
+    expect(remove).not.toHaveBeenCalled();
   });
 
   it("migrates more than 6 same-second images without exhausting the retry budget", async () => {
