@@ -1085,7 +1085,20 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
   // RESOLVER, not a string frozen at attach: the provider re-resolves on every reconnect, where a
   // stale ~1h JWT would otherwise fail auth (see presenceTokenResolver for the transient-vs-signed-
   // out split — a definitively-gone session must not re-send a stale token).
-  const presence = announcePresence(docId, presenceTokenResolver(backend.token, () => remoteBackend(docId, "cli-agent")), model);
+  const presence = announcePresence(
+    docId,
+    presenceTokenResolver(backend.token, async () => {
+      const fresh = await remoteBackend(docId, "cli-agent");
+      if (fresh) return fresh;
+      // remoteBackend's null conflates "signed out" with "refresh failed". Only a MISSING auth file
+      // is definitive sign-out; credentials still on disk mean a transient failure, which must take
+      // the resolver's last-good-token fallback rather than kill the badge for the rest of an
+      // otherwise recoverable outage.
+      if (!loadAuth()) return null;
+      throw new Error("transient token refresh failure");
+    }),
+    model,
+  );
   try {
     const workFile = join(sidecarRoot(), "remote", `${docId}.plan.md`);
     const pendingPath = `${workFile}.pending`; // marker: a local fallback edit awaits a hub push

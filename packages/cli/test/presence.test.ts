@@ -46,7 +46,10 @@ vi.mock("yjs", () => ({
   },
 }));
 
-import { announcePresence, presenceTokenResolver } from "../src/presence";
+import { announcePresence, presenceTokenResolver, AUTH_REPORT_DELAY_MS } from "../src/presence";
+
+/** A structurally valid JWT whose payload carries `exp` (epoch seconds) — enough for jwtExpMs. */
+const jwtWithExp = (expSec: number) => `h.${Buffer.from(JSON.stringify({ exp: expSec })).toString("base64url")}.sig`;
 
 describe("announcePresence", () => {
   it("publishes {kind:'agent', agentLocation:'local'} to the doc's awareness room", () => {
@@ -112,9 +115,10 @@ describe("announcePresence", () => {
   it("reports a channel that never authenticates (the silent Unauthorized death — issue #88)", () => {
     vi.useFakeTimers();
     const err = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    announcePresence("doc-1", "jwt-token");
-    vi.advanceTimersByTime(15_000);
+    const p = announcePresence("doc-1", "jwt-token");
+    vi.advanceTimersByTime(AUTH_REPORT_DELAY_MS);
     expect(err).toHaveBeenCalledWith(expect.stringContaining("did not authenticate"));
+    p.destroy();
     err.mockRestore();
     vi.useRealTimers();
   });
@@ -122,16 +126,43 @@ describe("announcePresence", () => {
   it("stays silent when authenticated in time; destroy() cancels the pending check", () => {
     vi.useFakeTimers();
     const err = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    announcePresence("doc-1", "jwt-token");
+    const p1 = announcePresence("doc-1", "jwt-token");
     lastProviderInstance!.isAuthenticated = true; // authenticated before the grace elapses
-    vi.advanceTimersByTime(15_000);
+    vi.advanceTimersByTime(AUTH_REPORT_DELAY_MS);
     expect(err).not.toHaveBeenCalled();
     const p2 = announcePresence("doc-2", "jwt-token");
     p2.destroy(); // teardown before the grace elapses must cancel the report
-    vi.advanceTimersByTime(15_000);
+    vi.advanceTimersByTime(AUTH_REPORT_DELAY_MS);
     expect(err).not.toHaveBeenCalled();
+    p1.destroy();
     err.mockRestore();
     vi.useRealTimers();
+  });
+
+  it("bounds the transient fallback by the cached JWT's expiry (no stale-token reconnect loop)", async () => {
+    // A prolonged refresh outage: mint keeps throwing. While the last good JWT is unexpired the
+    // fallback returns it; once it has expired, the resolver must reject rather than re-send it
+    // on every reconnect.
+    const fresh = jwtWithExp(Math.floor(Date.now() / 1000) + 3600); // valid for an hour
+    let now = Date.now();
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const resolve = presenceTokenResolver(fresh, async () => {
+        throw new Error("refresh outage");
+      });
+      await expect(resolve()).resolves.toBe(fresh); // unexpired → fallback holds
+      now += 2 * 3600 * 1000; // two hours later, still in the outage
+      await expect(resolve()).rejects.toThrow(/expired during a refresh outage/);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("keeps the plain fallback for an opaque (non-JWT) token — expiry unreadable", async () => {
+    const resolve = presenceTokenResolver("opaque-token", async () => {
+      throw new Error("refresh outage");
+    });
+    await expect(resolve()).resolves.toBe("opaque-token");
   });
 
   it("is best-effort: a construction failure returns a no-op handle instead of throwing", async () => {

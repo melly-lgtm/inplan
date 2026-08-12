@@ -10,8 +10,9 @@ import { resolveHubUrl } from "./pluginGate";
 const COLLAB_URL = resolveHubUrl();
 
 /** Grace before reporting an unauthenticated presence channel. Long enough for a cold hub start +
- *  auth round-trip; short enough that the report lands while the human is still looking. */
-const AUTH_REPORT_DELAY_MS = 15_000;
+ *  auth round-trip; short enough that the report lands while the human is still looking.
+ *  Exported for the tests, so the assertions track the real grace period. */
+export const AUTH_REPORT_DELAY_MS = 15_000;
 
 /** One shared suffix so every presence warning says the same, load-bearing thing: this channel is
  *  COSMETIC. A silently dead presence connection has been misread as "sync is broken" before — a
@@ -37,12 +38,28 @@ export function presenceTokenResolver(initial: string, mint: () => Promise<{ tok
     try {
       fresh = await mint();
     } catch {
-      return last; // transient — the last good token is the best available answer
+      // Transient — the last good token is the best available answer, but ONLY while it is still
+      // unexpired: during a prolonged refresh outage, a long wait would otherwise re-send the same
+      // expired JWT on every reconnect, a stale-token loop the hub can only answer with auth
+      // failures. An opaque (non-JWT) token has no readable expiry and keeps the plain fallback.
+      const exp = jwtExpMs(last);
+      if (exp !== null && exp <= Date.now()) throw new Error("cached token expired during a refresh outage — presence token unavailable");
+      return last;
     }
     if (!fresh) throw new Error("signed out — presence token unavailable");
     last = fresh.token;
     return last;
   };
+}
+
+/** Epoch-ms expiry from a JWT's payload, or null when unreadable (opaque/test tokens). */
+function jwtExpMs(token: string): number | null {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString()) as { exp?: number };
+    return typeof payload.exp === "number" ? payload.exp * 1000 : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
