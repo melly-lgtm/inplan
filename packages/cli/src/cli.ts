@@ -1947,27 +1947,21 @@ export async function doUpload(file: string, args: string[]): Promise<void> {
   let finalBody = body;
   if (out0.status === "created") {
     try {
-      // Baseline for the optimistic-concurrency write below: the row's own `updated_at` right
-      // after creation. create_document's JSON result doesn't include it, so read it fresh.
-      const { data: freshRow, error: freshErr } = await s.db.from("documents").select("updated_at").eq("id", cloudDocId).maybeSingle();
-      const baselineUpdatedAt = (freshRow as { updated_at?: string } | null)?.updated_at;
-      if (freshErr || !baselineUpdatedAt) throw new Error(freshErr?.message ?? "could not read the document's updated_at baseline");
-
       const migrated = await migrateLocalImages(body, dirname(file), s.db, pick.org_id, cloudDocId);
       if (migrated.migrated > 0) {
-        // Optimistic concurrency: under the unified-Yjs model the collab hub can attach to this
-        // doc at any point after create_document returns (the row already exists, so a human
-        // could open it) and start materializing ITS OWN writes to documents.body — an
-        // unconditional write here would race it. Condition on `updated_at` being unchanged
-        // since our baseline; the hub's own writes bump it too (create_document's LRU comment:
-        // "autosaves advance it"), so if it moved, someone else touched the row first and this
-        // must NOT overwrite them (flagged in review: cubic-dev-ai on PR #91). No schema change
-        // needed — `updated_at` already exists; this is a plain conditional UPDATE.
+        // Optimistic concurrency, conditioned on CONTENT rather than time: under the unified-Yjs
+        // model the collab hub can attach to this doc at any point after create_document returns
+        // (the row already exists, so a human could open it) and start materializing ITS OWN
+        // writes to documents.body — an unconditional write here would race it. `.eq("body",
+        // body)` conditions on the exact original body this migration was derived from, so the
+        // write only commits if nothing else touched the row first. Unlike a timestamp baseline,
+        // this closes the create→baseline-read window (there's no separate baseline read to race)
+        // and is immune to client clock skew (flagged in review: melly-lgtm on PR #91).
         const { data: updatedRows, error: updateErr } = await s.db
           .from("documents")
           .update({ body: migrated.body, updated_at: new Date().toISOString() })
           .eq("id", cloudDocId)
-          .eq("updated_at", baselineUpdatedAt)
+          .eq("body", body)
           .select("id");
         if (updateErr) {
           await cleanupOrphanedUploads(s.db, migrated.uploadedPaths);

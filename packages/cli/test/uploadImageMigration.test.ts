@@ -25,13 +25,14 @@ const getPublicUrl = vi.fn((path: string) => ({ data: { publicUrl: `https://cdn.
 // race, or the update itself errored) — asserted directly in those two tests below.
 const remove = vi.fn(async (_paths: string[]) => ({ data: null, error: null }));
 
-// The optimistic-concurrency write: `.update(patch).eq("id", …).eq("updated_at", baseline).select("id")`.
+// The optimistic-concurrency write: `.update(patch).eq("id", …).eq("body", originalBody).select("id")`.
 // `updateMatches` simulates whether the CAS condition matched (true = nobody else touched the row
-// since the baseline read; false = something changed the row first — the "lost the race" case).
-// `updateEqCalls` records each `.eq(column, value)` the production code actually issued, so a test
-// can assert the CAS predicates themselves are present — not just that the mock's canned result
-// (which `updateMatches` controls directly) got returned. Without this, a regression that silently
-// dropped `.eq("updated_at", …)` from the real code would still pass the "lost the race" test.
+// since the migration's `body` snapshot; false = something changed the row first — the "lost the
+// race" case). `updateEqCalls` records each `.eq(column, value)` the production code actually
+// issued, so a test can assert the CAS predicates themselves are present — not just that the
+// mock's canned result (which `updateMatches` controls directly) got returned. Without this, a
+// regression that silently dropped `.eq("body", …)` from the real code would still pass the
+// "lost the race" test.
 let updateError: { message: string } | null = null;
 let updateMatches = true;
 let updateEqCalls: Array<[string, unknown]> = [];
@@ -46,26 +47,15 @@ const update = vi.fn((_patch: Record<string, unknown>) => {
   return chain;
 });
 
-// The baseline `updated_at` read right after create_document — the value the CAS write above
-// conditions on.
-let baselineUpdatedAt = "2026-01-01T00:00:00.000Z";
-
 function fakeDb() {
   const membershipsQ: Record<string, unknown> = {};
   membershipsQ.select = () => membershipsQ;
   membershipsQ.in = () => Promise.resolve(memberships);
 
-  let lastSelectCols = "";
   const documentsQ: Record<string, unknown> = {};
-  documentsQ.select = (cols: string) => {
-    lastSelectCols = cols;
-    return documentsQ;
-  };
+  documentsQ.select = () => documentsQ;
   documentsQ.eq = () => documentsQ;
-  documentsQ.maybeSingle = () =>
-    Promise.resolve(
-      lastSelectCols === "updated_at" ? { data: { updated_at: baselineUpdatedAt }, error: null } : { data: existingDocId ? { id: existingDocId } : null, error: null },
-    );
+  documentsQ.maybeSingle = () => Promise.resolve({ data: existingDocId ? { id: existingDocId } : null, error: null });
   documentsQ.update = update;
 
   return {
@@ -140,7 +130,6 @@ beforeEach(() => {
   updateError = null;
   updateMatches = true;
   updateEqCalls = [];
-  baselineUpdatedAt = "2026-01-01T00:00:00.000Z";
   fsFailure.path = null;
 });
 afterEach(() => {
@@ -283,13 +272,14 @@ describe("inplan upload → local image migration", () => {
     expect(remove).toHaveBeenCalledWith([uploadedPath]);
   });
 
-  it("does not overwrite the cloud body when it changed since the baseline read (lost the CAS race)", async () => {
+  it("does not overwrite the cloud body when it changed since the migration's body snapshot (lost the CAS race)", async () => {
     mkdirSync(join(home, "PLAN.assets"), { recursive: true });
     writeFileSync(join(home, "PLAN.assets", "image-1.png"), Buffer.from([1, 2, 3]));
     const original = "# My Plan\n\n![](<PLAN.assets/image-1.png>)\n";
     writeFileSync(file, original);
-    // Simulate the collab hub attaching and writing the row between our baseline read and our
-    // conditional UPDATE: the CAS `.eq("updated_at", baseline)` matches zero rows.
+    // Simulate the collab hub attaching and writing the row after doUpload read its `body`
+    // snapshot but before this conditional UPDATE: the CAS `.eq("body", original)` matches zero
+    // rows because the row's body no longer equals what the migration started from.
     updateMatches = false;
 
     await doUpload(file, []);
@@ -299,9 +289,9 @@ describe("inplan upload → local image migration", () => {
     // Assert the CAS predicates THEMSELVES were issued — not just that the mock's canned "lost the
     // race" result came back (which updateMatches controls directly regardless of what the
     // production code actually asked for). Catches a regression that silently drops the
-    // updated_at condition, which would make every write unconditional again.
+    // body condition, which would make every write unconditional again.
     expect(updateEqCalls).toContainEqual(["id", "doc-new"]);
-    expect(updateEqCalls).toContainEqual(["updated_at", baselineUpdatedAt]);
+    expect(updateEqCalls).toContainEqual(["body", original]);
     // Lost the race: must not claim success by touching the local file or the hash.
     expect(readFileSync(file, "utf8")).toBe(original);
     expect(lastSyncedHash()).toBe(hashBody(original));
