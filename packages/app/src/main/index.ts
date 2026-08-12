@@ -99,7 +99,11 @@ interface ProfileSnapshot {
 /** Run an `inplan` subcommand under Electron's bundled Node, returning stdout JSON. `extraEnv`
  *  passes values that must NOT appear in argv (e.g. auth tokens, which `ps`/process listings would
  *  otherwise expose) — the CLI reads them from the environment. */
-function runCli(args: string[], extraEnv?: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
+/** `timeoutMs` bounds how long the child may run before it's killed (SIGTERM) — most callers
+ *  (whoami, upload, token, …) are short one-shot round-trips and stay unbounded by omitting it;
+ *  a caller worth bounding (asset-upload, a network call the renderer is blocked waiting on)
+ *  passes one explicitly so a stalled network can't hang the caller forever. */
+function runCli(args: string[], extraEnv?: Record<string, string>, timeoutMs?: number): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((res) => {
     const cli = process.env.INPLAN_CLI;
     if (!cli) {
@@ -109,7 +113,7 @@ function runCli(args: string[], extraEnv?: Record<string, string>): Promise<{ co
     execFile(
       process.execPath,
       [cli, ...args],
-      { env: { ...process.env, ...extraEnv, ELECTRON_RUN_AS_NODE: "1" } }, // RUN_AS_NODE last: never overridable
+      { env: { ...process.env, ...extraEnv, ELECTRON_RUN_AS_NODE: "1" }, ...(timeoutMs ? { timeout: timeoutMs } : {}) }, // RUN_AS_NODE last: never overridable
       (err, stdout, stderr) => {
         const code = err && typeof (err as NodeJS.ErrnoException & { code?: number }).code === "number" ? Number((err as { code: number }).code) : err ? 1 : 0;
         res({ code, stdout, stderr });
@@ -125,13 +129,17 @@ function runCli(args: string[], extraEnv?: Record<string, string>): Promise<{ co
  *  function owns that file's whole lifecycle, cleaning it up whether the upload succeeds or not.
  *  Returns null on any failure (network, auth, upload) so the caller falls back the same way a
  *  local write failure does. */
+/** A stalled network must not hang the paste forever — bound the subprocess and let the existing
+ *  failure path (null → the renderer reports a failed paste) take over instead. */
+const ASSET_UPLOAD_TIMEOUT_MS = 30_000;
+
 async function uploadAssetToCloud(docFile: string, bytes: ArrayBuffer, ext: string): Promise<{ relPath: string } | null> {
   const tmp = join(tmpdir(), `inplan-asset-${randomUUID()}`);
   try {
     // 0o600: the OS temp dir is shared system-wide — a permissive umask-derived mode would let
     // another local user read the pasted image bytes before cleanup.
     writeFileSync(tmp, Buffer.from(bytes), { mode: 0o600 });
-    const r = await runCli(["asset-upload", docFile, "--bytes-file", tmp, "--ext", ext]);
+    const r = await runCli(["asset-upload", docFile, "--bytes-file", tmp, "--ext", ext], undefined, ASSET_UPLOAD_TIMEOUT_MS);
     const out = JSON.parse(r.stdout.trim() || "{}") as { status?: string; relPath?: string };
     if (out.status !== "uploaded" || !out.relPath) {
       process.stderr.write(`[inplan] asset-upload failed: ${r.stderr.trim() || out.status || "unknown error"}\n`);
