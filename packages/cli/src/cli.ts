@@ -1950,9 +1950,16 @@ export async function doUpload(file: string, args: string[]): Promise<void> {
     try {
       const migrated = await migrateLocalImages(body, dirname(file), s.db, pick.org_id, cloudDocId);
       if (migrated.migrated > 0) {
+        // Cloud first, then local, then only NOW does `finalBody` (and so lastSyncedHash below)
+        // reflect the migrated body. If saveDoc throws, we never reach the local write or the
+        // reassignment — the local file and finalBody both stay at the ORIGINAL body, so the
+        // persisted hash always matches whatever the local file actually contains. The old
+        // local-first order could leave lastSyncedHash claiming sync (hash of the migrated body)
+        // while the cloud still held the pre-migration one, on nothing more than a failed cloud
+        // write (flagged in review: cubic-dev-ai + melly-lgtm on PR #91).
+        await new SupabaseDocumentStore(s.db, cloudDocId).saveDoc(migrated.body);
+        writeFileSync(file, migrated.body);
         finalBody = migrated.body;
-        writeFileSync(file, finalBody);
-        await new SupabaseDocumentStore(s.db, cloudDocId).saveDoc(finalBody);
       }
     } catch (e) {
       process.stderr.write(`inplan upload: image migration failed (${e instanceof Error ? e.message : String(e)}) — the doc uploaded, but its local images weren't moved to the cloud\n`);

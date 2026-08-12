@@ -20,7 +20,8 @@ const rpc = vi.fn(async (_name: string, _params: Record<string, unknown>) => rpc
 let uploadResult: { error: { status: number; message: string } | null } = { error: null };
 const upload = vi.fn(async (_path: string, _bytes: unknown, _opts: unknown) => uploadResult);
 const getPublicUrl = vi.fn((path: string) => ({ data: { publicUrl: `https://cdn.test/doc-images/${path}` } }));
-const update = vi.fn((_patch: Record<string, unknown>) => ({ eq: () => Promise.resolve({ error: null }) }));
+let updateError: { message: string } | null = null;
+const update = vi.fn((_patch: Record<string, unknown>) => ({ eq: () => Promise.resolve({ error: updateError }) }));
 
 function fakeDb() {
   const membershipsQ: Record<string, unknown> = {};
@@ -82,6 +83,7 @@ beforeEach(() => {
   memberships = { data: [{ org_id: "org-1", orgs: { slug: "acme", name: "Acme" } }], error: null };
   uploadResult = { error: null };
   existingDocId = null;
+  updateError = null;
 });
 afterEach(() => {
   delete process.env.INPLAN_SIDECAR_DIR;
@@ -198,5 +200,22 @@ describe("inplan upload → local image migration", () => {
     expect(update).not.toHaveBeenCalled();
     expect(readFileSync(file, "utf8")).toContain("PLAN.assets/image-1.png"); // left as-is, not "fixed"
     expect(lastJson()).toMatchObject({ status: "uploaded", cloudDocId: "doc-existing" });
+  });
+
+  it("leaves the local file untouched when the cloud write fails, so lastSyncedHash never lies", async () => {
+    mkdirSync(join(home, "PLAN.assets"), { recursive: true });
+    writeFileSync(join(home, "PLAN.assets", "image-1.png"), Buffer.from([1, 2, 3]));
+    const original = "# My Plan\n\n![](<PLAN.assets/image-1.png>)\n";
+    writeFileSync(file, original);
+    updateError = { message: "boom" }; // the image uploads fine; the cloud body write fails
+
+    await doUpload(file, []);
+
+    expect(upload).toHaveBeenCalledTimes(1); // the image itself did upload
+    expect(update).toHaveBeenCalledTimes(1); // the cloud write was attempted (and failed)
+    // Cloud-first ordering: since the cloud write failed, the local file must NOT have been
+    // rewritten either — otherwise lastSyncedHash (computed from whatever's now on disk) would
+    // match a body the cloud never actually received.
+    expect(readFileSync(file, "utf8")).toBe(original);
   });
 });
