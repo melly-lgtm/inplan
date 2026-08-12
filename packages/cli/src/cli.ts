@@ -29,7 +29,6 @@ import {
 import { agentAuthorFor } from "./agentAuthor";
 import { gitProvenance } from "./provenance";
 import { authedSession, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, type AuthFile } from "./cliAuth";
-import { SupabaseDocumentStore } from "@inplan/backend-supabase";
 import { LoginSessionExpiredError, clearPendingLogin, createLoginSession, loadPendingLogin, pollLoginSession, rendezvousLogin, type PendingLogin } from "./cliLogin";
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
 import { checkForUpdate, selfUpdate, UPDATE_PKG, warnIfOutdated } from "./update";
@@ -1948,21 +1947,46 @@ export async function doUpload(file: string, args: string[]): Promise<void> {
   let finalBody = body;
   if (out0.status === "created") {
     try {
+      // Baseline for the optimistic-concurrency write below: the row's own `updated_at` right
+      // after creation. create_document's JSON result doesn't include it, so read it fresh.
+      const { data: freshRow, error: freshErr } = await s.db.from("documents").select("updated_at").eq("id", cloudDocId).maybeSingle();
+      const baselineUpdatedAt = (freshRow as { updated_at?: string } | null)?.updated_at;
+      if (freshErr || !baselineUpdatedAt) throw new Error(freshErr?.message ?? "could not read the document's updated_at baseline");
+
       const migrated = await migrateLocalImages(body, dirname(file), s.db, pick.org_id, cloudDocId);
       if (migrated.migrated > 0) {
-        // Cloud first, then local, then only NOW does `finalBody` (and so lastSyncedHash below)
-        // reflect the migrated body. If saveDoc throws, we never reach the local write or the
-        // reassignment — the local file and finalBody both stay at the ORIGINAL body, so the
-        // persisted hash always matches whatever the local file actually contains. The old
-        // local-first order could leave lastSyncedHash claiming sync (hash of the migrated body)
-        // while the cloud still held the pre-migration one, on nothing more than a failed cloud
-        // write (flagged in review: cubic-dev-ai + melly-lgtm on PR #91).
-        await new SupabaseDocumentStore(s.db, cloudDocId).saveDoc(migrated.body);
-        writeFileSync(file, migrated.body);
-        finalBody = migrated.body;
+        // Optimistic concurrency: under the unified-Yjs model the collab hub can attach to this
+        // doc at any point after create_document returns (the row already exists, so a human
+        // could open it) and start materializing ITS OWN writes to documents.body — an
+        // unconditional write here would race it. Condition on `updated_at` being unchanged
+        // since our baseline; the hub's own writes bump it too (create_document's LRU comment:
+        // "autosaves advance it"), so if it moved, someone else touched the row first and this
+        // must NOT overwrite them (flagged in review: cubic-dev-ai on PR #91). No schema change
+        // needed — `updated_at` already exists; this is a plain conditional UPDATE.
+        const { data: updatedRows, error: updateErr } = await s.db
+          .from("documents")
+          .update({ body: migrated.body, updated_at: new Date().toISOString() })
+          .eq("id", cloudDocId)
+          .eq("updated_at", baselineUpdatedAt)
+          .select("id");
+        if (updateErr) throw new Error(`cloud write failed: ${updateErr.message}`);
+        if (!updatedRows || updatedRows.length === 0) {
+          throw new Error("the document changed in the cloud while migrating images (a live session attached first) — not overwriting it; re-run `inplan upload` to retry");
+        }
+        // The cloud write succeeded — a failure past this point is a DIFFERENT failure (the
+        // images and the cloud body are already correct), so it must not be reported as "the
+        // cloud write failed", and finalBody must reflect whatever actually ends up on disk
+        // rather than what we merely intended to write (flagged in review: cubic-dev-ai on #91).
+        try {
+          writeFileSync(file, migrated.body);
+          finalBody = migrated.body;
+        } catch (e) {
+          finalBody = existsSync(file) ? readFileSync(file, "utf8") : body;
+          throw new Error(`the cloud copy was updated, but writing it back to the local file failed (${e instanceof Error ? e.message : String(e)}) — re-run \`inplan upload\` to pull the migrated body back down locally`);
+        }
       }
     } catch (e) {
-      process.stderr.write(`inplan upload: image migration failed (${e instanceof Error ? e.message : String(e)}) — the doc uploaded, but its local images weren't moved to the cloud\n`);
+      process.stderr.write(`inplan upload: image migration failed (${e instanceof Error ? e.message : String(e)})\n`);
     }
   }
 

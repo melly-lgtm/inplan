@@ -20,18 +20,40 @@ const rpc = vi.fn(async (_name: string, _params: Record<string, unknown>) => rpc
 let uploadResult: { error: { status: number; message: string } | null } = { error: null };
 const upload = vi.fn(async (_path: string, _bytes: unknown, _opts: unknown) => uploadResult);
 const getPublicUrl = vi.fn((path: string) => ({ data: { publicUrl: `https://cdn.test/doc-images/${path}` } }));
+
+// The optimistic-concurrency write: `.update(patch).eq("id", …).eq("updated_at", baseline).select("id")`.
+// `updateMatches` simulates whether the CAS condition matched (true = nobody else touched the row
+// since the baseline read; false = something changed the row first — the "lost the race" case).
 let updateError: { message: string } | null = null;
-const update = vi.fn((_patch: Record<string, unknown>) => ({ eq: () => Promise.resolve({ error: updateError }) }));
+let updateMatches = true;
+const update = vi.fn((_patch: Record<string, unknown>) => {
+  const chain = {
+    eq: vi.fn(() => chain),
+    select: vi.fn(() => Promise.resolve(updateError ? { data: null, error: updateError } : { data: updateMatches ? [{ id: "doc-new" }] : [], error: null })),
+  };
+  return chain;
+});
+
+// The baseline `updated_at` read right after create_document — the value the CAS write above
+// conditions on.
+let baselineUpdatedAt = "2026-01-01T00:00:00.000Z";
 
 function fakeDb() {
   const membershipsQ: Record<string, unknown> = {};
   membershipsQ.select = () => membershipsQ;
   membershipsQ.in = () => Promise.resolve(memberships);
 
+  let lastSelectCols = "";
   const documentsQ: Record<string, unknown> = {};
-  documentsQ.select = () => documentsQ;
+  documentsQ.select = (cols: string) => {
+    lastSelectCols = cols;
+    return documentsQ;
+  };
   documentsQ.eq = () => documentsQ;
-  documentsQ.maybeSingle = () => Promise.resolve({ data: existingDocId ? { id: existingDocId } : null, error: null });
+  documentsQ.maybeSingle = () =>
+    Promise.resolve(
+      lastSelectCols === "updated_at" ? { data: { updated_at: baselineUpdatedAt }, error: null } : { data: existingDocId ? { id: existingDocId } : null, error: null },
+    );
   documentsQ.update = update;
 
   return {
@@ -47,6 +69,25 @@ vi.mock("../src/cliAuth", () => ({
 vi.mock("../src/provenance", () => ({
   gitProvenance: () => ({ repo: "acme/plan", path: "docs/PLAN.md" }),
 }));
+
+// Lets exactly one test simulate the LOCAL file write failing (disk full, permissions, …) right
+// after the cloud write already succeeded — a real `writeFileSync` failure mode that's otherwise
+// impractical to trigger from a test. Passes through to the real implementation for every other
+// call (including this file's own test-setup writes), so it's a no-op unless armed.
+const fsFailure = vi.hoisted(() => ({ path: null as string | null }));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    writeFileSync: (path: unknown, ...rest: unknown[]) => {
+      if (fsFailure.path && path === fsFailure.path) {
+        fsFailure.path = null; // one-shot
+        throw new Error("disk full");
+      }
+      return (actual.writeFileSync as (...a: unknown[]) => void)(path, ...rest);
+    },
+  };
+});
 
 import { doUpload } from "../src/cli";
 
@@ -84,6 +125,9 @@ beforeEach(() => {
   uploadResult = { error: null };
   existingDocId = null;
   updateError = null;
+  updateMatches = true;
+  baselineUpdatedAt = "2026-01-01T00:00:00.000Z";
+  fsFailure.path = null;
 });
 afterEach(() => {
   delete process.env.INPLAN_SIDECAR_DIR;
@@ -216,6 +260,40 @@ describe("inplan upload → local image migration", () => {
     // Cloud-first ordering: since the cloud write failed, the local file must NOT have been
     // rewritten either — otherwise lastSyncedHash (computed from whatever's now on disk) would
     // match a body the cloud never actually received.
+    expect(readFileSync(file, "utf8")).toBe(original);
+  });
+
+  it("does not overwrite the cloud body when it changed since the baseline read (lost the CAS race)", async () => {
+    mkdirSync(join(home, "PLAN.assets"), { recursive: true });
+    writeFileSync(join(home, "PLAN.assets", "image-1.png"), Buffer.from([1, 2, 3]));
+    const original = "# My Plan\n\n![](<PLAN.assets/image-1.png>)\n";
+    writeFileSync(file, original);
+    // Simulate the collab hub attaching and writing the row between our baseline read and our
+    // conditional UPDATE: the CAS `.eq("updated_at", baseline)` matches zero rows.
+    updateMatches = false;
+
+    await doUpload(file, []);
+
+    expect(upload).toHaveBeenCalledTimes(1); // the image itself still uploads fine
+    expect(update).toHaveBeenCalledTimes(1); // the conditional write was attempted
+    // Lost the race: must not claim success by touching the local file or the hash.
+    expect(readFileSync(file, "utf8")).toBe(original);
+    expect(lastJson()).toMatchObject({ status: "uploaded" }); // the promote itself still succeeded
+  });
+
+  it("re-reads whatever's actually on disk when the cloud write succeeds but the local write fails", async () => {
+    mkdirSync(join(home, "PLAN.assets"), { recursive: true });
+    writeFileSync(join(home, "PLAN.assets", "image-1.png"), Buffer.from([1, 2, 3]));
+    const original = "# My Plan\n\n![](<PLAN.assets/image-1.png>)\n";
+    writeFileSync(file, original);
+    fsFailure.path = file; // the cloud write succeeds; writing the migrated body back locally fails
+
+    await doUpload(file, []);
+
+    expect(update).toHaveBeenCalledTimes(1); // the cloud DID get the migrated body
+    // The local file was never actually rewritten (the write threw), so it must still read as the
+    // original — proving finalBody was re-derived from the real file content, not just assumed to
+    // be the migrated body because the write was "supposed to" succeed.
     expect(readFileSync(file, "utf8")).toBe(original);
   });
 
