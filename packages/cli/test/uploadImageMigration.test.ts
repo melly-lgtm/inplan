@@ -312,6 +312,30 @@ describe("inplan upload → local image migration", () => {
     expect(remove).toHaveBeenCalledWith([uploadedPath]);
   });
 
+  it("does not clobber a local edit made while the migration was in flight, even though the cloud write succeeded", async () => {
+    mkdirSync(join(home, "PLAN.assets"), { recursive: true });
+    writeFileSync(join(home, "PLAN.assets", "image-1.png"), Buffer.from([1, 2, 3]));
+    const original = "# My Plan\n\n![](<PLAN.assets/image-1.png>)\n";
+    writeFileSync(file, original);
+    const editedLocally = "# My Plan (edited while uploading)\n\n![](<PLAN.assets/image-1.png>)\n";
+    // Simulate a human editing the file during the network round-trip (between the `body` snapshot
+    // doUpload started from and the write-back below) — the upload call is the last async hop
+    // before that write-back, so mutating the file here reproduces the race window.
+    upload.mockImplementationOnce(async () => {
+      writeFileSync(file, editedLocally);
+      return uploadResult;
+    });
+
+    await doUpload(file, []);
+
+    expect(update).toHaveBeenCalledTimes(1); // the cloud DID get the migrated body — it's correct
+    // The stale, snapshot-derived migrated body must NOT overwrite the newer local edit.
+    expect(readFileSync(file, "utf8")).toBe(editedLocally);
+    // lastSyncedHash reflects what's actually on disk (the edit), not the migrated snapshot that
+    // was never written — otherwise the next reconcile check would wrongly believe they match.
+    expect(lastSyncedHash()).toBe(hashBody(editedLocally));
+  });
+
   it("re-reads whatever's actually on disk when the cloud write succeeds but the local write fails", async () => {
     mkdirSync(join(home, "PLAN.assets"), { recursive: true });
     writeFileSync(join(home, "PLAN.assets", "image-1.png"), Buffer.from([1, 2, 3]));

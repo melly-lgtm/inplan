@@ -1975,18 +1975,40 @@ export async function doUpload(file: string, args: string[]): Promise<void> {
         }
         if (!updatedRows || updatedRows.length === 0) {
           await cleanupOrphanedUploads(s.db, migrated.uploadedPaths);
-          throw new Error("the document changed in the cloud while migrating images (a live session attached first) — not overwriting it; re-run `inplan upload` to retry");
+          // A re-run of `upload` against this now-`created` doc resolves to `status: "exists"`,
+          // and the whole migration block above is gated to `status: "created"` only — so a retry
+          // cannot actually re-attempt this migration. Say what's actually true instead of
+          // promising a retry that doesn't happen (flagged in review: cubic-dev-ai on PR #91).
+          throw new Error(
+            "the document changed in the cloud while migrating images (a live session attached first) — not overwriting it; the local images were not migrated, re-paste them once you're collaborating on this doc in the cloud",
+          );
         }
         // The cloud write succeeded — a failure past this point is a DIFFERENT failure (the
         // images and the cloud body are already correct), so it must not be reported as "the
         // cloud write failed", and finalBody must reflect whatever actually ends up on disk
         // rather than what we merely intended to write (flagged in review: cubic-dev-ai on #91).
+        //
+        // `migrated.body` is derived from the `body` snapshot read at the very top of doUpload —
+        // before create_document, the baseline read, and every network upload. If the local file
+        // was edited during that window, writing the stale snapshot back would silently discard
+        // those edits. Compare against what's actually on disk right now and skip the write (the
+        // cloud copy already has the correct image links; only the local file needs reconciling)
+        // rather than clobbering unrelated changes (flagged in review: cubic-dev-ai on PR #91).
+        const onDiskNow = existsSync(file) ? readFileSync(file, "utf8") : null;
+        if (onDiskNow !== null && onDiskNow !== body) {
+          finalBody = onDiskNow;
+          throw new Error(
+            "the local file changed while migrating images, so it was left untouched to avoid discarding those edits — the cloud copy already has the migrated image links; open this doc in the editor to reconcile",
+          );
+        }
         try {
           writeFileSync(file, migrated.body);
           finalBody = migrated.body;
         } catch (e) {
           finalBody = existsSync(file) ? readFileSync(file, "utf8") : body;
-          throw new Error(`the cloud copy was updated, but writing it back to the local file failed (${e instanceof Error ? e.message : String(e)}) — re-run \`inplan upload\` to pull the migrated body back down locally`);
+          throw new Error(
+            `the cloud copy was updated, but writing it back to the local file failed (${e instanceof Error ? e.message : String(e)}) — the local file is now stale; open this doc in the editor (or re-run \`inplan wait\`) to pull the migrated body back down`,
+          );
         }
       }
     } catch (e) {
