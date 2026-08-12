@@ -12,6 +12,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { docPaths, hashBody, readStatus } from "@inplan/core/node";
 
 let rpcResult: { data: unknown; error: unknown } = { data: { status: "created", id: "doc-new" }, error: null };
 let memberships: { data: unknown; error: unknown } = { data: [{ org_id: "org-1", orgs: { slug: "acme", name: "Acme" } }], error: null };
@@ -24,11 +25,19 @@ const getPublicUrl = vi.fn((path: string) => ({ data: { publicUrl: `https://cdn.
 // The optimistic-concurrency write: `.update(patch).eq("id", …).eq("updated_at", baseline).select("id")`.
 // `updateMatches` simulates whether the CAS condition matched (true = nobody else touched the row
 // since the baseline read; false = something changed the row first — the "lost the race" case).
+// `updateEqCalls` records each `.eq(column, value)` the production code actually issued, so a test
+// can assert the CAS predicates themselves are present — not just that the mock's canned result
+// (which `updateMatches` controls directly) got returned. Without this, a regression that silently
+// dropped `.eq("updated_at", …)` from the real code would still pass the "lost the race" test.
 let updateError: { message: string } | null = null;
 let updateMatches = true;
+let updateEqCalls: Array<[string, unknown]> = [];
 const update = vi.fn((_patch: Record<string, unknown>) => {
   const chain = {
-    eq: vi.fn(() => chain),
+    eq: vi.fn((column: string, value: unknown) => {
+      updateEqCalls.push([column, value]);
+      return chain;
+    }),
     select: vi.fn(() => Promise.resolve(updateError ? { data: null, error: updateError } : { data: updateMatches ? [{ id: "doc-new" }] : [], error: null })),
   };
   return chain;
@@ -126,6 +135,7 @@ beforeEach(() => {
   existingDocId = null;
   updateError = null;
   updateMatches = true;
+  updateEqCalls = [];
   baselineUpdatedAt = "2026-01-01T00:00:00.000Z";
   fsFailure.path = null;
 });
@@ -135,6 +145,7 @@ afterEach(() => {
 });
 
 const lastJson = () => JSON.parse(out.join("").trim().split("\n").pop()!);
+const lastSyncedHash = () => readStatus(docPaths(file).statusPath).lastSyncedHash;
 
 describe("inplan upload → local image migration", () => {
   it("uploads a local relative image, rewrites the link in both the local file and the cloud row", async () => {
@@ -261,6 +272,7 @@ describe("inplan upload → local image migration", () => {
     // rewritten either — otherwise lastSyncedHash (computed from whatever's now on disk) would
     // match a body the cloud never actually received.
     expect(readFileSync(file, "utf8")).toBe(original);
+    expect(lastSyncedHash()).toBe(hashBody(original));
   });
 
   it("does not overwrite the cloud body when it changed since the baseline read (lost the CAS race)", async () => {
@@ -276,8 +288,15 @@ describe("inplan upload → local image migration", () => {
 
     expect(upload).toHaveBeenCalledTimes(1); // the image itself still uploads fine
     expect(update).toHaveBeenCalledTimes(1); // the conditional write was attempted
+    // Assert the CAS predicates THEMSELVES were issued — not just that the mock's canned "lost the
+    // race" result came back (which updateMatches controls directly regardless of what the
+    // production code actually asked for). Catches a regression that silently drops the
+    // updated_at condition, which would make every write unconditional again.
+    expect(updateEqCalls).toContainEqual(["id", "doc-new"]);
+    expect(updateEqCalls).toContainEqual(["updated_at", baselineUpdatedAt]);
     // Lost the race: must not claim success by touching the local file or the hash.
     expect(readFileSync(file, "utf8")).toBe(original);
+    expect(lastSyncedHash()).toBe(hashBody(original));
     expect(lastJson()).toMatchObject({ status: "uploaded" }); // the promote itself still succeeded
   });
 
@@ -295,6 +314,7 @@ describe("inplan upload → local image migration", () => {
     // original — proving finalBody was re-derived from the real file content, not just assumed to
     // be the migrated body because the write was "supposed to" succeed.
     expect(readFileSync(file, "utf8")).toBe(original);
+    expect(lastSyncedHash()).toBe(hashBody(original));
   });
 
   it("migrates more than 6 same-second images without exhausting the retry budget", async () => {
