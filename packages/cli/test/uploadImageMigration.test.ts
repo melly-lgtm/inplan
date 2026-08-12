@@ -318,4 +318,48 @@ describe("inplan upload → local image migration", () => {
     const rewritten = readFileSync(file, "utf8");
     expect(rewritten).not.toContain("PLAN.assets"); // none left dangling locally
   });
+
+  it("never uploads or rewrites an image reference inside a fenced code block", async () => {
+    mkdirSync(join(home, "PLAN.assets"), { recursive: true });
+    writeFileSync(join(home, "PLAN.assets", "image-1.png"), Buffer.from([1, 2, 3]));
+    const original = "# My Plan\n\nHow to embed an image:\n\n```markdown\n![](<PLAN.assets/image-1.png>)\n```\n";
+    writeFileSync(file, original);
+
+    await doUpload(file, []);
+
+    expect(upload).not.toHaveBeenCalled();
+    expect(readFileSync(file, "utf8")).toBe(original);
+  });
+
+  it("never uploads or rewrites an image reference inside inline code", async () => {
+    mkdirSync(join(home, "PLAN.assets"), { recursive: true });
+    writeFileSync(join(home, "PLAN.assets", "image-1.png"), Buffer.from([1, 2, 3]));
+    const original = "# My Plan\n\nWrite it as `![](<PLAN.assets/image-1.png>)` in your doc.\n";
+    writeFileSync(file, original);
+
+    await doUpload(file, []);
+
+    expect(upload).not.toHaveBeenCalled();
+    expect(readFileSync(file, "utf8")).toBe(original);
+  });
+
+  it("migrates a real image but leaves a code example naming the exact same path alone", async () => {
+    mkdirSync(join(home, "PLAN.assets"), { recursive: true });
+    writeFileSync(join(home, "PLAN.assets", "image-1.png"), Buffer.from([1, 2, 3]));
+    writeFileSync(
+      file,
+      "# My Plan\n\n" +
+        "![](<PLAN.assets/image-1.png>)\n\n" +
+        "Written as: `![](<PLAN.assets/image-1.png>)`\n",
+    );
+
+    await doUpload(file, []);
+
+    expect(upload).toHaveBeenCalledTimes(1); // only the real reference triggers an upload
+    const [path] = upload.mock.calls[0]!;
+    const url = `https://cdn.test/doc-images/${path}`;
+    const rewritten = readFileSync(file, "utf8");
+    expect(rewritten).toContain(`![](${url})`); // the real reference is rewritten
+    expect(rewritten).toContain("`![](<PLAN.assets/image-1.png>)`"); // the code example is untouched
+  });
 });

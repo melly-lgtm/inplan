@@ -2096,6 +2096,44 @@ function isLocalRelativePath(dest: string): boolean {
   return !/^[a-z][a-z0-9+.-]*:/i.test(dest) && !dest.startsWith("//") && !dest.startsWith("/");
 }
 
+/** `[start, end)` byte ranges of `body` that are inside a fenced code block (``` or ~~~, either
+ *  character repeated 3+ times to open, closed by a line starting with 3+ of the SAME character)
+ *  or an inline code span (`` `...` ``). An `![](...)` written as a documentation/example inside
+ *  either is a code sample, not a real asset reference, and must never be read off disk, uploaded,
+ *  or rewritten (flagged in review: cubic-dev-ai on PR #91). Not a full CommonMark parser — good
+ *  enough to keep migration from treating example text as real links. */
+function codeRanges(body: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  const fenceRe = /^(`{3,}|~{3,})/;
+  let offset = 0;
+  let fenceChar: string | null = null;
+  let fenceLen = 0;
+  let fenceStart = 0;
+  for (const line of body.split("\n")) {
+    const m = fenceRe.exec(line.trimStart());
+    if (fenceChar) {
+      if (m && m[1]![0] === fenceChar && m[1]!.length >= fenceLen) {
+        ranges.push([fenceStart, offset + line.length]);
+        fenceChar = null;
+      }
+    } else if (m) {
+      fenceChar = m[1]![0]!;
+      fenceLen = m[1]!.length;
+      fenceStart = offset;
+    }
+    offset += line.length + 1; // + the \n split() consumed
+  }
+  if (fenceChar) ranges.push([fenceStart, body.length]); // an unterminated fence runs to EOF
+  // Inline spans, outside any fence already captured above — CommonMark's exact backtick-count
+  // matching isn't needed here, only "don't treat this as a real link".
+  for (const m of body.matchAll(/`[^`\n]*`/g)) ranges.push([m.index, m.index + m[0].length]);
+  return ranges;
+}
+
+function inRange(ranges: Array<[number, number]>, index: number): boolean {
+  return ranges.some(([start, end]) => index >= start && index < end);
+}
+
 /**
  * Scan `body` for local relative image links, upload each referenced file (resolved against
  * `docDir`) to the cloud `doc-images` bucket, and rewrite the links to the resulting public URLs.
@@ -2106,7 +2144,12 @@ function isLocalRelativePath(dest: string): boolean {
  * file or a failed upload just leaves that one link untouched rather than losing the reference.
  */
 async function migrateLocalImages(body: string, docDir: string, db: SupabaseClient, orgId: string, docId: string): Promise<{ body: string; migrated: number }> {
-  const replacements = new Map<string, string>(); // matched destination → new public URL
+  const excluded = codeRanges(body); // fenced/inline code — example text, never a real asset
+  // Matches to actually migrate, keyed by their position (not just their destination string) —
+  // position-keying is what lets the rewrite pass below leave a CODE EXAMPLE alone even when it
+  // happens to name the exact same path as a real, migrated image elsewhere in the doc.
+  const migrations = new Map<number, { dest: string; url: string }>();
+  const uploadedUrlByDest = new Map<string, string>(); // dest → url, so a repeated real ref reuses one upload
   // A doc body isn't trusted-solely-authored input (cloned repos, collaborators, agents write
   // it), so a crafted `../../.ssh/id_ed25519`-style link must not let this read a file outside
   // the doc's own directory and publish it to the (public) bucket. Resolve symlinks on the root
@@ -2121,7 +2164,12 @@ async function migrateLocalImages(body: string, docDir: string, db: SupabaseClie
   }
   for (const m of body.matchAll(IMAGE_REF_RE)) {
     const dest = m[2] ?? m[3] ?? "";
-    if (!dest || !isLocalRelativePath(dest) || replacements.has(dest)) continue;
+    if (!dest || inRange(excluded, m.index) || !isLocalRelativePath(dest)) continue;
+    const cached = uploadedUrlByDest.get(dest);
+    if (cached) {
+      migrations.set(m.index, { dest, url: cached });
+      continue;
+    }
     const abs = resolve(docDir, dest);
     if (!existsSync(abs)) continue; // already dangling — nothing to migrate
     // Containment: resolve symlinks on this side too, so a symlink that LOOKS like it's inside
@@ -2147,18 +2195,26 @@ async function migrateLocalImages(body: string, docDir: string, db: SupabaseClie
       continue;
     }
     const url = await uploadAssetBytes(db, orgId, docId, bytes, ext);
-    if (url) replacements.set(dest, url);
+    if (!url) continue;
+    uploadedUrlByDest.set(dest, url);
+    migrations.set(m.index, { dest, url });
   }
-  if (replacements.size === 0) return { body, migrated: 0 };
-  // Rebuild from the captured groups rather than doing regex surgery on `whole`: alt text can
-  // itself contain parens (`![a (x) b](img.png)`), and a second "find the first (...)" pass over
-  // the whole match would rewrite the URL into the alt text's parens instead of the destination,
-  // corrupting the link and leaving the real destination still pointing at the local file.
-  const newBody = body.replace(IMAGE_REF_RE, (whole, alt: string, bracketed?: string, bare?: string) => {
-    const url = replacements.get(bracketed ?? bare ?? "");
-    return url ? `![${alt}](${url})` : whole;
-  });
-  return { body: newBody, migrated: replacements.size };
+  if (migrations.size === 0) return { body, migrated: 0 };
+  // Rebuild by position rather than a global body.replace: alt text can itself contain parens
+  // (`![a (x) b](img.png)`), so regex surgery on the whole match would rewrite the URL into the
+  // alt text's parens instead of the destination; and a string-keyed replace would also rewrite a
+  // CODE EXAMPLE that happens to name the same path as a real migrated image. Walking the same
+  // matchAll positions used above keeps both cases correct.
+  let newBody = "";
+  let cursor = 0;
+  for (const m of body.matchAll(IMAGE_REF_RE)) {
+    const hit = migrations.get(m.index);
+    newBody += body.slice(cursor, m.index);
+    newBody += hit ? `![${m[1]}](${hit.url})` : m[0];
+    cursor = m.index + m[0].length;
+  }
+  newBody += body.slice(cursor);
+  return { body: newBody, migrated: migrations.size };
 }
 
 /** `comment` (see ./commentAdd.ts) only knows how to rewrite a local file — reject it before
