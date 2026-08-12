@@ -27,7 +27,7 @@ import {
 } from "@inplan/core/node";
 import { agentAuthorFor } from "./agentAuthor";
 import { gitProvenance } from "./provenance";
-import { authedSession, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, type AuthFile } from "./cliAuth";
+import { authedSession, authPath, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, type AuthFile } from "./cliAuth";
 import { LoginSessionExpiredError, clearPendingLogin, createLoginSession, loadPendingLogin, pollLoginSession, rendezvousLogin, type PendingLogin } from "./cliLogin";
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
 import { checkForUpdate, selfUpdate, UPDATE_PKG, warnIfOutdated } from "./update";
@@ -38,7 +38,7 @@ import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenceReason, type PluginGate } from "./pluginGate";
 import { demoteSource, shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
-import { announcePresence } from "./presence";
+import { announcePresence, presenceTokenResolver } from "./presence";
 import { awaitReopen, wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
 import { toolActivityText } from "./relayActivity";
@@ -1080,9 +1080,26 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
   }
 
   // the web badge shows "agent · your machine"; clear it on exit.
-  // (Presence is a cosmetic websocket on the initial token; the correctness-critical DB polling
-  // rides `live` above and stays authenticated across the whole wait, even past the ~1h expiry.)
-  const presence = announcePresence(docId, backend.token, model);
+  // (Presence is a cosmetic websocket; the correctness-critical DB polling rides `live` above.)
+  // Its connection is LONG-lived — a wait can span hours and hub restarts — so hand it a token
+  // RESOLVER, not a string frozen at attach: the provider re-resolves on every reconnect, where a
+  // stale ~1h JWT would otherwise fail auth (see presenceTokenResolver for the transient-vs-signed-
+  // out split — a definitively-gone session must not re-send a stale token).
+  const presence = announcePresence(
+    docId,
+    presenceTokenResolver(backend.token, async () => {
+      const fresh = await remoteBackend(docId, "cli-agent");
+      if (fresh) return fresh;
+      // remoteBackend's null conflates "signed out" with "refresh failed". Only a MISSING auth file
+      // is definitive sign-out (a pure existence check — loadAuth() also nulls on a transiently
+      // unreadable or corrupt file, which must NOT read as logout); anything still on disk means a
+      // transient failure, which takes the resolver's last-good-token fallback (itself bounded by
+      // the token's expiry) rather than killing the badge for a recoverable outage.
+      if (!existsSync(authPath())) return null;
+      throw new Error("transient token refresh failure");
+    }),
+    model,
+  );
   try {
     const workFile = join(sidecarRoot(), "remote", `${docId}.plan.md`);
     const pendingPath = `${workFile}.pending`; // marker: a local fallback edit awaits a hub push
