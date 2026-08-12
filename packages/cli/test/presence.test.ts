@@ -46,19 +46,21 @@ vi.mock("yjs", () => ({
   },
 }));
 
-import { announcePresence } from "../src/presence";
+import { announcePresence, presenceTokenResolver } from "../src/presence";
 
 describe("announcePresence", () => {
   it("publishes {kind:'agent', agentLocation:'local'} to the doc's awareness room", () => {
-    announcePresence("doc-1", "jwt-token");
+    const p = announcePresence("doc-1", "jwt-token");
     expect(localState.inplanPresence).toEqual({ kind: "agent", agentLocation: "local" });
     expect((lastProviderConfig as { name: string }).name).toBe("doc-1");
     expect((lastProviderConfig as { token: string }).token).toBe("jwt-token");
+    p.destroy(); // cancel the pending auth check — it must not fire into a later test's stderr
   });
 
   it("includes the model when provided", () => {
-    announcePresence("doc-1", "jwt-token", "Opus 4.8");
+    const p = announcePresence("doc-1", "jwt-token", "Opus 4.8");
     expect(localState.inplanPresence).toEqual({ kind: "agent", agentLocation: "local", model: "Opus 4.8" });
+    p.destroy();
   });
 
   it("destroy() tears down the provider, socket, and doc", () => {
@@ -71,17 +73,40 @@ describe("announcePresence", () => {
 
   it("passes a token RESOLVER through to the provider (reconnects re-resolve; a frozen string goes stale)", () => {
     const resolver = async () => "fresh-jwt";
-    announcePresence("doc-1", resolver);
+    const p = announcePresence("doc-1", resolver);
     expect((lastProviderConfig as { token: unknown }).token).toBe(resolver);
+    p.destroy(); // cancel the pending auth check — it must not fire into a later test's stderr
   });
 
   it("surfaces an auth rejection on stderr, marked cosmetic-only", () => {
     const err = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    announcePresence("doc-1", "jwt-token");
-    (lastProviderConfig as { onAuthenticationFailed: (d: { reason: string }) => void }).onAuthenticationFailed({ reason: "permission-denied" });
-    expect(err).toHaveBeenCalledWith(expect.stringContaining("presence badge auth failed (permission-denied)"));
-    expect(err).toHaveBeenCalledWith(expect.stringContaining("cosmetic only"));
-    err.mockRestore();
+    const p = announcePresence("doc-1", "jwt-token");
+    try {
+      (lastProviderConfig as { onAuthenticationFailed: (d: { reason: string }) => void }).onAuthenticationFailed({ reason: "permission-denied" });
+      expect(err).toHaveBeenCalledWith(expect.stringContaining("presence badge auth failed (permission-denied)"));
+      expect(err).toHaveBeenCalledWith(expect.stringContaining("cosmetic only"));
+    } finally {
+      p.destroy();
+      err.mockRestore();
+    }
+  });
+
+  it("presenceTokenResolver: re-mints, keeps the last good token on a transient throw, fails on sign-out", async () => {
+    let mode: "ok" | "throw" | "null" = "ok";
+    let minted = 0;
+    const resolve = presenceTokenResolver("initial-jwt", async () => {
+      if (mode === "throw") throw new Error("network blip");
+      if (mode === "null") return null;
+      minted += 1;
+      return { token: `fresh-${minted}` };
+    });
+    await expect(resolve()).resolves.toBe("fresh-1"); // re-mints on each call
+    mode = "throw";
+    await expect(resolve()).resolves.toBe("fresh-1"); // transient → last GOOD token, not the initial
+    mode = "null";
+    await expect(resolve()).rejects.toThrow(/signed out/); // definitive → never re-send a stale token
+    mode = "ok";
+    await expect(resolve()).resolves.toBe("fresh-2"); // a recovered session resumes minting
   });
 
   it("reports a channel that never authenticates (the silent Unauthorized death — issue #88)", () => {

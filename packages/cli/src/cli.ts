@@ -38,7 +38,7 @@ import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenceReason, type PluginGate } from "./pluginGate";
 import { demoteSource, shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
-import { announcePresence } from "./presence";
+import { announcePresence, presenceTokenResolver } from "./presence";
 import { awaitReopen, wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
 import { toolActivityText } from "./relayActivity";
@@ -1083,22 +1083,9 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
   // (Presence is a cosmetic websocket; the correctness-critical DB polling rides `live` above.)
   // Its connection is LONG-lived — a wait can span hours and hub restarts — so hand it a token
   // RESOLVER, not a string frozen at attach: the provider re-resolves on every reconnect, where a
-  // stale ~1h JWT would otherwise fail auth. On a transient re-mint failure, fall back to the last
-  // good token (presence must never break the wait).
-  let lastPresenceToken = backend.token;
-  const presence = announcePresence(
-    docId,
-    async () => {
-      try {
-        const fresh = await remoteBackend(docId, "cli-agent");
-        if (fresh) lastPresenceToken = fresh.token;
-      } catch {
-        /* transient — reuse the last good token */
-      }
-      return lastPresenceToken;
-    },
-    model,
-  );
+  // stale ~1h JWT would otherwise fail auth (see presenceTokenResolver for the transient-vs-signed-
+  // out split — a definitively-gone session must not re-send a stale token).
+  const presence = announcePresence(docId, presenceTokenResolver(backend.token, () => remoteBackend(docId, "cli-agent")), model);
   try {
     const workFile = join(sidecarRoot(), "remote", `${docId}.plan.md`);
     const pendingPath = `${workFile}.pending`; // marker: a local fallback edit awaits a hub push

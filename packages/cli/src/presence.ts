@@ -23,6 +23,28 @@ export interface PresenceHandle {
   destroy: () => void;
 }
 
+/** Build the token resolver for the long-lived presence connection: re-mint on each reconnect.
+ *  The failure modes need OPPOSITE handling:
+ *  - `mint` THROWS (network blip, lock contention) → transient: reuse the last good token, the
+ *    session may well still be valid and presence must never break the wait;
+ *  - `mint` returns NULL (signed out / refresh definitively failed) → throw: knowingly re-sending a
+ *    stale or revoked token invites the server's Unauthorized close — the permanent-silent-death
+ *    path this fix exists to prevent. The rejection surfaces via the presence failure handlers. */
+export function presenceTokenResolver(initial: string, mint: () => Promise<{ token: string } | null>): () => Promise<string> {
+  let last = initial;
+  return async () => {
+    let fresh: { token: string } | null;
+    try {
+      fresh = await mint();
+    } catch {
+      return last; // transient — the last good token is the best available answer
+    }
+    if (!fresh) throw new Error("signed out — presence token unavailable");
+    last = fresh.token;
+    return last;
+  };
+}
+
 /**
  * Announce this local agent in a cloud doc's awareness room (Yjs presence), so
  * the web shows an "agent · your machine" badge while `wait --remote` is
