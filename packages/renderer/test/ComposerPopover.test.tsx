@@ -6,12 +6,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ComposerPopover } from "../src/ComposerPopover";
 import { MOD_KEY } from "../src/platform";
 import { setHostApi, type Api } from "../src/api";
-import { __resetMentionRosterForTests } from "../src/mentionAutocomplete";
+import { resetMentionRoster } from "../src/mentionAutocomplete";
 
 afterEach(() => {
   cleanup();
   setHostApi(undefined as unknown as Api); // reset any mention-roster stub between tests
-  __resetMentionRosterForTests(); // the roster is cached module-level (shared across composers) — must not leak between tests
+  resetMentionRoster(); // the roster is cached module-level (shared across composers) — must not leak between tests
 });
 
 const base = { target: null as string | null, pos: { x: 10, y: 10 }, disabled: false, onSubmit: () => {}, onClose: () => {} };
@@ -130,6 +130,39 @@ describe("ComposerPopover", () => {
     fireEvent.change(textarea(), { target: { value: "hey @bob@example.comx typo" } });
     fireEvent.click(commentBtn());
     expect(onSubmit).toHaveBeenCalledWith("hey @bob@example.comx typo", true, []);
+  });
+
+  it("Escape fully closes the dropdown — no stale candidates left showing for the old trigger", async () => {
+    setHostApi({ listMentionableUsers: async () => [{ email: "bob@example.com" }] } as unknown as Api);
+    render(<ComposerPopover {...base} />);
+    fireEvent.change(textarea(), { target: { value: "hey @b" } });
+    await screen.findByText("bob@example.com");
+    fireEvent.keyDown(textarea(), { key: "Escape" });
+    expect(document.querySelector(".ap-mention-dropdown")).toBeNull();
+  });
+
+  it("moving the caret off the trigger word (no text change) closes the dropdown", async () => {
+    setHostApi({ listMentionableUsers: async () => [{ email: "bob@example.com" }] } as unknown as Api);
+    render(<ComposerPopover {...base} />);
+    fireEvent.change(textarea(), { target: { value: "hey @b" } }); // caret lands at the end, inside the trigger word
+    await screen.findByText("bob@example.com");
+    // Move the caret to the very start — no longer inside/after the "@b" trigger word — WITHOUT
+    // changing the text (so onChange never fires; only onSelect can catch this). react-dom's
+    // onSelect polyfill listens on mouseup (among other events) to detect selection changes.
+    const ta = textarea();
+    ta.setSelectionRange(0, 0);
+    fireEvent.mouseUp(ta);
+    expect(document.querySelector(".ap-mention-dropdown")).toBeNull();
+  });
+
+  it("⌘/Ctrl+Enter submits (doesn't pick the highlighted mention) while the dropdown is open", async () => {
+    const onSubmit = vi.fn();
+    setHostApi({ listMentionableUsers: async () => [{ email: "bob@example.com" }] } as unknown as Api);
+    render(<ComposerPopover {...base} onSubmit={onSubmit} />);
+    fireEvent.change(textarea(), { target: { value: "hey @b" } });
+    await screen.findByText("bob@example.com");
+    fireEvent.keyDown(textarea(), { key: "Enter", metaKey: true });
+    expect(onSubmit).toHaveBeenCalledWith("hey @b", true, []); // submitted as typed, not autocompleted
   });
 
   it("no @-mention dropdown when the host has no listMentionableUsers (desktop/tests)", () => {

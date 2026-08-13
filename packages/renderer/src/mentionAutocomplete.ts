@@ -49,9 +49,12 @@ function escapeRegExp(s: string): string {
 let sharedRosterCache: MentionCandidate[] | null = null;
 let sharedRosterPromise: Promise<MentionCandidate[]> | null = null;
 
-/** Test-only: clear the module-level roster cache, which otherwise leaks between test cases in
- *  the same file (a real session only ever loads one doc, so it never needs clearing at runtime). */
-export function __resetMentionRosterForTests(): void {
+/** Clear the module-level roster cache. Real hosts call this on doc navigation (App.tsx's
+ *  onNavigated) — the cache is per-doc-open, and an in-window nav to a different doc (a
+ *  different org's roster) must not keep serving the previous doc's cached mentionable users.
+ *  Tests call it between cases for the same reason (it otherwise leaks across `it()` blocks in
+ *  the same file). */
+export function resetMentionRoster(): void {
   sharedRosterCache = null;
   sharedRosterPromise = null;
 }
@@ -106,7 +109,15 @@ export function useMentionAutocomplete(taRef: RefObject<HTMLTextAreaElement>, te
     taRef.current?.setSelectionRange(caret, caret);
   }, [text, taRef]);
 
-  const candidates = users && users.length ? filterMentionCandidates(users, query) : [];
+  // Tied to `open` (not derived from `query` alone): once `open` flips false (pick, Escape, the
+  // trigger word deleted/moved past), `candidates` must ALSO become empty in the same render, or
+  // MentionDropdown — which gates purely on `candidates.length` — would keep showing the stale
+  // list from the last open trigger.
+  const candidates = open && users && users.length ? filterMentionCandidates(users, query) : [];
+  // What's ACTUALLY visible: `open` alone can be true with zero matches (e.g. "@zzz" — the roster
+  // has users, just none matching the query), which would otherwise report an expanded-but-empty
+  // combobox to assistive tech.
+  const isOpen = open && candidates.length > 0;
 
   /** Call after every textarea change (onChange) to re-derive dropdown-open state from the caret. */
   const sync = useCallback(() => {
@@ -166,10 +177,12 @@ export function useMentionAutocomplete(taRef: RefObject<HTMLTextAreaElement>, te
   );
 
   /** Arrow/Enter/Escape/Tab handling while the dropdown is open. Returns true when it consumed the
-   *  key — the caller should skip its own handling (e.g. the composer's ⌘/Ctrl+Enter submit). */
+   *  key — the caller should skip its own handling. Plain `Enter` picks the highlighted candidate;
+   *  a MODIFIED Enter (⌘/Ctrl+Enter, the composer's submit shortcut) is left alone so it still
+   *  reaches the caller's own handler instead of being swallowed by the picker. */
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>): boolean => {
-      if (!open || candidates.length === 0) return false;
+      if (!isOpen) return false;
       if (e.key === "ArrowDown") {
         e.preventDefault();
         setActiveIndex((i) => (i + 1) % candidates.length);
@@ -185,7 +198,7 @@ export function useMentionAutocomplete(taRef: RefObject<HTMLTextAreaElement>, te
         setOpen(false);
         return true;
       }
-      if (e.key === "Enter" || e.key === "Tab") {
+      if (e.key === "Tab" || (e.key === "Enter" && !e.metaKey && !e.ctrlKey)) {
         e.preventDefault();
         const c = candidates[activeIndex];
         if (c) pick(c);
@@ -193,7 +206,7 @@ export function useMentionAutocomplete(taRef: RefObject<HTMLTextAreaElement>, te
       }
       return false;
     },
-    [open, candidates, activeIndex, pick],
+    [isOpen, candidates, activeIndex, pick],
   );
 
   /** Mentioned emails still referenced as a COMPLETE `@email` token in `currentText` — filters out
@@ -214,7 +227,11 @@ export function useMentionAutocomplete(taRef: RefObject<HTMLTextAreaElement>, te
   const optionId = useCallback((index: number) => `${listboxId}-opt-${index}`, [listboxId]);
 
   return {
+    /** A trigger word is active. Prefer {@link isOpen} for anything UI-visible (aria-expanded,
+     *  aria-controls) — `open` can be true with zero matches (e.g. "@zzz"). */
     open,
+    /** The dropdown is actually visibly showing candidates. */
+    isOpen,
     candidates,
     activeIndex,
     sync,
@@ -225,6 +242,6 @@ export function useMentionAutocomplete(taRef: RefObject<HTMLTextAreaElement>, te
     setActiveIndex,
     listboxId,
     optionId,
-    activeDescendantId: open && candidates[activeIndex] ? optionId(activeIndex) : undefined,
+    activeDescendantId: isOpen && candidates[activeIndex] ? optionId(activeIndex) : undefined,
   };
 }

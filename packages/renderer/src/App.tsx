@@ -29,7 +29,7 @@ import { NewDocModal } from "./NewDocModal";
 import { renderMarkdown } from "./markdown";
 import { isInternalDocLink, resolveDocPath } from "./links";
 import { ComposerPopover } from "./ComposerPopover";
-import { useMentionAutocomplete } from "./mentionAutocomplete";
+import { useMentionAutocomplete, resetMentionRoster } from "./mentionAutocomplete";
 import { MentionDropdown } from "./MentionDropdown";
 import { Switch } from "./Switch";
 import { ContextMenu } from "./ContextMenu";
@@ -410,6 +410,9 @@ export function App(props: EditorProps = {}): JSX.Element {
         if (docPathRef.current) historyByDoc.current.set(docPathRef.current, { undo: history.current, redo: future.current });
         docPathRef.current = path;
         setReadOnly(!!ro); // the destination doc may have its own read-only state
+        // The @-mention roster is cached per-doc-open — the doc we're navigating to may belong to
+        // a different org, so the previous doc's cached roster must not leak into this one.
+        resetMentionRoster();
         // Overwrite (not merge) even when absent: any stale pending focus from the doc we just
         // left must not carry over and fire against the wrong document.
         setPendingFocusCommentId(focusCommentId ?? null);
@@ -1226,16 +1229,6 @@ export function App(props: EditorProps = {}): JSX.Element {
     [],
   );
 
-  // A load()-supplied deep-link comment id (e.g. from a mention-digest email): focus it once the
-  // doc + rail have actually mounted, not inside the load().then() itself (the rail card doesn't
-  // exist yet at that point).
-  useEffect(() => {
-    if (!loaded || !pendingFocusCommentId) return;
-    const id = pendingFocusCommentId;
-    setPendingFocusCommentId(null);
-    requestAnimationFrame(() => focusComment(id));
-  }, [loaded, pendingFocusCommentId, focusComment]);
-
   // Jump to a find match: body matches select in the source editor (revealing it)
   // and scroll the preview; comment matches focus the comment thread.
   const navigateMatch = useCallback(
@@ -1430,6 +1423,23 @@ export function App(props: EditorProps = {}): JSX.Element {
   const visible = ordered.filter((o) => showResolvedOrphaned || (!o.thread.root.resolved && !o.orphaned));
   const resolvedCount = ordered.filter((o) => o.thread.root.resolved).length;
   const orphanedCount = ordered.filter((o) => o.orphaned).length;
+
+  // A load()/onNavigated-supplied deep-link comment id (e.g. from a mention-digest email): focus
+  // it once the doc + rail have actually mounted, not inside load().then()/onNavigated themselves
+  // (the rail card doesn't exist yet at that point). If the target thread is resolved/orphaned and
+  // currently hidden by the reveal toggle, reveal it first — otherwise there'd be no rail card to
+  // scroll to at all. The rAF is cancelled in the cleanup so a second deep-link arriving before the
+  // first one's frame fires can't run focusComment against a doc that's since moved on.
+  useEffect(() => {
+    if (!loaded || !pendingFocusCommentId) return;
+    const id = pendingFocusCommentId;
+    setPendingFocusCommentId(null);
+    const c = doc.comments.find((x) => x.id === id);
+    const rootId = c?.parentId ?? id;
+    if (!visible.some((o) => o.thread.root.id === rootId)) setShowResolvedOrphaned(true);
+    const raf = requestAnimationFrame(() => focusComment(id));
+    return () => cancelAnimationFrame(raf);
+  }, [loaded, pendingFocusCommentId, focusComment, doc.comments, visible]);
   // Reveal-toggle tooltip: only name the categories that actually have hidden comments
   // (the button itself is hidden when both counts are 0 — nothing to reveal).
   const revealTip =
@@ -2928,14 +2938,17 @@ function ThreadCard(props: {
               disabled={disabled}
               autoFocus
               role="combobox"
-              aria-expanded={replyMention.open}
-              aria-controls={replyMention.listboxId}
+              aria-expanded={replyMention.isOpen}
+              aria-controls={replyMention.isOpen ? replyMention.listboxId : undefined}
               aria-autocomplete="list"
               aria-activedescendant={replyMention.activeDescendantId}
               onChange={(e) => {
                 setReplyText(e.target.value);
                 replyMention.sync();
               }}
+              // Re-derive dropdown state on caret movement alone too (arrow keys, a click), not
+              // just on text change — otherwise moving off a trigger word leaves stale suggestions.
+              onSelect={() => replyMention.sync()}
               onKeyDown={(e) => {
                 if (replyMention.onKeyDown(e)) return;
                 if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && replyText.trim()) {

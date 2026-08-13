@@ -86,8 +86,8 @@ export function ComposerPopover({
           value={text}
           disabled={disabled}
           role="combobox"
-          aria-expanded={mention.open}
-          aria-controls={mention.listboxId}
+          aria-expanded={mention.isOpen}
+          aria-controls={mention.isOpen ? mention.listboxId : undefined}
           aria-autocomplete="list"
           aria-activedescendant={mention.activeDescendantId}
           onChange={(e) => {
@@ -95,6 +95,9 @@ export function ComposerPopover({
             grow(e.target);
             mention.sync();
           }}
+          // Re-derive dropdown state on caret movement alone too (arrow keys, a click), not just
+          // on text change — otherwise moving off a trigger word leaves stale suggestions showing.
+          onSelect={() => mention.sync()}
           onKeyDown={(e) => {
             if (mention.onKeyDown(e)) return;
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
