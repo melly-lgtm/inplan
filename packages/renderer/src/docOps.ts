@@ -361,6 +361,8 @@ export interface NewCommentFields {
   question?: Question;
   /** `false` = a memo the agent ignores ("leave a memo"). Absent/true = "talk to the agent". */
   agent?: boolean;
+  /** Emails of users @-mentioned via the composer's mention picker. */
+  mentions?: string[];
 }
 
 /** Wrap the selected body span in an anchor link and add a span comment. `span` is the
@@ -371,21 +373,21 @@ export function addSpanComment(doc: ParsedDocument, selectedText: string, fields
   if (!range) return null;
   const id = genId(takenIds(doc));
   const body = wrapSpanWithComment(doc.body, range.start, range.end, id); // balances crossed inline markup
-  const comment: Comment = { id, author: fields.author, date: nowIso(), resolved: false, text: fields.text, ...(fields.question ? { question: fields.question } : {}), ...(fields.agent === false ? { agent: false } : {}) };
+  const comment: Comment = { id, author: fields.author, date: nowIso(), resolved: false, text: fields.text, ...(fields.question ? { question: fields.question } : {}), ...(fields.agent === false ? { agent: false } : {}), ...(fields.mentions?.length ? { mentions: fields.mentions } : {}) };
   return { doc: { body, comments: [...doc.comments, comment] }, id };
 }
 
 /** Add a document-level comment. */
 export function addDocComment(doc: ParsedDocument, fields: NewCommentFields): { doc: ParsedDocument; id: string } {
   const id = genId(takenIds(doc));
-  const comment: Comment = { id, anchor: "doc", author: fields.author, date: nowIso(), resolved: false, text: fields.text, ...(fields.question ? { question: fields.question } : {}), ...(fields.agent === false ? { agent: false } : {}) };
+  const comment: Comment = { id, anchor: "doc", author: fields.author, date: nowIso(), resolved: false, text: fields.text, ...(fields.question ? { question: fields.question } : {}), ...(fields.agent === false ? { agent: false } : {}), ...(fields.mentions?.length ? { mentions: fields.mentions } : {}) };
   return { doc: { ...doc, comments: [...doc.comments, comment] }, id };
 }
 
 /** Add a reply to a comment thread. */
-export function addReply(doc: ParsedDocument, parentId: string, text: string, author: string): { doc: ParsedDocument; id: string } {
+export function addReply(doc: ParsedDocument, parentId: string, text: string, author: string, mentions?: string[]): { doc: ParsedDocument; id: string } {
   const id = genId(takenIds(doc));
-  const comment: Comment = { id, parentId, author, date: nowIso(), resolved: false, text };
+  const comment: Comment = { id, parentId, author, date: nowIso(), resolved: false, text, ...(mentions?.length ? { mentions } : {}) };
   return { doc: { ...doc, comments: [...doc.comments, comment] }, id };
 }
 

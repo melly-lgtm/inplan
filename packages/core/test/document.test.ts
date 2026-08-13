@@ -61,6 +61,17 @@ describe("parse / serialize", () => {
     expect(parse(serialize(doc))).toEqual(doc);
   });
 
+  it("round-trips the optional mentions field (@-tagged users in a comment)", () => {
+    const doc: ParsedDocument = {
+      version: 1,
+      body: "Use [Postgres](#cmt-m00001).",
+      comments: [
+        { id: "cmt-m00001", author: "Dana Lee <dana@example.com>", date: "2026-06-06T00:00:00Z", resolved: false, text: "@bob what do you think?", mentions: ["bob@example.com"] },
+      ],
+    };
+    expect(parse(serialize(doc))).toEqual(doc);
+  });
+
   it("parses an answer reply carrying `selected`", () => {
     const doc: ParsedDocument = {
       version: 1,

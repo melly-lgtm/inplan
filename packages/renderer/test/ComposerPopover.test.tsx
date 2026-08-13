@@ -5,8 +5,12 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ComposerPopover } from "../src/ComposerPopover";
 import { MOD_KEY } from "../src/platform";
+import { setHostApi, type Api } from "../src/api";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  setHostApi(undefined as unknown as Api); // reset any mention-roster stub between tests
+});
 
 const base = { target: null as string | null, pos: { x: 10, y: 10 }, disabled: false, onSubmit: () => {}, onClose: () => {} };
 const textarea = () => screen.getByPlaceholderText(/Add a comment/) as HTMLTextAreaElement;
@@ -25,7 +29,7 @@ describe("ComposerPopover", () => {
     render(<ComposerPopover {...base} onSubmit={onSubmit} />);
     fireEvent.change(textarea(), { target: { value: "  a remark  " } });
     fireEvent.keyDown(textarea(), { key: "Enter", metaKey: true });
-    expect(onSubmit).toHaveBeenCalledWith("a remark", true); // default audience = talk to the agent
+    expect(onSubmit).toHaveBeenCalledWith("a remark", true, []); // default audience = talk to the agent
   });
 
   it("Comment button is disabled until there's text, then submits", () => {
@@ -35,7 +39,7 @@ describe("ComposerPopover", () => {
     fireEvent.change(textarea(), { target: { value: "hi" } });
     expect(commentBtn().disabled).toBe(false);
     fireEvent.click(commentBtn());
-    expect(onSubmit).toHaveBeenCalledWith("hi", true);
+    expect(onSubmit).toHaveBeenCalledWith("hi", true, []);
   });
 
   it("the audience switch defaults to 'talk to the agent'; choosing 'leave a memo' submits agent=false", () => {
@@ -49,7 +53,7 @@ describe("ComposerPopover", () => {
     fireEvent.click(memo); // switch to memo
     expect(memo.getAttribute("aria-checked")).toBe("true");
     fireEvent.click(commentBtn());
-    expect(onSubmit).toHaveBeenCalledWith("note to self", false); // memo → the agent ignores it
+    expect(onSubmit).toHaveBeenCalledWith("note to self", false, []); // memo → the agent ignores it
   });
 
   it("shows the OS-specific modifier in the placeholder, not the dual 'Cmd/Ctrl'", () => {
@@ -83,5 +87,29 @@ describe("ComposerPopover", () => {
     fireEvent.change(textarea(), { target: { value: "" } });
     fireEvent.mouseDown(document.body);
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows an @-mention dropdown from the host roster and submits the picked email", async () => {
+    const onSubmit = vi.fn();
+    setHostApi({
+      listMentionableUsers: async () => [
+        { email: "bob@example.com", name: "Bob" },
+        { email: "alice@example.com" },
+      ],
+    } as unknown as Api);
+    render(<ComposerPopover {...base} onSubmit={onSubmit} />);
+    fireEvent.change(textarea(), { target: { value: "hey @bo" } });
+    await screen.findByText("bob@example.com");
+    expect(screen.queryByText("alice@example.com")).toBeNull(); // filtered out — doesn't match "bo"
+    fireEvent.mouseDown(screen.getByText("bob@example.com"));
+    expect(textarea().value).toBe("hey @bob@example.com ");
+    fireEvent.click(commentBtn());
+    expect(onSubmit).toHaveBeenCalledWith("hey @bob@example.com", true, ["bob@example.com"]);
+  });
+
+  it("no @-mention dropdown when the host has no listMentionableUsers (desktop/tests)", () => {
+    render(<ComposerPopover {...base} />);
+    fireEvent.change(textarea(), { target: { value: "hey @bo" } });
+    expect(document.querySelector(".ap-mention-dropdown")).toBeNull();
   });
 });

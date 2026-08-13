@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { useT } from "./i18n";
 import { MOD_KEY } from "./platform";
 import { IconComment, IconMemo } from "./Icons";
+import { useMentionAutocomplete } from "./mentionAutocomplete";
+import { MentionDropdown } from "./MentionDropdown";
 
 /**
  * Floating comment composer. Multi-line textarea that grows to 8 lines;
@@ -20,7 +22,7 @@ export function ComposerPopover({
   target: string | null;
   pos: { x: number; y: number };
   disabled: boolean;
-  onSubmit: (text: string, talkToAgent: boolean) => void;
+  onSubmit: (text: string, talkToAgent: boolean, mentions: string[]) => void;
   onClose: () => void;
 }): JSX.Element {
   const t = useT();
@@ -32,6 +34,7 @@ export function ComposerPopover({
   const box = useRef<HTMLDivElement>(null);
   const ta = useRef<HTMLTextAreaElement>(null);
   const drag = useRef<{ dx: number; dy: number } | null>(null);
+  const mention = useMentionAutocomplete(ta, text, setText);
 
   useEffect(() => {
     ta.current?.focus();
@@ -66,7 +69,7 @@ export function ComposerPopover({
   };
 
   const submit = () => {
-    if (text.trim()) onSubmit(text.trim(), talkToAgent);
+    if (text.trim()) onSubmit(text.trim(), talkToAgent, mention.activeMentions(text));
   };
 
   return (
@@ -75,23 +78,28 @@ export function ComposerPopover({
         <span className="ap-quote">{target ? t("composer.on", { target }) : t("composer.docLevel")}</span>
         <span className="ap-drag" title={t("composer.dragToMove")}>⠿</span>
       </div>
-      <textarea
-        ref={ta}
-        className="ap-grow"
-        placeholder={t("composer.placeholder", { mod: MOD_KEY })}
-        value={text}
-        disabled={disabled}
-        onChange={(e) => {
-          setText(e.target.value);
-          grow(e.target);
-        }}
-        onKeyDown={(e) => {
-          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-            e.preventDefault();
-            submit();
-          }
-        }}
-      />
+      <div style={{ position: "relative" }}>
+        <textarea
+          ref={ta}
+          className="ap-grow"
+          placeholder={t("composer.placeholder", { mod: MOD_KEY })}
+          value={text}
+          disabled={disabled}
+          onChange={(e) => {
+            setText(e.target.value);
+            grow(e.target);
+            mention.sync();
+          }}
+          onKeyDown={(e) => {
+            if (mention.onKeyDown(e)) return;
+            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+              e.preventDefault();
+              submit();
+            }
+          }}
+        />
+        <MentionDropdown candidates={mention.candidates} activeIndex={mention.activeIndex} onPick={mention.pick} onHover={mention.setActiveIndex} />
+      </div>
       <div className="ap-row">
         {/* Audience switch: conversation (talk to the agent — default) ⇄ memo (the agent ignores it). */}
         <span className="ap-agent-toggle" role="radiogroup" aria-label={t("composer.audience")}>

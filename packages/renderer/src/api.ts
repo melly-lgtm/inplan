@@ -70,6 +70,8 @@ export interface DocPayload {
    *  can't be handed off — the doc is viewable + downloadable only. Used by hosts that archive
    *  a doc (e.g. the cloud deactivates a doc over the plan's active-doc cap). Absent = editable. */
   readOnly?: boolean;
+  /** Focus this comment on load (a digest email's deep link). Absent = no auto-focus. */
+  focusCommentId?: string;
 }
 
 export interface SaveOptions {
@@ -365,6 +367,10 @@ export interface Api {
     onClose(cb: () => void): () => void;
     cancel(): void;
   };
+  /** Users eligible for @-mention in a comment (the org roster), for the composer's mention
+   *  dropdown. Absent ⇒ no roster to suggest from (desktop, tests) — the `@`-trigger stays inert.
+   *  Called on each `@`-keystroke; hosts should cache. */
+  listMentionableUsers?(): Promise<{ email: string; name?: string }[]>;
 }
 
 declare global {

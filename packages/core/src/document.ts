@@ -138,7 +138,7 @@ export function orderComments(comments: Comment[]): Comment[] {
 /** Canonical field order for a serialized comment. A round-trip through a shared map loses
  *  the original key order, so the canonical projection must re-impose one or the JSON bytes
  *  differ between peers. Matches the Comment interface declaration order. */
-const COMMENT_KEY_ORDER: (keyof Comment)[] = ["id", "parentId", "anchor", "text", "author", "date", "resolved", "may_resolve", "question", "selected", "agent"];
+const COMMENT_KEY_ORDER: (keyof Comment)[] = ["id", "parentId", "anchor", "text", "author", "date", "resolved", "may_resolve", "question", "selected", "agent", "mentions"];
 
 function canonicalizeComment(c: Comment): Comment {
   const out: Record<string, unknown> = {};
