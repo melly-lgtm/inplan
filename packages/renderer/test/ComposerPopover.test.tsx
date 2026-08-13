@@ -168,6 +168,53 @@ describe("ComposerPopover", () => {
     await screen.findByText("bob@example.com");
   });
 
+  it("a failed roster fetch lets the SAME still-mounted composer retry on its next @-trigger", async () => {
+    let calls = 0;
+    setHostApi({
+      listMentionableUsers: async () => {
+        calls++;
+        if (calls === 1) throw new Error("first attempt fails");
+        return [{ email: "bob@example.com" }];
+      },
+    } as unknown as Api);
+    render(<ComposerPopover {...base} />);
+    fireEvent.change(textarea(), { target: { value: "hey @b" } }); // 1st attempt: fails
+    await new Promise((r) => setTimeout(r, 0));
+    expect(document.querySelector(".ap-mention-dropdown")).toBeNull();
+    expect(calls).toBe(1);
+
+    // Still the SAME textarea — a genuinely different value (the author kept typing), since
+    // firing an identical value again wouldn't register as a real change to react-dom's tracker.
+    fireEvent.change(textarea(), { target: { value: "hey @bo" } });
+    await screen.findByText("bob@example.com");
+    expect(calls).toBe(2);
+  });
+
+  it("a roster request pending across a navigation cannot restore stale users into the shared cache", async () => {
+    let resolveFirst!: (u: { email: string }[]) => void;
+    const firstFetch = new Promise<{ email: string }[]>((res) => {
+      resolveFirst = res;
+    });
+    setHostApi({ listMentionableUsers: () => firstFetch } as unknown as Api);
+    const { unmount } = render(<ComposerPopover {...base} />);
+    fireEvent.change(textarea(), { target: { value: "hey @b" } }); // kicks off the pending fetch
+
+    resetMentionRoster(); // simulate in-window navigation to a different doc WHILE it's in flight
+    unmount(); // the old doc's composer is gone too — navigation replaces the whole doc/rail
+
+    // The stale request resolves only now, with the OLD doc's roster — after the nav already reset.
+    resolveFirst([{ email: "old-doc-user@example.com" }]);
+    await new Promise((r) => setTimeout(r, 0));
+
+    // A fresh composer instance for the NEW doc must get a real fetch of ITS OWN roster, not the
+    // stale result the obsolete request tried to write into the shared cache.
+    setHostApi({ listMentionableUsers: async () => [{ email: "new-doc-user@example.com" }] } as unknown as Api);
+    render(<ComposerPopover {...base} />);
+    fireEvent.change(textarea(), { target: { value: "hey @n" } });
+    await screen.findByText("new-doc-user@example.com");
+    expect(screen.queryByText("old-doc-user@example.com")).toBeNull();
+  });
+
   it("Escape fully closes the dropdown — no stale candidates left showing for the old trigger", async () => {
     setHostApi({ listMentionableUsers: async () => [{ email: "bob@example.com" }] } as unknown as Api);
     render(<ComposerPopover {...base} />);

@@ -48,6 +48,12 @@ function escapeRegExp(s: string): string {
 // says hosts should cache it. Module-level (not per-hook-instance) is what makes the sharing work.
 let sharedRosterCache: MentionCandidate[] | null = null;
 let sharedRosterPromise: Promise<MentionCandidate[]> | null = null;
+// Bumped by resetMentionRoster(). A request started BEFORE a navigation captures the generation
+// it was issued under; if it resolves/rejects AFTER a navigation (the generation has since moved
+// on), its handler must not touch the module cache — otherwise a slow, now-obsolete request for
+// the doc we LEFT could clobber (or null out the promise for) the NEW doc's already-current or
+// still-in-flight roster.
+let rosterGeneration = 0;
 
 /** Clear the module-level roster cache. Real hosts call this on doc navigation (App.tsx's
  *  onNavigated) — the cache is per-doc-open, and an in-window nav to a different doc (a
@@ -57,28 +63,27 @@ let sharedRosterPromise: Promise<MentionCandidate[]> | null = null;
 export function resetMentionRoster(): void {
   sharedRosterCache = null;
   sharedRosterPromise = null;
+  rosterGeneration++;
 }
 
 function loadSharedRoster(): Promise<MentionCandidate[]> {
   if (sharedRosterCache) return Promise.resolve(sharedRosterCache);
   if (!sharedRosterPromise) {
+    const generation = rosterGeneration;
     const list = hostApi()?.listMentionableUsers?.();
     sharedRosterPromise = list
-      ? list.then(
-          (u) => {
-            sharedRosterCache = u;
-            return u;
-          },
-          () => {
-            // Do NOT cache a failure as "no roster" — a transient network blip would then disable
-            // mentions for the rest of the doc session with no retry. Leave the cache unset and
-            // clear the in-flight promise so a later @-trigger (a fresh hook instance, or this
-            // doc's next load) tries again instead of being permanently poisoned.
-            sharedRosterPromise = null;
-            return [];
-          },
-        )
+      ? list.then((u) => {
+          if (generation === rosterGeneration) sharedRosterCache = u; // else: a navigation since made this stale — drop it
+          return u;
+        })
       : Promise.resolve([]);
+    // Do NOT cache a failure as "no roster" — a transient network blip would then disable mentions
+    // for the rest of the doc session with no retry. Clear the in-flight marker (only if still the
+    // current generation — a newer request may already have replaced it) so the next
+    // loadSharedRoster() call tries again instead of returning a dead promise forever.
+    sharedRosterPromise.catch(() => {
+      if (generation === rosterGeneration) sharedRosterPromise = null;
+    });
   }
   return sharedRosterPromise;
 }
@@ -142,7 +147,14 @@ export function useMentionAutocomplete(taRef: RefObject<HTMLTextAreaElement>, te
       setOpen(false);
       if (!requestedRosterRef.current) {
         requestedRosterRef.current = true;
-        void loadSharedRoster().then((u) => setUsers((prev) => prev ?? u));
+        void loadSharedRoster().then(
+          (u) => setUsers((prev) => prev ?? u),
+          () => {
+            // Failed — leave `users` at null (not a terminal []) and drop the guard, so THIS same
+            // mounted textarea's next @-trigger retries instead of being stuck forever.
+            requestedRosterRef.current = false;
+          },
+        );
       }
       return;
     }
