@@ -29,6 +29,8 @@ import { NewDocModal } from "./NewDocModal";
 import { renderMarkdown } from "./markdown";
 import { isInternalDocLink, resolveDocPath } from "./links";
 import { ComposerPopover } from "./ComposerPopover";
+import { useMentionAutocomplete, resetMentionRoster } from "./mentionAutocomplete";
+import { MentionDropdown } from "./MentionDropdown";
 import { Switch } from "./Switch";
 import { ContextMenu } from "./ContextMenu";
 import { MOD_KEY } from "./platform";
@@ -291,6 +293,10 @@ export function App(props: EditorProps = {}): JSX.Element {
   const docPathRef = useRef<string>(""); // current doc's locator path, for resolving relative links
   const railRef = useRef<HTMLElement>(null);
   const editorRef = useRef<SourceEditorHandle>(null);
+  // A load()/onNavigated-supplied deep-link comment id, focused once the destination doc + rail
+  // have committed. State (not a ref): setting it must itself trigger the focus effect below, so
+  // an in-window navigation (which doesn't flip `loaded`) still re-fires it.
+  const [pendingFocusCommentId, setPendingFocusCommentId] = useState<string | null>(null);
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const history = useRef<ParsedDocument[]>([]); // undo stack of doc snapshots
   const future = useRef<ParsedDocument[]>([]); // redo stack
@@ -341,9 +347,10 @@ export function App(props: EditorProps = {}): JSX.Element {
 
     hostApi()
       .load()
-      .then(({ content, path, readOnly: ro }) => {
+      .then(({ content, path, readOnly: ro, focusCommentId }) => {
         docPathRef.current = path;
         setReadOnly(!!ro);
+        setPendingFocusCommentId(focusCommentId ?? null);
         const parsed = parse(content);
         // With an external comment store (plugin) comments are owned by the store, not the
         // serialized body — source them from the store; its observer keeps them in sync.
@@ -396,13 +403,19 @@ export function App(props: EditorProps = {}): JSX.Element {
       hostApi().onAgentMessage?.((msg) => setAgentMessages((prev) => [...prev, msg])),
       // Desktop only: the window followed a link to another doc — reset to it (a fresh
       // load), clearing any in-flight proposal/turn state, then re-show a parked proposal.
-      hostApi().onNavigated?.(({ content, path, readOnly: ro }) => {
+      hostApi().onNavigated?.(({ content, path, readOnly: ro, focusCommentId }) => {
         // Undo/redo is per-doc: stash the leaving doc's stacks so returning restores them, and load
         // the destination's own (empty on first visit). Per-doc still holds — an undo can never pull
         // another doc's content — but the history now survives navigation instead of being dropped.
         if (docPathRef.current) historyByDoc.current.set(docPathRef.current, { undo: history.current, redo: future.current });
         docPathRef.current = path;
         setReadOnly(!!ro); // the destination doc may have its own read-only state
+        // The @-mention roster is cached per-doc-open — the doc we're navigating to may belong to
+        // a different org, so the previous doc's cached roster must not leak into this one.
+        resetMentionRoster();
+        // Overwrite (not merge) even when absent: any stale pending focus from the doc we just
+        // left must not carry over and fire against the wrong document.
+        setPendingFocusCommentId(focusCommentId ?? null);
         const parsed = parse(content);
         const d = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
         setDoc(d);
@@ -908,7 +921,7 @@ export function App(props: EditorProps = {}): JSX.Element {
 
   // --- comment actions ---
   const addComment = useCallback(
-    (text: string, target: string | null, span?: SourceSpan | null, question?: Question, talkToAgent = true) => {
+    (text: string, target: string | null, span?: SourceSpan | null, question?: Question, talkToAgent = true, mentions: string[] = []) => {
       // `talkToAgent === false` → a memo the agent ignores: the comment carries `agent:false`, and the
       // control event payload echoes it so the cloud agent can skip the wake (it never reacts to a memo).
       const agent = talkToAgent ? undefined : false;
@@ -922,7 +935,7 @@ export function App(props: EditorProps = {}): JSX.Element {
           setStatus(blocker === "overlap" ? t("topbar.cantOverlap") : t("msg.cantAnchor"));
           return;
         }
-        const res = addSpanComment(docRef.current, target, { text, author: userAuthorRef.current, question, agent }, span ?? undefined);
+        const res = addSpanComment(docRef.current, target, { text, author: userAuthorRef.current, question, agent, mentions }, span ?? undefined);
         if (!res) {
           setStatus(t("msg.cantAnchor"));
           return;
@@ -931,7 +944,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         hostApi().telemetry?.("comment_created", { kind: "span" }); // activation funnel; never the text
         setFocused(res.id);
       } else {
-        const res = addDocComment(docRef.current, { text, author: userAuthorRef.current, question, agent });
+        const res = addDocComment(docRef.current, { text, author: userAuthorRef.current, question, agent, mentions });
         apply(res.doc, { type: "comment_created", payload: { id: res.id, anchor: "doc", ...memoPayload } });
         hostApi().telemetry?.("comment_created", { kind: "doc" });
         setFocused(res.id);
@@ -1410,6 +1423,23 @@ export function App(props: EditorProps = {}): JSX.Element {
   const visible = ordered.filter((o) => showResolvedOrphaned || (!o.thread.root.resolved && !o.orphaned));
   const resolvedCount = ordered.filter((o) => o.thread.root.resolved).length;
   const orphanedCount = ordered.filter((o) => o.orphaned).length;
+
+  // A load()/onNavigated-supplied deep-link comment id (e.g. from a mention-digest email): focus
+  // it once the doc + rail have actually mounted, not inside load().then()/onNavigated themselves
+  // (the rail card doesn't exist yet at that point). If the target thread is resolved/orphaned and
+  // currently hidden by the reveal toggle, reveal it first — otherwise there'd be no rail card to
+  // scroll to at all. The rAF is cancelled in the cleanup so a second deep-link arriving before the
+  // first one's frame fires can't run focusComment against a doc that's since moved on.
+  useEffect(() => {
+    if (!loaded || !pendingFocusCommentId) return;
+    const id = pendingFocusCommentId;
+    setPendingFocusCommentId(null);
+    const c = doc.comments.find((x) => x.id === id);
+    const rootId = c?.parentId ?? id;
+    if (!visible.some((o) => o.thread.root.id === rootId)) setShowResolvedOrphaned(true);
+    const raf = requestAnimationFrame(() => focusComment(id));
+    return () => cancelAnimationFrame(raf);
+  }, [loaded, pendingFocusCommentId, focusComment, doc.comments, visible]);
   // Reveal-toggle tooltip: only name the categories that actually have hidden comments
   // (the button itself is hidden when both counts are 0 — nothing to reveal).
   const revealTip =
@@ -1717,8 +1747,8 @@ export function App(props: EditorProps = {}): JSX.Element {
           target={composer.target}
           pos={composer.pos}
           disabled={editingLocked}
-          onSubmit={(text, talkToAgent) => {
-            addComment(text, composer.target, composer.span, undefined, talkToAgent);
+          onSubmit={(text, talkToAgent, mentions) => {
+            addComment(text, composer.target, composer.span, undefined, talkToAgent, mentions);
             setComposer(null);
           }}
           onClose={() => setComposer(null)}
@@ -2014,7 +2044,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                   synced={syncedCommentId === o.thread.root.id}
                   disabled={editingLocked}
                   onFocus={() => focusComment(o.thread.root.id, false, true)}
-                  onReply={(text) => apply(addReply(docRef.current, o.thread.root.id, text, userAuthorRef.current).doc, { type: "comment_created", payload: { parentId: o.thread.root.id } })}
+                  onReply={(text, mentions) => apply(addReply(docRef.current, o.thread.root.id, text, userAuthorRef.current, mentions).doc, { type: "comment_created", payload: { parentId: o.thread.root.id } })}
                   onAnswer={(selected, text) => apply(setAnswer(docRef.current, o.thread.root.id, selected, text, userAuthorRef.current).doc, { type: "comment_answered", payload: { parentId: o.thread.root.id, selected } })}
                   onAnswerPending={(p) => setQuestionPending(o.thread.root.id, p)}
                   onResolve={(r) => apply(setResolved(docRef.current, o.thread.root.id, r), { type: "comment_resolved", payload: { id: o.thread.root.id, resolved: r } })}
@@ -2740,7 +2770,7 @@ function ThreadCard(props: {
   synced: boolean;
   disabled: boolean;
   onFocus: () => void;
-  onReply: (text: string) => void;
+  onReply: (text: string, mentions: string[]) => void;
   onAnswer: (selected: string[], text: string) => void;
   onAnswerPending?: (pending: boolean) => void;
   onResolve: (resolved: boolean) => void;
@@ -2766,6 +2796,8 @@ function ThreadCard(props: {
   const [replying, setReplying] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
+  const replyTa = useRef<HTMLTextAreaElement>(null);
+  const replyMention = useMentionAutocomplete(replyTa, replyText, setReplyText);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null); // which comment's ⋯ menu is open
 
   // Close the ⋯ menu on any outside click (its own clicks stopPropagation).
@@ -2897,27 +2929,52 @@ function ThreadCard(props: {
       )}
       {replying && (
         <div className="ap-reply-box">
-          <textarea
-            className="ap-grow"
-            placeholder={t("thread.replyPlaceholder")}
-            value={replyText}
-            disabled={disabled}
-            autoFocus
-            onChange={(e) => setReplyText(e.target.value)}
-            onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && replyText.trim()) {
-                props.onReply(replyText.trim());
-                setReplyText("");
-                setReplying(false);
-              }
-            }}
-          />
+          <div style={{ position: "relative" }}>
+            <textarea
+              ref={replyTa}
+              className="ap-grow"
+              placeholder={t("thread.replyPlaceholder")}
+              value={replyText}
+              disabled={disabled}
+              autoFocus
+              role="combobox"
+              aria-expanded={replyMention.isOpen}
+              aria-controls={replyMention.isOpen ? replyMention.listboxId : undefined}
+              aria-autocomplete="list"
+              aria-activedescendant={replyMention.activeDescendantId}
+              onChange={(e) => {
+                setReplyText(e.target.value);
+                replyMention.sync();
+              }}
+              // Re-derive dropdown state on caret movement alone too (arrow keys, a click), not
+              // just on text change — otherwise moving off a trigger word leaves stale suggestions.
+              onSelect={() => replyMention.sync()}
+              onKeyDown={(e) => {
+                if (replyMention.onKeyDown(e)) return;
+                if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && replyText.trim()) {
+                  props.onReply(replyText.trim(), replyMention.activeMentions(replyText));
+                  setReplyText("");
+                  replyMention.reset();
+                  setReplying(false);
+                }
+              }}
+            />
+            <MentionDropdown
+              candidates={replyMention.candidates}
+              activeIndex={replyMention.activeIndex}
+              onPick={replyMention.pick}
+              onHover={replyMention.setActiveIndex}
+              listboxId={replyMention.listboxId}
+              optionId={replyMention.optionId}
+            />
+          </div>
           <div className="ap-row">
             <button
               disabled={disabled || !replyText.trim()}
               onClick={() => {
-                props.onReply(replyText.trim());
+                props.onReply(replyText.trim(), replyMention.activeMentions(replyText));
                 setReplyText("");
+                replyMention.reset();
                 setReplying(false);
               }}
             >
@@ -2927,6 +2984,7 @@ function ThreadCard(props: {
               className="ap-link"
               onClick={() => {
                 setReplyText("");
+                replyMention.reset();
                 setReplying(false);
               }}
             >

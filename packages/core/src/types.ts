@@ -44,6 +44,9 @@ export interface Comment {
    *  from what the agent reads ({@link docForAgent}) and never a wake event. Lets a human jot a note for
    *  teammates (or themselves) without summoning the agent, in instant or turn mode. */
   agent?: boolean;
+  /** Emails of users @-mentioned in `text` via the composer's mention picker (not derived by
+   *  re-parsing `text`). Cloud-only: hosts without an org roster (desktop) never populate this. */
+  mentions?: string[];
 }
 
 /** A parsed document: the Markdown body plus the structured comments. */

@@ -462,6 +462,11 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outlin
 ::highlight(ap-comment-target) { background: #bcd5cc; color: inherit; }
 /* Preview right-click context menu. */
 .ap-ctxmenu { position: fixed; z-index: 40; display: flex; flex-direction: column; min-width: 168px; padding: 4px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
+.ap-mention-dropdown { position: absolute; top: 100%; left: 0; z-index: 45; margin-top: 4px; width: 260px; max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; padding: 4px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
+.ap-mention-item { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; font: inherit; text-align: left; background: none; border: 0; border-radius: 6px; padding: 5px 9px; cursor: pointer; color: var(--fg); }
+.ap-mention-item:hover, .ap-mention-item.active { background: var(--accent-soft); color: var(--accent); }
+.ap-mention-email { font-size: 12.5px; }
+.ap-mention-name { font-size: 11px; opacity: 0.7; }
 .ap-ctxmenu-item { font: inherit; text-align: left; background: none; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; color: var(--fg); }
 .ap-ctxmenu-item:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
 .ap-ctxmenu-item:disabled { opacity: 0.4; cursor: default; }

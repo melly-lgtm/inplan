@@ -33,6 +33,14 @@ describe("docOps", () => {
     expect(addAnswer(base, "cmt-q", ["SQLite"], "go simple", author).doc.comments[0]).toMatchObject({ parentId: "cmt-q", selected: ["SQLite"], text: "go simple" });
   });
 
+  it("mentions thread through addSpanComment/addDocComment/addReply when present, and are omitted when empty", () => {
+    expect(addSpanComment(base, "Postgres", { author, text: "cc @bob", mentions: ["bob@example.com"] })!.doc.comments[0]).toMatchObject({ mentions: ["bob@example.com"] });
+    expect(addSpanComment(base, "Postgres", { author, text: "no mention" })!.doc.comments[0]).not.toHaveProperty("mentions");
+    expect(addDocComment(base, { author, text: "cc @bob", mentions: ["bob@example.com"] }).doc.comments[0]).toMatchObject({ mentions: ["bob@example.com"] });
+    expect(addReply(base, "cmt-p", "cc @bob", author, ["bob@example.com"]).doc.comments[0]).toMatchObject({ mentions: ["bob@example.com"] });
+    expect(addReply(base, "cmt-p", "no mention", author).doc.comments[0]).not.toHaveProperty("mentions");
+  });
+
   it("setResolved and editCommentText update the targeted comment only", () => {
     const doc: ParsedDocument = { body: "x", comments: [{ id: "cmt-a", author, date: "d", resolved: false, text: "t" }] };
     expect(setResolved(doc, "cmt-a", true).comments[0]!.resolved).toBe(true);
