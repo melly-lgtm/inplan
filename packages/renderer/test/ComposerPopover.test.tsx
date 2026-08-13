@@ -215,6 +215,49 @@ describe("ComposerPopover", () => {
     expect(screen.queryByText("old-doc-user@example.com")).toBeNull();
   });
 
+  it("an obsolete request settling while a NEWER request is still pending does not clear the newer one", async () => {
+    let resolveOld!: (u: { email: string }[]) => void;
+    const oldFetch = new Promise<{ email: string }[]>((res) => {
+      resolveOld = res;
+    });
+    setHostApi({ listMentionableUsers: () => oldFetch } as unknown as Api);
+    const { unmount: unmountOld } = render(<ComposerPopover {...base} />);
+    fireEvent.change(textarea(), { target: { value: "hey @b" } }); // starts the OLD (generation N) request
+    unmountOld();
+
+    resetMentionRoster(); // navigation — generation bumps to N+1, sharedRosterPromise cleared
+
+    let newCalls = 0;
+    let resolveNew!: (u: { email: string }[]) => void;
+    const newFetch = new Promise<{ email: string }[]>((res) => {
+      resolveNew = res;
+    });
+    setHostApi({
+      listMentionableUsers: () => {
+        newCalls++;
+        return newFetch; // stays pending, so we can observe whether a later instance re-fetches
+      },
+    } as unknown as Api);
+    const { unmount: unmountNew } = render(<ComposerPopover {...base} />);
+    fireEvent.change(textarea(), { target: { value: "hey @n" } }); // starts the NEW (generation N+1) request — still pending
+    expect(newCalls).toBe(1);
+    unmountNew();
+
+    // NOW the old, obsolete request finally settles. Its handlers must see the generation mismatch
+    // and leave sharedRosterPromise — the newer, still-pending one — untouched.
+    resolveOld([{ email: "old-doc-user@example.com" }]);
+    await new Promise((r) => setTimeout(r, 0));
+
+    // A THIRD composer instance must reuse the still-pending NEW request, not start another fetch.
+    render(<ComposerPopover {...base} />);
+    fireEvent.change(textarea(), { target: { value: "hey @n" } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(newCalls).toBe(1); // no additional listMentionableUsers call
+
+    resolveNew([{ email: "new-doc-user@example.com" }]);
+    await screen.findByText("new-doc-user@example.com");
+  });
+
   it("Escape fully closes the dropdown — no stale candidates left showing for the old trigger", async () => {
     setHostApi({ listMentionableUsers: async () => [{ email: "bob@example.com" }] } as unknown as Api);
     render(<ComposerPopover {...base} />);
