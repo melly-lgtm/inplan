@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { KeyboardEvent, RefObject } from "react";
 import { hostApi } from "./api";
 
@@ -38,30 +38,64 @@ export function filterMentionCandidates(users: MentionCandidate[], query: string
   return matches.slice(0, 6);
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Shared across every mounted composer/reply box (a doc can have many ThreadCards): the roster
+// is per-doc-open, not per-textarea, so all instances fetch it at most ONCE and reuse the same
+// result — both to avoid a fetch storm on load and because Api.listMentionableUsers's own contract
+// says hosts should cache it. Module-level (not per-hook-instance) is what makes the sharing work.
+let sharedRosterCache: MentionCandidate[] | null = null;
+let sharedRosterPromise: Promise<MentionCandidate[]> | null = null;
+
+/** Test-only: clear the module-level roster cache, which otherwise leaks between test cases in
+ *  the same file (a real session only ever loads one doc, so it never needs clearing at runtime). */
+export function __resetMentionRosterForTests(): void {
+  sharedRosterCache = null;
+  sharedRosterPromise = null;
+}
+
+function loadSharedRoster(): Promise<MentionCandidate[]> {
+  if (sharedRosterCache) return Promise.resolve(sharedRosterCache);
+  if (!sharedRosterPromise) {
+    const list = hostApi()?.listMentionableUsers?.();
+    sharedRosterPromise = list
+      ? list.then(
+          (u) => {
+            sharedRosterCache = u;
+            return u;
+          },
+          () => {
+            sharedRosterCache = [];
+            return [];
+          },
+        )
+      : Promise.resolve([]);
+  }
+  return sharedRosterPromise;
+}
+
 /**
  * Wires an `@`-trigger mention dropdown onto a controlled `<textarea>`. The caller keeps owning
  * `text`/`setText` (as {@link ComposerPopover} and the reply box already do) — this hook only
  * decides when to show suggestions, splices a picked user into the text, and tracks which emails
  * were mentioned. Absent `Api.listMentionableUsers` (desktop, tests) ⇒ `open` never becomes true,
  * so the `@`-trigger is a silent no-op.
+ *
+ * The roster is fetched lazily — only once the author actually types a trigger, not on mount —
+ * and shared (see {@link loadSharedRoster}), so mounting many comment threads' hooks at once (a
+ * doc with dozens of ThreadCards) doesn't fire a roster request per thread.
  */
 export function useMentionAutocomplete(taRef: RefObject<HTMLTextAreaElement>, text: string, setText: (v: string) => void) {
-  const [users, setUsers] = useState<MentionCandidate[] | null>(null);
+  const [users, setUsers] = useState<MentionCandidate[] | null>(sharedRosterCache);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const mentionsRef = useRef<Set<string>>(new Set());
   const pendingCaretRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const list = hostApi()?.listMentionableUsers?.();
-    if (!list) return;
-    list.then((u) => !cancelled && setUsers(u)).catch(() => !cancelled && setUsers([]));
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const requestedRosterRef = useRef(false);
+  const listboxId = useId();
 
   // Restore the caret after a pick spliced new text in (setSelectionRange only takes effect once
   // the textarea's DOM value has actually updated to match the new `text`).
@@ -77,12 +111,27 @@ export function useMentionAutocomplete(taRef: RefObject<HTMLTextAreaElement>, te
   /** Call after every textarea change (onChange) to re-derive dropdown-open state from the caret. */
   const sync = useCallback(() => {
     const el = taRef.current;
-    if (!el || !users || !users.length) {
+    if (!el) {
       setOpen(false);
       return;
     }
     const trigger = detectMentionTrigger(el.value, el.selectionStart ?? el.value.length);
     if (!trigger) {
+      setOpen(false);
+      return;
+    }
+    if (users == null) {
+      // First real trigger this textarea has seen — kick off (or join) the shared roster fetch.
+      // sync() re-runs (see the effect below) once it resolves, re-checking the still-current
+      // trigger. Guarded so a fetch already in flight isn't re-requested on every keystroke.
+      setOpen(false);
+      if (!requestedRosterRef.current) {
+        requestedRosterRef.current = true;
+        void loadSharedRoster().then((u) => setUsers((prev) => prev ?? u));
+      }
+      return;
+    }
+    if (!users.length) {
       setOpen(false);
       return;
     }
@@ -147,10 +196,12 @@ export function useMentionAutocomplete(taRef: RefObject<HTMLTextAreaElement>, te
     [open, candidates, activeIndex, pick],
   );
 
-  /** Mentioned emails still referenced (`@email`) in `currentText` — filters out entries whose
-   *  `@`-marker the author deleted after picking. Call at submit time. */
+  /** Mentioned emails still referenced as a COMPLETE `@email` token in `currentText` — filters out
+   *  entries whose `@`-marker the author deleted, or extended into a different address, after
+   *  picking (e.g. "@bob@example.com" hand-edited into "@bob@example.comx" no longer counts). Call
+   *  at submit time. */
   const activeMentions = useCallback((currentText: string) => {
-    return Array.from(mentionsRef.current).filter((email) => currentText.includes(`@${email}`));
+    return Array.from(mentionsRef.current).filter((email) => new RegExp(`(?:^|\\s)@${escapeRegExp(email)}(?=\\s|$)`).test(currentText));
   }, []);
 
   const reset = useCallback(() => {
@@ -158,5 +209,22 @@ export function useMentionAutocomplete(taRef: RefObject<HTMLTextAreaElement>, te
     setOpen(false);
   }, []);
 
-  return { open, candidates, activeIndex, sync, pick, onKeyDown, activeMentions, reset, setActiveIndex };
+  /** Stable DOM id for the dropdown's listbox (`aria-controls` on the textarea, `id` on the
+   *  dropdown). Distinct per hook instance (`useId`) so multiple open composers never collide. */
+  const optionId = useCallback((index: number) => `${listboxId}-opt-${index}`, [listboxId]);
+
+  return {
+    open,
+    candidates,
+    activeIndex,
+    sync,
+    pick,
+    onKeyDown,
+    activeMentions,
+    reset,
+    setActiveIndex,
+    listboxId,
+    optionId,
+    activeDescendantId: open && candidates[activeIndex] ? optionId(activeIndex) : undefined,
+  };
 }

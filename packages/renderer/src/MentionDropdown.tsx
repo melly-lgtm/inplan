@@ -12,18 +12,25 @@ export function MentionDropdown({
   activeIndex,
   onPick,
   onHover,
+  listboxId,
+  optionId,
 }: {
   candidates: MentionCandidate[];
   activeIndex: number;
   onPick: (c: MentionCandidate) => void;
   onHover: (i: number) => void;
+  /** The id the owning textarea's `aria-controls` points at (from {@link useMentionAutocomplete}). */
+  listboxId: string;
+  /** Per-option id, matching the textarea's `aria-activedescendant` for the active index. */
+  optionId: (i: number) => string;
 }): JSX.Element | null {
   if (candidates.length === 0) return null;
   return (
-    <div className="ap-mention-dropdown" role="listbox">
+    <div className="ap-mention-dropdown" role="listbox" id={listboxId}>
       {candidates.map((c, i) => (
         <button
           key={c.email}
+          id={optionId(i)}
           type="button"
           role="option"
           aria-selected={i === activeIndex}

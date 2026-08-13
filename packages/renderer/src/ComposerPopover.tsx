@@ -85,6 +85,11 @@ export function ComposerPopover({
           placeholder={t("composer.placeholder", { mod: MOD_KEY })}
           value={text}
           disabled={disabled}
+          role="combobox"
+          aria-expanded={mention.open}
+          aria-controls={mention.listboxId}
+          aria-autocomplete="list"
+          aria-activedescendant={mention.activeDescendantId}
           onChange={(e) => {
             setText(e.target.value);
             grow(e.target);
@@ -98,7 +103,14 @@ export function ComposerPopover({
             }
           }}
         />
-        <MentionDropdown candidates={mention.candidates} activeIndex={mention.activeIndex} onPick={mention.pick} onHover={mention.setActiveIndex} />
+        <MentionDropdown
+          candidates={mention.candidates}
+          activeIndex={mention.activeIndex}
+          onPick={mention.pick}
+          onHover={mention.setActiveIndex}
+          listboxId={mention.listboxId}
+          optionId={mention.optionId}
+        />
       </div>
       <div className="ap-row">
         {/* Audience switch: conversation (talk to the agent — default) ⇄ memo (the agent ignores it). */}

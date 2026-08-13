@@ -6,10 +6,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ComposerPopover } from "../src/ComposerPopover";
 import { MOD_KEY } from "../src/platform";
 import { setHostApi, type Api } from "../src/api";
+import { __resetMentionRosterForTests } from "../src/mentionAutocomplete";
 
 afterEach(() => {
   cleanup();
   setHostApi(undefined as unknown as Api); // reset any mention-roster stub between tests
+  __resetMentionRosterForTests(); // the roster is cached module-level (shared across composers) — must not leak between tests
 });
 
 const base = { target: null as string | null, pos: { x: 10, y: 10 }, disabled: false, onSubmit: () => {}, onClose: () => {} };
@@ -105,6 +107,29 @@ describe("ComposerPopover", () => {
     expect(textarea().value).toBe("hey @bob@example.com ");
     fireEvent.click(commentBtn());
     expect(onSubmit).toHaveBeenCalledWith("hey @bob@example.com", true, ["bob@example.com"]);
+  });
+
+  it("does not call listMentionableUsers until the author actually types an @-trigger", () => {
+    const listMentionableUsers = vi.fn().mockResolvedValue([{ email: "bob@example.com" }]);
+    setHostApi({ listMentionableUsers } as unknown as Api);
+    render(<ComposerPopover {...base} />);
+    fireEvent.change(textarea(), { target: { value: "just typing, no trigger yet" } });
+    expect(listMentionableUsers).not.toHaveBeenCalled();
+    fireEvent.change(textarea(), { target: { value: "just typing, no trigger yet @b" } });
+    expect(listMentionableUsers).toHaveBeenCalledTimes(1);
+  });
+
+  it("only counts a mention as active while it's still a COMPLETE @email token (an edited/extended one doesn't count)", async () => {
+    const onSubmit = vi.fn();
+    setHostApi({ listMentionableUsers: async () => [{ email: "bob@example.com" }] } as unknown as Api);
+    render(<ComposerPopover {...base} onSubmit={onSubmit} />);
+    fireEvent.change(textarea(), { target: { value: "hey @b" } });
+    await screen.findByText("bob@example.com");
+    fireEvent.mouseDown(screen.getByText("bob@example.com"));
+    // Hand-extend the picked mention into a different address — no longer a complete token.
+    fireEvent.change(textarea(), { target: { value: "hey @bob@example.comx typo" } });
+    fireEvent.click(commentBtn());
+    expect(onSubmit).toHaveBeenCalledWith("hey @bob@example.comx typo", true, []);
   });
 
   it("no @-mention dropdown when the host has no listMentionableUsers (desktop/tests)", () => {

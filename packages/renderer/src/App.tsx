@@ -293,7 +293,10 @@ export function App(props: EditorProps = {}): JSX.Element {
   const docPathRef = useRef<string>(""); // current doc's locator path, for resolving relative links
   const railRef = useRef<HTMLElement>(null);
   const editorRef = useRef<SourceEditorHandle>(null);
-  const pendingFocusCommentRef = useRef<string | null>(null); // a load()-supplied deep-link comment id, focused once the rail mounts
+  // A load()/onNavigated-supplied deep-link comment id, focused once the destination doc + rail
+  // have committed. State (not a ref): setting it must itself trigger the focus effect below, so
+  // an in-window navigation (which doesn't flip `loaded`) still re-fires it.
+  const [pendingFocusCommentId, setPendingFocusCommentId] = useState<string | null>(null);
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const history = useRef<ParsedDocument[]>([]); // undo stack of doc snapshots
   const future = useRef<ParsedDocument[]>([]); // redo stack
@@ -347,7 +350,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       .then(({ content, path, readOnly: ro, focusCommentId }) => {
         docPathRef.current = path;
         setReadOnly(!!ro);
-        pendingFocusCommentRef.current = focusCommentId ?? null;
+        setPendingFocusCommentId(focusCommentId ?? null);
         const parsed = parse(content);
         // With an external comment store (plugin) comments are owned by the store, not the
         // serialized body — source them from the store; its observer keeps them in sync.
@@ -400,13 +403,16 @@ export function App(props: EditorProps = {}): JSX.Element {
       hostApi().onAgentMessage?.((msg) => setAgentMessages((prev) => [...prev, msg])),
       // Desktop only: the window followed a link to another doc — reset to it (a fresh
       // load), clearing any in-flight proposal/turn state, then re-show a parked proposal.
-      hostApi().onNavigated?.(({ content, path, readOnly: ro }) => {
+      hostApi().onNavigated?.(({ content, path, readOnly: ro, focusCommentId }) => {
         // Undo/redo is per-doc: stash the leaving doc's stacks so returning restores them, and load
         // the destination's own (empty on first visit). Per-doc still holds — an undo can never pull
         // another doc's content — but the history now survives navigation instead of being dropped.
         if (docPathRef.current) historyByDoc.current.set(docPathRef.current, { undo: history.current, redo: future.current });
         docPathRef.current = path;
         setReadOnly(!!ro); // the destination doc may have its own read-only state
+        // Overwrite (not merge) even when absent: any stale pending focus from the doc we just
+        // left must not carry over and fire against the wrong document.
+        setPendingFocusCommentId(focusCommentId ?? null);
         const parsed = parse(content);
         const d = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
         setDoc(d);
@@ -1224,11 +1230,11 @@ export function App(props: EditorProps = {}): JSX.Element {
   // doc + rail have actually mounted, not inside the load().then() itself (the rail card doesn't
   // exist yet at that point).
   useEffect(() => {
-    if (!loaded || !pendingFocusCommentRef.current) return;
-    const id = pendingFocusCommentRef.current;
-    pendingFocusCommentRef.current = null;
+    if (!loaded || !pendingFocusCommentId) return;
+    const id = pendingFocusCommentId;
+    setPendingFocusCommentId(null);
     requestAnimationFrame(() => focusComment(id));
-  }, [loaded, focusComment]);
+  }, [loaded, pendingFocusCommentId, focusComment]);
 
   // Jump to a find match: body matches select in the source editor (revealing it)
   // and scroll the preview; comment matches focus the comment thread.
@@ -2921,6 +2927,11 @@ function ThreadCard(props: {
               value={replyText}
               disabled={disabled}
               autoFocus
+              role="combobox"
+              aria-expanded={replyMention.open}
+              aria-controls={replyMention.listboxId}
+              aria-autocomplete="list"
+              aria-activedescendant={replyMention.activeDescendantId}
               onChange={(e) => {
                 setReplyText(e.target.value);
                 replyMention.sync();
@@ -2935,7 +2946,14 @@ function ThreadCard(props: {
                 }
               }}
             />
-            <MentionDropdown candidates={replyMention.candidates} activeIndex={replyMention.activeIndex} onPick={replyMention.pick} onHover={replyMention.setActiveIndex} />
+            <MentionDropdown
+              candidates={replyMention.candidates}
+              activeIndex={replyMention.activeIndex}
+              onPick={replyMention.pick}
+              onHover={replyMention.setActiveIndex}
+              listboxId={replyMention.listboxId}
+              optionId={replyMention.optionId}
+            />
           </div>
           <div className="ap-row">
             <button
