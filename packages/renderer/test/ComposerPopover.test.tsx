@@ -132,6 +132,42 @@ describe("ComposerPopover", () => {
     expect(onSubmit).toHaveBeenCalledWith("hey @bob@example.comx typo", true, []);
   });
 
+  it.each([
+    ["hey @bob@example.com, please look", "trailing comma"],
+    ["hey @bob@example.com. thanks", "trailing period"],
+    ["hey @bob@example.com!", "trailing exclamation"],
+  ])("still counts a mention followed by prose punctuation (%s)", async (edited, _label) => {
+    const onSubmit = vi.fn();
+    setHostApi({ listMentionableUsers: async () => [{ email: "bob@example.com" }] } as unknown as Api);
+    render(<ComposerPopover {...base} onSubmit={onSubmit} />);
+    fireEvent.change(textarea(), { target: { value: "hey @b" } });
+    await screen.findByText("bob@example.com");
+    fireEvent.mouseDown(screen.getByText("bob@example.com"));
+    fireEvent.change(textarea(), { target: { value: edited } });
+    fireEvent.click(commentBtn());
+    expect(onSubmit).toHaveBeenCalledWith(edited, true, ["bob@example.com"]);
+  });
+
+  it("a transient roster fetch failure does not permanently cache 'no roster' for the rest of the session", async () => {
+    setHostApi({
+      listMentionableUsers: async () => {
+        throw new Error("network blip");
+      },
+    } as unknown as Api);
+    const { unmount } = render(<ComposerPopover {...base} />);
+    fireEvent.change(textarea(), { target: { value: "hey @b" } });
+    await new Promise((r) => setTimeout(r, 0)); // let the rejected fetch settle
+    expect(document.querySelector(".ap-mention-dropdown")).toBeNull(); // failed this time
+    unmount();
+
+    // A LATER composer instance (a fresh mount — the reply box, or reopening this one) must
+    // retry rather than keep reusing an empty roster cached from the earlier failure.
+    setHostApi({ listMentionableUsers: async () => [{ email: "bob@example.com" }] } as unknown as Api);
+    render(<ComposerPopover {...base} />);
+    fireEvent.change(textarea(), { target: { value: "hey @b" } });
+    await screen.findByText("bob@example.com");
+  });
+
   it("Escape fully closes the dropdown — no stale candidates left showing for the old trigger", async () => {
     setHostApi({ listMentionableUsers: async () => [{ email: "bob@example.com" }] } as unknown as Api);
     render(<ComposerPopover {...base} />);

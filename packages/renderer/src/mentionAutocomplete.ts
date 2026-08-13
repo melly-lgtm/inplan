@@ -70,7 +70,11 @@ function loadSharedRoster(): Promise<MentionCandidate[]> {
             return u;
           },
           () => {
-            sharedRosterCache = [];
+            // Do NOT cache a failure as "no roster" — a transient network blip would then disable
+            // mentions for the rest of the doc session with no retry. Leave the cache unset and
+            // clear the in-flight promise so a later @-trigger (a fresh hook instance, or this
+            // doc's next load) tries again instead of being permanently poisoned.
+            sharedRosterPromise = null;
             return [];
           },
         )
@@ -214,7 +218,10 @@ export function useMentionAutocomplete(taRef: RefObject<HTMLTextAreaElement>, te
    *  picking (e.g. "@bob@example.com" hand-edited into "@bob@example.comx" no longer counts). Call
    *  at submit time. */
   const activeMentions = useCallback((currentText: string) => {
-    return Array.from(mentionsRef.current).filter((email) => new RegExp(`(?:^|\\s)@${escapeRegExp(email)}(?=\\s|$)`).test(currentText));
+    // The lookahead accepts end-of-string, whitespace, OR terminal prose punctuation — plain
+    // "@bob@x.com" and "@bob@x.com, thanks" / "@bob@x.com." must both still count. (An address
+    // that genuinely ends in one of these chars is rarer than a sentence ending in one.)
+    return Array.from(mentionsRef.current).filter((email) => new RegExp(`(?:^|\\s)@${escapeRegExp(email)}(?=$|\\s|[.,;:!?)\\]])`).test(currentText));
   }, []);
 
   const reset = useCallback(() => {
