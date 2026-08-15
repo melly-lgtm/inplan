@@ -1168,10 +1168,11 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     // Working doc stays on the local file, but Review-mode PROPOSALS persist to the CLOUD doc's
     // proposal store (via live.store) — otherwise a parked proposal would sit in this machine's
     // sidecar, invisible to the human in the web editor who's meant to accept/reject it. The
-    // wrapper also captures the parked text so the healthy-turn path below can write the durable
-    // proposal record BEFORE the re-sync overwrites the working copy (#88).
+    // wrapper writes the durable proposal record (#88) the moment the cloud push confirms — at
+    // park time, not at turn end — so a waiter killed mid-wait (SIGTERM, network death) still
+    // leaves the record + text on disk, and it exists long before the end-of-turn re-sync
+    // overwrites the working copy.
     const localStore = fsBackend(workFile).store;
-    let parkedThisTurn: string | null = null;
     const gateStore: DocumentStore = {
       loadDoc: () => localStore.loadDoc(),
       saveDoc: (c) => localStore.saveDoc(c),
@@ -1181,12 +1182,9 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       getProposed: () => live.store.getProposed(),
       setProposed: async (c) => {
         await live.store.setProposed(c);
-        parkedThisTurn = c;
+        rds.parkProposal(c);
       },
-      clearProposed: async () => {
-        await live.store.clearProposed();
-        parkedThisTurn = null;
-      },
+      clearProposed: () => live.store.clearProposed(),
     };
     // Save-local handoff on the gate path reads the HUB canonical (the source of truth here);
     // live.store isn't updated by gate.applyRevision, so reading it would write a stale doc. If
@@ -1239,15 +1237,12 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       }
       process.stderr.write("inplan: hub was unavailable this turn — keeping local edits (will sync next turn)\n");
     } else {
-      // Turn applied to the hub. FIRST persist any proposal parked this turn (#88): the re-sync
-      // below overwrites the working copy with the pre-edit canonical while the proposal is still
-      // pending, so without this record the agent's text would exist only in the cloud slot with
-      // no local trace — the exact shape of the 2026-08-11 work-deletion. The record makes the
-      // park auditable turns later and the text recoverable from `.proposed.md`.
-      if (parkedThisTurn !== null) rds.parkProposal(parkedThisTurn);
-      // The working copy is now consistent with the hub for the agent's part, so record its hash
-      // (this makes a FAILED re-sync below self-heal: next run sees a matching hash and safely
-      // hydrates). Then re-sync the copy to the latest canonical (folding in the human's
+      // Turn applied to the hub. Any proposal parked this turn already has its durable record on
+      // disk (written at park time by the gateStore wrapper above), so the re-sync below can
+      // safely overwrite the working copy — the parked text stays recoverable from `.proposed.md`,
+      // unlike the 2026-08-11 incident where this overwrite destroyed the only local copy. Record
+      // the working copy's hash (this makes a FAILED re-sync self-heal: next run sees a matching
+      // hash and safely hydrates), then re-sync to the latest canonical (folding in the human's
       // just-taken turn) so the agent's NEXT turn builds on it, and clear pending.
       rds.clearReplayPending();
       rds.recordSynced(rds.readWorkFile() ?? "");
