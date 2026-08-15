@@ -67,6 +67,20 @@ describe("applyGatedEdit — file path (no plugin)", () => {
     expect(await types(channel)).toEqual([]); // nothing was proposed, so no event claims it was
   });
 
+  it("a failed canonical restore AFTER a successful push also degrades: no event, parkFailed reported", async () => {
+    // The push landed but the file revert rejected: the park sequence is incomplete, and the log
+    // must not claim it finished. The working copy still holds the edit; the next run retries.
+    const store = new MemoryDocumentStore("agent body");
+    store.saveDoc = async () => {
+      throw new Error("disk full");
+    };
+    const channel = new MemoryControlChannel();
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "agent body", canonicalText: "canon", quarantine: true, gate: null });
+    expect(applied).toEqual({ proposed: false, parkFailed: true });
+    expect(await store.getProposed()).toBe("agent body"); // the push itself did land
+    expect(await types(channel)).toEqual([]);
+  });
+
   it("no change: writes nothing, logs nothing", async () => {
     const store = new MemoryDocumentStore("same");
     const channel = new MemoryControlChannel();

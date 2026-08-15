@@ -25,7 +25,9 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 const entry = (type: string, ts: string): LogEntry => ({ seq: 1, ts, actor: "user", type });
 
 describe("resolutionFromEvents", () => {
-  const PARK = "2026-08-15T12:00:00.000Z";
+  const PARK = { at: "2026-08-15T12:00:00.000Z", hash: "hash-P1" };
+  const parkEvent = (ts: string, hash?: string): LogEntry => ({ seq: 1, ts, actor: "agent", type: LogEventType.AgentRevisionProposed, ...(hash ? { payload: { bytes: 1, hash } } : {}) });
+
   it.each([
     ["accepted", LogEventType.RevisionAcceptedAll, "accepted"],
     ["rejected", LogEventType.RevisionRejectedAll, "rejected"],
@@ -57,7 +59,7 @@ describe("resolutionFromEvents", () => {
     // agent_revision_proposed event's position in the log is the boundary that cannot skew.
     const entries = [
       entry(LogEventType.RevisionRejectedAll, "2026-08-15T11:50:00.000Z"), // a PREVIOUS proposal's decision
-      entry(LogEventType.AgentRevisionProposed, "2026-08-15T11:58:00.000Z"), // this park (server ts behind PARK)
+      parkEvent("2026-08-15T11:58:00.000Z", "hash-P1"), // this park (server ts behind PARK)
       entry(LogEventType.RevisionAcceptedAll, "2026-08-15T11:59:00.000Z"), // fast acceptance, ts still < PARK
     ];
     expect(resolutionFromEvents(entries, PARK)).toBe("accepted");
@@ -66,9 +68,39 @@ describe("resolutionFromEvents", () => {
   it("a previous proposal's decision BEFORE the park event is never misattributed", () => {
     const entries = [
       entry(LogEventType.RevisionAcceptedAll, "2026-08-15T12:30:00.000Z"), // late server ts, but before the park in log order
-      entry(LogEventType.AgentRevisionProposed, "2026-08-15T12:31:00.000Z"),
+      parkEvent("2026-08-15T12:31:00.000Z", "hash-P1"),
     ];
     expect(resolutionFromEvents(entries, PARK)).toBe("decided");
+  });
+
+  it("decisions bind to THIS proposal's park event by hash — a later proposal's decision is never claimed", () => {
+    // Machine A parks P1 and goes offline; the human rejects P1; machine B parks P2 which is
+    // accepted. When A finally resolves P1 it must read P1's rejection, not P2's acceptance.
+    const entries = [
+      parkEvent("2026-08-15T12:01:00.000Z", "hash-P1"),
+      entry(LogEventType.RevisionRejectedAll, "2026-08-15T12:05:00.000Z"), // P1's decision
+      parkEvent("2026-08-15T12:10:00.000Z", "hash-P2"),
+      entry(LogEventType.RevisionAcceptedAll, "2026-08-15T12:15:00.000Z"), // P2's decision
+    ];
+    expect(resolutionFromEvents(entries, PARK)).toBe("rejected");
+    expect(resolutionFromEvents(entries, { at: "2026-08-15T12:10:00.000Z", hash: "hash-P2" })).toBe("accepted");
+  });
+
+  it("a later proposal with no decision for ours → 'decided', never the newer proposal's outcome", () => {
+    const entries = [
+      parkEvent("2026-08-15T12:01:00.000Z", "hash-P1"),
+      parkEvent("2026-08-15T12:10:00.000Z", "hash-P2"),
+      entry(LogEventType.RevisionAcceptedAll, "2026-08-15T12:15:00.000Z"), // P2's decision only
+    ];
+    expect(resolutionFromEvents(entries, PARK)).toBe("decided");
+  });
+
+  it("an un-hashed park event (older CLI) still anchors as the last park", () => {
+    const entries = [
+      parkEvent("2026-08-15T12:01:00.000Z"), // no hash payload
+      entry(LogEventType.RevisionAcceptedAll, "2026-08-15T12:05:00.000Z"),
+    ];
+    expect(resolutionFromEvents(entries, PARK)).toBe("accepted");
   });
 });
 
@@ -122,6 +154,20 @@ describe("park / audit / resolve", () => {
     expect(record.bytes).toBe(utf8Bytes(text));
     expect(record.bytes).toBe(9);
     expect(record.bytes).not.toBe(text.length);
+  });
+
+  it("a crashed finalization retries without duplicating history (history first, record last, idempotent)", () => {
+    s.parkProposal("v1");
+    s.resolveProposal("accepted");
+    const historyPath = join(dir, "remote", "doc-1.plan.md.proposals.jsonl");
+    const recordPath = join(dir, "remote", "doc-1.plan.md.proposed.json");
+    // Simulate the crash window: history was appended but the record rewrite never happened —
+    // roll the record back to pending_review as if the process died between the two writes.
+    const record = JSON.parse(readFileSync(recordPath, "utf8"));
+    writeFileSync(recordPath, JSON.stringify({ ...record, state: "pending_review" }, null, 2));
+    s.resolveProposal("accepted"); // the retry
+    expect(readFileSync(historyPath, "utf8").trim().split("\n")).toHaveLength(1); // no duplicate line
+    expect(s.latestProposal()?.state).toBe("accepted"); // and the record is finalized now
   });
 
   it("resolveProposal without a pending record is a no-op", () => {

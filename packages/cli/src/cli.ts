@@ -482,8 +482,11 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
   const debounceMs = Number(process.env.INPLAN_DEBOUNCE_MS ?? 3000);
   const pollMs = Number(process.env.INPLAN_POLL_MS ?? 200);
   // Test knob, same family as the two above: how long a continuous poll-failure streak runs
-  // before the wait gives up (waitForActions' errorGraceMs; default 5 min in wait.ts).
-  const errorGraceMs = process.env.INPLAN_ERROR_GRACE_MS ? Number(process.env.INPLAN_ERROR_GRACE_MS) : undefined;
+  // before the wait gives up (waitForActions' errorGraceMs; default 5 min in wait.ts). Validated:
+  // a NaN or negative value would make the grace comparison never fire and the wait poll forever,
+  // so anything unparseable falls back to the default instead of being passed through.
+  const errorGraceParsed = Number(process.env.INPLAN_ERROR_GRACE_MS);
+  const errorGraceMs = process.env.INPLAN_ERROR_GRACE_MS && Number.isFinite(errorGraceParsed) && errorGraceParsed >= 0 ? errorGraceParsed : undefined;
 
   let waitCursor = cursor;
   let historyForMode = history;
@@ -1157,7 +1160,7 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       const slot = await live.store.getProposed().catch(() => undefined);
       if (slot === null) {
         const { entries } = await live.channel.readSince(0);
-        rds.resolveProposal(resolutionFromEvents(entries, parkedEarlier.at));
+        rds.resolveProposal(resolutionFromEvents(entries, parkedEarlier));
       }
     }
 
@@ -1188,16 +1191,18 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       backup: (c, m) => localStore.backup(c, m),
       getProposed: () => live.store.getProposed(),
       setProposed: async (c) => {
-        // The durable record is written ONLY after a confirmed push. A failed push flags the turn
-        // (applyGatedEdit degrades; the post-turn path below must keep-local, or the re-sync would
-        // destroy the working copy — at that point the only copy of the edit anywhere).
+        // The durable record is written ONLY after a confirmed push, and BOTH steps count as the
+        // park: a failed push leaves the working copy as the only copy of the edit, and a failed
+        // record write (push ok, fs error) leaves this machine without its recovery signal — in
+        // either case the post-turn path must keep-local instead of re-syncing the copy away, so
+        // both flag the turn as a degraded write.
         try {
           await live.store.setProposed(c);
+          rds.parkProposal(c);
         } catch (e) {
           hubParkFailed = true;
           throw e;
         }
-        rds.parkProposal(c);
       },
       clearProposed: () => live.store.clearProposed(),
     };

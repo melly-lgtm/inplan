@@ -45,25 +45,46 @@ export interface ProposalRecord {
 }
 
 /**
- * Map the decision events since a park to the proposal's outcome, newest-first so the human's most
- * recent decision wins. The park boundary is the log's own order, not the clock: the park appended
- * `agent_revision_proposed`, and only one proposal pends at a time, so everything after the LAST
- * such event belongs to this park. Timestamp comparison against the recorded park time is only the
- * fallback for a park whose event append failed — there, CLI-clock vs server-timestamp skew can at
- * worst degrade a fast decision to "decided", never misattribute an old one.
+ * Map decision events to THIS proposal's outcome, newest-first so the human's most recent decision
+ * wins. Binding is by the log's own order, not the clock: the park appended
+ * `agent_revision_proposed` carrying the proposal's hash, so the decision window is (this park's
+ * event, the next park event] — decisions for a LATER proposal (parked and decided by another
+ * machine while this one was offline) can never be misattributed to this record. Fallbacks, in
+ * order: an un-hashed park event (older CLI) matches as the last park event; no park event at all
+ * (the append failed) falls back to timestamp comparison against the recorded park time, where
+ * CLI-clock vs server-timestamp skew can at worst degrade a fast decision to "decided".
  */
-export function resolutionFromEvents(entries: LogEntry[], parkedAtIso: string): ProposalOutcome {
-  let boundary = -1;
+export function resolutionFromEvents(entries: LogEntry[], park: { at: string; hash: string }): ProposalOutcome {
+  // This park's event: the last agent_revision_proposed whose payload hash matches the record —
+  // or, when no event carries this hash, the last park event of any kind (single-machine case /
+  // older CLI without the hash payload).
+  let start = -1;
+  let lastPark = -1;
   for (let i = entries.length - 1; i >= 0; i--) {
-    if (entries[i]!.type === LogEventType.AgentRevisionProposed) {
-      boundary = i;
+    const e = entries[i]!;
+    if (e.type !== LogEventType.AgentRevisionProposed) continue;
+    if (lastPark < 0) lastPark = i;
+    if ((e.payload as { hash?: unknown } | undefined)?.hash === park.hash) {
+      start = i;
       break;
     }
   }
-  const parkedAt = Date.parse(parkedAtIso);
-  for (let i = entries.length - 1; i > boundary; i--) {
+  if (start < 0) start = lastPark;
+  // The window closes at the NEXT park event after ours: decisions beyond it belong to a newer
+  // proposal.
+  let end = entries.length;
+  if (start >= 0) {
+    for (let i = start + 1; i < entries.length; i++) {
+      if (entries[i]!.type === LogEventType.AgentRevisionProposed) {
+        end = i;
+        break;
+      }
+    }
+  }
+  const parkedAt = Date.parse(park.at);
+  for (let i = end - 1; i > start; i--) {
     const e = entries[i]!;
-    if (boundary < 0) {
+    if (start < 0) {
       const ts = Date.parse(e.ts);
       if (Number.isFinite(parkedAt) && Number.isFinite(ts) && ts < parkedAt) break;
     }
@@ -200,8 +221,24 @@ export class RemoteDocState {
 
   private finalize(record: ProposalRecord, outcome: ProposalOutcome): ProposalRecord {
     const finalized: ProposalRecord = { ...record, state: outcome };
+    // History first, record last: a crash between the writes leaves the record pending, so the
+    // next resolution retries — and the retry is idempotent because a history tail line matching
+    // this park (hash + at) is not appended twice. The reverse order would leave a terminal
+    // record with its history line missing forever (nothing would ever retry the append).
+    if (!this.historyEndsWith(record)) appendFileSync(this.historyPath, `${JSON.stringify(finalized)}\n`);
     writeFileSync(this.recordPath, JSON.stringify(finalized, null, 2));
-    appendFileSync(this.historyPath, `${JSON.stringify(finalized)}\n`);
     return finalized;
+  }
+
+  /** Whether the history's last line already records this park (crash-retry idempotency). */
+  private historyEndsWith(record: ProposalRecord): boolean {
+    if (!existsSync(this.historyPath)) return false;
+    try {
+      const lines = readFileSync(this.historyPath, "utf8").trim().split("\n");
+      const last = JSON.parse(lines[lines.length - 1]!) as Partial<ProposalRecord>;
+      return last.hash === record.hash && last.at === record.at;
+    } catch {
+      return false;
+    }
   }
 }

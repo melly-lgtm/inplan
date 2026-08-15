@@ -81,14 +81,22 @@ output carries `proposal: { state: "pending_review", bytes, hash }`, an
 
 How to audit "did my edit land?", in order:
 1. **This turn:** the `proposal` field in the wait JSON (`pending_review` = safely parked), or
-   a `document_edited` entry (= applied directly to canonical).
+   a `document_edited` entry (= applied directly to canonical). The `proposal` field also rides
+   a `wait_failed`, `superseded`, or `moved_local` ending — losing the wait afterwards does not
+   un-park your edit, so check the field (and the record below) before classifying it.
 2. **Any later turn:** read `<workingCopy>.proposed.json` — the durable record. Its `state`
    becomes `accepted`, `partially_accepted`, or `rejected` once the human decides (or
-   `decided` when the outcome event wasn't readable). The exact text you pushed is kept next
-   to it in `<workingCopy>.proposed.md`, and every finalized record is appended to
+   `decided` when the outcome event wasn't readable, and `superseded` when a newer proposal of
+   yours replaced it — the newest record is the authoritative one). The exact text you pushed
+   is kept next to it in `<workingCopy>.proposed.md`, and every finalized record is appended to
    `<workingCopy>.proposals.jsonl`.
 3. A later wait's `entries` may also carry the decision itself: `revision_accepted_all`,
    `revision_hunk_accepted`, or `revision_rejected_all`.
+
+If the park itself fails (stderr says the proposal push FAILED), there is no
+`agent_revision_proposed` event and no `pending_review` record — your edit stays in the
+working copy, and the next `wait` run re-detects the divergence and retries the park. Do not
+re-create the edit; just re-run.
 
 Two things are **normal and must never be read as data loss**: after a healthy turn the
 working copy is re-synced to the current canonical (so your parked edit is no longer in it —

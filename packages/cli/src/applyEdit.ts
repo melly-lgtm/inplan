@@ -4,7 +4,7 @@
 // edit lands in the file model or a runtime plugin's document. Split out of cli.ts so it's
 // unit-testable without running the CLI's top-level main().
 
-import { type ControlChannel, type DocumentStore, LogEventType } from "@inplan/core/node";
+import { type ControlChannel, type DocumentStore, LogEventType, hashBody } from "@inplan/core/node";
 import type { AgentEditEvaluation } from "./gate";
 import type { PluginGate } from "./pluginGate";
 import { utf8Bytes } from "./remoteDocState";
@@ -46,15 +46,24 @@ export async function applyGatedEdit(
     // doc, so there's no .md to revert.
     try {
       await store.setProposed(current);
+      // File path only: revert the working file to canonical INSIDE the same failure envelope —
+      // if this revert rejects, the park sequence is incomplete (no event appended below), so the
+      // caller must degrade exactly as for a failed push rather than crash with no status.
+      if (!gate) await store.saveDoc(canonicalText);
     } catch {
-      // The push failed, so nothing is proposed anywhere: keep the working copy as the ONLY copy
-      // (skipping the revert below — reverting here would destroy the edit silently), log no
-      // event, and let the caller report the degradation. The next run re-detects the divergence
-      // and retries the park.
+      // The park sequence did not complete: keep the working copy as it stands (for a failed push
+      // it is the ONLY copy of the edit — reverting would destroy it silently), log no event
+      // (the log must not claim a park the sequence didn't finish), and let the caller report the
+      // degradation. The next run re-detects the divergence and retries the park idempotently.
       return { proposed: false, parkFailed: true };
     }
-    if (!gate) await store.saveDoc(canonicalText);
-    await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: utf8Bytes(current) } });
+    await channel.append({
+      actor: "agent",
+      type: LogEventType.AgentRevisionProposed,
+      // The hash identifies WHICH proposal this event parked, so a later resolution can bind
+      // decision events to this exact proposal (not merely the doc's latest park).
+      payload: { bytes: utf8Bytes(current), hash: hashBody(current) },
+    });
     return { proposed: true };
   } else if (ev.changed) {
     // Auto-accept (auto mode, or review mode with comment-only changes): advance the base. On the
