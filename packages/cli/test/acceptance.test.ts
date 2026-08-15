@@ -86,10 +86,18 @@ describe("the bypass, end to end through waitCycle", () => {
     const pre = new Map((["SIGTERM", "SIGHUP", "SIGINT"] as const).map((s) => [s, new Set(process.listeners(s))]));
     try {
       const run = waitCycle(backend, null, new Set(), undefined, gate);
-      // End the human's turn as soon as the park lands, so the wait wakes and returns.
+      // End the human's turn as soon as the park lands, so the wait wakes and returns. Bounded:
+      // on the regression this pins (the edit auto-applies and never parks), the park event never
+      // arrives — fail fast with the diagnosis instead of spinning into vitest's global timeout.
+      const deadline = Date.now() + 3_000;
       for (;;) {
         const { entries } = await channel.readSince(0);
         if (entries.some((x) => x.type === LogEventType.AgentRevisionProposed)) break;
+        if (Date.now() > deadline) {
+          await channel.append({ actor: "user", type: LogEventType.TurnEnded }); // unblock the waiter before failing
+          await run.catch(() => {});
+          throw new Error(`the edit never parked as a proposal — the review gate was bypassed (applyRevision called: ${gate.applyRevision.mock.calls.length > 0})`);
+        }
         await new Promise((r) => setTimeout(r, 2));
       }
       await channel.append({ actor: "user", type: LogEventType.TurnEnded });
