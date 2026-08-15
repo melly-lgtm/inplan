@@ -63,10 +63,42 @@ exits with a timeout message while the session is still valid — that is not a 
 re-run the same command and it resumes the same sign-in. If the link itself expires
 (`expiresInSec`, ~10 minutes), the re-run prints a fresh URL — repeat from 1.
 
+## Cloud documents (wait --remote)
+
+For a cloud document, `inplan wait --remote <docId>` materializes a **working copy** at
+`~/.inplan/sidecars/remote/<docId>.plan.md` and tells you so on stderr. That working copy is
+**your editing surface** — the one exception to the "never touch the sidecars" rule below.
+Edit it, then re-run the same `wait` command: the run pushes your edit and waits for the human.
+
+**Review mode parks your edit — that is success, not failure.** Most cloud docs are in review
+mode: your body edit is NOT applied to the canonical; it is pushed to the cloud as a
+**proposal** for the human to accept or reject in their editor. When that happens the wait
+output carries `proposal: { state: "pending_review", bytes, hash }`, an
+`agent_revision_proposed` entry appears in `entries`, and stderr says the edit was parked.
+
+How to audit "did my edit land?", in order:
+1. **This turn:** the `proposal` field in the wait JSON (`pending_review` = safely parked), or
+   a `document_edited` entry (= applied directly to canonical).
+2. **Any later turn:** read `<workingCopy>.proposed.json` — the durable record. Its `state`
+   becomes `accepted`, `partially_accepted`, or `rejected` once the human decides (or
+   `decided` when the outcome event wasn't readable). The exact text you pushed is kept next
+   to it in `<workingCopy>.proposed.md`, and every finalized record is appended to
+   `<workingCopy>.proposals.jsonl`.
+3. A later wait's `entries` may also carry the decision itself: `revision_accepted_all`,
+   `revision_hunk_accepted`, or `revision_rejected_all`.
+
+Two things are **normal and must never be read as data loss**: after a healthy turn the
+working copy is re-synced to the current canonical (so your parked edit is no longer in it —
+it lives in `.proposed.md` and in the cloud), and `.synced` tracks only canonical syncs (it
+says nothing about proposals). **Never delete or rewrite your local work because the working
+copy or `.synced` looks stale** — check the proposal record first.
+
 ## File convention
 
 Save plans as `<name>.plan.md`. The `inplan` CLI keeps its own working files under
-`~/.inplan/sidecars/<key>/` — it owns these; never read or edit them by hand.
+`~/.inplan/sidecars/<key>/` — it owns these; never read or edit them by hand. (One exception:
+the `wait --remote` working copy and its `.proposed.*` records, described above — the CLI
+puts them there *for* you.)
 
 ## Auto-approval (review happens in the app)
 

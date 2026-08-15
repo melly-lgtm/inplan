@@ -39,6 +39,7 @@ import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenceReason, type PluginGate } from "./pluginGate";
 import { demoteSource, shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
+import { RemoteDocState, resolutionFromEvents } from "./remoteDocState";
 import { announcePresence, presenceTokenResolver } from "./presence";
 import { awaitReopen, wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
@@ -427,7 +428,17 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
   const acceptance = acceptanceFrom(history);
   const quarantine = acceptance === "review" && parse(canonicalText).body !== parse(current).body;
   // `usePlugin ? gate : null` — only route through the plugin when its read succeeded.
-  await applyGatedEdit(store, channel, ev, { current, canonicalText, quarantine, gate: usePlugin ? gate : null });
+  const applied = await applyGatedEdit(store, channel, ev, { current, canonicalText, quarantine, gate: usePlugin ? gate : null });
+  // A parked proposal must be unmistakable in the moment (#88): the canonical is unchanged BY
+  // DESIGN, and an agent that reads silence as loss may destroy its own work. Say so on stderr
+  // now, and carry the fact in the wait output below (the durable record is the gate path's job).
+  if (applied.proposed) {
+    process.stderr.write(
+      "inplan: review mode — your edit was parked as a proposal (agent_revision_proposed); the canonical body is unchanged until the human accepts. This is normal, not a sync failure.\n",
+    );
+  }
+  // Rides every turn-end output below, so the agent sees the park no matter how the wait ends.
+  const proposalOut = applied.proposed ? { proposal: { state: "pending_review" as const, bytes: current.length, hash: hashBody(current) } } : {};
 
   // Signal the agent has (re)engaged this round so the editor can clear its
   // "Agent is thinking…" indicator even when the agent made no body change.
@@ -513,7 +524,7 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
     if (navEntry) {
       const path = (navEntry.payload as { path?: string } | undefined)?.path;
       backend.logExit("navigated");
-      output({ status: "navigated", ...(path ? { path } : {}), cursor: result.cursor, closed: false });
+      output({ status: "navigated", ...(path ? { path } : {}), ...proposalOut, cursor: result.cursor, closed: false });
       return "ok";
     }
 
@@ -556,7 +567,7 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
         // unrecorded and the next wait would re-read and re-report the completed session.
         await channel.setCursor(reopen.cursor);
         backend.logExit(reopen.reason);
-        output({ status: "closed", reason: reopen.reason, cursor: reopen.cursor, closed: true, entries: [...result.entries, ...reopen.entries] });
+        output({ status: "closed", reason: reopen.reason, ...proposalOut, cursor: reopen.cursor, closed: true, entries: [...result.entries, ...reopen.entries] });
         return "ok";
       }
       // A grace reopen deliberately resumes from the PRE-grace cursor: the user entries that proved
@@ -601,6 +612,10 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
       // when --model was passed), so presence + authorship stay consistent.
       agentAuthor: agentAuthorFor(model),
       ...(reason ? { reason } : {}),
+      // The landing signal for a parked Review-mode edit (#88): pending_review means the push
+      // REACHED the store and awaits the human — the canonical is unchanged by design. Absent
+      // when the turn applied directly (or made no body change).
+      ...proposalOut,
       cursor: result.cursor,
       closed: status === "closed",
       entries: result.entries,
@@ -1103,11 +1118,10 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
   );
   try {
     const workFile = join(sidecarRoot(), "remote", `${docId}.plan.md`);
-    const pendingPath = `${workFile}.pending`; // marker: a local fallback edit awaits a hub push
-    const hashPath = `${workFile}.synced`; // hash of the working copy at our last write/sync
-    mkdirSync(dirname(workFile), { recursive: true });
-    const readIf = (p: string): string | null => (existsSync(p) ? readFileSync(p, "utf8") : null);
-    const recordSynced = (content: string) => writeFileSync(hashPath, hashBody(content));
+    // All per-doc sidecar state (working copy hash, replay marker, proposal record) lives behind
+    // one tested owner (#88) — same files on disk as before, plus the durable proposal record.
+    const rds = new RemoteDocState(workFile, docId);
+    rds.ensureDir();
 
     // Probe the hub on EVERY run. A failure here means we cannot materialize the working copy, so
     // there is nothing for an out-of-process agent to read or edit — the same dead end the
@@ -1122,28 +1136,37 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       exitAfterFlush(EXIT_PLUGIN_UNAVAILABLE);
       return; // the `finally` below tears presence down on the way out
     }
+    // A proposal parked on an EARLIER run resolves here (#88): if the cloud's proposed slot has
+    // emptied, the human decided — finalize the record with the outcome the decision events name
+    // (accepted / partially_accepted / rejected), so "did my edit land?" stays answerable from
+    // disk even though agent_revision_proposed left the wait output long ago. A transient slot
+    // read failure just retries next run; the record stays pending.
+    const parkedEarlier = rds.pendingProposal();
+    if (parkedEarlier) {
+      const slot = await live.store.getProposed().catch(() => undefined);
+      if (slot === null) {
+        const { entries } = await live.channel.readSince(0);
+        rds.resolveProposal(resolutionFromEvents(entries, parkedEarlier.at));
+      }
+    }
+
     // Decide whether to (re)hydrate the working copy from the freshly probed canonical. Seed if
     // absent; keep it if a local fallback edit is pending (must push first); otherwise refresh it
     // ONLY when the agent hasn't touched it since our last sync (hash match) — so we pull the
     // human's edits without clobbering unsynced agent edits. This is also what lets a FAILED
     // end-of-turn re-sync self-heal on the next run.
-    const exists = existsSync(workFile);
-    if (
-      shouldHydrateWorkFile({
-        exists,
-        pending: existsSync(pendingPath),
-        currentHash: exists ? hashBody(readFileSync(workFile, "utf8")) : null,
-        syncedHash: readIf(hashPath),
-      })
-    ) {
-      writeFileSync(workFile, canonical);
-      recordSynced(canonical);
+    if (shouldHydrateWorkFile(rds.hydrateInput())) {
+      rds.writeWorkFile(canonical);
+      rds.recordSynced(canonical);
     }
 
     // Working doc stays on the local file, but Review-mode PROPOSALS persist to the CLOUD doc's
     // proposal store (via live.store) — otherwise a parked proposal would sit in this machine's
-    // sidecar, invisible to the human in the web editor who's meant to accept/reject it.
+    // sidecar, invisible to the human in the web editor who's meant to accept/reject it. The
+    // wrapper also captures the parked text so the healthy-turn path below can write the durable
+    // proposal record BEFORE the re-sync overwrites the working copy (#88).
     const localStore = fsBackend(workFile).store;
+    let parkedThisTurn: string | null = null;
     const gateStore: DocumentStore = {
       loadDoc: () => localStore.loadDoc(),
       saveDoc: (c) => localStore.saveDoc(c),
@@ -1151,8 +1174,14 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       setCanonical: (c) => localStore.setCanonical(c),
       backup: (c, m) => localStore.backup(c, m),
       getProposed: () => live.store.getProposed(),
-      setProposed: (c) => live.store.setProposed(c),
-      clearProposed: () => live.store.clearProposed(),
+      setProposed: async (c) => {
+        await live.store.setProposed(c);
+        parkedThisTurn = c;
+      },
+      clearProposed: async () => {
+        await live.store.clearProposed();
+        parkedThisTurn = null;
+      },
     };
     // Save-local handoff on the gate path reads the HUB canonical (the source of truth here);
     // live.store isn't updated by gate.applyRevision, so reading it would write a stale doc. If
@@ -1201,20 +1230,26 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       // copy either unchanged (clean) or hash-diverged (agent edited); both are handled by the
       // start-of-turn hydration check, and a spurious `.pending` would wrongly skip it next run.
       if (pendingRequiresReplay({ readFailed: tracked.readFailed(), writeFailed: tracked.writeFailed() })) {
-        writeFileSync(pendingPath, "1");
+        rds.markReplayPending();
       }
       process.stderr.write("inplan: hub was unavailable this turn — keeping local edits (will sync next turn)\n");
     } else {
-      // Turn applied to the hub. The working copy is now consistent with the hub for the agent's
-      // part, so record its hash (this makes a FAILED re-sync below self-heal: next run sees a
-      // matching hash and safely hydrates). Then re-sync the copy to the latest canonical (folding
-      // in the human's just-taken turn) so the agent's NEXT turn builds on it, and clear pending.
-      if (existsSync(pendingPath)) rmSync(pendingPath);
-      recordSynced(readFileSync(workFile, "utf8"));
+      // Turn applied to the hub. FIRST persist any proposal parked this turn (#88): the re-sync
+      // below overwrites the working copy with the pre-edit canonical while the proposal is still
+      // pending, so without this record the agent's text would exist only in the cloud slot with
+      // no local trace — the exact shape of the 2026-08-11 work-deletion. The record makes the
+      // park auditable turns later and the text recoverable from `.proposed.md`.
+      if (parkedThisTurn !== null) rds.parkProposal(parkedThisTurn);
+      // The working copy is now consistent with the hub for the agent's part, so record its hash
+      // (this makes a FAILED re-sync below self-heal: next run sees a matching hash and safely
+      // hydrates). Then re-sync the copy to the latest canonical (folding in the human's
+      // just-taken turn) so the agent's NEXT turn builds on it, and clear pending.
+      rds.clearReplayPending();
+      rds.recordSynced(rds.readWorkFile() ?? "");
       try {
         const fresh = await gate.readCanonical();
-        writeFileSync(workFile, fresh);
-        recordSynced(fresh);
+        rds.writeWorkFile(fresh);
+        rds.recordSynced(fresh);
       } catch {
         /* transient: leave the copy (its hash still matches) so the next run hydrates it */
       }

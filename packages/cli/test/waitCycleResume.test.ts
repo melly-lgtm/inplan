@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LogEventType, MemoryControlChannel, MemoryDocumentStore, type LogEntry } from "@inplan/core/node";
+import { LogEventType, MemoryControlChannel, MemoryDocumentStore, hashBody, type LogEntry } from "@inplan/core/node";
 import { waitCycle, type WaitBackend } from "../src/cli";
 
 const DOC_A = "# Plan\n\nOriginal body.\n\n<!--inplan\n[]\n-->\n";
@@ -144,6 +144,38 @@ describe("waitCycle resume is a loop, not a re-entry", () => {
 
       expect(await countEvents(h.channel, LogEventType.AgentRevisionProposed)).toBe(1);
       expect(h.lastJson().status).toBe("your_turn");
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("a parked Review proposal is reported in the wait output (#88 landing signal)", async () => {
+    // The push reached the store and awaits the human — the wait output must say so, or an agent
+    // auditing "did my edit land?" reads the unchanged canonical as loss (the 2026-08-11 incident).
+    const h = harness(DOC_B); // the agent's working copy, differing from the hub canonical
+    const gate = { readCanonical: async () => DOC_A, applyRevision: async () => {} };
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, gate);
+      await reloadThenAct(h.channel);
+      await expect(run).resolves.toBe("ok");
+
+      const last = h.lastJson() as ReturnType<typeof h.lastJson> & { proposal?: { state: string; bytes: number; hash: string } };
+      expect(last.proposal).toEqual({ state: "pending_review", bytes: DOC_B.length, hash: hashBody(DOC_B) });
+      expect(h.stderr()).toContain("parked as a proposal");
+      expect(await h.store.getProposed()).toBe(DOC_B);
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("no `proposal` key when the turn made no body change", async () => {
+    const h = harness(DOC_A);
+    try {
+      const run = waitCycle(h.backend, null, new Set());
+      await reloadThenAct(h.channel);
+      await expect(run).resolves.toBe("ok");
+      expect("proposal" in h.lastJson()).toBe(false);
+      expect(h.stderr()).not.toContain("parked as a proposal");
     } finally {
       h.restore();
     }

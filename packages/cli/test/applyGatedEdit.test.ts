@@ -28,7 +28,8 @@ describe("applyGatedEdit — file path (no plugin)", () => {
   it("auto-accepts a body change: advances canonical, clears proposed, logs DocumentEdited", async () => {
     const store = new MemoryDocumentStore("new body");
     const channel = new MemoryControlChannel();
-    await applyGatedEdit(store, channel, ev({ changed: true }), { current: "new body", canonicalText: "old", quarantine: false, gate: null });
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "new body", canonicalText: "old", quarantine: false, gate: null });
+    expect(applied.proposed).toBe(false);
     expect(await store.getCanonical()).toBe("new body");
     expect(await types(channel)).toEqual([LogEventType.DocumentEdited]);
   });
@@ -36,7 +37,8 @@ describe("applyGatedEdit — file path (no plugin)", () => {
   it("quarantines a Review-mode body change: parks proposed, reverts the file to canonical, logs AgentRevisionProposed", async () => {
     const store = new MemoryDocumentStore("agent body");
     const channel = new MemoryControlChannel();
-    await applyGatedEdit(store, channel, ev({ changed: true }), { current: "agent body", canonicalText: "canon", quarantine: true, gate: null });
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "agent body", canonicalText: "canon", quarantine: true, gate: null });
+    expect(applied.proposed).toBe(true); // the caller surfaces the park (#88)
     expect(await store.getProposed()).toBe("agent body");
     expect(await store.loadDoc()).toBe("canon"); // working file reverted to canonical
     expect(await types(channel)).toEqual([LogEventType.AgentRevisionProposed]);
@@ -54,7 +56,8 @@ describe("applyGatedEdit — file path (no plugin)", () => {
   it("no change: writes nothing, logs nothing", async () => {
     const store = new MemoryDocumentStore("same");
     const channel = new MemoryControlChannel();
-    await applyGatedEdit(store, channel, ev({ changed: false }), { current: "same", canonicalText: "same", quarantine: false, gate: null });
+    const applied = await applyGatedEdit(store, channel, ev({ changed: false }), { current: "same", canonicalText: "same", quarantine: false, gate: null });
+    expect(applied.proposed).toBe(false);
     expect(await store.getCanonical()).toBeNull();
     expect(await types(channel)).toEqual([]);
   });
@@ -85,7 +88,8 @@ describe("applyGatedEdit — plugin path (a plugin gate is connected)", () => {
     const store = new MemoryDocumentStore("agent body");
     const channel = new MemoryControlChannel();
     const gate = fakeGate();
-    await applyGatedEdit(store, channel, ev({ changed: true }), { current: "agent body", canonicalText: "canon", quarantine: true, gate });
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "agent body", canonicalText: "canon", quarantine: true, gate });
+    expect(applied.proposed).toBe(true);
     expect(await store.getProposed()).toBe("agent body");
     expect(await store.loadDoc()).toBe("agent body"); // NOT reverted to canon
     expect(gate.applyRevision).not.toHaveBeenCalled();

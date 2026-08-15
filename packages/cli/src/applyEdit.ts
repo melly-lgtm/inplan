@@ -13,13 +13,17 @@ import type { PluginGate } from "./pluginGate";
  * the plugin (never touching the `.md`); otherwise we advance the file + persisted canonical (or
  * quarantine a Review-mode body change as a `.proposed.md` for the human to accept). The matching
  * `DocumentEdited` / `AgentRevisionProposed` event is logged either way.
+ *
+ * Returns whether the edit was PARKED as a proposal (#88) — the caller surfaces that fact
+ * (wait output + stderr + the durable proposal record) so an agent auditing "did my edit
+ * land?" never mistakes a parked proposal for a sync failure.
  */
 export async function applyGatedEdit(
   store: DocumentStore,
   channel: ControlChannel,
   ev: AgentEditEvaluation,
   ctx: { current: string; canonicalText: string; quarantine: boolean; gate: PluginGate | null },
-): Promise<void> {
+): Promise<{ proposed: boolean }> {
   const { current, canonicalText, quarantine, gate } = ctx;
   if (ev.removedIds.length > 0) {
     // Confirmed deletions: drop the orphaned comment objects. On the plugin path push the result
@@ -39,6 +43,7 @@ export async function applyGatedEdit(
     await store.setProposed(current);
     if (!gate) await store.saveDoc(canonicalText);
     await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: current.length } });
+    return { proposed: true };
   } else if (ev.changed) {
     // Auto-accept (auto mode, or review mode with comment-only changes): advance the base. On the
     // plugin path that means pushing into the plugin's doc; otherwise advance the persisted canonical.
@@ -49,4 +54,5 @@ export async function applyGatedEdit(
     }
     await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: current.length } });
   }
+  return { proposed: false };
 }
