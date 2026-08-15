@@ -20,7 +20,7 @@
 // `.proposed.md` — the clobber that made the 2026-08-11 work-deletion inevitable no longer
 // destroys the only local copy.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { hashBody, LogEventType, type LogEntry } from "@inplan/core/node";
 import type { HydrateInput } from "./liveSync";
@@ -56,9 +56,10 @@ export interface ProposalRecord {
  */
 export function resolutionFromEvents(entries: LogEntry[], park: { at: string; hash: string }): ProposalOutcome {
   // This park's event: the last agent_revision_proposed whose payload hash matches the record —
-  // or, when no event carries this hash, the last park event of any kind (single-machine case /
-  // older CLI without the hash payload).
+  // or, when no event carries this hash (this park's append failed, or an older CLI wrote no
+  // hash), the last park event of any kind as a WEAK anchor.
   let start = -1;
+  let matched = false;
   let lastPark = -1;
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i]!;
@@ -66,6 +67,7 @@ export function resolutionFromEvents(entries: LogEntry[], park: { at: string; ha
     if (lastPark < 0) lastPark = i;
     if ((e.payload as { hash?: unknown } | undefined)?.hash === park.hash) {
       start = i;
+      matched = true;
       break;
     }
   }
@@ -81,10 +83,14 @@ export function resolutionFromEvents(entries: LogEntry[], park: { at: string; ha
       }
     }
   }
+  // Only a hash-MATCHED anchor earns pure log-order trust. A weak anchor may be an OLDER park
+  // (ours never appended), so its window can contain a PREVIOUS proposal's decision — the
+  // timestamp filter still applies there, preferring a degraded "decided" over finalizing this
+  // record with another proposal's outcome.
   const parkedAt = Date.parse(park.at);
   for (let i = end - 1; i > start; i--) {
     const e = entries[i]!;
-    if (start < 0) {
+    if (!matched) {
       const ts = Date.parse(e.ts);
       if (Number.isFinite(parkedAt) && Number.isFinite(ts) && ts < parkedAt) break;
     }
@@ -187,12 +193,38 @@ export class RemoteDocState {
    *  shape check (wrong doc, non-numeric bytes, unparseable park time, unknown state). A partial
    *  record must read as absent, or it could be finalized with missing metadata. */
   latestProposal(): ProposalRecord | null {
-    if (!existsSync(this.recordPath)) return null;
+    if (!existsSync(this.recordPath)) return this.recoverOrphanText();
     try {
       const p = JSON.parse(readFileSync(this.recordPath, "utf8")) as Partial<ProposalRecord>;
       const validState = p.state === "pending_review" || p.state === "accepted" || p.state === "partially_accepted" || p.state === "rejected" || p.state === "decided" || p.state === "superseded";
-      if (p.docId !== this.docId || typeof p.hash !== "string" || typeof p.bytes !== "number" || !Number.isFinite(Date.parse(p.at ?? "")) || !validState) return null;
+      if (p.docId !== this.docId || typeof p.hash !== "string" || typeof p.bytes !== "number" || !Number.isFinite(Date.parse(p.at ?? "")) || !validState) return this.recoverOrphanText();
       return p as ProposalRecord;
+    } catch {
+      return this.recoverOrphanText();
+    }
+  }
+
+  /**
+   * Crash recovery for the park's write pair: `parkProposal` writes the text, then the record. A
+   * process killed between the two (or mid-record) leaves a confirmed-pushed proposal with its
+   * text on disk but no readable record — and if the human accepts it while the CLI is down, no
+   * later run would ever recreate one (the working copy stops diverging). The text alone is
+   * enough to reconstruct a truthful record: the text is only ever written after a confirmed
+   * push, so `pending_review` is correct, and the park time falls back to the file's mtime.
+   */
+  private recoverOrphanText(): ProposalRecord | null {
+    if (!existsSync(this.textPath)) return null;
+    try {
+      const text = readFileSync(this.textPath, "utf8");
+      const record: ProposalRecord = {
+        docId: this.docId,
+        hash: hashBody(text),
+        bytes: utf8Bytes(text),
+        at: statSync(this.textPath).mtime.toISOString(),
+        state: "pending_review",
+      };
+      writeFileSync(this.recordPath, JSON.stringify(record, null, 2));
+      return record;
     } catch {
       return null;
     }

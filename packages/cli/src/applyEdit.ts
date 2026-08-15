@@ -46,24 +46,37 @@ export async function applyGatedEdit(
     // doc, so there's no .md to revert.
     try {
       await store.setProposed(current);
-      // File path only: revert the working file to canonical INSIDE the same failure envelope —
-      // if this revert rejects, the park sequence is incomplete (no event appended below), so the
-      // caller must degrade exactly as for a failed push rather than crash with no status.
-      if (!gate) await store.saveDoc(canonicalText);
     } catch {
-      // The park sequence did not complete: keep the working copy as it stands (for a failed push
-      // it is the ONLY copy of the edit — reverting would destroy it silently), log no event
-      // (the log must not claim a park the sequence didn't finish), and let the caller report the
-      // degradation. The next run re-detects the divergence and retries the park idempotently.
+      // The push failed, so nothing is proposed anywhere: keep the working copy as the ONLY copy
+      // (skipping the revert below — reverting would destroy the edit silently), log no event,
+      // and let the caller report the degradation. The next run re-detects the divergence and
+      // retries the park idempotently.
       return { proposed: false, parkFailed: true };
     }
-    await channel.append({
-      actor: "agent",
-      type: LogEventType.AgentRevisionProposed,
-      // The hash identifies WHICH proposal this event parked, so a later resolution can bind
-      // decision events to this exact proposal (not merely the doc's latest park).
-      payload: { bytes: utf8Bytes(current), hash: hashBody(current) },
-    });
+    // From here the park is REAL — the store holds the proposal (and on the remote path the
+    // durable record is already on disk). Every failure below is local housekeeping and must not
+    // be reported as a failed park: claiming "FAILED, will be re-pushed" for a proposal the human
+    // can already see in their editor is the same class of false signal #88 exists to kill.
+    if (!gate) {
+      try {
+        await store.saveDoc(canonicalText);
+      } catch {
+        /* Failed revert: the working copy keeps the edit, where the hydration hash-mismatch guard
+           protects it; the next turn re-parks the identical text as a no-op. */
+      }
+    }
+    try {
+      await channel.append({
+        actor: "agent",
+        type: LogEventType.AgentRevisionProposed,
+        // The hash identifies WHICH proposal this event parked, so a later resolution can bind
+        // decision events to this exact proposal (not merely the doc's latest park).
+        payload: { bytes: utf8Bytes(current), hash: hashBody(current) },
+      });
+    } catch {
+      /* The park stands without its event; resolution falls back to its lesser anchors (last
+         park event, then timestamps), which is exactly what those fallbacks exist for. */
+    }
     return { proposed: true };
   } else if (ev.changed) {
     // Auto-accept (auto mode, or review mode with comment-only changes): advance the base. On the

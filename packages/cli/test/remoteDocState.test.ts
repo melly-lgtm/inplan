@@ -102,6 +102,17 @@ describe("resolutionFromEvents", () => {
     ];
     expect(resolutionFromEvents(entries, PARK)).toBe("accepted");
   });
+
+  it("a WEAK anchor (our park's event never appended) keeps the timestamp filter — an older proposal's decision is never claimed", () => {
+    // Our park's append failed; the last park event in the log is a PREVIOUS proposal's, and its
+    // decision sits inside that window. Only a hash-matched anchor earns pure log-order trust;
+    // here the decision predates our recorded park time, so it must not finalize our record.
+    const entries = [
+      parkEvent("2026-08-15T11:00:00.000Z", "hash-OLD"),
+      entry(LogEventType.RevisionAcceptedAll, "2026-08-15T11:30:00.000Z"), // the OLD proposal's decision
+    ];
+    expect(resolutionFromEvents(entries, PARK)).toBe("decided");
+  });
 });
 
 describe("park / audit / resolve", () => {
@@ -175,13 +186,21 @@ describe("park / audit / resolve", () => {
     expect(s.latestProposal()).toBeNull();
   });
 
-  it("a corrupt record file reads as no record, never a crash", () => {
+  it("a corrupt or missing record RECOVERS from the orphan text (the park's crash window)", () => {
+    // parkProposal writes text first, record last: a kill between the writes leaves a
+    // confirmed-pushed proposal with no record. The text alone reconstructs a truthful one.
     s.parkProposal("v1");
     const recordPath = join(dir, "remote", "doc-1.plan.md.proposed.json");
-    writeFileSync(recordPath, "{ this is not json"); // exercises the parse-failure branch
+    writeFileSync(recordPath, "{ this is not json"); // crash mid-record-write
+    expect(s.latestProposal()).toMatchObject({ state: "pending_review", hash: hashBody("v1") });
+    rmSync(recordPath); // crash before the record write entirely
+    expect(s.pendingProposal()).toMatchObject({ state: "pending_review", hash: hashBody("v1") });
+    expect(s.latestProposal()?.docId).toBe("doc-1");
+  });
+
+  it("no record AND no text reads as no proposal, never a crash", () => {
     expect(s.latestProposal()).toBeNull();
-    rmSync(recordPath); // and plain absence
-    expect(s.latestProposal()).toBeNull();
+    expect(s.pendingProposal()).toBeNull();
   });
 
   it("a record failing the full shape check reads as absent — never finalized with bad metadata", () => {

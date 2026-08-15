@@ -1159,8 +1159,12 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     if (parkedEarlier) {
       const slot = await live.store.getProposed().catch(() => undefined);
       if (slot === null) {
-        const { entries } = await live.channel.readSince(0);
-        rds.resolveProposal(resolutionFromEvents(entries, parkedEarlier));
+        try {
+          const { entries } = await live.channel.readSince(0);
+          rds.resolveProposal(resolutionFromEvents(entries, parkedEarlier));
+        } catch {
+          /* transient history read failure: leave the record pending and retry next run */
+        }
       }
     }
 
