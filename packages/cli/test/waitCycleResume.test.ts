@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LogEventType, MemoryControlChannel, MemoryDocumentStore, hashBody, type LogEntry } from "@inplan/core/node";
 import { waitCycle, type WaitBackend } from "../src/cli";
+import { utf8Bytes } from "../src/remoteDocState";
 
 const DOC_A = "# Plan\n\nOriginal body.\n\n<!--inplan\n[]\n-->\n";
 const DOC_B = "# Plan\n\nAgent-edited body.\n\n<!--inplan\n[]\n-->\n";
@@ -160,10 +161,56 @@ describe("waitCycle resume is a loop, not a re-entry", () => {
       await expect(run).resolves.toBe("ok");
 
       const last = h.lastJson() as ReturnType<typeof h.lastJson> & { proposal?: { state: string; bytes: number; hash: string } };
-      expect(last.proposal).toEqual({ state: "pending_review", bytes: DOC_B.length, hash: hashBody(DOC_B) });
+      expect(last.proposal).toEqual({ state: "pending_review", bytes: utf8Bytes(DOC_B), hash: hashBody(DOC_B) });
       expect(h.stderr()).toContain("parked as a proposal");
       expect(await h.store.getProposed()).toBe(DOC_B);
     } finally {
+      h.restore();
+    }
+  });
+
+  it("a superseded wait still reports the proposal it parked (#88)", async () => {
+    // The park happened in THIS run's turn; a newer waiter taking over must not make it look
+    // like the push failed — superseded is a step-down, not a rollback.
+    const h = harness(DOC_B);
+    const gate = { readCanonical: async () => DOC_A, applyRevision: async () => {} };
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, gate);
+      await waitUntil(async () => (await countEvents(h.channel, LogEventType.AgentRevisionProposed)) >= 1);
+      await h.channel.claimLock("a-newer-waiter"); // an out-of-band newer waiter takes the doc
+      await expect(run).resolves.toBe("ok");
+
+      const last = h.lastJson() as ReturnType<typeof h.lastJson> & { proposal?: { state: string } };
+      expect(last.status).toBe("superseded");
+      expect(last.proposal).toMatchObject({ state: "pending_review", hash: hashBody(DOC_B) });
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("a failed wait still reports the proposal it parked (#88)", async () => {
+    // The proposal reached the store BEFORE the wait began; losing contact afterwards must not
+    // read as "the edit went nowhere".
+    process.env.INPLAN_ERROR_GRACE_MS = "20";
+    const h = harness(DOC_B);
+    const gate = { readCanonical: async () => DOC_A, applyRevision: async () => {} };
+    const origReadSince = h.channel.readSince.bind(h.channel);
+    let failing = false;
+    h.channel.readSince = async (cursor: number) => {
+      if (failing) throw new Error("session expired");
+      return origReadSince(cursor);
+    };
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, gate);
+      await waitUntil(async () => (await countEvents(h.channel, LogEventType.AgentRevisionProposed)) >= 1);
+      failing = true; // every poll now fails; the grace (20ms) trips and the wait gives up
+      await expect(run).resolves.toBe("exiting");
+
+      const last = h.lastJson() as ReturnType<typeof h.lastJson> & { proposal?: { state: string } };
+      expect(last.status).toBe("wait_failed");
+      expect(last.proposal).toMatchObject({ state: "pending_review", hash: hashBody(DOC_B) });
+    } finally {
+      delete process.env.INPLAN_ERROR_GRACE_MS;
       h.restore();
     }
   });

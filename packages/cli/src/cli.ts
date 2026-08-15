@@ -39,7 +39,7 @@ import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenceReason, type PluginGate } from "./pluginGate";
 import { demoteSource, shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
-import { RemoteDocState, resolutionFromEvents } from "./remoteDocState";
+import { RemoteDocState, resolutionFromEvents, utf8Bytes } from "./remoteDocState";
 import { announcePresence, presenceTokenResolver } from "./presence";
 import { awaitReopen, wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
@@ -437,8 +437,10 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
       "inplan: review mode — your edit was parked as a proposal (agent_revision_proposed); the canonical body is unchanged until the human accepts. This is normal, not a sync failure.\n",
     );
   }
-  // Rides every turn-end output below, so the agent sees the park no matter how the wait ends.
-  const proposalOut = applied.proposed ? { proposal: { state: "pending_review" as const, bytes: current.length, hash: hashBody(current) } } : {};
+  // Rides every terminal output below, so the agent sees the park no matter how the wait ends —
+  // including wait_failed and superseded, where mistaking a parked edit for a failed sync is
+  // exactly the misread this field exists to prevent.
+  const proposalOut = applied.proposed ? { proposal: { state: "pending_review" as const, bytes: utf8Bytes(current), hash: hashBody(current) } } : {};
 
   // Signal the agent has (re)engaged this round so the editor can clear its
   // "Agent is thinking…" indicator even when the agent made no body change.
@@ -473,6 +475,9 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
 
   const debounceMs = Number(process.env.INPLAN_DEBOUNCE_MS ?? 3000);
   const pollMs = Number(process.env.INPLAN_POLL_MS ?? 200);
+  // Test knob, same family as the two above: how long a continuous poll-failure streak runs
+  // before the wait gives up (waitForActions' errorGraceMs; default 5 min in wait.ts).
+  const errorGraceMs = process.env.INPLAN_ERROR_GRACE_MS ? Number(process.env.INPLAN_ERROR_GRACE_MS) : undefined;
 
   let waitCursor = cursor;
   let historyForMode = history;
@@ -482,7 +487,7 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
     // (history is re-read on resume), so a mode switched just before the reload is honoured.
     const mode = modeFrom(historyForMode);
     const isActionable = wakePredicate(mode.wake);
-    const result = await waitForActions({ channel, cursor: waitCursor, debounceMs, pollMs, isActionable, token: lockToken });
+    const result = await waitForActions({ channel, cursor: waitCursor, debounceMs, pollMs, isActionable, token: lockToken, ...(errorGraceMs !== undefined ? { errorGraceMs } : {}) });
 
     // The wait gave up after a streak of failed polls — an expired session is the common cause.
     // Report it as a status the agent can act on and exit non-zero. It used to reach here as an
@@ -490,7 +495,7 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
     if (result.failed) {
       backend.logExit("poll_failed");
       process.stderr.write(`inplan: lost contact with the document (${result.failed.message}).\n  If your session expired, run \`inplan login\` and re-attach.\n`);
-      output({ status: "wait_failed", message: result.failed.message });
+      output({ status: "wait_failed", message: result.failed.message, ...proposalOut });
       exitAfterFlush(EXIT_WAIT_FAILED);
       return "exiting";
     }
@@ -499,7 +504,7 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
     // advancing the cursor (the live waiter handles it).
     if (result.superseded) {
       backend.logExit("superseded");
-      output({ status: "superseded" });
+      output({ status: "superseded", ...proposalOut });
       return "ok";
     }
 
@@ -557,7 +562,7 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
       const reopen = await awaitReopen(channel, result.cursor, { token: lockToken });
       if (reopen.kind === "superseded") {
         backend.logExit("superseded");
-        output({ status: "superseded" });
+        output({ status: "superseded", ...proposalOut });
         return "ok";
       }
       if (reopen.kind === "completed") {

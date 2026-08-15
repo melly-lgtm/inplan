@@ -10,7 +10,7 @@ import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LogEventType, hashBody, type LogEntry } from "@inplan/core/node";
-import { RemoteDocState, resolutionFromEvents } from "../src/remoteDocState";
+import { RemoteDocState, resolutionFromEvents, utf8Bytes } from "../src/remoteDocState";
 import { shouldHydrateWorkFile } from "../src/liveSync";
 
 let dir: string;
@@ -94,6 +94,14 @@ describe("park / audit / resolve", () => {
     s.parkProposal("same");
     expect(existsSync(join(dir, "remote", "doc-1.plan.md.proposals.jsonl"))).toBe(false);
     expect(s.pendingProposal()?.hash).toBe(hashBody("same"));
+  });
+
+  it("bytes is the UTF-8 byte length, not the UTF-16 code-unit count", () => {
+    const text = "café ☕"; // 6 code units; é is 2 UTF-8 bytes, ☕ is 3
+    const record = s.parkProposal(text);
+    expect(record.bytes).toBe(utf8Bytes(text));
+    expect(record.bytes).toBe(9);
+    expect(record.bytes).not.toBe(text.length);
   });
 
   it("resolveProposal without a pending record is a no-op", () => {

@@ -67,8 +67,11 @@ re-run the same command and it resumes the same sign-in. If the link itself expi
 
 For a cloud document, `inplan wait --remote <docId>` materializes a **working copy** at
 `~/.inplan/sidecars/remote/<docId>.plan.md` and tells you so on stderr. That working copy is
-**your editing surface** — the one exception to the "never touch the sidecars" rule below.
-Edit it, then re-run the same `wait` command: the run pushes your edit and waits for the human.
+**your editing surface** — the one file under the sidecars you may edit (the CLI puts it there
+*for* you). Edit it, then re-run the same `wait` command: the run pushes your edit and waits
+for the human. The `.proposed.*` records described below are **read-only audit state** — read
+them to answer "did my edit land?", but never rewrite or delete them (they are the durable
+history the CLI maintains).
 
 **Review mode parks your edit — that is success, not failure.** Most cloud docs are in review
 mode: your body edit is NOT applied to the canonical; it is pushed to the cloud as a
@@ -96,9 +99,9 @@ copy or `.synced` looks stale** — check the proposal record first.
 ## File convention
 
 Save plans as `<name>.plan.md`. The `inplan` CLI keeps its own working files under
-`~/.inplan/sidecars/<key>/` — it owns these; never read or edit them by hand. (One exception:
-the `wait --remote` working copy and its `.proposed.*` records, described above — the CLI
-puts them there *for* you.)
+`~/.inplan/sidecars/<key>/` — it owns these; never read or edit them by hand. (Exceptions,
+described above: the `wait --remote` working copy is yours to **edit**, and its `.proposed.*`
+records are yours to **read** for audit — never to modify.)
 
 ## Auto-approval (review happens in the app)
 

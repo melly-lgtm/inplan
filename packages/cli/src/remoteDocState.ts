@@ -29,11 +29,15 @@ import type { HydrateInput } from "./liveSync";
  *  readable (the human acted; which way is unknown). `superseded` = a newer park replaced it. */
 export type ProposalOutcome = "accepted" | "partially_accepted" | "rejected" | "decided" | "superseded";
 
+/** UTF-8 byte length — the one sizing used by the proposal record, the wait output's `proposal`
+ *  field, and the `agent_revision_proposed` payload, so the three never disagree. */
+export const utf8Bytes = (text: string): number => Buffer.byteLength(text, "utf8");
+
 export interface ProposalRecord {
   docId: string;
   /** hashBody of the full proposed text (comments included — same hash family as `.synced`). */
   hash: string;
-  /** UTF-16 length of the proposed text, matching the `agent_revision_proposed` payload. */
+  /** UTF-8 byte length of the proposed text, matching the `agent_revision_proposed` payload. */
   bytes: number;
   /** ISO-8601 park time. */
   at: string;
@@ -134,7 +138,7 @@ export class RemoteDocState {
     const record: ProposalRecord = {
       docId: this.docId,
       hash: hashBody(text),
-      bytes: text.length,
+      bytes: utf8Bytes(text),
       at: at.toISOString(),
       state: "pending_review",
     };

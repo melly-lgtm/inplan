@@ -7,6 +7,7 @@
 import { type ControlChannel, type DocumentStore, LogEventType } from "@inplan/core/node";
 import type { AgentEditEvaluation } from "./gate";
 import type { PluginGate } from "./pluginGate";
+import { utf8Bytes } from "./remoteDocState";
 
 /**
  * When `gate` is non-null an entitled plugin owns the document, so we push the accepted text into
@@ -42,7 +43,7 @@ export async function applyGatedEdit(
     // doc, so there's no .md to revert.
     await store.setProposed(current);
     if (!gate) await store.saveDoc(canonicalText);
-    await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: current.length } });
+    await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: utf8Bytes(current) } });
     return { proposed: true };
   } else if (ev.changed) {
     // Auto-accept (auto mode, or review mode with comment-only changes): advance the base. On the
@@ -52,7 +53,7 @@ export async function applyGatedEdit(
       await store.setCanonical(current);
       await store.clearProposed();
     }
-    await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: current.length } });
+    await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: utf8Bytes(current) } });
   }
   return { proposed: false };
 }
