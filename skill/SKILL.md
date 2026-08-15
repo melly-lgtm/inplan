@@ -86,8 +86,10 @@ How to audit "did my edit land?", in order:
    un-park your edit, so check the field (and the record below) before classifying it.
 2. **Any later turn:** read `<workingCopy>.proposed.json` — the durable record. Its `state`
    becomes `accepted`, `partially_accepted`, or `rejected` once the human decides (or
-   `decided` when the outcome event wasn't readable, and `superseded` when a newer proposal of
-   yours replaced it — the newest record is the authoritative one). The exact text you pushed
+   `decided` when history is readable but no usable outcome event can be recovered — a
+   transient history-read failure instead leaves the record pending and retries next run), and
+   `superseded` when a newer proposal of yours replaced it — the newest record is the
+   authoritative one. The exact text you pushed
    is kept next to it in `<workingCopy>.proposed.md`, and every finalized record is appended to
    `<workingCopy>.proposals.jsonl`.
 3. A later wait's `entries` may also carry the decision itself: `revision_accepted_all`,

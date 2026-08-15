@@ -211,20 +211,45 @@ export class RemoteDocState {
    * later run would ever recreate one (the working copy stops diverging). The text alone is
    * enough to reconstruct a truthful record: the text is only ever written after a confirmed
    * push, so `pending_review` is correct, and the park time falls back to the file's mtime.
+   *
+   * One disambiguation: `finalize` leaves the text in place, so a damaged record may belong to
+   * an already-FINALIZED proposal — resurrecting that as pending would re-resolve it and append
+   * a duplicate history line under a fresh mtime-based `at`. When the history's tail finalized
+   * this exact text AND the text hasn't been rewritten since (a later park reuses the file and
+   * bumps its mtime), recover the finalized record verbatim. On ambiguity, prefer pending: a
+   * duplicate history line is cosmetic; hiding a genuinely pending proposal is not.
    */
   private recoverOrphanText(): ProposalRecord | null {
     if (!existsSync(this.textPath)) return null;
+    let text: string;
+    let mtimeMs: number;
     try {
-      const text = readFileSync(this.textPath, "utf8");
-      const record: ProposalRecord = {
-        docId: this.docId,
-        hash: hashBody(text),
-        bytes: utf8Bytes(text),
-        at: statSync(this.textPath).mtime.toISOString(),
-        state: "pending_review",
-      };
+      text = readFileSync(this.textPath, "utf8");
+      mtimeMs = statSync(this.textPath).mtime.getTime();
+    } catch {
+      return null;
+    }
+    const tail = this.historyTail();
+    const record: ProposalRecord =
+      tail && tail.hash === hashBody(text) && mtimeMs <= Date.parse(tail.at) + 5_000
+        ? tail
+        : { docId: this.docId, hash: hashBody(text), bytes: utf8Bytes(text), at: new Date(mtimeMs).toISOString(), state: "pending_review" };
+    try {
       writeFileSync(this.recordPath, JSON.stringify(record, null, 2));
-      return record;
+    } catch {
+      /* best-effort republish — the reconstruction is still the truth, so return it regardless */
+    }
+    return record;
+  }
+
+  /** The history log's last finalized record, or null (absent/unreadable/invalid). */
+  private historyTail(): ProposalRecord | null {
+    if (!existsSync(this.historyPath)) return null;
+    try {
+      const lines = readFileSync(this.historyPath, "utf8").trim().split("\n");
+      const last = JSON.parse(lines[lines.length - 1]!) as Partial<ProposalRecord>;
+      if (last.docId !== this.docId || typeof last.hash !== "string" || typeof last.bytes !== "number" || !Number.isFinite(Date.parse(last.at ?? "")) || typeof last.state !== "string") return null;
+      return last as ProposalRecord;
     } catch {
       return null;
     }
@@ -264,13 +289,7 @@ export class RemoteDocState {
 
   /** Whether the history's last line already records this park (crash-retry idempotency). */
   private historyEndsWith(record: ProposalRecord): boolean {
-    if (!existsSync(this.historyPath)) return false;
-    try {
-      const lines = readFileSync(this.historyPath, "utf8").trim().split("\n");
-      const last = JSON.parse(lines[lines.length - 1]!) as Partial<ProposalRecord>;
-      return last.hash === record.hash && last.at === record.at;
-    } catch {
-      return false;
-    }
+    const tail = this.historyTail();
+    return tail !== null && tail.hash === record.hash && tail.at === record.at;
   }
 }

@@ -6,7 +6,7 @@
 // human's actual decision (including partial hunk acceptance), never silently vanish.
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LogEventType, hashBody, type LogEntry } from "@inplan/core/node";
@@ -201,6 +201,45 @@ describe("park / audit / resolve", () => {
   it("no record AND no text reads as no proposal, never a crash", () => {
     expect(s.latestProposal()).toBeNull();
     expect(s.pendingProposal()).toBeNull();
+  });
+
+  it("a FINALIZED proposal whose record is damaged recovers as finalized, never as pending", () => {
+    // finalize leaves the text in place; resurrecting a decided proposal as pending would
+    // re-resolve it and append a duplicate history line under a fresh mtime-based `at`.
+    const parked = s.parkProposal("v1");
+    s.resolveProposal("accepted");
+    const recordPath = join(dir, "remote", "doc-1.plan.md.proposed.json");
+    const textPath = join(dir, "remote", "doc-1.plan.md.proposed.md");
+    utimesSync(textPath, new Date(parked.at), new Date(parked.at)); // pin mtime = park time (deterministic)
+    rmSync(recordPath);
+    const recovered = s.latestProposal();
+    expect(recovered).toMatchObject({ state: "accepted", at: parked.at });
+    expect(s.pendingProposal()).toBeNull(); // never re-resolved
+    s.resolveProposal("rejected"); // a stray re-resolution attempt is a no-op
+    const history = readFileSync(join(dir, "remote", "doc-1.plan.md.proposals.jsonl"), "utf8").trim().split("\n");
+    expect(history).toHaveLength(1);
+  });
+
+  it("a LATER park reusing identical text is pending, even though the history tail matches its hash", () => {
+    const first = s.parkProposal("same text");
+    s.resolveProposal("accepted");
+    s.parkProposal("same text"); // a new proposal with identical content
+    const recordPath = join(dir, "remote", "doc-1.plan.md.proposed.json");
+    const textPath = join(dir, "remote", "doc-1.plan.md.proposed.md");
+    // The re-park rewrote the text well after the finalized park's `at`:
+    const later = new Date(Date.parse(first.at) + 60_000);
+    utimesSync(textPath, later, later);
+    writeFileSync(recordPath, "{ truncated"); // crash mid-record-write on the SECOND park
+    expect(s.latestProposal()).toMatchObject({ state: "pending_review", hash: hashBody("same text") });
+    expect(s.pendingProposal()).not.toBeNull();
+  });
+
+  it("recovery returns the reconstruction even when republishing the record file fails", () => {
+    s.parkProposal("v1");
+    const recordPath = join(dir, "remote", "doc-1.plan.md.proposed.json");
+    rmSync(recordPath);
+    mkdirSync(recordPath); // a directory at the record path makes the republish write throw
+    expect(s.latestProposal()).toMatchObject({ state: "pending_review", hash: hashBody("v1") });
   });
 
   it("a record failing the full shape check reads as absent — never finalized with bad metadata", () => {
