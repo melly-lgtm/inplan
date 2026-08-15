@@ -339,8 +339,9 @@ export interface WaitBackend {
   logExit(reason: string): void;
   /** Handle a `save_locally_requested` directive (cloud→local handoff). When set
    *  and that event wakes the wait, this runs instead of the normal status output
-   *  and is responsible for emitting its own result. Absent on the desktop. */
-  onSaveLocally?: () => Promise<void>;
+   *  and is responsible for emitting its own result — including the turn's landing
+   *  signal, passed through `info`, so the handoff can't hide a parked proposal. */
+  onSaveLocally?: (info: { proposal?: { state: "pending_review"; bytes: number; hash: string } }) => Promise<void>;
 }
 
 /** Local sidecar-file backend for a document on disk. */
@@ -437,10 +438,15 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
       "inplan: review mode — your edit was parked as a proposal (agent_revision_proposed); the canonical body is unchanged until the human accepts. This is normal, not a sync failure.\n",
     );
   }
+  if (applied.parkFailed) {
+    process.stderr.write("inplan: pushing your edit as a review proposal FAILED — the edit is kept in the working copy and will be re-pushed on the next run.\n");
+  }
   // Rides every terminal output below, so the agent sees the park no matter how the wait ends —
   // including wait_failed and superseded, where mistaking a parked edit for a failed sync is
   // exactly the misread this field exists to prevent.
-  const proposalOut = applied.proposed ? { proposal: { state: "pending_review" as const, bytes: utf8Bytes(current), hash: hashBody(current) } } : {};
+  const proposalOut: { proposal?: { state: "pending_review"; bytes: number; hash: string } } = applied.proposed
+    ? { proposal: { state: "pending_review", bytes: utf8Bytes(current), hash: hashBody(current) } }
+    : {};
 
   // Signal the agent has (re)engaged this round so the editor can clear its
   // "Agent is thinking…" indicator even when the agent made no body change.
@@ -516,7 +522,7 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
     // would be lost. On success the doc becomes local, so the cloud cursor is moot.
     if (backend.onSaveLocally && result.entries.some((e) => e.type === LogEventType.SaveLocallyRequested)) {
       backend.logExit("save_locally");
-      await backend.onSaveLocally();
+      await backend.onSaveLocally(proposalOut);
       return "ok";
     }
 
@@ -1173,6 +1179,7 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     // leaves the record + text on disk, and it exists long before the end-of-turn re-sync
     // overwrites the working copy.
     const localStore = fsBackend(workFile).store;
+    let hubParkFailed = false;
     const gateStore: DocumentStore = {
       loadDoc: () => localStore.loadDoc(),
       saveDoc: (c) => localStore.saveDoc(c),
@@ -1181,7 +1188,15 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       backup: (c, m) => localStore.backup(c, m),
       getProposed: () => live.store.getProposed(),
       setProposed: async (c) => {
-        await live.store.setProposed(c);
+        // The durable record is written ONLY after a confirmed push. A failed push flags the turn
+        // (applyGatedEdit degrades; the post-turn path below must keep-local, or the re-sync would
+        // destroy the working copy — at that point the only copy of the edit anywhere).
+        try {
+          await live.store.setProposed(c);
+        } catch (e) {
+          hubParkFailed = true;
+          throw e;
+        }
         rds.parkProposal(c);
       },
       clearProposed: () => live.store.clearProposed(),
@@ -1190,12 +1205,12 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     // live.store isn't updated by gate.applyRevision, so reading it would write a stale doc. If
     // the hub read fails we throw BEFORE writing status, so the doc isn't switched to local.
     const onSaveLocallyGate = localFile
-      ? async () => {
+      ? async (info: { proposal?: { state: "pending_review"; bytes: number; hash: string } }) => {
           const body = await gate.readCanonical();
           writeFileSync(localFile, body);
           writeStatus(docPaths(localFile).statusPath, { location: "local", originalPath: localFile, lastSyncedHash: hashBody(body) });
           const pid = spawnApp(localFile);
-          output({ status: "moved_local", path: localFile, reopened: pid !== null });
+          output({ status: "moved_local", path: localFile, reopened: pid !== null, ...info });
         }
       : undefined;
 
@@ -1223,7 +1238,11 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       tracked.gate, // …and accepted edits apply through the hub, not the store.
     );
 
-    const action = postTurnAction(outcome, { readFailed: tracked.readFailed(), writeFailed: tracked.writeFailed() });
+    // A failed park counts as a write failure: the edit exists ONLY in the working copy, so the
+    // healthy-path re-sync below would destroy it, and `.pending` must protect it until the next
+    // run's quarantine re-parks it.
+    const degraded = { readFailed: tracked.readFailed(), writeFailed: tracked.writeFailed() || hubParkFailed };
+    const action = postTurnAction(outcome, degraded);
     if (action === "stop") return; // a fail-fast exit is pending — never touch the working copy
 
     if (action === "keep-local") {
@@ -1232,7 +1251,7 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       // revision persisted off-hub that must be replayed. A read-only failure leaves the working
       // copy either unchanged (clean) or hash-diverged (agent edited); both are handled by the
       // start-of-turn hydration check, and a spurious `.pending` would wrongly skip it next run.
-      if (pendingRequiresReplay({ readFailed: tracked.readFailed(), writeFailed: tracked.writeFailed() })) {
+      if (pendingRequiresReplay(degraded)) {
         rds.markReplayPending();
       }
       process.stderr.write("inplan: hub was unavailable this turn — keeping local edits (will sync next turn)\n");

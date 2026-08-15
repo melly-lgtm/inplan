@@ -6,7 +6,7 @@
 // human's actual decision (including partial hunk acceptance), never silently vanish.
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LogEventType, hashBody, type LogEntry } from "@inplan/core/node";
@@ -49,6 +49,26 @@ describe("resolutionFromEvents", () => {
       entry(LogEventType.RevisionAcceptedAll, "2026-08-15T12:09:00.000Z"),
     ];
     expect(resolutionFromEvents(entries, PARK)).toBe("accepted");
+  });
+
+  it("log order beats the clock: a decision after the park EVENT counts even when server timestamps lag the CLI clock", () => {
+    // The CLI records the park time from its own clock; Supabase stamps events server-side. With
+    // the CLI clock ahead, a fast acceptance can carry a ts EARLIER than the recorded park — the
+    // agent_revision_proposed event's position in the log is the boundary that cannot skew.
+    const entries = [
+      entry(LogEventType.RevisionRejectedAll, "2026-08-15T11:50:00.000Z"), // a PREVIOUS proposal's decision
+      entry(LogEventType.AgentRevisionProposed, "2026-08-15T11:58:00.000Z"), // this park (server ts behind PARK)
+      entry(LogEventType.RevisionAcceptedAll, "2026-08-15T11:59:00.000Z"), // fast acceptance, ts still < PARK
+    ];
+    expect(resolutionFromEvents(entries, PARK)).toBe("accepted");
+  });
+
+  it("a previous proposal's decision BEFORE the park event is never misattributed", () => {
+    const entries = [
+      entry(LogEventType.RevisionAcceptedAll, "2026-08-15T12:30:00.000Z"), // late server ts, but before the park in log order
+      entry(LogEventType.AgentRevisionProposed, "2026-08-15T12:31:00.000Z"),
+    ];
+    expect(resolutionFromEvents(entries, PARK)).toBe("decided");
   });
 });
 
@@ -112,8 +132,28 @@ describe("park / audit / resolve", () => {
   it("a corrupt record file reads as no record, never a crash", () => {
     s.parkProposal("v1");
     const recordPath = join(dir, "remote", "doc-1.plan.md.proposed.json");
-    rmSync(recordPath);
+    writeFileSync(recordPath, "{ this is not json"); // exercises the parse-failure branch
     expect(s.latestProposal()).toBeNull();
+    rmSync(recordPath); // and plain absence
+    expect(s.latestProposal()).toBeNull();
+  });
+
+  it("a record failing the full shape check reads as absent — never finalized with bad metadata", () => {
+    const recordPath = join(dir, "remote", "doc-1.plan.md.proposed.json");
+    const good = { docId: "doc-1", hash: "h", bytes: 3, at: "2026-08-15T00:00:00.000Z", state: "pending_review" };
+    for (const bad of [
+      { ...good, docId: "some-other-doc" }, // a record copied from another doc
+      { ...good, bytes: "3" }, // non-numeric bytes
+      { ...good, at: "not-a-date" }, // unparseable park time
+      { ...good, state: "unknown_state" }, // outside the allowed states
+      { docId: "doc-1", state: "pending_review" }, // partial record
+    ]) {
+      writeFileSync(recordPath, JSON.stringify(bad));
+      expect(s.latestProposal()).toBeNull();
+      expect(s.pendingProposal()).toBeNull();
+    }
+    writeFileSync(recordPath, JSON.stringify(good));
+    expect(s.latestProposal()).toEqual(good);
   });
 });
 

@@ -17,14 +17,17 @@ import { utf8Bytes } from "./remoteDocState";
  *
  * Returns whether the edit was PARKED as a proposal (#88) — the caller surfaces that fact
  * (wait output + stderr + the durable proposal record) so an agent auditing "did my edit
- * land?" never mistakes a parked proposal for a sync failure.
+ * land?" never mistakes a parked proposal for a sync failure. `parkFailed` reports the
+ * inverse hazard: the park never reached the store, so nothing was proposed — the edit is
+ * kept in the working copy (deliberately NOT reverted) and no event is appended; the caller
+ * degrades the turn instead of crashing with no status.
  */
 export async function applyGatedEdit(
   store: DocumentStore,
   channel: ControlChannel,
   ev: AgentEditEvaluation,
   ctx: { current: string; canonicalText: string; quarantine: boolean; gate: PluginGate | null },
-): Promise<{ proposed: boolean }> {
+): Promise<{ proposed: boolean; parkFailed?: boolean }> {
   const { current, canonicalText, quarantine, gate } = ctx;
   if (ev.removedIds.length > 0) {
     // Confirmed deletions: drop the orphaned comment objects. On the plugin path push the result
@@ -41,7 +44,15 @@ export async function applyGatedEdit(
     // sidecar is file-based either way; on the file path also revert the working file to canonical
     // (the human's accept later writes canonical). On the plugin path the plugin owns the working
     // doc, so there's no .md to revert.
-    await store.setProposed(current);
+    try {
+      await store.setProposed(current);
+    } catch {
+      // The push failed, so nothing is proposed anywhere: keep the working copy as the ONLY copy
+      // (skipping the revert below — reverting here would destroy the edit silently), log no
+      // event, and let the caller report the degradation. The next run re-detects the divergence
+      // and retries the park.
+      return { proposed: false, parkFailed: true };
+    }
     if (!gate) await store.saveDoc(canonicalText);
     await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: utf8Bytes(current) } });
     return { proposed: true };

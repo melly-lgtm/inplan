@@ -53,6 +53,20 @@ describe("applyGatedEdit — file path (no plugin)", () => {
     expect(await types(channel)).toEqual([LogEventType.DocumentEdited]);
   });
 
+  it("park failure degrades: the file is NOT reverted, no event is appended, parkFailed is reported", async () => {
+    // A crashed park used to reject all the way out of waitCycle — no status, no marker — and a
+    // continued turn would have re-synced the working copy over the ONLY copy of the edit.
+    const store = new MemoryDocumentStore("agent body");
+    store.setProposed = async () => {
+      throw new Error("hub down");
+    };
+    const channel = new MemoryControlChannel();
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "agent body", canonicalText: "canon", quarantine: true, gate: null });
+    expect(applied).toEqual({ proposed: false, parkFailed: true });
+    expect(await store.loadDoc()).toBe("agent body"); // NOT reverted — this is the only copy
+    expect(await types(channel)).toEqual([]); // nothing was proposed, so no event claims it was
+  });
+
   it("no change: writes nothing, logs nothing", async () => {
     const store = new MemoryDocumentStore("same");
     const channel = new MemoryControlChannel();

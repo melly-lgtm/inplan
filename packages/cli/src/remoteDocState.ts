@@ -45,16 +45,28 @@ export interface ProposalRecord {
 }
 
 /**
- * Map the decision events since a park to the proposal's outcome. Scans newest-first so the
- * human's most recent decision wins; stops at events older than the park (when timestamps are
- * parseable) so a previous proposal's decision is never misattributed to this one.
+ * Map the decision events since a park to the proposal's outcome, newest-first so the human's most
+ * recent decision wins. The park boundary is the log's own order, not the clock: the park appended
+ * `agent_revision_proposed`, and only one proposal pends at a time, so everything after the LAST
+ * such event belongs to this park. Timestamp comparison against the recorded park time is only the
+ * fallback for a park whose event append failed — there, CLI-clock vs server-timestamp skew can at
+ * worst degrade a fast decision to "decided", never misattribute an old one.
  */
 export function resolutionFromEvents(entries: LogEntry[], parkedAtIso: string): ProposalOutcome {
-  const parkedAt = Date.parse(parkedAtIso);
+  let boundary = -1;
   for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i]!.type === LogEventType.AgentRevisionProposed) {
+      boundary = i;
+      break;
+    }
+  }
+  const parkedAt = Date.parse(parkedAtIso);
+  for (let i = entries.length - 1; i > boundary; i--) {
     const e = entries[i]!;
-    const ts = Date.parse(e.ts);
-    if (Number.isFinite(parkedAt) && Number.isFinite(ts) && ts < parkedAt) break;
+    if (boundary < 0) {
+      const ts = Date.parse(e.ts);
+      if (Number.isFinite(parkedAt) && Number.isFinite(ts) && ts < parkedAt) break;
+    }
     if (e.type === LogEventType.RevisionAcceptedAll) return "accepted";
     if (e.type === LogEventType.RevisionRejectedAll) return "rejected";
     if (e.type === LogEventType.RevisionHunkAccepted || e.type === LogEventType.RevisionHunkRejected) return "partially_accepted";
@@ -142,17 +154,24 @@ export class RemoteDocState {
       at: at.toISOString(),
       state: "pending_review",
     };
-    writeFileSync(this.recordPath, JSON.stringify(record, null, 2));
+    // Text first, record last: the record is the publish point, so a process killed between the
+    // two writes leaves an unadvertised text file — never a pending_review record whose text is
+    // missing (which would defeat the recovery path the record exists to provide).
     writeFileSync(this.textPath, text);
+    writeFileSync(this.recordPath, JSON.stringify(record, null, 2));
     return record;
   }
 
-  /** The latest record regardless of state, or null (missing/unreadable). */
+  /** The latest record regardless of state, or null — missing, unreadable, or failing the full
+   *  shape check (wrong doc, non-numeric bytes, unparseable park time, unknown state). A partial
+   *  record must read as absent, or it could be finalized with missing metadata. */
   latestProposal(): ProposalRecord | null {
     if (!existsSync(this.recordPath)) return null;
     try {
-      const parsed = JSON.parse(readFileSync(this.recordPath, "utf8")) as ProposalRecord;
-      return typeof parsed?.hash === "string" && typeof parsed?.state === "string" ? parsed : null;
+      const p = JSON.parse(readFileSync(this.recordPath, "utf8")) as Partial<ProposalRecord>;
+      const validState = p.state === "pending_review" || p.state === "accepted" || p.state === "partially_accepted" || p.state === "rejected" || p.state === "decided" || p.state === "superseded";
+      if (p.docId !== this.docId || typeof p.hash !== "string" || typeof p.bytes !== "number" || !Number.isFinite(Date.parse(p.at ?? "")) || !validState) return null;
+      return p as ProposalRecord;
     } catch {
       return null;
     }
