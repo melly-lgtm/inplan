@@ -1337,7 +1337,10 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
             const row = await live.store.getProposal(created.id).catch(() => null);
             if (row && row.state !== "pending") {
               if (rds.pendingProposal()?.id === created.id) rds.resolveProposal(row.state);
-              created = await live.store.createProposal(input); // fresh id — a genuine successor
+              // Fresh id — a genuine successor. Strip any caller-supplied id: passing input
+              // unchanged would reuse the very terminal id we just detected, returning it
+              // untouched again and never landing the content.
+              created = await live.store.createProposal({ content: input.content, baseHash: input.baseHash, baseContent: input.baseContent });
             }
           }
         } catch (e) {

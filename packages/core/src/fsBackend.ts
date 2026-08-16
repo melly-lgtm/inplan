@@ -244,13 +244,27 @@ export class FsDocumentStore implements DocumentStore {
     try {
       return run();
     } finally {
-      // Ownership-checked release: if a holder overstays the staleness window and its lock was
-      // broken, its release must not tear down the NEW holder's lock (that would readmit a third
-      // process mid-mutation and lose rows to last-write-wins).
+      // Release by ATOMIC TAKE: rename the lock dir to a private name (rename is atomic — nobody
+      // can be mid-acquisition inside it), verify ownership there, and only then delete. A plain
+      // read-check-then-rm had a window where a broken-and-replaced lock could be read as ours a
+      // beat before recovery swapped it, deleting the NEW holder's lock and readmitting a third
+      // writer. If the taken lock turns out not to be ours, it is restored by the reverse rename;
+      // the restore can only collide if a third acquisition raced the gap, in which case the
+      // taken (stale-broken) copy is discarded and the live lock is theirs — never deleted here.
+      const releasing = `${lockDir}.releasing-${token}`;
       try {
-        if (readFileSync(ownerPath, "utf8") === token) rmSync(lockDir, { recursive: true, force: true });
+        renameSync(lockDir, releasing);
+        if (readFileSync(join(releasing, "owner"), "utf8") === token) {
+          rmSync(releasing, { recursive: true, force: true });
+        } else {
+          try {
+            renameSync(releasing, lockDir); // not ours — put the live lock back
+          } catch {
+            rmSync(releasing, { recursive: true, force: true }); // a fresh lock exists; drop the stale copy
+          }
+        }
       } catch {
-        /* broken by staleness — the lock is someone else's now */
+        /* the lock was already broken and replaced or removed — nothing of ours to release */
       }
     }
   }

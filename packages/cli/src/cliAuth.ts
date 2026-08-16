@@ -6,7 +6,7 @@
 // must belong to the document's org). The service-role key is NEVER used here:
 // the local CLI runs as the human, the same as the browser SPA.
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
@@ -342,13 +342,21 @@ function machineClientId(): string {
   const v = mintProposalId();
   try {
     mkdirSync(dirname(p), { recursive: true });
-    // Exclusive create: two processes racing the first mint must converge on ONE identity —
-    // last-writer-wins would leave the loser's future rows invisible to its own lookups.
-    writeFileSync(p, v, { flag: "wx" });
+    // Exclusive AND fully-written install: two processes racing the first mint must converge on
+    // ONE identity, and a reader must never observe a half-written marker. The content lands in a
+    // private temp file first; linkSync is the atomic-exclusive publish (EEXIST when the race was
+    // lost) — the marker only ever appears with its full content.
+    const tmp = `${p}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+    writeFileSync(tmp, v);
+    try {
+      linkSync(tmp, p);
+    } finally {
+      rmSync(tmp, { force: true });
+    }
   } catch {
     try {
       const w = readFileSync(p, "utf8").trim();
-      if (w) return (cachedClientId = w); // the race winner's id
+      if (w) return (cachedClientId = w); // the race winner's id (always complete — see above)
     } catch {
       /* unwritable home: an ephemeral id still works for this process (cached above) */
     }

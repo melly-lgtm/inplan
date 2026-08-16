@@ -142,6 +142,12 @@ export class Session {
     // (its cleanup can fail independently) must never resurface a decided proposal as an id-less
     // review. The bare-file read only serves genuinely pre-rows sidecars.
     if (store.hasProposalHistory()) return null;
+    if (!existsSync(this.paths.proposedPath)) return null;
+    // A CLI can mint the row between the lookup above and this read — the derived file would then
+    // be a real row's content served WITHOUT its id, and an id-less review resolves whatever is
+    // pending at Apply time. One re-lookup collapses that race to the row (with its identity).
+    const raced = await store.myPendingProposal();
+    if (raced) return { id: raced.id, content: raced.content };
     return existsSync(this.paths.proposedPath) ? { content: readFileSync(this.paths.proposedPath, "utf8") } : null;
   }
 
