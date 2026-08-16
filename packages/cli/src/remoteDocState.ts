@@ -26,7 +26,7 @@
 //    slot at the next attach (see `needsReparkFromSlot`) — the slot is the authoritative side
 //    of the push, so it, not local heuristics, is the recovery source.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { hashBody, LogEventType, type LogEntry } from "@inplan/core/node";
 import type { HydrateInput } from "./liveSync";
@@ -79,17 +79,18 @@ export function resolutionFromEvents(entries: LogEntry[], park: { at: string; ha
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i]!;
     if (e.type !== LogEventType.AgentRevisionProposed) continue;
+    // Any candidate — hash-matched or weak — must plausibly BE this park: an event stamped after
+    // our recorded park time (5s slack for CLI-vs-server clock disagreement) is someone else's
+    // LATER park, even when its content hash matches ours (identical text is not identity — a
+    // newer proposal repeating our text must not donate its decision window to this record).
+    const ts = Date.parse(e.ts);
+    if (Number.isFinite(parkedAt) && Number.isFinite(ts) && ts > parkedAt + 5_000) continue;
     if ((e.payload as { hash?: unknown } | undefined)?.hash === park.hash) {
       start = i;
       matched = true;
       break;
     }
-    // Weak-anchor candidate: the newest park event that could plausibly BE this park — i.e. not
-    // stamped after our recorded park time (5s slack for CLI-vs-server clock disagreement).
-    if (start < 0) {
-      const ts = Date.parse(e.ts);
-      if (!Number.isFinite(parkedAt) || !Number.isFinite(ts) || ts <= parkedAt + 5_000) start = i;
-    }
+    if (start < 0) start = i; // newest eligible park: the weak-anchor candidate
   }
   // The window closes at the NEXT park event after the anchor: decisions beyond it belong to a
   // newer proposal. This applies even with NO anchor (every park event postdates us): the first
@@ -204,6 +205,14 @@ export class RemoteDocState {
     const prior = this.pendingProposal();
     const hash = hashBody(text);
     if (prior && prior.hash === hash) {
+      // Same proposal, re-pushed. A stale awaiting-outcome marker must not survive the re-push:
+      // the slot is live again, so a later slot-clear deserves the full grace before degrading
+      // to 'decided', not an immediate finalization off the old sighting.
+      if (prior.awaitingOutcomeSince) {
+        const { awaitingOutcomeSince: _stale, ...rest } = prior;
+        this.publish({ ...rest, text });
+        return rest;
+      }
       this.writeDerivedText(text);
       return prior;
     }
@@ -301,18 +310,35 @@ export class RemoteDocState {
     try {
       const p = JSON.parse(readFileSync(this.recordPath, "utf8")) as Partial<StoredProposal>;
       const validState = p.state === "pending_review" || p.state === "accepted" || p.state === "partially_accepted" || p.state === "rejected" || p.state === "decided" || p.state === "superseded";
-      if (typeof p.id !== "string" || p.docId !== this.docId || typeof p.hash !== "string" || typeof p.bytes !== "number" || !Number.isFinite(Date.parse(p.at ?? "")) || !validState || typeof p.text !== "string") return null;
+      if (typeof p.id !== "string" || p.docId !== this.docId || typeof p.hash !== "string" || !Number.isInteger(p.bytes) || (p.bytes as number) < 0 || !Number.isFinite(Date.parse(p.at ?? "")) || !validState || typeof p.text !== "string") return null;
+      // A PENDING record's text is load-bearing (recovery, re-push, slot comparison), so a
+      // valid-JSON-but-corrupted record whose hash/bytes disagree with its own text reads as
+      // absent — reconciliation from the cloud slot rebuilds the truth. Finalized records
+      // tolerate the mismatch: their text is historical convenience, not a recovery input.
+      if (p.state === "pending_review" && (hashBody(p.text) !== p.hash || utf8Bytes(p.text) !== p.bytes)) return null;
       return p as StoredProposal;
     } catch {
       return null;
     }
   }
 
-  /** The history log's last finalized record, or null (absent/unreadable/invalid). */
+  /** The history log's last finalized record, or null (absent/unreadable/invalid). Reads only the
+   *  file's tail — the log is never pruned, so a whole-file read would grow without bound. */
   private historyTail(): ProposalRecord | null {
     if (!existsSync(this.historyPath)) return null;
     try {
-      const lines = readFileSync(this.historyPath, "utf8").trim().split("\n");
+      const fd = openSync(this.historyPath, "r");
+      let chunk: string;
+      try {
+        const size = fstatSync(fd).size;
+        const span = Math.min(size, 16_384); // far above any single metadata line
+        const buf = Buffer.alloc(span);
+        readSync(fd, buf, 0, span, size - span);
+        chunk = buf.toString("utf8");
+      } finally {
+        closeSync(fd);
+      }
+      const lines = chunk.trim().split("\n");
       const last = JSON.parse(lines[lines.length - 1]!) as Partial<ProposalRecord>;
       if (typeof last.id !== "string" || last.docId !== this.docId || typeof last.hash !== "string" || typeof last.state !== "string") return null;
       return last as ProposalRecord;

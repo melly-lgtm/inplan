@@ -27,7 +27,7 @@ export async function applyGatedEdit(
   channel: ControlChannel,
   ev: AgentEditEvaluation,
   ctx: { current: string; canonicalText: string; quarantine: boolean; gate: PluginGate | null },
-): Promise<{ proposed: boolean; parkFailed?: boolean }> {
+): Promise<{ proposed: boolean; parkFailed?: boolean; eventLogged?: boolean }> {
   const { current, canonicalText, quarantine, gate } = ctx;
   if (ev.removedIds.length > 0) {
     // Confirmed deletions: drop the orphaned comment objects. On the plugin path push the result
@@ -81,8 +81,11 @@ export async function applyGatedEdit(
         payload: { bytes: utf8Bytes(current), hash: hashBody(current) },
       });
     } catch {
-      /* The park stands without its event; resolution falls back to its lesser anchors (last
-         park event, then timestamps), which is exactly what those fallbacks exist for. */
+      // The park stands without its event; resolution falls back to its lesser anchors, which is
+      // exactly what those fallbacks exist for. Report it, though: the event is also what nudges
+      // a live editor to show the review panel, so the caller should tell the agent the proposal
+      // may stay invisible to the human until their editor next reloads.
+      return { proposed: true, eventLogged: false };
     }
     return { proposed: true };
   } else if (ev.changed) {

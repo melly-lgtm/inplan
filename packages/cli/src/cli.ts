@@ -39,7 +39,7 @@ import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenceReason, type PluginGate } from "./pluginGate";
 import { demoteSource, shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
-import { RemoteDocState, needsReparkFromSlot, resolutionFromEvents, utf8Bytes } from "./remoteDocState";
+import { RemoteDocState, needsReparkFromSlot, resolutionFromEvents, utf8Bytes, type ProposalOutcome } from "./remoteDocState";
 import { announcePresence, presenceTokenResolver } from "./presence";
 import { awaitReopen, wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
@@ -440,6 +440,9 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
   }
   if (applied.parkFailed) {
     process.stderr.write("inplan: pushing your edit as a review proposal FAILED — the edit is kept in the working copy and will be re-pushed on the next run.\n");
+  }
+  if (applied.eventLogged === false) {
+    process.stderr.write("inplan: the proposal was parked, but its notification event could not be logged — the human's editor may not show it until they reload. The proposal itself is safe.\n");
   }
   // Rides every terminal output below, so the agent sees the park no matter how the wait ends —
   // including wait_failed and superseded, where mistaking a parked edit for a failed sync is
@@ -1164,7 +1167,30 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     // 'decided'. A transient slot read failure skips both — retry next run.
     const slot = await live.store.getProposed().catch(() => undefined);
     if (typeof slot === "string" && needsReparkFromSlot(rds.latestProposal(), slot)) {
-      rds.parkProposal(slot);
+      try {
+        // A pending record the slot no longer matches was DISPLACED while we were away — but not
+        // necessarily superseded: the human may have decided it before another machine parked the
+        // slot's new content. Resolve it from the decision events FIRST, so a real acceptance is
+        // never mislabeled; only when no decision is readable does 'superseded' apply (the slot's
+        // replacement content is itself the proof of displacement, so no grace is owed here).
+        const displaced = rds.pendingProposal();
+        if (displaced) {
+          let outcome: ProposalOutcome = "superseded";
+          try {
+            const { entries } = await live.channel.readSince(0);
+            const resolved = resolutionFromEvents(entries, displaced);
+            if (resolved !== "decided") outcome = resolved;
+          } catch {
+            /* events unreadable — displacement is still certain, so 'superseded' stands */
+          }
+          rds.resolveProposal(outcome);
+        }
+        rds.parkProposal(slot);
+      } catch (e) {
+        // Local persistence trouble must not stop the attach: the cloud proposal stays live and
+        // reconciliation retries on the next run.
+        process.stderr.write(`inplan: could not reconcile the local proposal record (${String(e)}); continuing — it will retry next run\n`);
+      }
     }
     const parkedEarlier = rds.pendingProposal();
     if (parkedEarlier && slot === null) {

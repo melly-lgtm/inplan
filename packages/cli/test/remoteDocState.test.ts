@@ -68,7 +68,7 @@ describe("resolutionFromEvents", () => {
   it("a previous proposal's decision BEFORE the park event is never misattributed", () => {
     const entries = [
       entry(LogEventType.RevisionAcceptedAll, "2026-08-15T12:30:00.000Z"), // late server ts, but before the park in log order
-      parkEvent("2026-08-15T12:31:00.000Z", "hash-P1"),
+      parkEvent("2026-08-15T12:00:02.000Z", "hash-P1"), // ours (within clock slack)
     ];
     expect(resolutionFromEvents(entries, PARK)).toBe("decided");
   });
@@ -77,7 +77,7 @@ describe("resolutionFromEvents", () => {
     // Machine A parks P1 and goes offline; the human rejects P1; machine B parks P2 which is
     // accepted. When A finally resolves P1 it must read P1's rejection, not P2's acceptance.
     const entries = [
-      parkEvent("2026-08-15T12:01:00.000Z", "hash-P1"),
+      parkEvent("2026-08-15T12:00:02.000Z", "hash-P1"), // ours (within clock slack)
       entry(LogEventType.RevisionRejectedAll, "2026-08-15T12:05:00.000Z"), // P1's decision
       parkEvent("2026-08-15T12:10:00.000Z", "hash-P2"),
       entry(LogEventType.RevisionAcceptedAll, "2026-08-15T12:15:00.000Z"), // P2's decision
@@ -88,7 +88,7 @@ describe("resolutionFromEvents", () => {
 
   it("a later proposal with no decision for ours → 'decided', never the newer proposal's outcome", () => {
     const entries = [
-      parkEvent("2026-08-15T12:01:00.000Z", "hash-P1"),
+      parkEvent("2026-08-15T12:00:02.000Z", "hash-P1"), // ours (within clock slack)
       parkEvent("2026-08-15T12:10:00.000Z", "hash-P2"),
       entry(LogEventType.RevisionAcceptedAll, "2026-08-15T12:15:00.000Z"), // P2's decision only
     ];
@@ -112,6 +112,18 @@ describe("resolutionFromEvents", () => {
       entry(LogEventType.RevisionAcceptedAll, "2026-08-15T11:30:00.000Z"), // the OLD proposal's decision
     ];
     expect(resolutionFromEvents(entries, PARK)).toBe("decided");
+  });
+
+  it("a hash match POSTDATING our park is someone else's identical-text proposal — never our anchor", () => {
+    // Identical text is not identity: a newer proposal repeating our content must not donate its
+    // decision window to this record. Our own (eligible) park event still anchors correctly.
+    const entries = [
+      parkEvent("2026-08-15T11:58:00.000Z", "hash-P1"), // ours (within clock slack of PARK.at)
+      entry(LogEventType.RevisionRejectedAll, "2026-08-15T11:59:00.000Z"), // OUR decision
+      parkEvent("2026-08-15T12:10:00.000Z", "hash-P1"), // another machine's park, SAME text
+      entry(LogEventType.RevisionAcceptedAll, "2026-08-15T12:15:00.000Z"), // THEIR decision
+    ];
+    expect(resolutionFromEvents(entries, PARK)).toBe("rejected");
   });
 
   it("a LATER machine's park never becomes our weak anchor — its decision postdates us but is still not ours", () => {
@@ -240,9 +252,34 @@ describe("park / audit / resolve", () => {
     expect(s.latestProposal()?.state).toBe("decided");
   });
 
+  it("re-pushing identical text RESETS a stale awaiting-outcome marker — the slot is live again", () => {
+    // Without the reset, a later slot-clear would finalize 'decided' immediately off the old
+    // sighting instead of granting the full grace for the decision event to surface.
+    const first = s.parkProposal("v1");
+    s.noteOutcomeMissing();
+    const repushed = s.parkProposal("v1");
+    expect(repushed.id).toBe(first.id); // same proposal, re-pushed
+    expect(repushed.awaitingOutcomeSince).toBeUndefined();
+    expect(s.pendingProposal()?.awaitingOutcomeSince).toBeUndefined();
+  });
+
+  it("a pending record whose hash/bytes disagree with its own text reads as absent", () => {
+    // Valid JSON is not integrity: a corrupted pending record must not feed re-push or slot
+    // comparison with text it doesn't actually describe. Finalized records tolerate the mismatch
+    // (their text is historical convenience, not a recovery input).
+    const recordPath = join(dir, "remote", "doc-1.plan.md.proposed.json");
+    const base = { id: "p-1", docId: "doc-1", bytes: utf8Bytes("abc"), at: "2026-08-15T00:00:00.000Z", text: "abc" };
+    writeFileSync(recordPath, JSON.stringify({ ...base, state: "pending_review", hash: "not-the-text-hash" }));
+    expect(s.latestProposal()).toBeNull();
+    writeFileSync(recordPath, JSON.stringify({ ...base, state: "pending_review", hash: hashBody("abc"), bytes: 999 }));
+    expect(s.latestProposal()).toBeNull();
+    writeFileSync(recordPath, JSON.stringify({ ...base, state: "accepted", hash: "not-the-text-hash" }));
+    expect(s.latestProposal()?.state).toBe("accepted");
+  });
+
   it("a record failing the full shape check reads as absent — never finalized with bad metadata", () => {
     const recordPath = join(dir, "remote", "doc-1.plan.md.proposed.json");
-    const good = { id: "p-1", docId: "doc-1", hash: "h", bytes: 3, at: "2026-08-15T00:00:00.000Z", state: "pending_review", text: "abc" };
+    const good = { id: "p-1", docId: "doc-1", hash: hashBody("abc"), bytes: utf8Bytes("abc"), at: "2026-08-15T00:00:00.000Z", state: "pending_review", text: "abc" };
     for (const bad of [
       { ...good, docId: "some-other-doc" }, // a record copied from another doc
       { ...good, bytes: "3" }, // non-numeric bytes
