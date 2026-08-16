@@ -53,11 +53,12 @@ describe("Session.dispatchLog", () => {
     expect(h.onAgentMessage).toHaveBeenNthCalledWith(2, "second", "2026-06-01T00:00:00Z");
   });
 
-  it("a parked Review proposal loads proposed.md and is NOT adopted as an external change", () => {
+  it("a parked Review proposal loads proposed.md and is NOT adopted as an external change", async () => {
     writeFileSync(session.paths.proposedPath, "# Plan\n\nPROPOSED rewrite.\n");
     const h = handlers();
     session.dispatchLog([entry("agent", LogEventType.AgentRevisionProposed, { bytes: 22 }), entry("agent", LogEventType.AgentRevised)], h);
-    expect(h.onProposal).toHaveBeenCalledWith("# Plan\n\nPROPOSED rewrite.\n");
+    await new Promise((r) => setTimeout(r, 0)); // pendingProposal is row-backed and async now
+    expect(h.onProposal).toHaveBeenCalledWith("# Plan\n\nPROPOSED rewrite.\n", expect.any(String)); // the legacy park is ADOPTED as a row and gains a real identity
     expect(h.onExternalChange).not.toHaveBeenCalled(); // baseline never moves → no empty-diff race
     expect(h.onAgentActive).toHaveBeenCalled();
   });

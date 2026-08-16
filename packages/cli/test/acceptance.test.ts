@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LogEventType, MemoryControlChannel, MemoryDocumentStore, type LogEntry } from "@inplan/core/node";
 import { acceptanceFrom, waitCycle, type WaitBackend } from "../src/cli";
+import { proposedContent } from "./helpers";
 
 let home: string;
 beforeEach(() => {
@@ -104,7 +105,7 @@ describe("the bypass, end to end through waitCycle", () => {
       await expect(run).resolves.toBe("ok");
 
       expect(gate.applyRevision).not.toHaveBeenCalled(); // no direct canonical write — the gate held
-      expect(await store.getProposed()).toBe(DOC_B); // the edit is parked for the human
+      expect(await proposedContent(store)).toBe(DOC_B); // the edit is parked for the human
     } finally {
       so.mockRestore();
       se.mockRestore();

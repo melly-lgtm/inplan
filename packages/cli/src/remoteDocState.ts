@@ -32,8 +32,9 @@ import { hashBody, LogEventType, type LogEntry } from "@inplan/core/node";
 import type { HydrateInput } from "./liveSync";
 
 /** How a pending proposal ended. `decided` = the proposed slot emptied but no decision event was
- *  readable (the human acted; which way is unknown). `superseded` = a newer park replaced it. */
-export type ProposalOutcome = "accepted" | "partially_accepted" | "rejected" | "decided" | "superseded";
+ *  readable (the human acted; which way is unknown). `superseded` = a newer park replaced it;
+ *  `withdrawn` = the agent retracted its own proposal (a direct-landing edit mooted it). */
+export type ProposalOutcome = "accepted" | "partially_accepted" | "rejected" | "decided" | "superseded" | "withdrawn";
 
 /** UTF-8 byte length — the one sizing used by the proposal record, the wait output's `proposal`
  *  field, and the `agent_revision_proposed` payload, so the three never disagree. */
@@ -218,10 +219,21 @@ export class RemoteDocState {
    * so no record is ever silently lost; re-parking identical content keeps the existing pending
    * identity (same proposal, re-pushed) instead of minting a new one.
    */
-  parkProposal(text: string, at: Date = new Date()): ProposalRecord {
+  parkProposal(text: string, at: Date = new Date(), id?: string): ProposalRecord {
     const prior = this.pendingProposal();
     const hash = hashBody(text);
-    if (prior && prior.hash === hash) {
+    if (prior && id !== undefined && id === prior.id && prior.hash !== hash) {
+      // Same identity, updated content (the cloud converge-if-pending path): the record follows
+      // in place. Superseding here would finalize the id into the history and then republish the
+      // SAME id as pending — breaking terminal immutability and corrupting the history.
+      // The grace marker never survives updated content: the slot is live again, so a later
+      // empty-slot sighting earns the full grace, not an immediate 'decided' off the old one.
+      const { awaitingOutcomeSince: _stale, ...rest } = prior;
+      const updated: ProposalRecord = { ...rest, hash, bytes: utf8Bytes(text), at: at.toISOString() };
+      this.publish({ ...updated, text });
+      return updated;
+    }
+    if (prior && prior.hash === hash && (id === undefined || id === prior.id)) {
       // Same proposal, re-pushed. A stale awaiting-outcome marker must not survive the re-push:
       // the slot is live again, so a later slot-clear deserves the full grace before degrading
       // to 'decided', not an immediate finalization off the old sighting.
@@ -235,7 +247,9 @@ export class RemoteDocState {
     }
     if (prior) this.finalize(prior, "superseded");
     const record: ProposalRecord = {
-      id: `${at.getTime().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      // The id is the CLOUD row's id when the caller passes one (proposals v1 — one identity end
+      // to end); minted locally only for offline/desktop parks.
+      id: id ?? `${at.getTime().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       docId: this.docId,
       hash,
       bytes: utf8Bytes(text),
@@ -329,7 +343,7 @@ export class RemoteDocState {
     if (!existsSync(this.recordPath)) return null;
     try {
       const p = JSON.parse(readFileSync(this.recordPath, "utf8")) as Partial<StoredProposal>;
-      const validState = p.state === "pending_review" || p.state === "accepted" || p.state === "partially_accepted" || p.state === "rejected" || p.state === "decided" || p.state === "superseded";
+      const validState = p.state === "pending_review" || p.state === "accepted" || p.state === "partially_accepted" || p.state === "rejected" || p.state === "decided" || p.state === "superseded" || p.state === "withdrawn";
       if (typeof p.id !== "string" || p.docId !== this.docId || typeof p.hash !== "string" || !Number.isInteger(p.bytes) || (p.bytes as number) < 0 || !Number.isFinite(Date.parse(p.at ?? "")) || !validState || typeof p.text !== "string") return null;
       // A PENDING record's text is load-bearing (recovery, re-push, slot comparison), so a
       // valid-JSON-but-corrupted record whose hash/bytes disagree with its own text reads as

@@ -11,6 +11,23 @@
 // raced by a working-file watcher — the Review-mode adopt race can't occur here.
 
 import { LogEventType, MemoryControlChannel, MemoryDocumentStore, type LogEntry } from "@inplan/core";
+
+// Browser-safe sha-256 hex, matching core's node-only hashBody byte for byte so the harness's
+// proposal metadata is format-compatible with what durable stores and the CLI record. Falls back
+// to a marked FNV fingerprint only where WebCrypto is missing entirely.
+async function harnessHash(text: string): Promise<string> {
+  const subtle = (globalThis as { crypto?: { subtle?: SubtleCrypto } }).crypto?.subtle;
+  if (subtle) {
+    const digest = await subtle.digest("SHA-256", new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return `fnv1a-${(h >>> 0).toString(16)}`;
+}
 import type { Acceptance, Api, Cadence, DocPayload, SaveOptions, Settings } from "./api";
 import type { ModePolicy } from "./mode";
 
@@ -19,7 +36,10 @@ export interface MemoryAgent {
   /** Auto-accept: the agent rewrote the document (fires onExternalChange). */
   externalChange(content: string): void;
   /** Review mode: park a proposed revision (fires onProposal; getProposal returns it). */
-  proposeRevision(content: string): void;
+  /** Park a Review-mode proposal. The returned promise settles once the proposal row and its
+   *  event are durably recorded — the review banner surfaces at that point (after persistence),
+   *  carrying the row's identity. */
+  proposeRevision(content: string): Promise<void>;
   /** The agent re-engaged this round (clears the editor's "thinking" state). */
   markActive(): void;
   /** The agent suggests the plan is ready. */
@@ -56,7 +76,7 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
   const telemetryEvents: MemorySession["telemetryEvents"] = [];
 
   const external: Array<(p: DocPayload) => void> = [];
-  const proposal: Array<(p: { content: string }) => void> = [];
+  const proposal: Array<(p: { content: string; id?: string }) => void> = [];
   const done: Array<() => void> = [];
   const active: Array<() => void> = [];
   const reload: Array<() => void> = [];
@@ -129,11 +149,15 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
     async closeWindow(): Promise<void> {
       closed = true;
     },
-    async getProposal(): Promise<string | null> {
-      return store.getProposed();
+    async getProposal(): Promise<{ id?: string; content: string } | null> {
+      const mine = await store.myPendingProposal();
+      return mine ? { id: mine.id, content: mine.content } : null;
     },
-    async clearProposal(): Promise<void> {
-      await store.clearProposed();
+    async clearProposal(outcome?: "accepted" | "partially_accepted" | "rejected", id?: string): Promise<void> {
+      // Settle the EXACT reviewed proposal when its id is known — deciding a row that has since
+      // been superseded is a state-guarded no-op, which beats landing the outcome on a newer row.
+      const target = id ?? (await store.myPendingProposal())?.id;
+      if (target) await store.decideProposal(target, outcome ?? "accepted");
     },
     async openDoc(): Promise<void> {
       /* in-memory harness: no navigation */
@@ -148,9 +172,13 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
       for (const cb of external) cb({ path: "memory://doc", content });
     },
     proposeRevision(content: string) {
-      void store.setProposed(content);
-      void channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: content.length } });
-      for (const cb of proposal) cb({ content });
+      return (async () => {
+        const base = (await store.getCanonical()) ?? (await store.loadDoc());
+        const { id } = await store.createProposal({ content, baseHash: await harnessHash(base), baseContent: base });
+        await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: new TextEncoder().encode(content).byteLength, hash: await harnessHash(content), proposal_id: id } });
+        // Surfaced AFTER the row exists so the payload carries the identity the decision needs.
+        for (const cb of proposal) cb({ content, id });
+      })();
     },
     markActive() {
       void channel.append({ actor: "agent", type: LogEventType.AgentRevised });

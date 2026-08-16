@@ -7,7 +7,8 @@
 // can run against `Fs`, `Memory` (and later `Supabase`) to prove the backends are
 // interchangeable. Pure and browser-safe (exported from the package root).
 
-import type { ControlChannel, DocumentStore, WaitToken } from "./channel";
+import type { ControlChannel, DocumentStore, ProposalInput, ProposalRow, WaitToken } from "./channel";
+import { mintProposalId } from "./channel";
 import type { LogEntry, NewLogEntry } from "./controlLog";
 
 export class MemoryControlChannel implements ControlChannel {
@@ -78,7 +79,7 @@ export class MemoryControlChannel implements ControlChannel {
 export class MemoryDocumentStore implements DocumentStore {
   private doc: string;
   private canonical: string | null = null;
-  private proposed: string | null = null;
+  private proposals: ProposalRow[] = [];
   private backups: string[] = [];
 
   constructor(initial = "") {
@@ -99,15 +100,40 @@ export class MemoryDocumentStore implements DocumentStore {
     this.canonical = content;
     return Promise.resolve();
   }
-  getProposed(): Promise<string | null> {
-    return Promise.resolve(this.proposed);
+  createProposal(input: ProposalInput): Promise<{ id: string }> {
+    // Identical content with no explicit id re-parks the SAME proposal (a retry, not a successor):
+    // minting a fresh id would supersede the original identity on every retry.
+    const pendingSame = input.id ? undefined : this.proposals.find((r) => r.state === "pending" && r.content === input.content);
+    const id = input.id ?? pendingSame?.id ?? mintProposalId();
+    const existing = this.proposals.find((r) => r.id === id);
+    if (existing) {
+      // Idempotent re-park: converge content/base while still pending; a decided row is immutable.
+      if (existing.state === "pending") Object.assign(existing, { content: input.content, baseHash: input.baseHash, baseContent: input.baseContent });
+      return Promise.resolve({ id });
+    }
+    for (const r of this.proposals) if (r.state === "pending") r.state = "superseded";
+    this.proposals.push({ id, content: input.content, baseHash: input.baseHash, baseContent: input.baseContent, state: "pending", createdAt: new Date().toISOString() });
+    return Promise.resolve({ id });
   }
-  setProposed(content: string): Promise<void> {
-    this.proposed = content;
+  myPendingProposal(): Promise<ProposalRow | null> {
+    const r = this.proposals.find((x) => x.state === "pending");
+    return Promise.resolve(r ? { ...r } : null); // copies — callers must not bypass the lifecycle
+  }
+  getProposal(id: string): Promise<ProposalRow | null> {
+    const r = this.proposals.find((x) => x.id === id);
+    return Promise.resolve(r ? { ...r } : null);
+  }
+  withdrawProposal(id: string): Promise<void> {
+    const r = this.proposals.find((x) => x.id === id);
+    if (r && r.state === "pending") r.state = "withdrawn";
     return Promise.resolve();
   }
-  clearProposed(): Promise<void> {
-    this.proposed = null;
+  decideProposal(id: string, state: "accepted" | "partially_accepted" | "rejected"): Promise<void> {
+    const r = this.proposals.find((x) => x.id === id);
+    if (r && r.state === "pending") {
+      r.state = state;
+      r.decidedAt = new Date().toISOString();
+    }
     return Promise.resolve();
   }
   backup(content: string): Promise<void> {

@@ -16,9 +16,9 @@ describe("createMemoryApi", () => {
     let surfaced: string | null = null;
     api.onProposal((p) => (surfaced = p.content));
 
-    agent.proposeRevision("# Plan\n\nnew");
+    await agent.proposeRevision("# Plan\n\nnew");
     expect(surfaced).toBe("# Plan\n\nnew"); // onProposal fired with the proposed content
-    expect(await api.getProposal()).toBe("# Plan\n\nnew"); // durable, re-readable
+    expect((await api.getProposal())?.content).toBe("# Plan\n\nnew"); // durable, re-readable (with its row id)
 
     // Accepting = a silent "apply" save: writes canonical, does NOT wake the agent.
     await api.save("# Plan\n\nnew", { kind: "apply", cadence: "turn" });

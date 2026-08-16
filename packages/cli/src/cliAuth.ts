@@ -6,13 +6,15 @@
 // must belong to the document's org). The service-role key is NEVER used here:
 // the local CLI runs as the human, the same as the browser SPA.
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
 import WebSocket from "ws";
 import type { ControlChannel, DocumentStore } from "@inplan/core";
+import { mintProposalId } from "@inplan/core";
 import { SupabaseControlChannel, SupabaseDocumentStore } from "@inplan/backend-supabase";
+import { sidecarRoot } from "./paths";
 
 // supabase-js builds a RealtimeClient eagerly in createClient, which throws on a
 // Node without a global WebSocket (e.g. Electron's bundled Node 20, used when the
@@ -322,6 +324,50 @@ export interface RemoteBackend {
   token: string;
 }
 
+/** Stable per-machine proposer client id (proposals v1): minted once, kept beside the sidecars
+ *  (INPLAN_HOME-aware, so tests stay isolated). Losing it merely orphans a pending row — which
+ *  stays reviewable — and the next park mints a new row. */
+let cachedClientId: string | null = null;
+function machineClientId(): string {
+  // Process-lifetime cache: liveRemoteBackend re-mints the backend after token refreshes, and a
+  // changing identity mid-process would orphan the pending row it just parked.
+  if (cachedClientId) return cachedClientId;
+  // Anchored to the stable INPLAN_HOME root, NOT sidecarRoot(): the sidecar dir has its own
+  // documented override, and a proposer identity that moves with it would strand the previous
+  // pending cloud row (invisible to its own lookups → duplicate pending rows on retry).
+  const home = process.env.INPLAN_HOME || join(homedir(), ".inplan"); // `||`: an EMPTY env var must not anchor the identity to the cwd
+  const p = join(home, "proposer-client-id");
+  try {
+    const v = readFileSync(p, "utf8").trim();
+    if (v) return (cachedClientId = v);
+  } catch {
+    /* mint below */
+  }
+  const v = mintProposalId();
+  try {
+    mkdirSync(dirname(p), { recursive: true });
+    // Exclusive AND fully-written install: two processes racing the first mint must converge on
+    // ONE identity, and a reader must never observe a half-written marker. The content lands in a
+    // private temp file first; linkSync is the atomic-exclusive publish (EEXIST when the race was
+    // lost) — the marker only ever appears with its full content.
+    const tmp = `${p}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+    writeFileSync(tmp, v);
+    try {
+      linkSync(tmp, p);
+    } finally {
+      rmSync(tmp, { force: true });
+    }
+  } catch {
+    try {
+      const w = readFileSync(p, "utf8").trim();
+      if (w) return (cachedClientId = w); // the race winner's id (always complete — see above)
+    } catch {
+      /* unwritable home: an ephemeral id still works for this process (cached above) */
+    }
+  }
+  return (cachedClientId = v);
+}
+
 /**
  * Bind an authenticated client to one cloud document. Returns null when not
  * logged in (the caller prints "run `inplan login`").
@@ -332,7 +378,9 @@ export async function remoteBackend(docId: string, consumerId = "cli-agent", ske
   return {
     db: s.db,
     channel: new SupabaseControlChannel(s.db, docId, consumerId),
-    store: new SupabaseDocumentStore(s.db, docId),
+    // The CLI proposes as the signed-in USER on this MACHINE: RLS scopes user-kind rows, and the
+    // stable client id keeps two of the same human's machines from superseding each other.
+    store: new SupabaseDocumentStore(s.db, docId, { kind: "user", userId: s.session.user.id, clientId: machineClientId() }),
     token: s.session.access_token,
   };
 }
@@ -433,9 +481,11 @@ export function liveRemoteBackend(docId: string, consumerId = "cli-agent"): Live
     saveDoc: async (c) => (await need()).store.saveDoc(c),
     getCanonical: async () => (await need()).store.getCanonical(),
     setCanonical: async (c) => (await need()).store.setCanonical(c),
-    getProposed: async () => (await need()).store.getProposed(),
-    setProposed: async (c) => (await need()).store.setProposed(c),
-    clearProposed: async () => (await need()).store.clearProposed(),
+    createProposal: async (i) => (await need()).store.createProposal(i),
+    myPendingProposal: async () => (await need()).store.myPendingProposal(),
+    getProposal: async (id) => (await need()).store.getProposal(id),
+    withdrawProposal: async (id) => (await need()).store.withdrawProposal(id),
+    decideProposal: async (id, st) => (await need()).store.decideProposal(id, st),
     backup: async (c, m) => (await need()).store.backup(c, m),
   };
   return { channel, store, tokenNow: () => inner?.token ?? null };

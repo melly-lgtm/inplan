@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FsControlChannel, FsDocumentStore, LogEventType, type FsBackendPaths } from "../src/node";
 
@@ -82,18 +82,45 @@ describe("FsControlChannel", () => {
 });
 
 describe("FsDocumentStore", () => {
-  it("round-trips doc, canonical, and proposed (null when absent)", async () => {
+  it("round-trips doc and canonical; a parked proposal survives a NEW STORE INSTANCE (durability)", async () => {
     const store = new FsDocumentStore(paths);
     expect(await store.getCanonical()).toBeNull();
-    expect(await store.getProposed()).toBeNull();
     await store.saveDoc("# body");
     await store.setCanonical("# canon");
-    await store.setProposed("# proposed");
+    const { id } = await store.createProposal({ content: "# proposed", baseHash: "h", baseContent: "# canon" });
     expect(await store.loadDoc()).toBe("# body");
     expect(await store.getCanonical()).toBe("# canon");
-    expect(await store.getProposed()).toBe("# proposed");
-    await store.clearProposed();
-    expect(await store.getProposed()).toBeNull();
+    // The rows persist on disk — a fresh instance (a later process) sees the same state.
+    const reopened = new FsDocumentStore(paths);
+    expect(await reopened.myPendingProposal()).toMatchObject({ id, content: "# proposed", state: "pending" });
+    await reopened.decideProposal(id, "rejected");
+    expect(await new FsDocumentStore(paths).getProposal(id)).toMatchObject({ state: "rejected" });
+    expect(await new FsDocumentStore(paths).myPendingProposal()).toBeNull();
+  });
+
+  it("a rows file with valid JSON but invalid row shapes is quarantined — and the pending park recovers via the derived file", async () => {
+    const store = new FsDocumentStore(paths);
+    const a = await store.createProposal({ content: "good", baseHash: "h", baseContent: "c" });
+    const rowsPath = `${paths.proposedPath}.rows.json`;
+    writeFileSync(rowsPath, JSON.stringify([{ id: a.id, state: "pending" }])); // shape-invalid rows
+    const recovered = await store.myPendingProposal();
+    // Invalid lifecycle rows are never served: the file is preserved aside as evidence, and the
+    // derived pending-content file (which only exists while something is pending) is ADOPTED — the
+    // park survives with its content intact under a fresh identity.
+    expect(readdirSync(dirname(rowsPath)).some((f) => f.includes(".rows.json.corrupt-"))).toBe(true);
+    expect(recovered).toMatchObject({ content: "good", state: "pending" });
+    expect(recovered?.id).not.toBe(a.id);
+  });
+
+  it("a legacy pre-rows proposedPath park is ADOPTED as a real pending row with a stable identity", async () => {
+    writeFileSync(paths.proposedPath, "legacy parked content");
+    const store = new FsDocumentStore(paths);
+    const adopted = await store.myPendingProposal();
+    expect(adopted).toMatchObject({ content: "legacy parked content", state: "pending" });
+    expect((await store.myPendingProposal())?.id).toBe(adopted?.id); // identity is stable across reads
+    await store.withdrawProposal(adopted!.id); // the full lifecycle applies to it now
+    expect(await store.myPendingProposal()).toBeNull();
+    expect(existsSync(paths.proposedPath)).toBe(false); // the derived file follows the lifecycle
   });
 
   it("caps autosave backups at the retention limit", async () => {

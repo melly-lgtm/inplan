@@ -51,7 +51,7 @@ if (env) {
     });
 
     runControlChannelContract("SupabaseControlChannel", async () => new SupabaseControlChannel(db, await freshDocId()));
-    runDocumentStoreContract("SupabaseDocumentStore", async () => new SupabaseDocumentStore(db, await freshDocId()));
+    runDocumentStoreContract("SupabaseDocumentStore", async () => new SupabaseDocumentStore(db, await freshDocId(), { kind: "user", userId: "00000000-0000-4000-8000-000000000001", clientId: "live-contract" }));
   });
 } else {
   describe.skip("live Supabase backend (set SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY to run)", () => {

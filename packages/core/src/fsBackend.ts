@@ -12,6 +12,9 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
   unlinkSync,
   unwatchFile,
   watch,
@@ -19,7 +22,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { ControlChannel, DocumentStore, WaitToken } from "./channel";
+import type { ControlChannel, DocumentStore, ProposalInput, ProposalRow, WaitToken } from "./channel";
+import { mintProposalId } from "./channel";
 import { LogEventType, type LogEntry, type NewLogEntry } from "./controlLog";
 import { appendLog, readLog, readLogIncrement } from "./controlLogFs";
 
@@ -163,18 +167,191 @@ export class FsDocumentStore implements DocumentStore {
     return Promise.resolve();
   }
 
-  getProposed(): Promise<string | null> {
-    return Promise.resolve(this.readOrNull(this.paths.proposedPath));
+  // Proposal rows live in a JSON file beside the other sidecars; `proposedPath` stays as a
+  // derived copy of the CURRENT pending content (readable at a glance, and what pre-rows code
+  // wrote). A single local proposer, so "mine" is unqualified.
+  private proposalsPath(): string {
+    return `${this.paths.proposedPath}.rows.json`;
   }
 
-  setProposed(content: string): Promise<void> {
-    writeFileSync(this.paths.proposedPath, content);
-    return Promise.resolve();
+  /** Whether row-backed proposal state exists for this doc at all (vs the legacy content file). */
+  hasProposalHistory(): boolean {
+    return existsSync(this.proposalsPath());
   }
 
-  clearProposed(): Promise<void> {
-    if (existsSync(this.paths.proposedPath)) unlinkSync(this.paths.proposedPath);
-    return Promise.resolve();
+  private static readonly STATES = new Set(["pending", "accepted", "partially_accepted", "rejected", "superseded", "withdrawn"]);
+
+  private static isValidRow(r: unknown): r is ProposalRow {
+    const x = r as Partial<ProposalRow> | null;
+    return !!x && typeof x.id === "string" && typeof x.content === "string" && typeof x.baseHash === "string" && typeof x.baseContent === "string" && typeof x.state === "string" && FsDocumentStore.STATES.has(x.state) && typeof x.createdAt === "string";
+  }
+
+  private readRows(): ProposalRow[] {
+    const raw = this.readOrNull(this.proposalsPath());
+    if (raw === null) return [];
+    try {
+      const rows = JSON.parse(raw) as unknown;
+      // Valid JSON is not integrity: every row must carry the full lifecycle shape, or lookups
+      // would serve invalid state downstream. Anything else is quarantined like a parse failure.
+      if (Array.isArray(rows) && rows.every((r) => FsDocumentStore.isValidRow(r))) return rows as ProposalRow[];
+    } catch {
+      /* fall through to preservation */
+    }
+    // A damaged rows file must never be silently replaced by the next write — it is the proposal
+    // history. Move the bytes aside (evidence, hand-recoverable) and start fresh. If even the
+    // rename fails, FAIL the operation: returning [] here would let the next writeRows publish an
+    // empty replacement over the original via tmp+rename, destroying the history it exists to keep.
+    renameSync(this.proposalsPath(), `${this.proposalsPath()}.corrupt-${Date.now()}`);
+    return [];
+  }
+
+  /**
+   * Advisory per-doc lock around every read-modify-publish of the rows file: the desktop editor
+   * (main process) and a CLI can share one sidecar, and interleaved mutations would lose a
+   * lifecycle update. mkdir is the atomic primitive; a stale lock (a crashed holder) is broken
+   * after 2s. Mutations here are a few file ops — well under the staleness window.
+   */
+  private withRowsLock<T>(run: () => T): T {
+    const lockDir = `${this.proposalsPath()}.lock`;
+    const ownerPath = join(lockDir, "owner");
+    const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const deadline = Date.now() + 2_000;
+    for (;;) {
+      try {
+        mkdirSync(lockDir);
+        writeFileSync(ownerPath, token);
+        break;
+      } catch {
+        let stale = false;
+        try {
+          stale = Date.now() - statSync(lockDir).mtime.getTime() > 2_000;
+        } catch {
+          continue; // holder released between our attempt and the stat — retry immediately
+        }
+        if (stale) {
+          try {
+            rmSync(lockDir, { recursive: true, force: true });
+          } catch {
+            /* someone else broke it first */
+          }
+          continue;
+        }
+        if (Date.now() > deadline) throw new Error(`proposal rows lock is held: ${lockDir}`);
+        const buf = new SharedArrayBuffer(4);
+        Atomics.wait(new Int32Array(buf), 0, 0, 25); // sync sleep without spinning a core
+      }
+    }
+    try {
+      return run();
+    } finally {
+      // Release by ATOMIC TAKE: rename the lock dir to a private name (rename is atomic — nobody
+      // can be mid-acquisition inside it), verify ownership there, and only then delete. A plain
+      // read-check-then-rm had a window where a broken-and-replaced lock could be read as ours a
+      // beat before recovery swapped it, deleting the NEW holder's lock and readmitting a third
+      // writer. If the taken lock turns out not to be ours, it is restored by the reverse rename;
+      // the restore can only collide if a third acquisition raced the gap, in which case the
+      // taken (stale-broken) copy is discarded and the live lock is theirs — never deleted here.
+      const releasing = `${lockDir}.releasing-${token}`;
+      try {
+        renameSync(lockDir, releasing);
+        if (readFileSync(join(releasing, "owner"), "utf8") === token) {
+          rmSync(releasing, { recursive: true, force: true });
+        } else {
+          try {
+            renameSync(releasing, lockDir); // not ours — put the live lock back
+          } catch {
+            rmSync(releasing, { recursive: true, force: true }); // a fresh lock exists; drop the stale copy
+          }
+        }
+      } catch {
+        /* the lock was already broken and replaced or removed — nothing of ours to release */
+      }
+    }
+  }
+
+  private writeRows(rows: ProposalRow[]): void {
+    // Atomic publish (tmp + rename), then refresh the derived pending-content file.
+    const tmp = `${this.proposalsPath()}.tmp`;
+    writeFileSync(tmp, JSON.stringify(rows, null, 2));
+    renameSync(tmp, this.proposalsPath());
+    const pending = rows.find((r) => r.state === "pending");
+    try {
+      if (pending) writeFileSync(this.paths.proposedPath, pending.content);
+      else if (existsSync(this.paths.proposedPath)) unlinkSync(this.paths.proposedPath);
+    } catch {
+      /* derived copy only */
+    }
+  }
+
+  async createProposal(input: ProposalInput): Promise<{ id: string }> {
+    // async so a sync throw (lock contention, unpreservable corruption) REJECTS as the interface
+    // promises, instead of escaping a caller that chained .catch() without awaiting.
+    return this.withRowsLock(() => {
+        const rows = this.readRowsAdoptingLegacy();
+        // Identical content with no explicit id re-parks the SAME proposal (a retry, not a
+        // successor): minting a fresh id would supersede the original identity on every retry.
+        const pendingSame = input.id ? undefined : rows.find((r) => r.state === "pending" && r.content === input.content);
+        const id = input.id ?? pendingSame?.id ?? mintProposalId();
+        const existing = rows.find((r) => r.id === id);
+        if (existing) {
+          if (existing.state === "pending") Object.assign(existing, { content: input.content, baseHash: input.baseHash, baseContent: input.baseContent });
+        } else {
+          for (const r of rows) if (r.state === "pending") r.state = "superseded";
+          rows.push({ id, content: input.content, baseHash: input.baseHash, baseContent: input.baseContent, state: "pending", createdAt: new Date().toISOString() });
+        }
+        this.writeRows(rows);
+        return { id };
+      });
+  }
+
+  /** Rows, adopting a legacy pre-rows sidecar exactly once: a `proposedPath` content file with no
+   *  rows file is an old park — it becomes a real pending row (minted id) so the full lifecycle
+   *  (withdraw/decide/supersede) applies to it instead of the file lingering forever. */
+  private readRowsAdoptingLegacy(): ProposalRow[] {
+    const rows = this.readRows();
+    if (rows.length > 0 || this.hasProposalHistory()) return rows;
+    const legacy = this.readOrNull(this.paths.proposedPath);
+    if (legacy === null) return rows;
+    return [{ id: mintProposalId(), content: legacy, baseHash: "", baseContent: "", state: "pending", createdAt: new Date().toISOString() }];
+  }
+
+  async myPendingProposal(): Promise<ProposalRow | null> {
+    return this.withRowsLock(() => {
+        const rows = this.readRowsAdoptingLegacy();
+        const pending = rows.find((r) => r.state === "pending") ?? null;
+        // Persist an adoption so the minted identity is stable across calls.
+        if (pending && !this.hasProposalHistory()) this.writeRows(rows);
+        return pending;
+      });
+  }
+
+  async getProposal(id: string): Promise<ProposalRow | null> {
+    // Under the lock like every other rows access: a lookup must not race a concurrent
+    // quarantine-recovery rename from another process mid-publish.
+    return this.withRowsLock(() => this.readRows().find((r) => r.id === id) ?? null);
+  }
+
+  async withdrawProposal(id: string): Promise<void> {
+    this.withRowsLock(() => {
+      const rows = this.readRowsAdoptingLegacy();
+      const r = rows.find((x) => x.id === id);
+      if (r && r.state === "pending") {
+        r.state = "withdrawn";
+        this.writeRows(rows);
+      }
+    });
+  }
+
+  async decideProposal(id: string, state: "accepted" | "partially_accepted" | "rejected"): Promise<void> {
+    this.withRowsLock(() => {
+      const rows = this.readRowsAdoptingLegacy();
+      const r = rows.find((x) => x.id === id);
+      if (r && r.state === "pending") {
+        r.state = state;
+        r.decidedAt = new Date().toISOString();
+        this.writeRows(rows);
+      }
+    });
   }
 
   backup(content: string): Promise<void> {

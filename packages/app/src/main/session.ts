@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { appendLog, CONTROL_LOG_VERSION, FsControlChannel, type LogEntry, LogEventType, readGlobalSettings, readLog, writeGlobalSettings } from "@inplan/core/node";
+import { appendLog, CONTROL_LOG_VERSION, FsControlChannel, FsDocumentStore, type LogEntry, LogEventType, readGlobalSettings, readLog, writeGlobalSettings } from "@inplan/core/node";
 import type { Settings } from "@inplan/renderer";
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -132,14 +132,44 @@ export class Session {
     this.pendingContent = content;
   }
 
-  /** The parked Review-mode proposal, if one is pending (the file exists ⇔ undecided). */
-  pendingProposal(): string | null {
-    return existsSync(this.paths.proposedPath) ? readFileSync(this.paths.proposedPath, "utf8") : null;
+  /** The parked Review-mode proposal, if one is pending. Row-backed (proposals v1) with a
+   *  legacy fallback to the derived content file (a pre-rows sidecar). */
+  async pendingProposal(): Promise<{ id?: string; content: string } | null> {
+    const store = new FsDocumentStore(this.paths);
+    const mine = await store.myPendingProposal();
+    if (mine) return { id: mine.id, content: mine.content };
+    // Once row-backed state exists, the rows are the ONLY truth: a leftover derived content file
+    // (its cleanup can fail independently) must never resurface a decided proposal as an id-less
+    // review. The bare-file read only serves genuinely pre-rows sidecars.
+    if (store.hasProposalHistory()) return null;
+    if (!existsSync(this.paths.proposedPath)) return null;
+    // A CLI can mint the row between the lookup above and this read — the derived file would then
+    // be a real row's content served WITHOUT its id, and an id-less review resolves whatever is
+    // pending at Apply time. One re-lookup collapses that race to the row (with its identity).
+    const raced = await store.myPendingProposal();
+    if (raced) return { id: raced.id, content: raced.content };
+    return existsSync(this.paths.proposedPath) ? { content: readFileSync(this.paths.proposedPath, "utf8") } : null;
   }
 
-  /** Discard the parked proposal once the human has accepted/rejected it. */
-  clearProposal(): void {
-    if (existsSync(this.paths.proposedPath)) unlinkSync(this.paths.proposedPath);
+  /** Settle the parked proposal once the human has decided — the outcome lands on the proposal
+   *  row (proposals v1); the derived proposedPath file is cleared by the store. Legacy fallback:
+   *  a stray content file with no row is simply removed. */
+  async clearProposal(outcome: "accepted" | "partially_accepted" | "rejected" = "accepted", id?: string): Promise<void> {
+    // IPC payloads are runtime data — a malformed outcome would be persisted as an invalid state
+    // and quarantine the rows file on the next read. Validate before touching the store.
+    if (outcome !== "accepted" && outcome !== "partially_accepted" && outcome !== "rejected") {
+      throw new Error(`invalid proposal outcome: ${String(outcome)}`);
+    }
+    // Awaited end-to-end (the IPC handler returns this promise): a failed decision must surface
+    // to the renderer as a failed invoke, not report success and resurface on the next launch —
+    // and an unhandled rejection here would crash the main process.
+    const store = new FsDocumentStore(this.paths);
+    const mine = await store.myPendingProposal();
+    // Settle the EXACT reviewed proposal when its id is known; deciding a since-superseded row
+    // is a state-guarded no-op — better than landing the outcome on a newer row.
+    const target = id ?? mine?.id;
+    if (target) await store.decideProposal(target, outcome);
+    else if (!store.hasProposalHistory() && existsSync(this.paths.proposedPath)) unlinkSync(this.paths.proposedPath);
   }
 
   /** Record why the session ended (logged at most once) so the agent's `wait` can report it. */
@@ -190,8 +220,14 @@ export class Session {
       }
     }
     if (entries.some((e) => e.type === LogEventType.AgentRevisionProposed)) {
-      const proposed = this.pendingProposal();
-      if (proposed != null) handlers.onProposal(proposed);
+      void this.pendingProposal().then((proposed) => {
+        if (proposed != null) handlers.onProposal(proposed.content, proposed.id);
+      }).catch((e: unknown) => {
+        // The passive dispatch must not crash the main process, but a swallowed failure here can
+        // also be TRANSIENT (lock contention) and silently drop the review banner — log it so a
+        // missing banner is diagnosable; the failure re-surfaces on the next explicit operation.
+        console.warn("inplan: could not read the pending proposal for review dispatch:", e);
+      });
     }
     // An accepted agent edit: the working file holds the agent's revision (the gate
     // set canonical to it). Load it — this replaces the old raw working-file watch.
@@ -214,7 +250,7 @@ export interface WatchHandlers {
   onExternalChange: (content: string) => void;
   onAgentDone: () => void;
   onAgentActive: () => void;
-  onProposal: (content: string) => void;
+  onProposal: (content: string, id?: string) => void;
   onReload: () => void;
   onAgentMessage: (text: string, ts: string) => void;
 }

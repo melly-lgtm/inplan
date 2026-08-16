@@ -162,6 +162,9 @@ interface OrderedThread {
 }
 
 interface Proposal {
+  /** The proposal row's id (proposals v1) — the decision must settle THIS proposal, not
+   *  whichever row happens to be pending by then. Absent only on legacy hosts. */
+  id?: string;
   baseBody: string;
   next: ParsedDocument;
 }
@@ -334,10 +337,10 @@ export function App(props: EditorProps = {}): JSX.Element {
 
   // --- load + agent signals ---
   useEffect(() => {
-    const showProposal = (content: string) => {
-      // The agent's version is parked in `.proposed.md`; review it against the
+    const showProposal = (content: string, id?: string) => {
+      // The agent's version is parked as a proposal row; review it against the
       // current (canonical) body. The working doc stays unchanged until Apply.
-      setProposal({ baseBody: docRef.current.body, next: parse(content) });
+      setProposal({ ...(id ? { id } : {}), baseBody: docRef.current.body, next: parse(content) });
       setReviewOpen(true);
       setAgentThinking(false);
       setStatus(t("msg.proposedReview"));
@@ -360,7 +363,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         setLoaded(true);
         // Durable re-show: if a proposal was parked (e.g. the app was closed
         // mid-review), surface it again rather than silently accepting it.
-        void hostApi().getProposal().then((parked) => parked != null && showProposal(parked));
+        void hostApi().getProposal().then((parked) => parked != null && showProposal(parked.content, parked.id));
       })
       .catch(() => setLoaded(true));
 
@@ -388,7 +391,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         setStatus(t("msg.agentUpdated"));
       }),
       // Review-mode body changes arrive parked, as a proposal to accept/reject.
-      hostApi().onProposal(({ content }) => showProposal(content)),
+      hostApi().onProposal(({ content, id }) => showProposal(content, id)),
       hostApi().onAgentDone(() => setAgentDone(true)),
       hostApi().onReload(() => {
         setReloadReady(true);
@@ -431,7 +434,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         setAgentMessages([]); // notes belong to the doc we just left — don't carry them over
         setActivePreviewLine(null); // a synced line belongs to the doc we just left, not this one
         setStatus(`opened ${path.split("/").pop() ?? path}`);
-        void hostApi().getProposal().then((parked) => parked != null && showProposal(parked));
+        void hostApi().getProposal().then((parked) => parked != null && showProposal(parked.content, parked.id));
       }),
       hostApi().onNavState?.((s) => setNavState(s)),
       // Desktop only: a newer npm version is available.
@@ -1301,7 +1304,12 @@ export function App(props: EditorProps = {}): JSX.Element {
       } else {
         void hostApi().save(serialized, { kind: "apply", cadence }).then(() => setCheckpoint(serialized));
       }
-      void hostApi().clearProposal();
+      // A failed settlement must be visible: the content is applied and the review UI is gone, but
+      // the row stays pending and WILL resurface for review on the next launch — announce that
+      // (the resurfacing is the retry) instead of letting it look like a mystery double-review.
+      hostApi()
+        .clearProposal(acceptedCount === accepted.length ? "accepted" : acceptedCount === 0 ? "rejected" : "partially_accepted", proposal.id)
+        .catch(() => setStatus("the decision could not be recorded — this proposal will reappear for review"));
       void hostApi().logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", { accepted: acceptedCount, total: accepted.length });
       setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`);
     },

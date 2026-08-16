@@ -128,8 +128,8 @@ const api: Api = {
   },
   closeWindow: () => ipcRenderer.invoke("window:close"),
   getProposal: () => ipcRenderer.invoke("proposal:get"),
-  clearProposal: () => ipcRenderer.invoke("proposal:clear"),
-  onProposal: (cb: (payload: { content: string }) => void) => {
+  clearProposal: (outcome?: "accepted" | "partially_accepted" | "rejected", id?: string) => ipcRenderer.invoke("proposal:clear", outcome, id),
+  onProposal: (cb: (payload: { content: string; id?: string }) => void) => {
     const h = (_e: unknown, payload: { content: string }): void => cb(payload);
     ipcRenderer.on("doc:proposal", h);
     return () => ipcRenderer.removeListener("doc:proposal", h);

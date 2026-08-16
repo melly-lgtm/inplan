@@ -65,6 +65,47 @@ export interface VersionMeta {
   author?: string;
 }
 
+/** How a proposal's life ends (or hasn't yet). Terminal states are immutable. */
+export type ProposalState = "pending" | "accepted" | "partially_accepted" | "rejected" | "superseded" | "withdrawn";
+
+/** What a proposer parks (proposals v1 — see docs/proposals-v1.plan.md in the cloud repo). */
+export interface ProposalInput {
+  /** Client-minted uuid. Re-parking with the SAME id is an idempotent upsert (a retried park
+   *  converges even when an earlier response was lost). When omitted, identical still-pending
+   *  content re-parks under ITS existing id (a retry, not a successor); only genuinely new
+   *  content mints a fresh identity. */
+  id?: string;
+  /** The full proposed serialization. */
+  content: string;
+  /** hashBody of the canonical this proposal was written against. */
+  baseHash: string;
+  /** The base canonical itself — a 3-way merge at review time must never depend on a version
+   *  checkpoint happening to exist for `baseHash`. */
+  baseContent: string;
+}
+
+export interface ProposalRow {
+  id: string;
+  content: string;
+  baseHash: string;
+  baseContent: string;
+  state: ProposalState;
+  /** ISO-8601. */
+  createdAt: string;
+  decidedAt?: string;
+}
+
+/** Mint a proposal id (uuid) — client-generated so retries are idempotent by construction. */
+export function mintProposalId(): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (c?.randomUUID) return c.randomUUID();
+  // Fallback for runtimes without randomUUID: still RFC-4122 v4 SHAPED — the id lands in a
+  // Postgres uuid column, which rejects anything else. Uniqueness (not unguessability) is the
+  // requirement here; ids are scoped per doc and authorization never derives from them.
+  const hex = (n: number) => Math.floor(Math.random() * n).toString(16);
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (ch) => (ch === "x" ? hex(16) : ((Math.floor(Math.random() * 4) + 8).toString(16))));
+}
+
 export interface DocumentStore {
   /** Read the working document. */
   loadDoc(): Promise<string>;
@@ -73,10 +114,19 @@ export interface DocumentStore {
   /** The last canonical version (diff base / undo base), or null if unset. */
   getCanonical(): Promise<string | null>;
   setCanonical(content: string): Promise<void>;
-  /** The parked agent revision pending accept/reject (Review mode), or null. */
-  getProposed(): Promise<string | null>;
-  setProposed(content: string): Promise<void>;
-  clearProposed(): Promise<void>;
+  /** Park a proposal (Review mode): upsert by id — the same id converges, a NEW id supersedes the
+   *  caller's own previous pending proposal. Never touches another proposer's proposals. */
+  createProposal(input: ProposalInput): Promise<{ id: string }>;
+  /** The caller's own pending proposal, or null. */
+  myPendingProposal(): Promise<ProposalRow | null>;
+  /** Any visible proposal by id — the landing signal, as one lookup. */
+  getProposal(id: string): Promise<ProposalRow | null>;
+  /** Retract the caller's own pending proposal (state → withdrawn). No-op when it isn't pending
+   *  (a decision may have raced ahead — the decision wins). */
+  withdrawProposal(id: string): Promise<void>;
+  /** Record the human's decision on a pending proposal. No-op on a non-pending row (terminal
+   *  states are immutable). */
+  decideProposal(id: string, state: "accepted" | "partially_accepted" | "rejected"): Promise<void>;
   /** Write an autosave backup checkpoint. `meta` (optional) records its provenance for a history
    *  view; an implementation that keeps history should de-duplicate (skip a no-op snapshot whose
    *  body matches the most recent one). */

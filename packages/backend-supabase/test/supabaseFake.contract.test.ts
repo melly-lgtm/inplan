@@ -19,7 +19,7 @@ type Row = Record<string, unknown>;
  *  adapters use: from().insert/upsert/update/select + eq/gt/order/single/maybeSingle,
  *  and channel().on().subscribe() / removeChannel() with INSERT notifications. */
 function makeFakeSupabase() {
-  const tables: Record<string, Row[]> = { events: [], cursors: [], locks: [], editor_presence: [], documents: [], doc_versions: [] };
+  const tables: Record<string, Row[]> = { events: [], cursors: [], locks: [], editor_presence: [], documents: [], doc_versions: [], proposals: [] };
   let seq = 0;
   const channels: Array<{ table: string | null; cb: (() => void) | null; subscribed: boolean }> = [];
 
@@ -30,6 +30,7 @@ function makeFakeSupabase() {
     private onConflict?: string;
     private wantSelect = false;
     private eqs: Array<[string, unknown]> = [];
+    private neqs: Array<[string, unknown]> = [];
     private gts: Array<[string, unknown]> = [];
     private ords: Array<{ col: string; asc: boolean }> = [];
     private lim?: number;
@@ -39,14 +40,16 @@ function makeFakeSupabase() {
     update(patch: Row) { this.op = "update"; this.patch = patch; return this; }
     select(_cols?: string) { this.wantSelect = true; return this; }
     eq(col: string, val: unknown) { this.eqs.push([col, val]); return this; }
+    match(filters: Row) { for (const [c, v] of Object.entries(filters)) this.eqs.push([c, v]); return this; }
+    neq(col: string, val: unknown) { this.neqs.push([col, val]); return this; }
     gt(col: string, val: unknown) { this.gts.push([col, val]); return this; }
     order(col: string, opts?: { ascending?: boolean }) { this.ords.push({ col, asc: opts?.ascending !== false }); return this; }
     limit(n: number) { this.lim = n; return this; }
     single() { const r = this.exec(); return Promise.resolve(r.error ? r : { data: (r.data as Row[])?.[0] ?? null, error: null }); }
     maybeSingle() { const r = this.exec(); return Promise.resolve({ data: (r.data as Row[])?.[0] ?? null, error: r.error }); }
     then<T>(resolve: (v: { data: unknown; error: unknown }) => T) { return Promise.resolve(this.exec()).then(resolve); }
-    private match(row: Row) {
-      return this.eqs.every(([c, v]) => row[c] === v) && this.gts.every(([c, v]) => (row[c] as number) > (v as number));
+    private rowMatches(row: Row) {
+      return this.eqs.every(([c, v]) => row[c] === v) && this.neqs.every(([c, v]) => row[c] !== v) && this.gts.every(([c, v]) => (row[c] as number) > (v as number));
     }
     private exec(): { data: unknown; error: unknown } {
       const t = tables[this.table]!;
@@ -54,6 +57,7 @@ function makeFakeSupabase() {
         const rows = (Array.isArray(this.payload) ? this.payload : [this.payload]).map((r) => {
           const row: Row = { ...r };
           if (this.table === "events") { row.seq = ++seq; row.ts = new Date().toISOString(); }
+          if (this.table === "proposals" && row.created_at === undefined) row.created_at = new Date().toISOString();
           return row;
         });
         t.push(...rows);
@@ -68,10 +72,11 @@ function makeFakeSupabase() {
         return { data: null, error: null };
       }
       if (this.op === "update") {
-        for (const row of t) if (this.match(row)) Object.assign(row, this.patch);
-        return { data: null, error: null };
+        const hit: Row[] = [];
+        for (const row of t) if (this.rowMatches(row)) { Object.assign(row, this.patch); hit.push(row); }
+        return { data: this.wantSelect ? hit : null, error: null };
       }
-      let rows = t.filter((r) => this.match(r));
+      let rows = t.filter((r) => this.rowMatches(r));
       if (this.ords.length) {
         // multi-column sort (priority order); generic compare so created_at (ISO strings) and
         // numeric ids/seq both order correctly.
@@ -104,14 +109,14 @@ runControlChannelContract("Supabase (fake client)", () => new SupabaseControlCha
 runDocumentStoreContract("Supabase (fake client)", () => {
   const f = makeFakeSupabase();
   f.seedDoc("doc-1");
-  return new SupabaseDocumentStore(f.db, "doc-1");
+  return new SupabaseDocumentStore(f.db, "doc-1", { kind: "user", userId: "user-1", clientId: "test-client" });
 });
 
 describe("SupabaseDocumentStore version history", () => {
   it("backup dedups a no-op snapshot (same body as the latest) and records provenance", async () => {
     const f = makeFakeSupabase();
     f.seedDoc("d1");
-    const s = new SupabaseDocumentStore(f.db, "d1");
+    const s = new SupabaseDocumentStore(f.db, "d1", { kind: "user", userId: "user-1", clientId: "test-client" });
     await s.backup("v1", { actor: "agent", kind: "turn", author: "Opus 4.8" });
     await s.backup("v1"); // same body → skipped
     await s.backup("v2");
@@ -127,7 +132,7 @@ describe("SupabaseDocumentStore version history", () => {
       { id: 4, doc_id: "d1", body: "b2", created_at: "2026-01-02", actor: "user", kind: "manual", author: "me" }, // same created_at as id 2
       { id: 3, doc_id: "d2", body: "c", created_at: "2026-01-03", actor: "user", kind: "manual", author: "x" },
     );
-    const s = new SupabaseDocumentStore(f.db, "d1");
+    const s = new SupabaseDocumentStore(f.db, "d1", { kind: "user", userId: "user-1", clientId: "test-client" });
     expect((await s.listVersions(10)).map((v) => v.id)).toEqual([4, 2, 1]); // d1 only; created_at desc, then id desc
     expect((await s.listVersions(1)).map((v) => v.id)).toEqual([4]); // limit honored
   });
@@ -135,7 +140,7 @@ describe("SupabaseDocumentStore version history", () => {
   it("getVersion returns a version's body scoped to the doc; null when absent or another doc's", async () => {
     const f = makeFakeSupabase();
     f.tables.doc_versions.push({ id: 7, doc_id: "d1", body: "hello" }, { id: 8, doc_id: "other", body: "nope" });
-    const s = new SupabaseDocumentStore(f.db, "d1");
+    const s = new SupabaseDocumentStore(f.db, "d1", { kind: "user", userId: "user-1", clientId: "test-client" });
     expect(await s.getVersion(7)).toBe("hello");
     expect(await s.getVersion(8)).toBeNull(); // belongs to another doc
     expect(await s.getVersion(999)).toBeNull();
@@ -192,7 +197,7 @@ describe("SupabaseControlChannel error + presence paths", () => {
 });
 
 describe("SupabaseDocumentStore error paths", () => {
-  const store = () => new SupabaseDocumentStore(erroringDb(), "d");
+  const store = () => new SupabaseDocumentStore(erroringDb(), "d", { kind: "user", userId: "user-1", clientId: "test-client" });
   it("surfaces a Postgres error from reads, writes, and backup", async () => {
     await expect(store().loadDoc()).rejects.toThrow(/read body failed: boom/);
     await expect(store().getCanonical()).rejects.toThrow(/read canonical failed: boom/);
@@ -206,7 +211,7 @@ describe("createSupabaseBackend", () => {
   it("wires a channel + store onto a created client", async () => {
     const { createSupabaseBackend } = await import("../src/client");
     const { createClient } = await import("@supabase/supabase-js");
-    const backend = createSupabaseBackend({ url: "https://x.supabase.co", key: "anon", docId: "doc-9", consumerId: "editor" });
+    const backend = createSupabaseBackend({ url: "https://x.supabase.co", key: "anon", docId: "doc-9", consumerId: "editor", proposer: { kind: "user", userId: "user-9", clientId: "test" } });
     expect(createClient).toHaveBeenCalledWith("https://x.supabase.co", "anon");
     expect(backend.channel).toBeInstanceOf(SupabaseControlChannel);
     expect(backend.store).toBeInstanceOf(SupabaseDocumentStore);

@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LogEventType, MemoryControlChannel, MemoryDocumentStore, hashBody, type LogEntry } from "@inplan/core/node";
 import { waitCycle, type WaitBackend } from "../src/cli";
 import { utf8Bytes } from "../src/remoteDocState";
+import { proposedContent } from "./helpers";
 
 const DOC_A = "# Plan\n\nOriginal body.\n\n<!--inplan\n[]\n-->\n";
 const DOC_B = "# Plan\n\nAgent-edited body.\n\n<!--inplan\n[]\n-->\n";
@@ -163,7 +164,7 @@ describe("waitCycle resume is a loop, not a re-entry", () => {
       const last = h.lastJson() as ReturnType<typeof h.lastJson> & { proposal?: { state: string; bytes: number; hash: string } };
       expect(last.proposal).toEqual({ state: "pending_review", bytes: utf8Bytes(DOC_B), hash: hashBody(DOC_B) });
       expect(h.stderr()).toContain("parked as a proposal");
-      expect(await h.store.getProposed()).toBe(DOC_B);
+      expect(await proposedContent(h.store)).toBe(DOC_B);
     } finally {
       h.restore();
     }
@@ -221,7 +222,7 @@ describe("waitCycle resume is a loop, not a re-entry", () => {
     // the wait completes and the JSON says exactly what happened, so an agent parsing only the
     // output (stderr discarded) can never read a failed push as a no-change turn.
     const h = harness(DOC_B);
-    h.store.setProposed = async () => {
+    h.store.createProposal = async () => {
       throw new Error("hub down");
     };
     const origAppend = h.channel.append.bind(h.channel);
@@ -239,7 +240,7 @@ describe("waitCycle resume is a loop, not a re-entry", () => {
       const last = h.lastJson() as ReturnType<typeof h.lastJson> & { proposal?: { state: string; hash: string } };
       expect(last.status).toBe("your_turn");
       expect(last.proposal).toMatchObject({ state: "park_failed", hash: hashBody(DOC_B) });
-      expect(await h.store.getProposed()).toBeNull(); // nothing landed anywhere
+      expect(await proposedContent(h.store)).toBeNull(); // nothing landed anywhere
     } finally {
       h.restore();
     }

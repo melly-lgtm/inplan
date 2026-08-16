@@ -1203,7 +1203,8 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     // an identical working copy is a deliberate re-edit (an agent may legitimately re-propose
     // byte-identical content after a rejection), and overwriting it would destroy real work.
     let justFinalized = false;
-    const slot = await live.store.getProposed().catch(() => undefined);
+    const slotRow = await live.store.myPendingProposal().catch(() => undefined);
+    const slot = slotRow === undefined ? undefined : (slotRow?.content ?? null);
     if (typeof slot === "string" && needsReparkFromSlot(rds.latestProposal(), slot)) {
       try {
         // A pending record the slot no longer matches was DISPLACED while we were away — but not
@@ -1238,7 +1239,7 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
               rds.recordSynced(canonical);
             }
           }
-          rds.parkProposal(slot);
+          rds.parkProposal(slot, undefined, slotRow!.id); // keep the CLOUD row's identity — a fresh local id would split them
         }
       } catch (e) {
         // Local persistence trouble must not stop the attach: the cloud proposal stays live and
@@ -1295,26 +1296,86 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       getCanonical: () => localStore.getCanonical(),
       setCanonical: (c) => localStore.setCanonical(c),
       backup: (c, m) => localStore.backup(c, m),
-      getProposed: () => live.store.getProposed(),
-      setProposed: async (c) => {
-        // Only a failed PUSH is a failed park (the edit's sole copy stays local; the post-turn
-        // path must keep-local). A failed local record write after a confirmed push is NOT — the
-        // proposal is live in the cloud, the human can already see it, and the record is
-        // reconciled from the slot at the next attach; masquerading it as a failed push would
-        // deny a park that actually happened.
+      myPendingProposal: () => live.store.myPendingProposal(),
+      getProposal: (id) => live.store.getProposal(id),
+      // Cloud-side lifecycle transitions settle the LOCAL record too, or it would stay
+      // pending_review while its cloud row is terminal — and the id-reuse on the next park
+      // would then converge against an immutable row and the content would never land. The
+      // local record mirrors the row's ACTUAL terminal state, not the intended one: our
+      // transition is state-guarded and can lose a race (zero rows updated, no error) to a
+      // human decision that landed first — the decision wins, locally too.
+      withdrawProposal: async (id) => {
+        await live.store.withdrawProposal(id);
+        // The local record settles ONLY from a read-back non-pending row: a transient or missing
+        // read must not stamp the requested outcome over a decision that won the state-guarded
+        // race. Left pending, the next attach reconciles from the cloud's truth.
+        if (rds.pendingProposal()?.id === id) {
+          const row = await live.store.getProposal(id).catch(() => null);
+          if (row && row.state !== "pending") rds.resolveProposal(row.state);
+        }
+      },
+      decideProposal: async (id, st) => {
+        await live.store.decideProposal(id, st);
+        if (rds.pendingProposal()?.id === id) {
+          const row = await live.store.getProposal(id).catch(() => null);
+          if (row && row.state !== "pending") rds.resolveProposal(row.state);
+        }
+      },
+      createProposal: async (input) => {
+        // Re-parking identical content reuses the LOCAL record's id, so a retry after a lost
+        // response converges on the same row (client-generated-id idempotency). Only a failed
+        // PUSH is a failed park (the edit's sole copy stays local; the post-turn path must
+        // keep-local). A failed local record write after a confirmed push is NOT — the proposal
+        // is live in the cloud, and the record is reconciled from it at the next attach.
+        const prior = rds.pendingProposal();
+        const id = input.id ?? (prior && prior.hash === hashBody(input.content) ? prior.id : undefined);
+        let created: { id: string };
         try {
-          await live.store.setProposed(c);
+          created = await live.store.createProposal({ ...input, ...(id ? { id } : {}) });
+          // A reused id can be TERMINAL in the cloud (the human decided mid-session; the local
+          // record only settles at attach or via our own transitions). createProposal returns a
+          // terminal id untouched — verify the park actually landed pending, and if not, settle
+          // the local record from the cloud's terminal state and re-park under a fresh identity.
+          // The verification lookup is NOT allowed to fail silently: an unknown state must report
+          // an unconfirmed park (park_failed means exactly that), never a claimed pending_review.
+          if (id) {
+            const row = await live.store.getProposal(created.id);
+            // A row we cannot read back is an UNVERIFIED identity — publishing a local pending
+            // record under it would claim a landing nothing confirms. Unconfirmed = park_failed.
+            if (!row) throw new Error(`park verification found no row for reused id ${created.id}`);
+            if (row.state !== "pending") {
+              if (rds.pendingProposal()?.id === created.id) rds.resolveProposal(row.state);
+              // Fresh id — a genuine successor. Strip any caller-supplied id: passing input
+              // unchanged would reuse the very terminal id we just detected, returning it
+              // untouched again and never landing the content.
+              created = await live.store.createProposal({ content: input.content, baseHash: input.baseHash, baseContent: input.baseContent });
+            }
+          }
         } catch (e) {
           hubParkFailed = true;
           throw e;
         }
+        // A DIFFERENT id displaces the prior local pending record — but the cloud may have
+        // DECIDED that prior mid-session (our supersede is state-guarded and skips terminal
+        // rows). Mirror the cloud's actual state before the local park would mark it superseded;
+        // the decision wins, locally too. This reconciliation is OUTSIDE the park's failure
+        // envelope: the park is confirmed by now, and a transient lookup here must not
+        // masquerade as park_failed — on failure the next attach settles it from the cloud.
         try {
-          rds.parkProposal(c);
+          if (prior && prior.id !== created.id) {
+            const priorRow = await live.store.getProposal(prior.id);
+            if (priorRow && priorRow.state !== "pending" && priorRow.state !== "superseded") rds.resolveProposal(priorRow.state);
+          }
+        } catch {
+          /* deferred to next-attach reconciliation */
+        }
+        try {
+          rds.parkProposal(input.content, undefined, created.id);
         } catch (e) {
           process.stderr.write(`inplan: could not write the local proposal record (${String(e)}); the proposal is live in the cloud and the record will be reconciled on the next run\n`);
         }
+        return created;
       },
-      clearProposed: () => live.store.clearProposed(),
     };
     // Save-local handoff on the gate path reads the HUB canonical (the source of truth here);
     // live.store isn't updated by gate.applyRevision, so reading it would write a stale doc. If
