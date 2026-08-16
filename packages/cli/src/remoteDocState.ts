@@ -85,7 +85,12 @@ export function resolutionFromEvents(entries: LogEntry[], park: { at: string; ha
     // newer proposal repeating our text must not donate its decision window to this record).
     const ts = Date.parse(e.ts);
     if (Number.isFinite(parkedAt) && Number.isFinite(ts) && ts > parkedAt + 5_000) continue;
-    if ((e.payload as { hash?: unknown } | undefined)?.hash === park.hash) {
+    // A hash match must also not PREDATE us by more than clock skew plausibly allows (10 min —
+    // generous for unsynced clocks): an OLDER proposal that happened to carry identical content
+    // is not our park either, and binding to its event would hand us its decision. Outside the
+    // near window, an identical-hash event only qualifies as a weak anchor like any other park.
+    const nearOurPark = !Number.isFinite(parkedAt) || !Number.isFinite(ts) || ts >= parkedAt - 600_000;
+    if (nearOurPark && (e.payload as { hash?: unknown } | undefined)?.hash === park.hash) {
       start = i;
       matched = true;
       break;
@@ -292,8 +297,11 @@ export class RemoteDocState {
   private finalize(record: ProposalRecord, outcome: ProposalOutcome): ProposalRecord {
     const { awaitingOutcomeSince: _grace, ...rest } = record;
     const finalized: ProposalRecord = { ...rest, state: outcome };
+    // Idempotency is by identity AND outcome: a crash-retried finalization with the same result
+    // appends nothing, but a retry that resolved to a DIFFERENT outcome appends the correction —
+    // the history must never disagree with the record it claims to log.
     const tail = this.historyTail();
-    if (!tail || tail.id !== finalized.id) appendFileSync(this.historyPath, `${JSON.stringify(finalized)}\n`);
+    if (!tail || tail.id !== finalized.id || tail.state !== finalized.state) appendFileSync(this.historyPath, `${JSON.stringify(finalized)}\n`);
     const stored = this.readStored();
     this.publish({ ...finalized, text: stored?.id === finalized.id ? stored.text : "" });
     return finalized;

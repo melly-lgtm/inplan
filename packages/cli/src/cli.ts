@@ -434,15 +434,16 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
   // DESIGN, and an agent that reads silence as loss may destroy its own work. Say so on stderr
   // now, and carry the fact in the wait output below (the durable record is the gate path's job).
   if (applied.proposed) {
+    // One coherent line per outcome — the with-event and without-event messages must not
+    // contradict each other about whether agent_revision_proposed was logged.
     process.stderr.write(
-      "inplan: review mode — your edit was parked as a proposal (agent_revision_proposed); the canonical body is unchanged until the human accepts. This is normal, not a sync failure.\n",
+      applied.eventLogged === false
+        ? "inplan: review mode — your edit was parked as a proposal, but its notification event could NOT be logged: the proposal is safe in the cloud, and the human's editor may not show it until they reload. Not a sync failure.\n"
+        : "inplan: review mode — your edit was parked as a proposal (agent_revision_proposed); the canonical body is unchanged until the human accepts. This is normal, not a sync failure.\n",
     );
   }
   if (applied.parkFailed) {
     process.stderr.write("inplan: pushing your edit as a review proposal FAILED — the edit is kept in the working copy and will be re-pushed on the next run.\n");
-  }
-  if (applied.eventLogged === false) {
-    process.stderr.write("inplan: the proposal was parked, but its notification event could not be logged — the human's editor may not show it until they reload. The proposal itself is safe.\n");
   }
   // Rides every terminal output below, so the agent sees the park no matter how the wait ends —
   // including wait_failed and superseded, where mistaking a parked edit for a failed sync is
@@ -486,7 +487,17 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
   // Last writer wins — any older waiter sees the token change and steps down. Log the exit reason —
   // including OS signals — so a reaped waiter is diagnosable instead of "vanishing" silently.
   const lockToken = `${process.pid}-${Date.now()}`;
-  await channel.claimLock(lockToken);
+  try {
+    await channel.claimLock(lockToken);
+  } catch (e) {
+    // A write-dead control backend must not crash the wait into a no-status exit — the landing
+    // signal above (proposalOut) is promised on every terminal output, this one included.
+    backend.logExit("claim_lock_failed");
+    process.stderr.write(`inplan: could not claim the wait lock (${String(e)}).\n  If your session expired, run \`inplan login\` and re-attach.\n`);
+    output({ status: "wait_failed", message: `could not claim the wait lock: ${String(e)}`, ...proposalOut });
+    exitAfterFlush(EXIT_WAIT_FAILED);
+    return "exiting";
+  }
   for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"] as const) {
     process.on(sig, () => {
       backend.logExit(`signal:${sig}`);

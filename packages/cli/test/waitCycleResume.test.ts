@@ -245,6 +245,25 @@ describe("waitCycle resume is a loop, not a re-entry", () => {
     }
   });
 
+  it("a failed lock claim exits as wait_failed WITH the landing signal, never a bare crash", async () => {
+    // The lock claim is the last unguarded write before the wait: with the control backend
+    // write-dead it used to reject the whole run — no JSON at all — right after a park.
+    const h = harness(DOC_B);
+    h.channel.claimLock = async () => {
+      throw new Error("backend unavailable");
+    };
+    const gate = { readCanonical: async () => DOC_A, applyRevision: async () => {} };
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, gate);
+      await expect(run).resolves.toBe("exiting");
+      const last = h.lastJson() as ReturnType<typeof h.lastJson> & { proposal?: { state: string } };
+      expect(last.status).toBe("wait_failed");
+      expect(last.proposal).toMatchObject({ state: "pending_review", hash: hashBody(DOC_B) }); // the park still reported
+    } finally {
+      h.restore();
+    }
+  });
+
   it("no `proposal` key when the turn made no body change", async () => {
     const h = harness(DOC_A);
     try {

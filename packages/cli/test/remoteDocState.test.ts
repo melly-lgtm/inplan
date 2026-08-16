@@ -114,6 +114,33 @@ describe("resolutionFromEvents", () => {
     expect(resolutionFromEvents(entries, PARK)).toBe("decided");
   });
 
+  it("a hash match far PREDATING our park is an OLDER identical-text proposal — never our anchor", () => {
+    // The backward twin of the postdating case: our event never appended, and an old proposal
+    // with identical content was decided hours ago. Its event must not bind our window — outside
+    // the near window it only weak-anchors, and the timestamp filter then excludes its decision.
+    const entries = [
+      parkEvent("2026-08-15T08:00:00.000Z", "hash-P1"), // an OLD proposal, same content
+      entry(LogEventType.RevisionAcceptedAll, "2026-08-15T08:30:00.000Z"), // ITS decision
+    ];
+    expect(resolutionFromEvents(entries, PARK)).toBe("decided"); // ours at 12:00 — never 'accepted'
+  });
+
+  it("a retried finalization with a DIFFERENT outcome appends the correction to the history", () => {
+    s.parkProposal("v1");
+    s.resolveProposal("accepted");
+    const historyPath = join(dir, "remote", "doc-1.plan.md.proposals.jsonl");
+    const recordPath = join(dir, "remote", "doc-1.plan.md.proposed.json");
+    // Crash window: history has 'accepted', the record republish never ran — and the retry
+    // resolves differently this time. The history must follow the record, not silently disagree.
+    const stored = JSON.parse(readFileSync(recordPath, "utf8"));
+    writeFileSync(recordPath, JSON.stringify({ ...stored, state: "pending_review" }, null, 2));
+    s.resolveProposal("rejected");
+    const lines = readFileSync(historyPath, "utf8").trim().split("\n");
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[1]!)).toMatchObject({ id: stored.id, state: "rejected" });
+    expect(s.latestProposal()?.state).toBe("rejected"); // record and history tail agree
+  });
+
   it("a hash match POSTDATING our park is someone else's identical-text proposal — never our anchor", () => {
     // Identical text is not identity: a newer proposal repeating our content must not donate its
     // decision window to this record. Our own (eligible) park event still anchors correctly.
