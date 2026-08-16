@@ -4,22 +4,30 @@
 // edit lands in the file model or a runtime plugin's document. Split out of cli.ts so it's
 // unit-testable without running the CLI's top-level main().
 
-import { type ControlChannel, type DocumentStore, LogEventType } from "@inplan/core/node";
+import { type ControlChannel, type DocumentStore, LogEventType, hashBody } from "@inplan/core/node";
 import type { AgentEditEvaluation } from "./gate";
 import type { PluginGate } from "./pluginGate";
+import { utf8Bytes } from "./remoteDocState";
 
 /**
  * When `gate` is non-null an entitled plugin owns the document, so we push the accepted text into
  * the plugin (never touching the `.md`); otherwise we advance the file + persisted canonical (or
  * quarantine a Review-mode body change as a `.proposed.md` for the human to accept). The matching
  * `DocumentEdited` / `AgentRevisionProposed` event is logged either way.
+ *
+ * Returns whether the edit was PARKED as a proposal (#88) — the caller surfaces that fact
+ * (wait output + stderr + the durable proposal record) so an agent auditing "did my edit
+ * land?" never mistakes a parked proposal for a sync failure. `parkFailed` reports the
+ * inverse hazard: the park never reached the store, so nothing was proposed — the edit is
+ * kept in the working copy (deliberately NOT reverted) and no event is appended; the caller
+ * degrades the turn instead of crashing with no status.
  */
 export async function applyGatedEdit(
   store: DocumentStore,
   channel: ControlChannel,
   ev: AgentEditEvaluation,
   ctx: { current: string; canonicalText: string; quarantine: boolean; gate: PluginGate | null },
-): Promise<void> {
+): Promise<{ proposed: boolean; parkFailed?: boolean; eventLogged?: boolean }> {
   const { current, canonicalText, quarantine, gate } = ctx;
   if (ev.removedIds.length > 0) {
     // Confirmed deletions: drop the orphaned comment objects. On the plugin path push the result
@@ -36,9 +44,50 @@ export async function applyGatedEdit(
     // sidecar is file-based either way; on the file path also revert the working file to canonical
     // (the human's accept later writes canonical). On the plugin path the plugin owns the working
     // doc, so there's no .md to revert.
-    await store.setProposed(current);
-    if (!gate) await store.saveDoc(canonicalText);
-    await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: current.length } });
+    try {
+      await store.setProposed(current);
+    } catch {
+      // The push failed, so nothing is proposed anywhere: keep the working copy as the ONLY copy
+      // (skipping the revert below — reverting would destroy the edit silently), log no event,
+      // and let the caller report the degradation. The next run re-detects the divergence and
+      // retries the park idempotently.
+      //
+      // CONTRACT for composite stores: a `setProposed` rejection must mean NOTHING was committed.
+      // A store that pushes remotely and then persists locally (runRemote's gateStore) must
+      // contain its post-commit failures itself — the cloud proposal is live and the human can
+      // see it, so surfacing that partial failure here would misreport a real park as a failed
+      // push. The gateStore does exactly that: it swallows the local record-write failure and
+      // relies on slot reconciliation at the next attach.
+      return { proposed: false, parkFailed: true };
+    }
+    // From here the park is REAL — the store holds the proposal (and on the remote path the
+    // durable record is already on disk). Every failure below is local housekeeping and must not
+    // be reported as a failed park: claiming "FAILED, will be re-pushed" for a proposal the human
+    // can already see in their editor is the same class of false signal #88 exists to kill.
+    if (!gate) {
+      try {
+        await store.saveDoc(canonicalText);
+      } catch {
+        /* Failed revert: the working copy keeps the edit, where the hydration hash-mismatch guard
+           protects it; the next turn re-parks the identical text as a no-op. */
+      }
+    }
+    try {
+      await channel.append({
+        actor: "agent",
+        type: LogEventType.AgentRevisionProposed,
+        // The hash identifies WHICH proposal this event parked, so a later resolution can bind
+        // decision events to this exact proposal (not merely the doc's latest park).
+        payload: { bytes: utf8Bytes(current), hash: hashBody(current) },
+      });
+    } catch {
+      // The park stands without its event; resolution falls back to its lesser anchors, which is
+      // exactly what those fallbacks exist for. Report it, though: the event is also what nudges
+      // a live editor to show the review panel, so the caller should tell the agent the proposal
+      // may stay invisible to the human until their editor next reloads.
+      return { proposed: true, eventLogged: false };
+    }
+    return { proposed: true };
   } else if (ev.changed) {
     // Auto-accept (auto mode, or review mode with comment-only changes): advance the base. On the
     // plugin path that means pushing into the plugin's doc; otherwise advance the persisted canonical.
@@ -47,6 +96,7 @@ export async function applyGatedEdit(
       await store.setCanonical(current);
       await store.clearProposed();
     }
-    await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: current.length } });
+    await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: utf8Bytes(current) } });
   }
+  return { proposed: false };
 }

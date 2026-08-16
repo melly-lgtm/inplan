@@ -63,10 +63,69 @@ exits with a timeout message while the session is still valid — that is not a 
 re-run the same command and it resumes the same sign-in. If the link itself expires
 (`expiresInSec`, ~10 minutes), the re-run prints a fresh URL — repeat from 1.
 
+## Cloud documents (wait --remote)
+
+For a cloud document, `inplan wait --remote <docId>` materializes a **working copy** at
+`~/.inplan/sidecars/remote/<docId>.plan.md` and tells you so on stderr. That working copy is
+**your editing surface** — the one file under the sidecars you may edit (the CLI puts it there
+*for* you). Edit it, then re-run the same `wait` command: the run pushes your edit and waits
+for the human. The `.proposed.*` records described below are **read-only audit state** — read
+them to answer "did my edit land?", but never rewrite or delete them (they are the durable
+history the CLI maintains).
+
+**Review mode parks your edit — that is success, not failure.** Most cloud docs are in review
+mode: your body edit is NOT applied to the canonical; it is pushed to the cloud as a
+**proposal** for the human to accept or reject in their editor. When that happens the wait
+output carries `proposal: { state: "pending_review", bytes, hash }`, an
+`agent_revision_proposed` entry appears in `entries`, and stderr says the edit was parked.
+
+How to audit "did my edit land?", in order:
+1. **This turn:** the `proposal` field in the wait JSON (`pending_review` = safely parked), or
+   a `document_edited` entry (= applied directly to canonical). The `proposal` field rides
+   **every** turn-ending output when a park happened this turn — `your_turn`/`activity`,
+   `closed`, `navigated`, `wait_failed`, `superseded`, and `moved_local` — losing or handing
+   off the wait afterwards does not un-park your edit, so check the field (and the record
+   below) before classifying it.
+2. **Any later turn:** read `<workingCopy>.proposed.json` — the durable record. Its `state`
+   becomes `accepted`, `partially_accepted`, or `rejected` once the human decides (or
+   `decided` when history is readable but no usable outcome event can be recovered — a
+   transient history-read failure instead leaves the record pending and retries next run), and
+   `superseded` when a newer proposal of yours replaced it — the newest record is the
+   authoritative one. The exact text you pushed is embedded in the record itself (its `text`
+   field — audit from there); `<workingCopy>.proposed.md` is only a derived, read-convenience
+   copy that can be missing or stale until the next run reconciles it. Every finalized record
+   is appended to `<workingCopy>.proposals.jsonl`.
+3. A later wait's `entries` may also carry the decision itself: `revision_accepted_all`,
+   `revision_hunk_accepted`, or `revision_rejected_all`.
+
+If the park itself fails, the wait JSON carries `proposal: { state: "park_failed", bytes,
+hash }` (and stderr says the push FAILED) — `park_failed` means exactly that the **cloud push
+was not confirmed**. It does NOT prove the push didn't land: a lost response can leave the
+proposal live in the cloud while the local event and record are missing. Either way the retry
+is safe and automatic — the next `wait` run first reconciles the cloud's proposal slot (a
+landed push is adopted as the pending record, not re-sent), and re-pushing identical content
+is idempotent (same proposal identity, no duplicate). Your edit stays in the working copy;
+do not re-create it — just re-run.
+
+The converse also holds: a CONFIRMED push stays parked even when a piece of local bookkeeping
+failed around it. The event append or the local record write can fail after the push landed —
+stderr says so when it happens — and the next `wait --remote` run reconciles the missing
+artifacts from the cloud's own proposed slot. A temporarily missing event or record therefore
+never means the park failed; only `park_failed` (or the absence of any park signal plus a
+still-diverged working copy) means that.
+
+Two things are **normal and must never be read as data loss**: after a healthy turn the
+working copy is re-synced to the current canonical (so your parked edit is no longer in it —
+it lives in `.proposed.md` and in the cloud), and `.synced` tracks only canonical syncs (it
+says nothing about proposals). **Never delete or rewrite your local work because the working
+copy or `.synced` looks stale** — check the proposal record first.
+
 ## File convention
 
 Save plans as `<name>.plan.md`. The `inplan` CLI keeps its own working files under
-`~/.inplan/sidecars/<key>/` — it owns these; never read or edit them by hand.
+`~/.inplan/sidecars/<key>/` — it owns these; never read or edit them by hand. (Exceptions,
+described above: the `wait --remote` working copy is yours to **edit**, and its `.proposed.*`
+records are yours to **read** for audit — never to modify.)
 
 ## Auto-approval (review happens in the app)
 

@@ -39,6 +39,7 @@ import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenceReason, type PluginGate } from "./pluginGate";
 import { demoteSource, shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
+import { RemoteDocState, isDecidedProposalCorpse, needsReparkFromSlot, resolutionFromEvents, utf8Bytes, type ProposalOutcome } from "./remoteDocState";
 import { announcePresence, presenceTokenResolver } from "./presence";
 import { awaitReopen, wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
@@ -338,8 +339,9 @@ export interface WaitBackend {
   logExit(reason: string): void;
   /** Handle a `save_locally_requested` directive (cloud→local handoff). When set
    *  and that event wakes the wait, this runs instead of the normal status output
-   *  and is responsible for emitting its own result. Absent on the desktop. */
-  onSaveLocally?: () => Promise<void>;
+   *  and is responsible for emitting its own result — including the turn's landing
+   *  signal, passed through `info`, so the handoff can't hide a parked proposal. */
+  onSaveLocally?: (info: { proposal?: { state: "pending_review" | "park_failed"; bytes: number; hash: string } }) => Promise<void>;
 }
 
 /** Local sidecar-file backend for a document on disk. */
@@ -427,11 +429,44 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
   const acceptance = acceptanceFrom(history);
   const quarantine = acceptance === "review" && parse(canonicalText).body !== parse(current).body;
   // `usePlugin ? gate : null` — only route through the plugin when its read succeeded.
-  await applyGatedEdit(store, channel, ev, { current, canonicalText, quarantine, gate: usePlugin ? gate : null });
+  const applied = await applyGatedEdit(store, channel, ev, { current, canonicalText, quarantine, gate: usePlugin ? gate : null });
+  // A parked proposal must be unmistakable in the moment (#88): the canonical is unchanged BY
+  // DESIGN, and an agent that reads silence as loss may destroy its own work. Say so on stderr
+  // now, and carry the fact in the wait output below (the durable record is the gate path's job).
+  if (applied.proposed) {
+    // One coherent line per outcome — the with-event and without-event messages must not
+    // contradict each other about whether agent_revision_proposed was logged.
+    process.stderr.write(
+      applied.eventLogged === false
+        ? "inplan: review mode — your edit was parked as a proposal, but its notification event could NOT be logged: the proposal is safely stored, and the human's editor may not show it until they reload. Not a sync failure.\n"
+        : "inplan: review mode — your edit was parked as a proposal (agent_revision_proposed); the canonical body is unchanged until the human accepts. This is normal, not a sync failure.\n",
+    );
+  }
+  if (applied.parkFailed) {
+    process.stderr.write("inplan: pushing your edit as a review proposal FAILED — the edit is kept in the working copy and will be re-pushed on the next run.\n");
+  }
+  // Rides every terminal output below, so the agent sees the park no matter how the wait ends —
+  // including wait_failed and superseded, where mistaking a parked edit for a failed sync is
+  // exactly the misread this field exists to prevent. A FAILED park is machine-readable too
+  // (state "park_failed"): an agent parsing only the JSON must never read a failed push as a
+  // no-change turn — stderr alone is not a signal contract.
+  const proposalOut: { proposal?: { state: "pending_review" | "park_failed"; bytes: number; hash: string } } = applied.proposed
+    ? { proposal: { state: "pending_review", bytes: utf8Bytes(current), hash: hashBody(current) } }
+    : applied.parkFailed
+      ? { proposal: { state: "park_failed", bytes: utf8Bytes(current), hash: hashBody(current) } }
+      : {};
 
   // Signal the agent has (re)engaged this round so the editor can clear its
-  // "Agent is thinking…" indicator even when the agent made no body change.
-  await channel.append({ actor: "agent", type: LogEventType.AgentRevised });
+  // "Agent is thinking…" indicator even when the agent made no body change. Guarded: with the
+  // control log write-degraded (the same outage that just swallowed a park event), an unguarded
+  // append here crashed the whole wait with NO status — the one exit that must never happen once
+  // proposalOut is carrying the landing signal. The wait itself may still work (reads can be
+  // healthy while writes fail), and if it doesn't, wait_failed reports with proposalOut attached.
+  try {
+    await channel.append({ actor: "agent", type: LogEventType.AgentRevised });
+  } catch {
+    process.stderr.write("inplan: could not log the turn marker (control log write failed) — the editor may keep showing 'Agent is thinking' until it reloads.\n");
+  }
 
   // ── Everything below only READS, WAITS, and REPORTS. ──────────────────────────────────────────
   //
@@ -452,7 +487,17 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
   // Last writer wins — any older waiter sees the token change and steps down. Log the exit reason —
   // including OS signals — so a reaped waiter is diagnosable instead of "vanishing" silently.
   const lockToken = `${process.pid}-${Date.now()}`;
-  await channel.claimLock(lockToken);
+  try {
+    await channel.claimLock(lockToken);
+  } catch (e) {
+    // A write-dead control backend must not crash the wait into a no-status exit — the landing
+    // signal above (proposalOut) is promised on every terminal output, this one included.
+    backend.logExit("claim_lock_failed");
+    process.stderr.write(`inplan: could not claim the wait lock (${String(e)}).\n  If your session expired, run \`inplan login\` and re-attach.\n`);
+    output({ status: "wait_failed", message: `could not claim the wait lock: ${String(e)}`, ...proposalOut });
+    exitAfterFlush(EXIT_WAIT_FAILED);
+    return "exiting";
+  }
   for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"] as const) {
     process.on(sig, () => {
       backend.logExit(`signal:${sig}`);
@@ -462,6 +507,12 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
 
   const debounceMs = Number(process.env.INPLAN_DEBOUNCE_MS ?? 3000);
   const pollMs = Number(process.env.INPLAN_POLL_MS ?? 200);
+  // Test knob, same family as the two above: how long a continuous poll-failure streak runs
+  // before the wait gives up (waitForActions' errorGraceMs; default 5 min in wait.ts). Validated:
+  // a NaN or negative value would make the grace comparison never fire and the wait poll forever,
+  // so anything unparseable falls back to the default instead of being passed through.
+  const errorGraceParsed = Number(process.env.INPLAN_ERROR_GRACE_MS);
+  const errorGraceMs = process.env.INPLAN_ERROR_GRACE_MS && Number.isFinite(errorGraceParsed) && errorGraceParsed >= 0 ? errorGraceParsed : undefined;
 
   let waitCursor = cursor;
   let historyForMode = history;
@@ -471,7 +522,7 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
     // (history is re-read on resume), so a mode switched just before the reload is honoured.
     const mode = modeFrom(historyForMode);
     const isActionable = wakePredicate(mode.wake);
-    const result = await waitForActions({ channel, cursor: waitCursor, debounceMs, pollMs, isActionable, token: lockToken });
+    const result = await waitForActions({ channel, cursor: waitCursor, debounceMs, pollMs, isActionable, token: lockToken, ...(errorGraceMs !== undefined ? { errorGraceMs } : {}) });
 
     // The wait gave up after a streak of failed polls — an expired session is the common cause.
     // Report it as a status the agent can act on and exit non-zero. It used to reach here as an
@@ -479,7 +530,7 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
     if (result.failed) {
       backend.logExit("poll_failed");
       process.stderr.write(`inplan: lost contact with the document (${result.failed.message}).\n  If your session expired, run \`inplan login\` and re-attach.\n`);
-      output({ status: "wait_failed", message: result.failed.message });
+      output({ status: "wait_failed", message: result.failed.message, ...proposalOut });
       exitAfterFlush(EXIT_WAIT_FAILED);
       return "exiting";
     }
@@ -488,7 +539,7 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
     // advancing the cursor (the live waiter handles it).
     if (result.superseded) {
       backend.logExit("superseded");
-      output({ status: "superseded" });
+      output({ status: "superseded", ...proposalOut });
       return "ok";
     }
 
@@ -500,7 +551,7 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
     // would be lost. On success the doc becomes local, so the cloud cursor is moot.
     if (backend.onSaveLocally && result.entries.some((e) => e.type === LogEventType.SaveLocallyRequested)) {
       backend.logExit("save_locally");
-      await backend.onSaveLocally();
+      await backend.onSaveLocally(proposalOut);
       return "ok";
     }
 
@@ -513,7 +564,7 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
     if (navEntry) {
       const path = (navEntry.payload as { path?: string } | undefined)?.path;
       backend.logExit("navigated");
-      output({ status: "navigated", ...(path ? { path } : {}), cursor: result.cursor, closed: false });
+      output({ status: "navigated", ...(path ? { path } : {}), ...proposalOut, cursor: result.cursor, closed: false });
       return "ok";
     }
 
@@ -546,7 +597,7 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
       const reopen = await awaitReopen(channel, result.cursor, { token: lockToken });
       if (reopen.kind === "superseded") {
         backend.logExit("superseded");
-        output({ status: "superseded" });
+        output({ status: "superseded", ...proposalOut });
         return "ok";
       }
       if (reopen.kind === "completed") {
@@ -556,7 +607,7 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
         // unrecorded and the next wait would re-read and re-report the completed session.
         await channel.setCursor(reopen.cursor);
         backend.logExit(reopen.reason);
-        output({ status: "closed", reason: reopen.reason, cursor: reopen.cursor, closed: true, entries: [...result.entries, ...reopen.entries] });
+        output({ status: "closed", reason: reopen.reason, ...proposalOut, cursor: reopen.cursor, closed: true, entries: [...result.entries, ...reopen.entries] });
         return "ok";
       }
       // A grace reopen deliberately resumes from the PRE-grace cursor: the user entries that proved
@@ -601,6 +652,10 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
       // when --model was passed), so presence + authorship stay consistent.
       agentAuthor: agentAuthorFor(model),
       ...(reason ? { reason } : {}),
+      // The landing signal for a parked Review-mode edit (#88): pending_review means the push
+      // REACHED the store and awaits the human — the canonical is unchanged by design. Absent
+      // when the turn applied directly (or made no body change).
+      ...proposalOut,
       cursor: result.cursor,
       closed: status === "closed",
       entries: result.entries,
@@ -1103,11 +1158,10 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
   );
   try {
     const workFile = join(sidecarRoot(), "remote", `${docId}.plan.md`);
-    const pendingPath = `${workFile}.pending`; // marker: a local fallback edit awaits a hub push
-    const hashPath = `${workFile}.synced`; // hash of the working copy at our last write/sync
-    mkdirSync(dirname(workFile), { recursive: true });
-    const readIf = (p: string): string | null => (existsSync(p) ? readFileSync(p, "utf8") : null);
-    const recordSynced = (content: string) => writeFileSync(hashPath, hashBody(content));
+    // All per-doc sidecar state (working copy hash, replay marker, proposal record) lives behind
+    // one tested owner (#88) — same files on disk as before, plus the durable proposal record.
+    const rds = new RemoteDocState(workFile, docId);
+    rds.ensureDir();
 
     // Probe the hub on EVERY run. A failure here means we cannot materialize the working copy, so
     // there is nothing for an out-of-process agent to read or edit — the same dead end the
@@ -1122,28 +1176,109 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       exitAfterFlush(EXIT_PLUGIN_UNAVAILABLE);
       return; // the `finally` below tears presence down on the way out
     }
+    // A proposal parked on an EARLIER run resolves here (#88): if the cloud's proposed slot has
+    // emptied, the human decided — finalize the record with the outcome the decision events name
+    // (accepted / partially_accepted / rejected), so "did my edit land?" stays answerable from
+    // disk even though agent_revision_proposed left the wait output long ago. A transient slot
+    // read failure just retries next run; the record stays pending.
+    // Reconcile with the CLOUD slot first (#88): the slot is the authoritative side of a park, so
+    // a proposal it holds that this machine has no live record of (a crash between the confirmed
+    // push and the record publish, a re-park after a finalization) is re-parked from the slot's
+    // own text, recreating the truthful pending record. Then resolve a pending record whose slot
+    // has emptied: the decision events name the outcome; when none is readable yet, the record
+    // waits one more run (a slot-clear can race ahead of its decision event) before degrading to
+    // 'decided'. A transient slot read failure skips both — retry next run.
+    // Whether THIS attach transitioned a record pending → terminal. The corpse restore below is
+    // gated on it: only a just-decided proposal's leftover text is a corpse — on any later attach
+    // an identical working copy is a deliberate re-edit (an agent may legitimately re-propose
+    // byte-identical content after a rejection), and overwriting it would destroy real work.
+    let justFinalized = false;
+    const slot = await live.store.getProposed().catch(() => undefined);
+    if (typeof slot === "string" && needsReparkFromSlot(rds.latestProposal(), slot)) {
+      try {
+        // A pending record the slot no longer matches was DISPLACED while we were away — but not
+        // necessarily superseded: the human may have decided it before another machine parked the
+        // slot's new content. Resolve it from the decision events FIRST, so a real acceptance is
+        // never mislabeled. When no decision is readable, the record gets the same one-run grace
+        // as the empty-slot path (the decision event can lag the slot change) — the repark is
+        // deferred with it, and a still-unreadable outcome next run finalizes as 'superseded'.
+        const displaced = rds.pendingProposal();
+        let outcome: ProposalOutcome | null = "superseded";
+        if (displaced) {
+          try {
+            const { entries } = await live.channel.readSince(0);
+            const resolved = resolutionFromEvents(entries, displaced);
+            if (resolved !== "decided") outcome = resolved;
+            else if (!displaced.awaitingOutcomeSince) outcome = null; // first sighting — grace
+          } catch {
+            if (!displaced.awaitingOutcomeSince) outcome = null; // unreadable — same grace
+          }
+        }
+        if (displaced && outcome === null) {
+          rds.noteOutcomeMissing(); // defer both the finalization and the repark one run
+        } else {
+          if (displaced && outcome) {
+            const finalized = rds.resolveProposal(outcome);
+            // Corpse-restore for the DISPLACED record must run HERE, against the record we just
+            // finalized: parking the slot's content below makes latestProposal() the NEW pending
+            // record, so the generic check after this block could never match — leaving a stale
+            // working copy that next turn would quarantine and push OVER the slot's proposal.
+            if (finalized && !rds.replayPending() && isDecidedProposalCorpse(finalized, rds.readWorkFile())) {
+              rds.writeWorkFile(canonical);
+              rds.recordSynced(canonical);
+            }
+          }
+          rds.parkProposal(slot);
+        }
+      } catch (e) {
+        // Local persistence trouble must not stop the attach: the cloud proposal stays live and
+        // reconciliation retries on the next run.
+        process.stderr.write(`inplan: could not reconcile the local proposal record (${String(e)}); continuing — it will retry next run\n`);
+      }
+    }
+    const parkedEarlier = rds.pendingProposal();
+    if (parkedEarlier && slot === null) {
+      try {
+        const { entries } = await live.channel.readSince(0);
+        const outcome = resolutionFromEvents(entries, parkedEarlier);
+        if (outcome !== "decided") justFinalized = rds.resolveProposal(outcome) !== null;
+        else if (parkedEarlier.awaitingOutcomeSince) justFinalized = rds.resolveProposal("decided") !== null;
+        else rds.noteOutcomeMissing();
+      } catch {
+        /* transient history read failure: leave the record pending and retry next run */
+      }
+    }
+
+    // A working copy equal to a JUST-decided proposal's text is not "unsynced agent edits" — the
+    // post-turn re-sync died before running, and the human has since decided. Restore canonical
+    // (the decision stands, whichever way it went); keeping the copy would quarantine it again
+    // next turn and re-park a proposal the human may have just rejected. Gated on justFinalized:
+    // on any LATER attach an identical copy is a deliberate re-edit to preserve, not a corpse.
+    // Skip when a replay is pending — that copy holds an unpushed direct edit.
+    if (justFinalized && !rds.replayPending() && isDecidedProposalCorpse(rds.latestProposal(), rds.readWorkFile())) {
+      rds.writeWorkFile(canonical);
+      rds.recordSynced(canonical);
+    }
+
     // Decide whether to (re)hydrate the working copy from the freshly probed canonical. Seed if
     // absent; keep it if a local fallback edit is pending (must push first); otherwise refresh it
     // ONLY when the agent hasn't touched it since our last sync (hash match) — so we pull the
     // human's edits without clobbering unsynced agent edits. This is also what lets a FAILED
     // end-of-turn re-sync self-heal on the next run.
-    const exists = existsSync(workFile);
-    if (
-      shouldHydrateWorkFile({
-        exists,
-        pending: existsSync(pendingPath),
-        currentHash: exists ? hashBody(readFileSync(workFile, "utf8")) : null,
-        syncedHash: readIf(hashPath),
-      })
-    ) {
-      writeFileSync(workFile, canonical);
-      recordSynced(canonical);
+    if (shouldHydrateWorkFile(rds.hydrateInput())) {
+      rds.writeWorkFile(canonical);
+      rds.recordSynced(canonical);
     }
 
     // Working doc stays on the local file, but Review-mode PROPOSALS persist to the CLOUD doc's
     // proposal store (via live.store) — otherwise a parked proposal would sit in this machine's
-    // sidecar, invisible to the human in the web editor who's meant to accept/reject it.
+    // sidecar, invisible to the human in the web editor who's meant to accept/reject it. The
+    // wrapper writes the durable proposal record (#88) the moment the cloud push confirms — at
+    // park time, not at turn end — so a waiter killed mid-wait (SIGTERM, network death) still
+    // leaves the record + text on disk, and it exists long before the end-of-turn re-sync
+    // overwrites the working copy.
     const localStore = fsBackend(workFile).store;
+    let hubParkFailed = false;
     const gateStore: DocumentStore = {
       loadDoc: () => localStore.loadDoc(),
       saveDoc: (c) => localStore.saveDoc(c),
@@ -1151,19 +1286,45 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       setCanonical: (c) => localStore.setCanonical(c),
       backup: (c, m) => localStore.backup(c, m),
       getProposed: () => live.store.getProposed(),
-      setProposed: (c) => live.store.setProposed(c),
+      setProposed: async (c) => {
+        // Only a failed PUSH is a failed park (the edit's sole copy stays local; the post-turn
+        // path must keep-local). A failed local record write after a confirmed push is NOT — the
+        // proposal is live in the cloud, the human can already see it, and the record is
+        // reconciled from the slot at the next attach; masquerading it as a failed push would
+        // deny a park that actually happened.
+        try {
+          await live.store.setProposed(c);
+        } catch (e) {
+          hubParkFailed = true;
+          throw e;
+        }
+        try {
+          rds.parkProposal(c);
+        } catch (e) {
+          process.stderr.write(`inplan: could not write the local proposal record (${String(e)}); the proposal is live in the cloud and the record will be reconciled on the next run\n`);
+        }
+      },
       clearProposed: () => live.store.clearProposed(),
     };
     // Save-local handoff on the gate path reads the HUB canonical (the source of truth here);
     // live.store isn't updated by gate.applyRevision, so reading it would write a stale doc. If
     // the hub read fails we throw BEFORE writing status, so the doc isn't switched to local.
     const onSaveLocallyGate = localFile
-      ? async () => {
+      ? async (info: { proposal?: { state: "pending_review" | "park_failed"; bytes: number; hash: string } }) => {
           const body = await gate.readCanonical();
+          // The handoff writes CANONICAL to the local file. A working copy diverging from the
+          // last sync at this moment holds an edit that never reached the hub (e.g. this turn's
+          // park failed) — it stays in the remote sidecar, where nothing will replay it once the
+          // doc is local. Not silently: say where it is, and the moved_local output already
+          // carries the park_failed signal via `info`.
+          const leftover = rds.readWorkFile();
+          if (leftover !== null && hashBody(leftover) !== (rds.hydrateInput().syncedHash ?? "") && parse(leftover).body !== parse(body).body) {
+            process.stderr.write(`inplan: the doc moved local, but an unpushed edit remains at ${workFile} — merge it into ${localFile} by hand if you still want it.\n`);
+          }
           writeFileSync(localFile, body);
           writeStatus(docPaths(localFile).statusPath, { location: "local", originalPath: localFile, lastSyncedHash: hashBody(body) });
           const pid = spawnApp(localFile);
-          output({ status: "moved_local", path: localFile, reopened: pid !== null });
+          output({ status: "moved_local", path: localFile, reopened: pid !== null, ...info });
         }
       : undefined;
 
@@ -1191,7 +1352,11 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       tracked.gate, // …and accepted edits apply through the hub, not the store.
     );
 
-    const action = postTurnAction(outcome, { readFailed: tracked.readFailed(), writeFailed: tracked.writeFailed() });
+    // A failed park counts as a write failure: the edit exists ONLY in the working copy, so the
+    // healthy-path re-sync below would destroy it, and `.pending` must protect it until the next
+    // run's quarantine re-parks it.
+    const degraded = { readFailed: tracked.readFailed(), writeFailed: tracked.writeFailed() || hubParkFailed };
+    const action = postTurnAction(outcome, degraded);
     if (action === "stop") return; // a fail-fast exit is pending — never touch the working copy
 
     if (action === "keep-local") {
@@ -1200,21 +1365,24 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       // revision persisted off-hub that must be replayed. A read-only failure leaves the working
       // copy either unchanged (clean) or hash-diverged (agent edited); both are handled by the
       // start-of-turn hydration check, and a spurious `.pending` would wrongly skip it next run.
-      if (pendingRequiresReplay({ readFailed: tracked.readFailed(), writeFailed: tracked.writeFailed() })) {
-        writeFileSync(pendingPath, "1");
+      if (pendingRequiresReplay(degraded)) {
+        rds.markReplayPending();
       }
       process.stderr.write("inplan: hub was unavailable this turn — keeping local edits (will sync next turn)\n");
     } else {
-      // Turn applied to the hub. The working copy is now consistent with the hub for the agent's
-      // part, so record its hash (this makes a FAILED re-sync below self-heal: next run sees a
-      // matching hash and safely hydrates). Then re-sync the copy to the latest canonical (folding
-      // in the human's just-taken turn) so the agent's NEXT turn builds on it, and clear pending.
-      if (existsSync(pendingPath)) rmSync(pendingPath);
-      recordSynced(readFileSync(workFile, "utf8"));
+      // Turn applied to the hub. Any proposal parked this turn already has its durable record on
+      // disk (written at park time by the gateStore wrapper above), so the re-sync below can
+      // safely overwrite the working copy — the parked text stays recoverable from `.proposed.md`,
+      // unlike the 2026-08-11 incident where this overwrite destroyed the only local copy. Record
+      // the working copy's hash (this makes a FAILED re-sync self-heal: next run sees a matching
+      // hash and safely hydrates), then re-sync to the latest canonical (folding in the human's
+      // just-taken turn) so the agent's NEXT turn builds on it, and clear pending.
+      rds.clearReplayPending();
+      rds.recordSynced(rds.readWorkFile() ?? "");
       try {
         const fresh = await gate.readCanonical();
-        writeFileSync(workFile, fresh);
-        recordSynced(fresh);
+        rds.writeWorkFile(fresh);
+        rds.recordSynced(fresh);
       } catch {
         /* transient: leave the copy (its hash still matches) so the next run hydrates it */
       }

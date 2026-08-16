@@ -14,8 +14,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LogEventType, MemoryControlChannel, MemoryDocumentStore, type LogEntry } from "@inplan/core/node";
+import { LogEventType, MemoryControlChannel, MemoryDocumentStore, hashBody, type LogEntry } from "@inplan/core/node";
 import { waitCycle, type WaitBackend } from "../src/cli";
+import { utf8Bytes } from "../src/remoteDocState";
 
 const DOC_A = "# Plan\n\nOriginal body.\n\n<!--inplan\n[]\n-->\n";
 const DOC_B = "# Plan\n\nAgent-edited body.\n\n<!--inplan\n[]\n-->\n";
@@ -144,6 +145,133 @@ describe("waitCycle resume is a loop, not a re-entry", () => {
 
       expect(await countEvents(h.channel, LogEventType.AgentRevisionProposed)).toBe(1);
       expect(h.lastJson().status).toBe("your_turn");
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("a parked Review proposal is reported in the wait output (#88 landing signal)", async () => {
+    // The push reached the store and awaits the human — the wait output must say so, or an agent
+    // auditing "did my edit land?" reads the unchanged canonical as loss (the 2026-08-11 incident).
+    const h = harness(DOC_B); // the agent's working copy, differing from the hub canonical
+    const gate = { readCanonical: async () => DOC_A, applyRevision: async () => {} };
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, gate);
+      await reloadThenAct(h.channel);
+      await expect(run).resolves.toBe("ok");
+
+      const last = h.lastJson() as ReturnType<typeof h.lastJson> & { proposal?: { state: string; bytes: number; hash: string } };
+      expect(last.proposal).toEqual({ state: "pending_review", bytes: utf8Bytes(DOC_B), hash: hashBody(DOC_B) });
+      expect(h.stderr()).toContain("parked as a proposal");
+      expect(await h.store.getProposed()).toBe(DOC_B);
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("a superseded wait still reports the proposal it parked (#88)", async () => {
+    // The park happened in THIS run's turn; a newer waiter taking over must not make it look
+    // like the push failed — superseded is a step-down, not a rollback.
+    const h = harness(DOC_B);
+    const gate = { readCanonical: async () => DOC_A, applyRevision: async () => {} };
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, gate);
+      await waitUntil(async () => (await countEvents(h.channel, LogEventType.AgentRevisionProposed)) >= 1);
+      await h.channel.claimLock("a-newer-waiter"); // an out-of-band newer waiter takes the doc
+      await expect(run).resolves.toBe("ok");
+
+      const last = h.lastJson() as ReturnType<typeof h.lastJson> & { proposal?: { state: string } };
+      expect(last.status).toBe("superseded");
+      expect(last.proposal).toMatchObject({ state: "pending_review", hash: hashBody(DOC_B) });
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("a failed wait still reports the proposal it parked (#88)", async () => {
+    // The proposal reached the store BEFORE the wait began; losing contact afterwards must not
+    // read as "the edit went nowhere".
+    process.env.INPLAN_ERROR_GRACE_MS = "20";
+    const h = harness(DOC_B);
+    const gate = { readCanonical: async () => DOC_A, applyRevision: async () => {} };
+    const origReadSince = h.channel.readSince.bind(h.channel);
+    let failing = false;
+    h.channel.readSince = async (cursor: number) => {
+      if (failing) throw new Error("session expired");
+      return origReadSince(cursor);
+    };
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, gate);
+      await waitUntil(async () => (await countEvents(h.channel, LogEventType.AgentRevisionProposed)) >= 1);
+      failing = true; // every poll now fails; the grace (20ms) trips and the wait gives up
+      await expect(run).resolves.toBe("exiting");
+
+      const last = h.lastJson() as ReturnType<typeof h.lastJson> & { proposal?: { state: string } };
+      expect(last.status).toBe("wait_failed");
+      expect(last.proposal).toMatchObject({ state: "pending_review", hash: hashBody(DOC_B) });
+    } finally {
+      delete process.env.INPLAN_ERROR_GRACE_MS;
+      h.restore();
+    }
+  });
+
+  it("a FAILED park is machine-readable (proposal.state park_failed) and survives a write-dead control log", async () => {
+    // Two failures at once — the push rejects AND every agent-side log append fails (the same
+    // outage). Previously the unguarded turn-marker append crashed the wait with NO status; now
+    // the wait completes and the JSON says exactly what happened, so an agent parsing only the
+    // output (stderr discarded) can never read a failed push as a no-change turn.
+    const h = harness(DOC_B);
+    h.store.setProposed = async () => {
+      throw new Error("hub down");
+    };
+    const origAppend = h.channel.append.bind(h.channel);
+    h.channel.append = async (e: Parameters<typeof origAppend>[0]) => {
+      if (e.actor === "agent") throw new Error("log write denied");
+      return origAppend(e);
+    };
+    const gate = { readCanonical: async () => DOC_A, applyRevision: async () => {} };
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, gate);
+      await waitUntil(async () => h.stderr().includes("FAILED")); // the park failure was reported → turn processing done
+      await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
+      await expect(run).resolves.toBe("ok");
+
+      const last = h.lastJson() as ReturnType<typeof h.lastJson> & { proposal?: { state: string; hash: string } };
+      expect(last.status).toBe("your_turn");
+      expect(last.proposal).toMatchObject({ state: "park_failed", hash: hashBody(DOC_B) });
+      expect(await h.store.getProposed()).toBeNull(); // nothing landed anywhere
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("a failed lock claim exits as wait_failed WITH the landing signal, never a bare crash", async () => {
+    // The lock claim is the last unguarded write before the wait: with the control backend
+    // write-dead it used to reject the whole run — no JSON at all — right after a park.
+    const h = harness(DOC_B);
+    h.channel.claimLock = async () => {
+      throw new Error("backend unavailable");
+    };
+    const gate = { readCanonical: async () => DOC_A, applyRevision: async () => {} };
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, gate);
+      await expect(run).resolves.toBe("exiting");
+      const last = h.lastJson() as ReturnType<typeof h.lastJson> & { proposal?: { state: string } };
+      expect(last.status).toBe("wait_failed");
+      expect(last.proposal).toMatchObject({ state: "pending_review", hash: hashBody(DOC_B) }); // the park still reported
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("no `proposal` key when the turn made no body change", async () => {
+    const h = harness(DOC_A);
+    try {
+      const run = waitCycle(h.backend, null, new Set());
+      await reloadThenAct(h.channel);
+      await expect(run).resolves.toBe("ok");
+      expect("proposal" in h.lastJson()).toBe(false);
+      expect(h.stderr()).not.toContain("parked as a proposal");
     } finally {
       h.restore();
     }
