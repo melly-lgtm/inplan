@@ -11,6 +11,17 @@
 // raced by a working-file watcher — the Review-mode adopt race can't occur here.
 
 import { LogEventType, MemoryControlChannel, MemoryDocumentStore, type LogEntry } from "@inplan/core";
+
+// Browser-safe content hash for the harness's proposal metadata (core's hashBody is sha256 via
+// node:crypto, unavailable here; the harness only needs a stable fingerprint, not crypto).
+function harnessHash(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return `fnv1a-${(h >>> 0).toString(16)}`;
+}
 import type { Acceptance, Api, Cadence, DocPayload, SaveOptions, Settings } from "./api";
 import type { ModePolicy } from "./mode";
 
@@ -19,7 +30,9 @@ export interface MemoryAgent {
   /** Auto-accept: the agent rewrote the document (fires onExternalChange). */
   externalChange(content: string): void;
   /** Review mode: park a proposed revision (fires onProposal; getProposal returns it). */
-  proposeRevision(content: string): void;
+  /** Park a Review-mode proposal. The review banner surfaces synchronously; the returned
+   *  promise settles when the proposal row + event are durably recorded. */
+  proposeRevision(content: string): Promise<void>;
   /** The agent re-engaged this round (clears the editor's "thinking" state). */
   markActive(): void;
   /** The agent suggests the plan is ready. */
@@ -130,10 +143,11 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
       closed = true;
     },
     async getProposal(): Promise<string | null> {
-      return store.getProposed();
+      return (await store.myPendingProposal())?.content ?? null;
     },
-    async clearProposal(): Promise<void> {
-      await store.clearProposed();
+    async clearProposal(outcome?: "accepted" | "partially_accepted" | "rejected"): Promise<void> {
+      const mine = await store.myPendingProposal();
+      if (mine) await store.decideProposal(mine.id, outcome ?? "accepted");
     },
     async openDoc(): Promise<void> {
       /* in-memory harness: no navigation */
@@ -148,9 +162,13 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
       for (const cb of external) cb({ path: "memory://doc", content });
     },
     proposeRevision(content: string) {
-      void store.setProposed(content);
-      void channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: content.length } });
+      // Surface synchronously (the review banner must not lag the call), persist behind it.
       for (const cb of proposal) cb({ content });
+      return (async () => {
+        const base = (await store.getCanonical()) ?? (await store.loadDoc());
+        const { id } = await store.createProposal({ content, baseHash: harnessHash(base), baseContent: base });
+        await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: content.length, hash: harnessHash(content), proposal_id: id } });
+      })();
     },
     markActive() {
       void channel.append({ actor: "agent", type: LogEventType.AgentRevised });

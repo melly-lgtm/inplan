@@ -1,10 +1,41 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { DocumentStore, VersionMeta } from "@inplan/core";
+import type { DocumentStore, ProposalInput, ProposalRow, ProposalState, VersionMeta } from "@inplan/core";
+import { mintProposalId } from "@inplan/core";
 
 /** A `documents` column that holds free text (see db/schema.sql). */
-type DocColumn = "body" | "canonical" | "proposed";
+type DocColumn = "body" | "canonical";
+
+/** Who is parking proposals through this store — identifies "my" rows (proposals v1). */
+export interface ProposerIdentity {
+  kind: "user" | "agent";
+  /** auth.uid() for kind "user" (RLS also enforces it); an agent name for kind "agent". */
+  userId?: string;
+  /** Stable per-machine/client id (persisted by the caller). */
+  clientId: string;
+}
+
+/** The `proposals` table row shape (see the proposals-v1 migration in the cloud repo). */
+interface DbProposalRow {
+  id: string;
+  content: string;
+  base_hash: string;
+  base_content: string;
+  state: ProposalState;
+  created_at: string;
+  decided_at: string | null;
+}
+
+const toRow = (r: DbProposalRow): ProposalRow => ({
+  id: r.id,
+  content: r.content,
+  baseHash: r.base_hash,
+  baseContent: r.base_content,
+  state: r.state,
+  createdAt: r.created_at,
+  ...(r.decided_at ? { decidedAt: r.decided_at } : {}),
+});
 
 /** A `doc_versions` checkpoint's metadata (no body) — for a history list. */
 export interface VersionSummary {
@@ -29,7 +60,17 @@ export class SupabaseDocumentStore implements DocumentStore {
   constructor(
     private readonly db: SupabaseClient,
     private readonly docId: string,
+    /** Defaults suit the web editor (a signed-in user reviewing in the browser). CLI and agent
+     *  callers pass their own identity so "my pending proposal" means theirs. */
+    private readonly proposer: ProposerIdentity = { kind: "user", clientId: "web" },
   ) {}
+
+  /** Filter for the caller's own proposal rows. */
+  private mineFilter() {
+    const f: Record<string, string> = { proposer_kind: this.proposer.kind, client_id: this.proposer.clientId };
+    if (this.proposer.userId !== undefined) f.proposer_user_id = this.proposer.userId;
+    return f;
+  }
 
   async loadDoc(): Promise<string> {
     return (await this.readColumn("body")) ?? "";
@@ -47,16 +88,73 @@ export class SupabaseDocumentStore implements DocumentStore {
     await this.writeColumns({ canonical: content });
   }
 
-  async getProposed(): Promise<string | null> {
-    return this.readColumn("proposed");
+  async createProposal(input: ProposalInput): Promise<{ id: string }> {
+    const id = input.id ?? mintProposalId();
+    // Supersede the caller's OWN previous pending row when the id differs. Sequential statements
+    // rather than a transaction: the worst interleaving (a decision landing in between) leaves
+    // either a decided row — immutable below — or one extra superseded row, both benign; a
+    // proposer only races itself here (single live waiter per client).
+    await this.db.from("proposals").update({ state: "superseded" }).match({ doc_id: this.docId, state: "pending", ...this.mineFilter() }).neq("id", id);
+    // Converge-if-pending FIRST (a plain upsert would resurrect a decided row back to pending —
+    // terminal states are immutable). Zero rows updated + row exists ⇒ decided while we retried:
+    // the decision wins and the call converges as a no-op on that id.
+    const { data: updated, error: upErr } = await this.db
+      .from("proposals")
+      .update({ content: input.content, base_hash: input.baseHash, base_content: input.baseContent })
+      .match({ doc_id: this.docId, id, state: "pending" })
+      .select("id");
+    if (upErr) throw new Error(`createProposal failed: ${upErr.message}`);
+    if ((updated ?? []).length > 0) return { id };
+    if (await this.getProposal(id)) return { id }; // exists but not pending — terminal, immutable
+    const { error } = await this.db.from("proposals").insert({
+      id,
+      doc_id: this.docId,
+      proposer_kind: this.proposer.kind,
+      proposer_user_id: this.proposer.userId ?? null,
+      client_id: this.proposer.clientId,
+      content: input.content,
+      base_hash: input.baseHash,
+      base_content: input.baseContent,
+      state: "pending",
+    });
+    if (error) throw new Error(`createProposal failed: ${error.message}`);
+    return { id };
   }
 
-  async setProposed(content: string): Promise<void> {
-    await this.writeColumns({ proposed: content });
+  async myPendingProposal(): Promise<ProposalRow | null> {
+    const { data, error } = await this.db
+      .from("proposals")
+      .select("id, content, base_hash, base_content, state, created_at, decided_at")
+      .match({ doc_id: this.docId, state: "pending", ...this.mineFilter() })
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw new Error(`myPendingProposal failed: ${error.message}`);
+    return data ? toRow(data as DbProposalRow) : null;
   }
 
-  async clearProposed(): Promise<void> {
-    await this.writeColumns({ proposed: null });
+  async getProposal(id: string): Promise<ProposalRow | null> {
+    const { data, error } = await this.db
+      .from("proposals")
+      .select("id, content, base_hash, base_content, state, created_at, decided_at")
+      .match({ doc_id: this.docId, id })
+      .maybeSingle();
+    if (error) throw new Error(`getProposal failed: ${error.message}`);
+    return data ? toRow(data as DbProposalRow) : null;
+  }
+
+  async withdrawProposal(id: string): Promise<void> {
+    // State-guarded: only a pending row moves; a raced decision wins (terminal is immutable).
+    const { error } = await this.db.from("proposals").update({ state: "withdrawn" }).match({ doc_id: this.docId, id, state: "pending", ...this.mineFilter() });
+    if (error) throw new Error(`withdrawProposal failed: ${error.message}`);
+  }
+
+  async decideProposal(id: string, state: "accepted" | "partially_accepted" | "rejected"): Promise<void> {
+    const { error } = await this.db
+      .from("proposals")
+      .update({ state, decided_at: new Date().toISOString() })
+      .match({ doc_id: this.docId, id, state: "pending" });
+    if (error) throw new Error(`decideProposal failed: ${error.message}`);
   }
 
   async backup(content: string, meta?: VersionMeta): Promise<void> {

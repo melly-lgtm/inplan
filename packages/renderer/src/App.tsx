@@ -1301,7 +1301,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       } else {
         void hostApi().save(serialized, { kind: "apply", cadence }).then(() => setCheckpoint(serialized));
       }
-      void hostApi().clearProposal();
+      void hostApi().clearProposal(acceptedCount === accepted.length ? "accepted" : acceptedCount === 0 ? "rejected" : "partially_accepted");
       void hostApi().logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", { accepted: acceptedCount, total: accepted.length });
       setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`);
     },

@@ -296,8 +296,9 @@ export interface Api {
   closeWindow(): Promise<void>;
   /** Read the parked Review-mode proposal pending decision (null if none) — for durable re-show on launch. */
   getProposal(): Promise<string | null>;
-  /** Discard the parked proposal after the human accepts/rejects it. */
-  clearProposal(): Promise<void>;
+  /** Settle the parked proposal after the human decides. The outcome is recorded on the
+   *  proposal itself (proposals v1); omitted = legacy callers, treated as accepted. */
+  clearProposal(outcome?: "accepted" | "partially_accepted" | "rejected"): Promise<void>;
   /** A Review-mode proposal was parked by the agent this session — surface it for review. */
   onProposal(cb: (payload: { content: string }) => void): () => void;
   /**

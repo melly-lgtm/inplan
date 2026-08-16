@@ -128,7 +128,7 @@ const api: Api = {
   },
   closeWindow: () => ipcRenderer.invoke("window:close"),
   getProposal: () => ipcRenderer.invoke("proposal:get"),
-  clearProposal: () => ipcRenderer.invoke("proposal:clear"),
+  clearProposal: (outcome?: "accepted" | "partially_accepted" | "rejected") => ipcRenderer.invoke("proposal:clear", outcome),
   onProposal: (cb: (payload: { content: string }) => void) => {
     const h = (_e: unknown, payload: { content: string }): void => cb(payload);
     ipcRenderer.on("doc:proposal", h);

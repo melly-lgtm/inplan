@@ -528,8 +528,8 @@ function registerIpc(): void {
     win?.close();
   });
   ipcMain.handle("proposal:get", () => session?.pendingProposal() ?? null);
-  ipcMain.handle("proposal:clear", () => {
-    session?.clearProposal();
+  ipcMain.handle("proposal:clear", (_e, outcome?: "accepted" | "partially_accepted" | "rejected") => {
+    session?.clearProposal(outcome);
   });
   // New-doc actions (Create Doc / Move Text to New Doc): the renderer owns the body edit + the
   // (relative) link; main owns the location picker + the file write, both relative to the current

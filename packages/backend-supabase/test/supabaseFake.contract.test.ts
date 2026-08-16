@@ -19,7 +19,7 @@ type Row = Record<string, unknown>;
  *  adapters use: from().insert/upsert/update/select + eq/gt/order/single/maybeSingle,
  *  and channel().on().subscribe() / removeChannel() with INSERT notifications. */
 function makeFakeSupabase() {
-  const tables: Record<string, Row[]> = { events: [], cursors: [], locks: [], editor_presence: [], documents: [], doc_versions: [] };
+  const tables: Record<string, Row[]> = { events: [], cursors: [], locks: [], editor_presence: [], documents: [], doc_versions: [], proposals: [] };
   let seq = 0;
   const channels: Array<{ table: string | null; cb: (() => void) | null; subscribed: boolean }> = [];
 
@@ -30,6 +30,7 @@ function makeFakeSupabase() {
     private onConflict?: string;
     private wantSelect = false;
     private eqs: Array<[string, unknown]> = [];
+    private neqs: Array<[string, unknown]> = [];
     private gts: Array<[string, unknown]> = [];
     private ords: Array<{ col: string; asc: boolean }> = [];
     private lim?: number;
@@ -39,14 +40,16 @@ function makeFakeSupabase() {
     update(patch: Row) { this.op = "update"; this.patch = patch; return this; }
     select(_cols?: string) { this.wantSelect = true; return this; }
     eq(col: string, val: unknown) { this.eqs.push([col, val]); return this; }
+    match(filters: Row) { for (const [c, v] of Object.entries(filters)) this.eqs.push([c, v]); return this; }
+    neq(col: string, val: unknown) { this.neqs.push([col, val]); return this; }
     gt(col: string, val: unknown) { this.gts.push([col, val]); return this; }
     order(col: string, opts?: { ascending?: boolean }) { this.ords.push({ col, asc: opts?.ascending !== false }); return this; }
     limit(n: number) { this.lim = n; return this; }
     single() { const r = this.exec(); return Promise.resolve(r.error ? r : { data: (r.data as Row[])?.[0] ?? null, error: null }); }
     maybeSingle() { const r = this.exec(); return Promise.resolve({ data: (r.data as Row[])?.[0] ?? null, error: r.error }); }
     then<T>(resolve: (v: { data: unknown; error: unknown }) => T) { return Promise.resolve(this.exec()).then(resolve); }
-    private match(row: Row) {
-      return this.eqs.every(([c, v]) => row[c] === v) && this.gts.every(([c, v]) => (row[c] as number) > (v as number));
+    private rowMatches(row: Row) {
+      return this.eqs.every(([c, v]) => row[c] === v) && this.neqs.every(([c, v]) => row[c] !== v) && this.gts.every(([c, v]) => (row[c] as number) > (v as number));
     }
     private exec(): { data: unknown; error: unknown } {
       const t = tables[this.table]!;
@@ -54,6 +57,7 @@ function makeFakeSupabase() {
         const rows = (Array.isArray(this.payload) ? this.payload : [this.payload]).map((r) => {
           const row: Row = { ...r };
           if (this.table === "events") { row.seq = ++seq; row.ts = new Date().toISOString(); }
+          if (this.table === "proposals" && row.created_at === undefined) row.created_at = new Date().toISOString();
           return row;
         });
         t.push(...rows);
@@ -68,10 +72,11 @@ function makeFakeSupabase() {
         return { data: null, error: null };
       }
       if (this.op === "update") {
-        for (const row of t) if (this.match(row)) Object.assign(row, this.patch);
-        return { data: null, error: null };
+        const hit: Row[] = [];
+        for (const row of t) if (this.rowMatches(row)) { Object.assign(row, this.patch); hit.push(row); }
+        return { data: this.wantSelect ? hit : null, error: null };
       }
-      let rows = t.filter((r) => this.match(r));
+      let rows = t.filter((r) => this.rowMatches(r));
       if (this.ords.length) {
         // multi-column sort (priority order); generic compare so created_at (ISO strings) and
         // numeric ids/seq both order correctly.

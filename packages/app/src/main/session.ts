@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { appendLog, CONTROL_LOG_VERSION, FsControlChannel, type LogEntry, LogEventType, readGlobalSettings, readLog, writeGlobalSettings } from "@inplan/core/node";
+import { appendLog, CONTROL_LOG_VERSION, FsControlChannel, FsDocumentStore, type LogEntry, LogEventType, readGlobalSettings, readLog, writeGlobalSettings } from "@inplan/core/node";
 import type { Settings } from "@inplan/renderer";
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -137,9 +137,15 @@ export class Session {
     return existsSync(this.paths.proposedPath) ? readFileSync(this.paths.proposedPath, "utf8") : null;
   }
 
-  /** Discard the parked proposal once the human has accepted/rejected it. */
-  clearProposal(): void {
-    if (existsSync(this.paths.proposedPath)) unlinkSync(this.paths.proposedPath);
+  /** Settle the parked proposal once the human has decided — the outcome lands on the proposal
+   *  row (proposals v1); the derived proposedPath file is cleared by the store. Legacy fallback:
+   *  a stray content file with no row is simply removed. */
+  clearProposal(outcome: "accepted" | "partially_accepted" | "rejected" = "accepted"): void {
+    const store = new FsDocumentStore(this.paths);
+    void store.myPendingProposal().then(async (mine) => {
+      if (mine) await store.decideProposal(mine.id, outcome);
+      else if (existsSync(this.paths.proposedPath)) unlinkSync(this.paths.proposedPath);
+    });
   }
 
   /** Record why the session ended (logged at most once) so the agent's `wait` can report it. */

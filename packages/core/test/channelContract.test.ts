@@ -78,17 +78,53 @@ for (const [name, make] of Object.entries(BACKENDS)) {
     beforeEach(() => (b = make()));
     afterEach(() => b.cleanup());
 
-    it("round-trips doc, canonical, and proposed (null when absent)", async () => {
+    it("round-trips doc and canonical (null when absent)", async () => {
       expect(await b.store.getCanonical()).toBeNull();
-      expect(await b.store.getProposed()).toBeNull();
       await b.store.saveDoc("# body");
       await b.store.setCanonical("# canon");
-      await b.store.setProposed("# proposed");
       expect(await b.store.loadDoc()).toBe("# body");
       expect(await b.store.getCanonical()).toBe("# canon");
-      expect(await b.store.getProposed()).toBe("# proposed");
-      await b.store.clearProposed();
-      expect(await b.store.getProposed()).toBeNull();
+    });
+
+    it("parks a proposal and reads it back as the pending row, by id and as mine", async () => {
+      expect(await b.store.myPendingProposal()).toBeNull();
+      const { id } = await b.store.createProposal({ content: "# proposed", baseHash: "h1", baseContent: "# canon" });
+      const mine = await b.store.myPendingProposal();
+      expect(mine).toMatchObject({ id, content: "# proposed", baseHash: "h1", baseContent: "# canon", state: "pending" });
+      expect(await b.store.getProposal(id)).toMatchObject({ id, state: "pending" });
+    });
+
+    it("re-parking with the SAME id converges (idempotent retry), updating content and base", async () => {
+      const { id } = await b.store.createProposal({ id: "p-fixed", content: "v1", baseHash: "h1", baseContent: "c1" });
+      expect(id).toBe("p-fixed");
+      await b.store.createProposal({ id: "p-fixed", content: "v2", baseHash: "h2", baseContent: "c2" });
+      expect(await b.store.myPendingProposal()).toMatchObject({ id: "p-fixed", content: "v2", baseHash: "h2" });
+    });
+
+    it("a NEW id supersedes the caller's own previous pending proposal — history is kept", async () => {
+      const a = await b.store.createProposal({ content: "first", baseHash: "h", baseContent: "c" });
+      const c = await b.store.createProposal({ content: "second", baseHash: "h", baseContent: "c" });
+      expect(await b.store.myPendingProposal()).toMatchObject({ id: c.id, content: "second" });
+      expect(await b.store.getProposal(a.id)).toMatchObject({ state: "superseded", content: "first" });
+    });
+
+    it("deciding a pending proposal is terminal — later decisions, withdraws, and re-parks are no-ops on it", async () => {
+      const { id } = await b.store.createProposal({ content: "v1", baseHash: "h", baseContent: "c" });
+      await b.store.decideProposal(id, "accepted");
+      expect(await b.store.getProposal(id)).toMatchObject({ state: "accepted" });
+      expect((await b.store.getProposal(id))?.decidedAt).toBeTruthy();
+      await b.store.decideProposal(id, "rejected"); // immutable
+      await b.store.withdrawProposal(id); // immutable
+      await b.store.createProposal({ id, content: "sneaky rewrite", baseHash: "h2", baseContent: "c2" });
+      expect(await b.store.getProposal(id)).toMatchObject({ state: "accepted", content: "v1" });
+      expect(await b.store.myPendingProposal()).toBeNull(); // the decided row never reappears as pending
+    });
+
+    it("withdraw retracts the caller's own pending proposal", async () => {
+      const { id } = await b.store.createProposal({ content: "v1", baseHash: "h", baseContent: "c" });
+      await b.store.withdrawProposal(id);
+      expect(await b.store.getProposal(id)).toMatchObject({ state: "withdrawn" });
+      expect(await b.store.myPendingProposal()).toBeNull();
     });
   });
 }

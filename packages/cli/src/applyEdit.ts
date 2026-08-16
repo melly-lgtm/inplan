@@ -36,7 +36,7 @@ export async function applyGatedEdit(
     else {
       await store.saveDoc(ev.acceptedText);
       await store.setCanonical(ev.acceptedText);
-      await store.clearProposed();
+      await withdrawOwnPending(store);
     }
     await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { removed: ev.removedIds } });
   } else if (ev.changed && quarantine) {
@@ -44,15 +44,16 @@ export async function applyGatedEdit(
     // sidecar is file-based either way; on the file path also revert the working file to canonical
     // (the human's accept later writes canonical). On the plugin path the plugin owns the working
     // doc, so there's no .md to revert.
+    let proposalId: string;
     try {
-      await store.setProposed(current);
+      ({ id: proposalId } = await store.createProposal({ content: current, baseHash: hashBody(canonicalText), baseContent: canonicalText }));
     } catch {
       // The push failed, so nothing is proposed anywhere: keep the working copy as the ONLY copy
       // (skipping the revert below — reverting would destroy the edit silently), log no event,
       // and let the caller report the degradation. The next run re-detects the divergence and
       // retries the park idempotently.
       //
-      // CONTRACT for composite stores: a `setProposed` rejection must mean NOTHING was committed.
+      // CONTRACT for composite stores: a `createProposal` rejection must mean NOTHING was committed.
       // A store that pushes remotely and then persists locally (runRemote's gateStore) must
       // contain its post-commit failures itself — the cloud proposal is live and the human can
       // see it, so surfacing that partial failure here would misreport a real park as a failed
@@ -78,7 +79,7 @@ export async function applyGatedEdit(
         type: LogEventType.AgentRevisionProposed,
         // The hash identifies WHICH proposal this event parked, so a later resolution can bind
         // decision events to this exact proposal (not merely the doc's latest park).
-        payload: { bytes: utf8Bytes(current), hash: hashBody(current) },
+        payload: { bytes: utf8Bytes(current), hash: hashBody(current), proposal_id: proposalId },
       });
     } catch {
       // The park stands without its event; resolution falls back to its lesser anchors, which is
@@ -94,9 +95,15 @@ export async function applyGatedEdit(
     if (gate) await gate.applyRevision(current);
     else {
       await store.setCanonical(current);
-      await store.clearProposed();
+      await withdrawOwnPending(store);
     }
     await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: utf8Bytes(current) } });
   }
   return { proposed: false };
+}
+
+/** An edit that lands directly moots the caller's own parked proposal, if any — retract it. */
+async function withdrawOwnPending(store: DocumentStore): Promise<void> {
+  const mine = await store.myPendingProposal();
+  if (mine) await store.withdrawProposal(mine.id);
 }

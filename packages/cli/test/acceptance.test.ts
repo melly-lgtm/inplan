@@ -27,6 +27,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** The caller-visible pending proposal content (proposals v1 surface). */
+async function proposedContent(store: { myPendingProposal(): Promise<{ content: string } | null> }): Promise<string | null> {
+  return (await store.myPendingProposal())?.content ?? null;
+}
+
 const globalAuto = () => writeFileSync(join(home, "settings.json"), JSON.stringify({ acceptance: "auto" }));
 
 let seq = 0;
@@ -104,7 +109,7 @@ describe("the bypass, end to end through waitCycle", () => {
       await expect(run).resolves.toBe("ok");
 
       expect(gate.applyRevision).not.toHaveBeenCalled(); // no direct canonical write — the gate held
-      expect(await store.getProposed()).toBe(DOC_B); // the edit is parked for the human
+      expect(await proposedContent(store)).toBe(DOC_B); // the edit is parked for the human
     } finally {
       so.mockRestore();
       se.mockRestore();

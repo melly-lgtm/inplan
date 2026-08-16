@@ -433,9 +433,11 @@ export function liveRemoteBackend(docId: string, consumerId = "cli-agent"): Live
     saveDoc: async (c) => (await need()).store.saveDoc(c),
     getCanonical: async () => (await need()).store.getCanonical(),
     setCanonical: async (c) => (await need()).store.setCanonical(c),
-    getProposed: async () => (await need()).store.getProposed(),
-    setProposed: async (c) => (await need()).store.setProposed(c),
-    clearProposed: async () => (await need()).store.clearProposed(),
+    createProposal: async (i) => (await need()).store.createProposal(i),
+    myPendingProposal: async () => (await need()).store.myPendingProposal(),
+    getProposal: async (id) => (await need()).store.getProposal(id),
+    withdrawProposal: async (id) => (await need()).store.withdrawProposal(id),
+    decideProposal: async (id, st) => (await need()).store.decideProposal(id, st),
     backup: async (c, m) => (await need()).store.backup(c, m),
   };
   return { channel, store, tokenNow: () => inner?.token ?? null };

@@ -6,6 +6,11 @@ import { applyGatedEdit } from "../src/applyEdit";
 import type { AgentEditEvaluation } from "../src/gate";
 import type { PluginGate } from "../src/pluginGate";
 
+/** The caller-visible pending proposal content (proposals v1 surface). */
+async function proposedContent(store: { myPendingProposal(): Promise<{ content: string } | null> }): Promise<string | null> {
+  return (await store.myPendingProposal())?.content ?? null;
+}
+
 const ev = (over: Partial<AgentEditEvaluation> = {}): AgentEditEvaluation => ({
   integrityOk: true,
   integrityErrors: [],
@@ -39,7 +44,7 @@ describe("applyGatedEdit — file path (no plugin)", () => {
     const channel = new MemoryControlChannel();
     const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "agent body", canonicalText: "canon", quarantine: true, gate: null });
     expect(applied.proposed).toBe(true); // the caller surfaces the park (#88)
-    expect(await store.getProposed()).toBe("agent body");
+    expect(await proposedContent(store)).toBe("agent body");
     expect(await store.loadDoc()).toBe("canon"); // working file reverted to canonical
     expect(await types(channel)).toEqual([LogEventType.AgentRevisionProposed]);
   });
@@ -57,7 +62,7 @@ describe("applyGatedEdit — file path (no plugin)", () => {
     // A crashed park used to reject all the way out of waitCycle — no status, no marker — and a
     // continued turn would have re-synced the working copy over the ONLY copy of the edit.
     const store = new MemoryDocumentStore("agent body");
-    store.setProposed = async () => {
+    store.createProposal = async () => {
       throw new Error("hub down");
     };
     const channel = new MemoryControlChannel();
@@ -78,7 +83,7 @@ describe("applyGatedEdit — file path (no plugin)", () => {
     const channel = new MemoryControlChannel();
     const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "agent body", canonicalText: "canon", quarantine: true, gate: null });
     expect(applied).toEqual({ proposed: true });
-    expect(await store.getProposed()).toBe("agent body");
+    expect(await proposedContent(store)).toBe("agent body");
     expect(await store.loadDoc()).toBe("agent body"); // revert failed — edit stays put
     expect(await types(channel)).toEqual([LogEventType.AgentRevisionProposed]); // the park is logged
   });
@@ -91,7 +96,7 @@ describe("applyGatedEdit — file path (no plugin)", () => {
     };
     const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "agent body", canonicalText: "canon", quarantine: true, gate: null });
     expect(applied).toEqual({ proposed: true, eventLogged: false }); // no crash, no false failure — and the missing event is reported
-    expect(await store.getProposed()).toBe("agent body");
+    expect(await proposedContent(store)).toBe("agent body");
     expect(await store.loadDoc()).toBe("canon"); // the revert did run
   });
 
@@ -132,7 +137,7 @@ describe("applyGatedEdit — plugin path (a plugin gate is connected)", () => {
     const gate = fakeGate();
     const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "agent body", canonicalText: "canon", quarantine: true, gate });
     expect(applied.proposed).toBe(true);
-    expect(await store.getProposed()).toBe("agent body");
+    expect(await proposedContent(store)).toBe("agent body");
     expect(await store.loadDoc()).toBe("agent body"); // NOT reverted to canon
     expect(gate.applyRevision).not.toHaveBeenCalled();
     expect(await types(channel)).toEqual([LogEventType.AgentRevisionProposed]);

@@ -12,6 +12,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   unlinkSync,
   unwatchFile,
   watch,
@@ -19,7 +20,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { ControlChannel, DocumentStore, WaitToken } from "./channel";
+import type { ControlChannel, DocumentStore, ProposalInput, ProposalRow, WaitToken } from "./channel";
+import { mintProposalId } from "./channel";
 import { LogEventType, type LogEntry, type NewLogEntry } from "./controlLog";
 import { appendLog, readLog, readLogIncrement } from "./controlLogFs";
 
@@ -163,17 +165,78 @@ export class FsDocumentStore implements DocumentStore {
     return Promise.resolve();
   }
 
-  getProposed(): Promise<string | null> {
-    return Promise.resolve(this.readOrNull(this.paths.proposedPath));
+  // Proposal rows live in a JSON file beside the other sidecars; `proposedPath` stays as a
+  // derived copy of the CURRENT pending content (readable at a glance, and what pre-rows code
+  // wrote). A single local proposer, so "mine" is unqualified.
+  private proposalsPath(): string {
+    return `${this.paths.proposedPath}.rows.json`;
   }
 
-  setProposed(content: string): Promise<void> {
-    writeFileSync(this.paths.proposedPath, content);
+  private readRows(): ProposalRow[] {
+    const raw = this.readOrNull(this.proposalsPath());
+    if (raw === null) return [];
+    try {
+      const rows = JSON.parse(raw) as ProposalRow[];
+      return Array.isArray(rows) ? rows : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private writeRows(rows: ProposalRow[]): void {
+    // Atomic publish (tmp + rename), then refresh the derived pending-content file.
+    const tmp = `${this.proposalsPath()}.tmp`;
+    writeFileSync(tmp, JSON.stringify(rows, null, 2));
+    renameSync(tmp, this.proposalsPath());
+    const pending = rows.find((r) => r.state === "pending");
+    try {
+      if (pending) writeFileSync(this.paths.proposedPath, pending.content);
+      else if (existsSync(this.paths.proposedPath)) unlinkSync(this.paths.proposedPath);
+    } catch {
+      /* derived copy only */
+    }
+  }
+
+  createProposal(input: ProposalInput): Promise<{ id: string }> {
+    const rows = this.readRows();
+    const id = input.id ?? mintProposalId();
+    const existing = rows.find((r) => r.id === id);
+    if (existing) {
+      if (existing.state === "pending") Object.assign(existing, { content: input.content, baseHash: input.baseHash, baseContent: input.baseContent });
+    } else {
+      for (const r of rows) if (r.state === "pending") r.state = "superseded";
+      rows.push({ id, content: input.content, baseHash: input.baseHash, baseContent: input.baseContent, state: "pending", createdAt: new Date().toISOString() });
+    }
+    this.writeRows(rows);
+    return Promise.resolve({ id });
+  }
+
+  myPendingProposal(): Promise<ProposalRow | null> {
+    return Promise.resolve(this.readRows().find((r) => r.state === "pending") ?? null);
+  }
+
+  getProposal(id: string): Promise<ProposalRow | null> {
+    return Promise.resolve(this.readRows().find((r) => r.id === id) ?? null);
+  }
+
+  withdrawProposal(id: string): Promise<void> {
+    const rows = this.readRows();
+    const r = rows.find((x) => x.id === id);
+    if (r && r.state === "pending") {
+      r.state = "withdrawn";
+      this.writeRows(rows);
+    }
     return Promise.resolve();
   }
 
-  clearProposed(): Promise<void> {
-    if (existsSync(this.paths.proposedPath)) unlinkSync(this.paths.proposedPath);
+  decideProposal(id: string, state: "accepted" | "partially_accepted" | "rejected"): Promise<void> {
+    const rows = this.readRows();
+    const r = rows.find((x) => x.id === id);
+    if (r && r.state === "pending") {
+      r.state = state;
+      r.decidedAt = new Date().toISOString();
+      this.writeRows(rows);
+    }
     return Promise.resolve();
   }
 

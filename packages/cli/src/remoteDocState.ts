@@ -218,10 +218,10 @@ export class RemoteDocState {
    * so no record is ever silently lost; re-parking identical content keeps the existing pending
    * identity (same proposal, re-pushed) instead of minting a new one.
    */
-  parkProposal(text: string, at: Date = new Date()): ProposalRecord {
+  parkProposal(text: string, at: Date = new Date(), id?: string): ProposalRecord {
     const prior = this.pendingProposal();
     const hash = hashBody(text);
-    if (prior && prior.hash === hash) {
+    if (prior && prior.hash === hash && (id === undefined || id === prior.id)) {
       // Same proposal, re-pushed. A stale awaiting-outcome marker must not survive the re-push:
       // the slot is live again, so a later slot-clear deserves the full grace before degrading
       // to 'decided', not an immediate finalization off the old sighting.
@@ -235,7 +235,9 @@ export class RemoteDocState {
     }
     if (prior) this.finalize(prior, "superseded");
     const record: ProposalRecord = {
-      id: `${at.getTime().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      // The id is the CLOUD row's id when the caller passes one (proposals v1 — one identity end
+      // to end); minted locally only for offline/desktop parks.
+      id: id ?? `${at.getTime().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       docId: this.docId,
       hash,
       bytes: utf8Bytes(text),

@@ -92,13 +92,26 @@ export function runDocumentStoreContract(name: string, makeStore: Make<DocumentS
       expect(await s.getCanonical()).toBe("base");
     });
 
-    it("a proposed revision can be parked, read, and cleared", async () => {
+    it("a proposal can be parked, read back (mine + by id), superseded by a re-park, and decided terminally", async () => {
       const s = await makeStore();
-      expect(await s.getProposed()).toBeNull();
-      await s.setProposed("proposal");
-      expect(await s.getProposed()).toBe("proposal");
-      await s.clearProposed();
-      expect(await s.getProposed()).toBeNull();
+      expect(await s.myPendingProposal()).toBeNull();
+      const a = await s.createProposal({ content: "proposal", baseHash: "h", baseContent: "base" });
+      expect(await s.myPendingProposal()).toMatchObject({ id: a.id, content: "proposal", state: "pending" });
+      // Same id converges (idempotent retry).
+      await s.createProposal({ id: a.id, content: "proposal v2", baseHash: "h2", baseContent: "base" });
+      expect(await s.getProposal(a.id)).toMatchObject({ content: "proposal v2", state: "pending" });
+      // A new id supersedes the caller's own pending row.
+      const b = await s.createProposal({ content: "successor", baseHash: "h2", baseContent: "base" });
+      expect(await s.getProposal(a.id)).toMatchObject({ state: "superseded" });
+      // Deciding is terminal — a later re-park with the same id cannot resurrect it.
+      await s.decideProposal(b.id, "rejected");
+      await s.createProposal({ id: b.id, content: "sneaky", baseHash: "h3", baseContent: "base" });
+      expect(await s.getProposal(b.id)).toMatchObject({ state: "rejected", content: "successor" });
+      expect(await s.myPendingProposal()).toBeNull();
+      // Withdraw retracts a pending row.
+      const c = await s.createProposal({ content: "third", baseHash: "h3", baseContent: "base" });
+      await s.withdrawProposal(c.id);
+      expect(await s.getProposal(c.id)).toMatchObject({ state: "withdrawn" });
     });
 
     it("backup does not disturb the working document", async () => {

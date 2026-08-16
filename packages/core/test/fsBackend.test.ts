@@ -82,18 +82,20 @@ describe("FsControlChannel", () => {
 });
 
 describe("FsDocumentStore", () => {
-  it("round-trips doc, canonical, and proposed (null when absent)", async () => {
+  it("round-trips doc and canonical; a parked proposal survives a NEW STORE INSTANCE (durability)", async () => {
     const store = new FsDocumentStore(paths);
     expect(await store.getCanonical()).toBeNull();
-    expect(await store.getProposed()).toBeNull();
     await store.saveDoc("# body");
     await store.setCanonical("# canon");
-    await store.setProposed("# proposed");
+    const { id } = await store.createProposal({ content: "# proposed", baseHash: "h", baseContent: "# canon" });
     expect(await store.loadDoc()).toBe("# body");
     expect(await store.getCanonical()).toBe("# canon");
-    expect(await store.getProposed()).toBe("# proposed");
-    await store.clearProposed();
-    expect(await store.getProposed()).toBeNull();
+    // The rows persist on disk — a fresh instance (a later process) sees the same state.
+    const reopened = new FsDocumentStore(paths);
+    expect(await reopened.myPendingProposal()).toMatchObject({ id, content: "# proposed", state: "pending" });
+    await reopened.decideProposal(id, "rejected");
+    expect(await new FsDocumentStore(paths).getProposal(id)).toMatchObject({ state: "rejected" });
+    expect(await new FsDocumentStore(paths).myPendingProposal()).toBeNull();
   });
 
   it("caps autosave backups at the retention limit", async () => {

@@ -1203,7 +1203,8 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     // an identical working copy is a deliberate re-edit (an agent may legitimately re-propose
     // byte-identical content after a rejection), and overwriting it would destroy real work.
     let justFinalized = false;
-    const slot = await live.store.getProposed().catch(() => undefined);
+    const slotRow = await live.store.myPendingProposal().catch(() => undefined);
+    const slot = slotRow === undefined ? undefined : (slotRow?.content ?? null);
     if (typeof slot === "string" && needsReparkFromSlot(rds.latestProposal(), slot)) {
       try {
         // A pending record the slot no longer matches was DISPLACED while we were away — but not
@@ -1295,26 +1296,32 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       getCanonical: () => localStore.getCanonical(),
       setCanonical: (c) => localStore.setCanonical(c),
       backup: (c, m) => localStore.backup(c, m),
-      getProposed: () => live.store.getProposed(),
-      setProposed: async (c) => {
-        // Only a failed PUSH is a failed park (the edit's sole copy stays local; the post-turn
-        // path must keep-local). A failed local record write after a confirmed push is NOT — the
-        // proposal is live in the cloud, the human can already see it, and the record is
-        // reconciled from the slot at the next attach; masquerading it as a failed push would
-        // deny a park that actually happened.
+      myPendingProposal: () => live.store.myPendingProposal(),
+      getProposal: (id) => live.store.getProposal(id),
+      withdrawProposal: (id) => live.store.withdrawProposal(id),
+      decideProposal: (id, st) => live.store.decideProposal(id, st),
+      createProposal: async (input) => {
+        // Re-parking identical content reuses the LOCAL record's id, so a retry after a lost
+        // response converges on the same row (client-generated-id idempotency). Only a failed
+        // PUSH is a failed park (the edit's sole copy stays local; the post-turn path must
+        // keep-local). A failed local record write after a confirmed push is NOT — the proposal
+        // is live in the cloud, and the record is reconciled from it at the next attach.
+        const prior = rds.pendingProposal();
+        const id = input.id ?? (prior && prior.hash === hashBody(input.content) ? prior.id : undefined);
+        let created: { id: string };
         try {
-          await live.store.setProposed(c);
+          created = await live.store.createProposal({ ...input, ...(id ? { id } : {}) });
         } catch (e) {
           hubParkFailed = true;
           throw e;
         }
         try {
-          rds.parkProposal(c);
+          rds.parkProposal(input.content, undefined, created.id);
         } catch (e) {
           process.stderr.write(`inplan: could not write the local proposal record (${String(e)}); the proposal is live in the cloud and the record will be reconciled on the next run\n`);
         }
+        return created;
       },
-      clearProposed: () => live.store.clearProposed(),
     };
     // Save-local handoff on the gate path reads the HUB canonical (the source of truth here);
     // live.store isn't updated by gate.applyRevision, so reading it would write a stale doc. If

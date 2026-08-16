@@ -16,7 +16,7 @@ describe("createMemoryApi", () => {
     let surfaced: string | null = null;
     api.onProposal((p) => (surfaced = p.content));
 
-    agent.proposeRevision("# Plan\n\nnew");
+    await agent.proposeRevision("# Plan\n\nnew");
     expect(surfaced).toBe("# Plan\n\nnew"); // onProposal fired with the proposed content
     expect(await api.getProposal()).toBe("# Plan\n\nnew"); // durable, re-readable
 
