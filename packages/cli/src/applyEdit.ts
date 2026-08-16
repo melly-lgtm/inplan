@@ -51,6 +51,13 @@ export async function applyGatedEdit(
       // (skipping the revert below — reverting would destroy the edit silently), log no event,
       // and let the caller report the degradation. The next run re-detects the divergence and
       // retries the park idempotently.
+      //
+      // CONTRACT for composite stores: a `setProposed` rejection must mean NOTHING was committed.
+      // A store that pushes remotely and then persists locally (runRemote's gateStore) must
+      // contain its post-commit failures itself — the cloud proposal is live and the human can
+      // see it, so surfacing that partial failure here would misreport a real park as a failed
+      // push. The gateStore does exactly that: it swallows the local record-write failure and
+      // relies on slot reconciliation at the next attach.
       return { proposed: false, parkFailed: true };
     }
     // From here the park is REAL — the store holds the proposal (and on the remote path the
