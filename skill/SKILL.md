@@ -97,10 +97,10 @@ How to audit "did my edit land?", in order:
 3. A later wait's `entries` may also carry the decision itself: `revision_accepted_all`,
    `revision_hunk_accepted`, or `revision_rejected_all`.
 
-If the park itself fails (stderr says the proposal push FAILED), there is no
-`agent_revision_proposed` event and no `pending_review` record — your edit stays in the
-working copy, and the next `wait` run re-detects the divergence and retries the park. Do not
-re-create the edit; just re-run.
+If the park itself fails, the wait JSON carries `proposal: { state: "park_failed", bytes,
+hash }` (and stderr says the push FAILED) — there is no `agent_revision_proposed` event and
+no `pending_review` record; your edit stays in the working copy, and the next `wait` run
+re-detects the divergence and retries the park. Do not re-create the edit; just re-run.
 
 Two things are **normal and must never be read as data loss**: after a healthy turn the
 working copy is re-synced to the current canonical (so your parked edit is no longer in it —

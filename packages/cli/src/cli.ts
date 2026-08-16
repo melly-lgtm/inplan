@@ -39,7 +39,7 @@ import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenceReason, type PluginGate } from "./pluginGate";
 import { demoteSource, shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
-import { RemoteDocState, needsReparkFromSlot, resolutionFromEvents, utf8Bytes, type ProposalOutcome } from "./remoteDocState";
+import { RemoteDocState, isDecidedProposalCorpse, needsReparkFromSlot, resolutionFromEvents, utf8Bytes, type ProposalOutcome } from "./remoteDocState";
 import { announcePresence, presenceTokenResolver } from "./presence";
 import { awaitReopen, wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
@@ -341,7 +341,7 @@ export interface WaitBackend {
    *  and that event wakes the wait, this runs instead of the normal status output
    *  and is responsible for emitting its own result — including the turn's landing
    *  signal, passed through `info`, so the handoff can't hide a parked proposal. */
-  onSaveLocally?: (info: { proposal?: { state: "pending_review"; bytes: number; hash: string } }) => Promise<void>;
+  onSaveLocally?: (info: { proposal?: { state: "pending_review" | "park_failed"; bytes: number; hash: string } }) => Promise<void>;
 }
 
 /** Local sidecar-file backend for a document on disk. */
@@ -446,14 +446,26 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
   }
   // Rides every terminal output below, so the agent sees the park no matter how the wait ends —
   // including wait_failed and superseded, where mistaking a parked edit for a failed sync is
-  // exactly the misread this field exists to prevent.
-  const proposalOut: { proposal?: { state: "pending_review"; bytes: number; hash: string } } = applied.proposed
+  // exactly the misread this field exists to prevent. A FAILED park is machine-readable too
+  // (state "park_failed"): an agent parsing only the JSON must never read a failed push as a
+  // no-change turn — stderr alone is not a signal contract.
+  const proposalOut: { proposal?: { state: "pending_review" | "park_failed"; bytes: number; hash: string } } = applied.proposed
     ? { proposal: { state: "pending_review", bytes: utf8Bytes(current), hash: hashBody(current) } }
-    : {};
+    : applied.parkFailed
+      ? { proposal: { state: "park_failed", bytes: utf8Bytes(current), hash: hashBody(current) } }
+      : {};
 
   // Signal the agent has (re)engaged this round so the editor can clear its
-  // "Agent is thinking…" indicator even when the agent made no body change.
-  await channel.append({ actor: "agent", type: LogEventType.AgentRevised });
+  // "Agent is thinking…" indicator even when the agent made no body change. Guarded: with the
+  // control log write-degraded (the same outage that just swallowed a park event), an unguarded
+  // append here crashed the whole wait with NO status — the one exit that must never happen once
+  // proposalOut is carrying the landing signal. The wait itself may still work (reads can be
+  // healthy while writes fail), and if it doesn't, wait_failed reports with proposalOut attached.
+  try {
+    await channel.append({ actor: "agent", type: LogEventType.AgentRevised });
+  } catch {
+    process.stderr.write("inplan: could not log the turn marker (control log write failed) — the editor may keep showing 'Agent is thinking' until it reloads.\n");
+  }
 
   // ── Everything below only READS, WAITS, and REPORTS. ──────────────────────────────────────────
   //
@@ -1205,6 +1217,16 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       }
     }
 
+    // A working copy equal to a DECIDED proposal's text is not "unsynced agent edits" — the
+    // post-turn re-sync died before running, and the human has since decided. Restore canonical
+    // (the decision stands, whichever way it went); keeping the copy would quarantine it again
+    // next turn and re-park a proposal the human may have just rejected. Skip when a replay is
+    // pending — that marker means the copy holds an unpushed direct edit, not a proposal corpse.
+    if (!rds.replayPending() && isDecidedProposalCorpse(rds.latestProposal(), rds.readWorkFile())) {
+      rds.writeWorkFile(canonical);
+      rds.recordSynced(canonical);
+    }
+
     // Decide whether to (re)hydrate the working copy from the freshly probed canonical. Seed if
     // absent; keep it if a local fallback edit is pending (must push first); otherwise refresh it
     // ONLY when the agent hasn't touched it since our last sync (hash match) — so we pull the
@@ -1255,7 +1277,7 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     // live.store isn't updated by gate.applyRevision, so reading it would write a stale doc. If
     // the hub read fails we throw BEFORE writing status, so the doc isn't switched to local.
     const onSaveLocallyGate = localFile
-      ? async (info: { proposal?: { state: "pending_review"; bytes: number; hash: string } }) => {
+      ? async (info: { proposal?: { state: "pending_review" | "park_failed"; bytes: number; hash: string } }) => {
           const body = await gate.readCanonical();
           writeFileSync(localFile, body);
           writeStatus(docPaths(localFile).statusPath, { location: "local", originalPath: localFile, lastSyncedHash: hashBody(body) });

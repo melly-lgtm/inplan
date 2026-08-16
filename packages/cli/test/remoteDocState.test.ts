@@ -10,7 +10,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LogEventType, hashBody, type LogEntry } from "@inplan/core/node";
-import { RemoteDocState, needsReparkFromSlot, resolutionFromEvents, utf8Bytes } from "../src/remoteDocState";
+import { RemoteDocState, isDecidedProposalCorpse, needsReparkFromSlot, resolutionFromEvents, utf8Bytes } from "../src/remoteDocState";
 import { shouldHydrateWorkFile } from "../src/liveSync";
 
 let dir: string;
@@ -297,6 +297,27 @@ describe("park / audit / resolve", () => {
     const { text: _text, ...record } = good;
     expect(s.latestProposal()).toEqual(record);
     expect(s.proposedText()).toBe("abc");
+  });
+});
+
+describe("isDecidedProposalCorpse — the working copy after a park-then-crash-then-decision", () => {
+  it("a working copy equal to a DECIDED record's text is the corpse — restore canonical, don't re-park", () => {
+    s.parkProposal("rejected content");
+    const rejected = s.resolveProposal("rejected")!;
+    expect(isDecidedProposalCorpse(rejected, "rejected content")).toBe(true);
+  });
+
+  it("a PENDING record's matching copy is not a corpse — the proposal is live", () => {
+    const pending = s.parkProposal("live content");
+    expect(isDecidedProposalCorpse(pending, "live content")).toBe(false);
+  });
+
+  it("diverged content is real agent work, never a corpse", () => {
+    s.parkProposal("decided content");
+    const decided = s.resolveProposal("accepted")!;
+    expect(isDecidedProposalCorpse(decided, "something the agent typed since")).toBe(false);
+    expect(isDecidedProposalCorpse(decided, null)).toBe(false);
+    expect(isDecidedProposalCorpse(null, "anything")).toBe(false);
   });
 });
 

@@ -215,6 +215,36 @@ describe("waitCycle resume is a loop, not a re-entry", () => {
     }
   });
 
+  it("a FAILED park is machine-readable (proposal.state park_failed) and survives a write-dead control log", async () => {
+    // Two failures at once — the push rejects AND every agent-side log append fails (the same
+    // outage). Previously the unguarded turn-marker append crashed the wait with NO status; now
+    // the wait completes and the JSON says exactly what happened, so an agent parsing only the
+    // output (stderr discarded) can never read a failed push as a no-change turn.
+    const h = harness(DOC_B);
+    h.store.setProposed = async () => {
+      throw new Error("hub down");
+    };
+    const origAppend = h.channel.append.bind(h.channel);
+    h.channel.append = async (e: Parameters<typeof origAppend>[0]) => {
+      if (e.actor === "agent") throw new Error("log write denied");
+      return origAppend(e);
+    };
+    const gate = { readCanonical: async () => DOC_A, applyRevision: async () => {} };
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, gate);
+      await waitUntil(async () => h.stderr().includes("FAILED")); // the park failure was reported → turn processing done
+      await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
+      await expect(run).resolves.toBe("ok");
+
+      const last = h.lastJson() as ReturnType<typeof h.lastJson> & { proposal?: { state: string; hash: string } };
+      expect(last.status).toBe("your_turn");
+      expect(last.proposal).toMatchObject({ state: "park_failed", hash: hashBody(DOC_B) });
+      expect(await h.store.getProposed()).toBeNull(); // nothing landed anywhere
+    } finally {
+      h.restore();
+    }
+  });
+
   it("no `proposal` key when the turn made no body change", async () => {
     const h = harness(DOC_A);
     try {

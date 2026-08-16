@@ -129,6 +129,18 @@ export function needsReparkFromSlot(latest: ProposalRecord | null, slotText: str
   return latest === null || latest.state !== "pending_review" || latest.hash !== hashBody(slotText);
 }
 
+/**
+ * Whether the working copy is the CORPSE of a decided proposal: its content equals a terminal
+ * record's text (the post-turn re-sync never ran before the process died). Hydration normally
+ * protects a diverged working copy as "unsynced agent edits" — but this copy is not an edit to
+ * preserve, it is content the human already decided; keeping it would make the next turn re-park
+ * a rejected proposal. The caller restores canonical instead (the decision stands).
+ */
+export function isDecidedProposalCorpse(latest: ProposalRecord | null, currentContent: string | null): boolean {
+  if (!latest || latest.state === "pending_review" || currentContent === null) return false;
+  return hashBody(currentContent) === latest.hash;
+}
+
 export class RemoteDocState {
   /** Marker: a local fallback edit awaits a hub push (public — liveSync's replay decision reads it). */
   readonly pendingPath: string;
