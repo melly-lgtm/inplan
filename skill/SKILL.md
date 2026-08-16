@@ -91,9 +91,10 @@ How to audit "did my edit land?", in order:
    `decided` when history is readable but no usable outcome event can be recovered — a
    transient history-read failure instead leaves the record pending and retries next run), and
    `superseded` when a newer proposal of yours replaced it — the newest record is the
-   authoritative one. The exact text you pushed
-   is kept next to it in `<workingCopy>.proposed.md`, and every finalized record is appended to
-   `<workingCopy>.proposals.jsonl`.
+   authoritative one. The exact text you pushed is embedded in the record itself (its `text`
+   field — audit from there); `<workingCopy>.proposed.md` is only a derived, read-convenience
+   copy that can be missing or stale until the next run reconciles it. Every finalized record
+   is appended to `<workingCopy>.proposals.jsonl`.
 3. A later wait's `entries` may also carry the decision itself: `revision_accepted_all`,
    `revision_hunk_accepted`, or `revision_rejected_all`.
 
