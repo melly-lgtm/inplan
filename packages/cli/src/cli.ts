@@ -1340,7 +1340,10 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
           // an unconfirmed park (park_failed means exactly that), never a claimed pending_review.
           if (id) {
             const row = await live.store.getProposal(created.id);
-            if (row && row.state !== "pending") {
+            // A row we cannot read back is an UNVERIFIED identity — publishing a local pending
+            // record under it would claim a landing nothing confirms. Unconfirmed = park_failed.
+            if (!row) throw new Error(`park verification found no row for reused id ${created.id}`);
+            if (row.state !== "pending") {
               if (rds.pendingProposal()?.id === created.id) rds.resolveProposal(row.state);
               // Fresh id — a genuine successor. Strip any caller-supplied id: passing input
               // unchanged would reuse the very terminal id we just detected, returning it
