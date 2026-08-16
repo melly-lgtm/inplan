@@ -283,9 +283,10 @@ export class FsDocumentStore implements DocumentStore {
     }
   }
 
-  createProposal(input: ProposalInput): Promise<{ id: string }> {
-    return Promise.resolve(
-      this.withRowsLock(() => {
+  async createProposal(input: ProposalInput): Promise<{ id: string }> {
+    // async so a sync throw (lock contention, unpreservable corruption) REJECTS as the interface
+    // promises, instead of escaping a caller that chained .catch() without awaiting.
+    return this.withRowsLock(() => {
         const rows = this.readRowsAdoptingLegacy();
         // Identical content with no explicit id re-parks the SAME proposal (a retry, not a
         // successor): minting a fresh id would supersede the original identity on every retry.
@@ -300,8 +301,7 @@ export class FsDocumentStore implements DocumentStore {
         }
         this.writeRows(rows);
         return { id };
-      }),
-    );
+      });
   }
 
   /** Rows, adopting a legacy pre-rows sidecar exactly once: a `proposedPath` content file with no
@@ -315,25 +315,23 @@ export class FsDocumentStore implements DocumentStore {
     return [{ id: mintProposalId(), content: legacy, baseHash: "", baseContent: "", state: "pending", createdAt: new Date().toISOString() }];
   }
 
-  myPendingProposal(): Promise<ProposalRow | null> {
-    return Promise.resolve(
-      this.withRowsLock(() => {
+  async myPendingProposal(): Promise<ProposalRow | null> {
+    return this.withRowsLock(() => {
         const rows = this.readRowsAdoptingLegacy();
         const pending = rows.find((r) => r.state === "pending") ?? null;
         // Persist an adoption so the minted identity is stable across calls.
         if (pending && !this.hasProposalHistory()) this.writeRows(rows);
         return pending;
-      }),
-    );
+      });
   }
 
-  getProposal(id: string): Promise<ProposalRow | null> {
+  async getProposal(id: string): Promise<ProposalRow | null> {
     // Under the lock like every other rows access: a lookup must not race a concurrent
     // quarantine-recovery rename from another process mid-publish.
-    return Promise.resolve(this.withRowsLock(() => this.readRows().find((r) => r.id === id) ?? null));
+    return this.withRowsLock(() => this.readRows().find((r) => r.id === id) ?? null);
   }
 
-  withdrawProposal(id: string): Promise<void> {
+  async withdrawProposal(id: string): Promise<void> {
     this.withRowsLock(() => {
       const rows = this.readRowsAdoptingLegacy();
       const r = rows.find((x) => x.id === id);
@@ -342,10 +340,9 @@ export class FsDocumentStore implements DocumentStore {
         this.writeRows(rows);
       }
     });
-    return Promise.resolve();
   }
 
-  decideProposal(id: string, state: "accepted" | "partially_accepted" | "rejected"): Promise<void> {
+  async decideProposal(id: string, state: "accepted" | "partially_accepted" | "rejected"): Promise<void> {
     this.withRowsLock(() => {
       const rows = this.readRowsAdoptingLegacy();
       const r = rows.find((x) => x.id === id);
@@ -355,7 +352,6 @@ export class FsDocumentStore implements DocumentStore {
         this.writeRows(rows);
       }
     });
-    return Promise.resolve();
   }
 
   backup(content: string): Promise<void> {

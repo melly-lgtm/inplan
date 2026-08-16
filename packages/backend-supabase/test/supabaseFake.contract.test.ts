@@ -211,7 +211,7 @@ describe("createSupabaseBackend", () => {
   it("wires a channel + store onto a created client", async () => {
     const { createSupabaseBackend } = await import("../src/client");
     const { createClient } = await import("@supabase/supabase-js");
-    const backend = createSupabaseBackend({ url: "https://x.supabase.co", key: "anon", docId: "doc-9", consumerId: "editor" });
+    const backend = createSupabaseBackend({ url: "https://x.supabase.co", key: "anon", docId: "doc-9", consumerId: "editor", proposer: { kind: "user", userId: "user-9", clientId: "test" } });
     expect(createClient).toHaveBeenCalledWith("https://x.supabase.co", "anon");
     expect(backend.channel).toBeInstanceOf(SupabaseControlChannel);
     expect(backend.store).toBeInstanceOf(SupabaseDocumentStore);

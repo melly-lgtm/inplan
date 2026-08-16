@@ -1304,7 +1304,12 @@ export function App(props: EditorProps = {}): JSX.Element {
       } else {
         void hostApi().save(serialized, { kind: "apply", cadence }).then(() => setCheckpoint(serialized));
       }
-      void hostApi().clearProposal(acceptedCount === accepted.length ? "accepted" : acceptedCount === 0 ? "rejected" : "partially_accepted", proposal.id);
+      // A failed settlement must be visible: the content is applied and the review UI is gone, but
+      // the row stays pending and WILL resurface for review on the next launch — announce that
+      // (the resurfacing is the retry) instead of letting it look like a mystery double-review.
+      hostApi()
+        .clearProposal(acceptedCount === accepted.length ? "accepted" : acceptedCount === 0 ? "rejected" : "partially_accepted", proposal.id)
+        .catch(() => setStatus("the decision could not be recorded — this proposal will reappear for review"));
       void hostApi().logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", { accepted: acceptedCount, total: accepted.length });
       setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`);
     },
