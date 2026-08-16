@@ -13,6 +13,8 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  rmdirSync,
+  statSync,
   unlinkSync,
   unwatchFile,
   watch,
@@ -172,12 +174,26 @@ export class FsDocumentStore implements DocumentStore {
     return `${this.paths.proposedPath}.rows.json`;
   }
 
+  /** Whether row-backed proposal state exists for this doc at all (vs the legacy content file). */
+  hasProposalHistory(): boolean {
+    return existsSync(this.proposalsPath());
+  }
+
+  private static readonly STATES = new Set(["pending", "accepted", "partially_accepted", "rejected", "superseded", "withdrawn"]);
+
+  private static isValidRow(r: unknown): r is ProposalRow {
+    const x = r as Partial<ProposalRow> | null;
+    return !!x && typeof x.id === "string" && typeof x.content === "string" && typeof x.baseHash === "string" && typeof x.baseContent === "string" && typeof x.state === "string" && FsDocumentStore.STATES.has(x.state) && typeof x.createdAt === "string";
+  }
+
   private readRows(): ProposalRow[] {
     const raw = this.readOrNull(this.proposalsPath());
     if (raw === null) return [];
     try {
-      const rows = JSON.parse(raw) as ProposalRow[];
-      if (Array.isArray(rows)) return rows;
+      const rows = JSON.parse(raw) as unknown;
+      // Valid JSON is not integrity: every row must carry the full lifecycle shape, or lookups
+      // would serve invalid state downstream. Anything else is quarantined like a parse failure.
+      if (Array.isArray(rows) && rows.every((r) => FsDocumentStore.isValidRow(r))) return rows as ProposalRow[];
     } catch {
       /* fall through to preservation */
     }
@@ -187,6 +203,50 @@ export class FsDocumentStore implements DocumentStore {
     // empty replacement over the original via tmp+rename, destroying the history it exists to keep.
     renameSync(this.proposalsPath(), `${this.proposalsPath()}.corrupt-${Date.now()}`);
     return [];
+  }
+
+  /**
+   * Advisory per-doc lock around every read-modify-publish of the rows file: the desktop editor
+   * (main process) and a CLI can share one sidecar, and interleaved mutations would lose a
+   * lifecycle update. mkdir is the atomic primitive; a stale lock (a crashed holder) is broken
+   * after 2s. Mutations here are a few file ops — well under the staleness window.
+   */
+  private withRowsLock<T>(run: () => T): T {
+    const lockDir = `${this.proposalsPath()}.lock`;
+    const deadline = Date.now() + 2_000;
+    for (;;) {
+      try {
+        mkdirSync(lockDir);
+        break;
+      } catch {
+        let stale = false;
+        try {
+          stale = Date.now() - statSync(lockDir).mtime.getTime() > 2_000;
+        } catch {
+          continue; // holder released between our attempt and the stat — retry immediately
+        }
+        if (stale) {
+          try {
+            rmdirSync(lockDir);
+          } catch {
+            /* someone else broke it first */
+          }
+          continue;
+        }
+        if (Date.now() > deadline) throw new Error(`proposal rows lock is held: ${lockDir}`);
+        const buf = new SharedArrayBuffer(4);
+        Atomics.wait(new Int32Array(buf), 0, 0, 25); // sync sleep without spinning a core
+      }
+    }
+    try {
+      return run();
+    } finally {
+      try {
+        rmdirSync(lockDir);
+      } catch {
+        /* released by staleness-breaking — nothing to do */
+      }
+    }
   }
 
   private writeRows(rows: ProposalRow[]): void {
@@ -204,21 +264,47 @@ export class FsDocumentStore implements DocumentStore {
   }
 
   createProposal(input: ProposalInput): Promise<{ id: string }> {
+    return Promise.resolve(
+      this.withRowsLock(() => {
+        const rows = this.readRowsAdoptingLegacy();
+        // Identical content with no explicit id re-parks the SAME proposal (a retry, not a
+        // successor): minting a fresh id would supersede the original identity on every retry.
+        const pendingSame = input.id ? undefined : rows.find((r) => r.state === "pending" && r.content === input.content);
+        const id = input.id ?? pendingSame?.id ?? mintProposalId();
+        const existing = rows.find((r) => r.id === id);
+        if (existing) {
+          if (existing.state === "pending") Object.assign(existing, { content: input.content, baseHash: input.baseHash, baseContent: input.baseContent });
+        } else {
+          for (const r of rows) if (r.state === "pending") r.state = "superseded";
+          rows.push({ id, content: input.content, baseHash: input.baseHash, baseContent: input.baseContent, state: "pending", createdAt: new Date().toISOString() });
+        }
+        this.writeRows(rows);
+        return { id };
+      }),
+    );
+  }
+
+  /** Rows, adopting a legacy pre-rows sidecar exactly once: a `proposedPath` content file with no
+   *  rows file is an old park — it becomes a real pending row (minted id) so the full lifecycle
+   *  (withdraw/decide/supersede) applies to it instead of the file lingering forever. */
+  private readRowsAdoptingLegacy(): ProposalRow[] {
     const rows = this.readRows();
-    const id = input.id ?? mintProposalId();
-    const existing = rows.find((r) => r.id === id);
-    if (existing) {
-      if (existing.state === "pending") Object.assign(existing, { content: input.content, baseHash: input.baseHash, baseContent: input.baseContent });
-    } else {
-      for (const r of rows) if (r.state === "pending") r.state = "superseded";
-      rows.push({ id, content: input.content, baseHash: input.baseHash, baseContent: input.baseContent, state: "pending", createdAt: new Date().toISOString() });
-    }
-    this.writeRows(rows);
-    return Promise.resolve({ id });
+    if (rows.length > 0 || this.hasProposalHistory()) return rows;
+    const legacy = this.readOrNull(this.paths.proposedPath);
+    if (legacy === null) return rows;
+    return [{ id: mintProposalId(), content: legacy, baseHash: "", baseContent: "", state: "pending", createdAt: new Date().toISOString() }];
   }
 
   myPendingProposal(): Promise<ProposalRow | null> {
-    return Promise.resolve(this.readRows().find((r) => r.state === "pending") ?? null);
+    return Promise.resolve(
+      this.withRowsLock(() => {
+        const rows = this.readRowsAdoptingLegacy();
+        const pending = rows.find((r) => r.state === "pending") ?? null;
+        // Persist an adoption so the minted identity is stable across calls.
+        if (pending && !this.hasProposalHistory()) this.writeRows(rows);
+        return pending;
+      }),
+    );
   }
 
   getProposal(id: string): Promise<ProposalRow | null> {
@@ -226,23 +312,27 @@ export class FsDocumentStore implements DocumentStore {
   }
 
   withdrawProposal(id: string): Promise<void> {
-    const rows = this.readRows();
-    const r = rows.find((x) => x.id === id);
-    if (r && r.state === "pending") {
-      r.state = "withdrawn";
-      this.writeRows(rows);
-    }
+    this.withRowsLock(() => {
+      const rows = this.readRowsAdoptingLegacy();
+      const r = rows.find((x) => x.id === id);
+      if (r && r.state === "pending") {
+        r.state = "withdrawn";
+        this.writeRows(rows);
+      }
+    });
     return Promise.resolve();
   }
 
   decideProposal(id: string, state: "accepted" | "partially_accepted" | "rejected"): Promise<void> {
-    const rows = this.readRows();
-    const r = rows.find((x) => x.id === id);
-    if (r && r.state === "pending") {
-      r.state = state;
-      r.decidedAt = new Date().toISOString();
-      this.writeRows(rows);
-    }
+    this.withRowsLock(() => {
+      const rows = this.readRowsAdoptingLegacy();
+      const r = rows.find((x) => x.id === id);
+      if (r && r.state === "pending") {
+        r.state = state;
+        r.decidedAt = new Date().toISOString();
+        this.writeRows(rows);
+      }
+    });
     return Promise.resolve();
   }
 

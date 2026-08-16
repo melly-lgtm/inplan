@@ -17,11 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LogEventType, MemoryControlChannel, MemoryDocumentStore, hashBody, type LogEntry } from "@inplan/core/node";
 import { waitCycle, type WaitBackend } from "../src/cli";
 import { utf8Bytes } from "../src/remoteDocState";
-
-/** The caller-visible pending proposal content (proposals v1 surface). */
-async function proposedContent(store: { myPendingProposal(): Promise<{ content: string } | null> }): Promise<string | null> {
-  return (await store.myPendingProposal())?.content ?? null;
-}
+import { proposedContent } from "./helpers";
 
 const DOC_A = "# Plan\n\nOriginal body.\n\n<!--inplan\n[]\n-->\n";
 const DOC_B = "# Plan\n\nAgent-edited body.\n\n<!--inplan\n[]\n-->\n";

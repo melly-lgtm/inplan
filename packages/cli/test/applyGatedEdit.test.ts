@@ -5,11 +5,7 @@ import { MemoryControlChannel, MemoryDocumentStore, LogEventType } from "@inplan
 import { applyGatedEdit } from "../src/applyEdit";
 import type { AgentEditEvaluation } from "../src/gate";
 import type { PluginGate } from "../src/pluginGate";
-
-/** The caller-visible pending proposal content (proposals v1 surface). */
-async function proposedContent(store: { myPendingProposal(): Promise<{ content: string } | null> }): Promise<string | null> {
-  return (await store.myPendingProposal())?.content ?? null;
-}
+import { proposedContent } from "./helpers";
 
 const ev = (over: Partial<AgentEditEvaluation> = {}): AgentEditEvaluation => ({
   integrityOk: true,

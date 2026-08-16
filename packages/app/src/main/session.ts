@@ -135,23 +135,30 @@ export class Session {
   /** The parked Review-mode proposal, if one is pending. Row-backed (proposals v1) with a
    *  legacy fallback to the derived content file (a pre-rows sidecar). */
   async pendingProposal(): Promise<{ id?: string; content: string } | null> {
-    const mine = await new FsDocumentStore(this.paths).myPendingProposal();
+    const store = new FsDocumentStore(this.paths);
+    const mine = await store.myPendingProposal();
     if (mine) return { id: mine.id, content: mine.content };
+    // Once row-backed state exists, the rows are the ONLY truth: a leftover derived content file
+    // (its cleanup can fail independently) must never resurface a decided proposal as an id-less
+    // review. The bare-file read only serves genuinely pre-rows sidecars.
+    if (store.hasProposalHistory()) return null;
     return existsSync(this.paths.proposedPath) ? { content: readFileSync(this.paths.proposedPath, "utf8") } : null;
   }
 
   /** Settle the parked proposal once the human has decided — the outcome lands on the proposal
    *  row (proposals v1); the derived proposedPath file is cleared by the store. Legacy fallback:
    *  a stray content file with no row is simply removed. */
-  clearProposal(outcome: "accepted" | "partially_accepted" | "rejected" = "accepted", id?: string): void {
+  async clearProposal(outcome: "accepted" | "partially_accepted" | "rejected" = "accepted", id?: string): Promise<void> {
+    // Awaited end-to-end (the IPC handler returns this promise): a failed decision must surface
+    // to the renderer as a failed invoke, not report success and resurface on the next launch —
+    // and an unhandled rejection here would crash the main process.
     const store = new FsDocumentStore(this.paths);
-    void store.myPendingProposal().then(async (mine) => {
-      // Settle the EXACT reviewed proposal when its id is known; deciding a since-superseded row
-      // is a state-guarded no-op — better than landing the outcome on a newer row.
-      const target = id ?? mine?.id;
-      if (target) await store.decideProposal(target, outcome);
-      else if (existsSync(this.paths.proposedPath)) unlinkSync(this.paths.proposedPath);
-    });
+    const mine = await store.myPendingProposal();
+    // Settle the EXACT reviewed proposal when its id is known; deciding a since-superseded row
+    // is a state-guarded no-op — better than landing the outcome on a newer row.
+    const target = id ?? mine?.id;
+    if (target) await store.decideProposal(target, outcome);
+    else if (!store.hasProposalHistory() && existsSync(this.paths.proposedPath)) unlinkSync(this.paths.proposedPath);
   }
 
   /** Record why the session ended (logged at most once) so the agent's `wait` can report it. */

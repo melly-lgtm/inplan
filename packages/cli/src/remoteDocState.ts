@@ -32,8 +32,9 @@ import { hashBody, LogEventType, type LogEntry } from "@inplan/core/node";
 import type { HydrateInput } from "./liveSync";
 
 /** How a pending proposal ended. `decided` = the proposed slot emptied but no decision event was
- *  readable (the human acted; which way is unknown). `superseded` = a newer park replaced it. */
-export type ProposalOutcome = "accepted" | "partially_accepted" | "rejected" | "decided" | "superseded";
+ *  readable (the human acted; which way is unknown). `superseded` = a newer park replaced it;
+ *  `withdrawn` = the agent retracted its own proposal (a direct-landing edit mooted it). */
+export type ProposalOutcome = "accepted" | "partially_accepted" | "rejected" | "decided" | "superseded" | "withdrawn";
 
 /** UTF-8 byte length — the one sizing used by the proposal record, the wait output's `proposal`
  *  field, and the `agent_revision_proposed` payload, so the three never disagree. */
@@ -221,6 +222,14 @@ export class RemoteDocState {
   parkProposal(text: string, at: Date = new Date(), id?: string): ProposalRecord {
     const prior = this.pendingProposal();
     const hash = hashBody(text);
+    if (prior && id !== undefined && id === prior.id && prior.hash !== hash) {
+      // Same identity, updated content (the cloud converge-if-pending path): the record follows
+      // in place. Superseding here would finalize the id into the history and then republish the
+      // SAME id as pending — breaking terminal immutability and corrupting the history.
+      const updated: ProposalRecord = { ...prior, hash, bytes: utf8Bytes(text), at: at.toISOString() };
+      this.publish({ ...updated, text });
+      return updated;
+    }
     if (prior && prior.hash === hash && (id === undefined || id === prior.id)) {
       // Same proposal, re-pushed. A stale awaiting-outcome marker must not survive the re-push:
       // the slot is live again, so a later slot-clear deserves the full grace before degrading

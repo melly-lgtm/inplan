@@ -13,6 +13,9 @@ export interface SupabaseBackend {
 }
 
 export interface SupabaseBackendOptions {
+  /** Who parks proposals through this backend (proposals v1) — REQUIRED, no ambient default:
+   *  "my pending proposal" must mean exactly one proposer. */
+  proposer: import("./supabaseDocumentStore").ProposerIdentity;
   url: string;
   /**
    * Anon key for browser/SPA clients (RLS enforced) or the service-role key for
@@ -35,6 +38,6 @@ export function createSupabaseBackend(opts: SupabaseBackendOptions): SupabaseBac
   return {
     db,
     channel: new SupabaseControlChannel(db, opts.docId, opts.consumerId),
-    store: new SupabaseDocumentStore(db, opts.docId),
+    store: new SupabaseDocumentStore(db, opts.docId, opts.proposer),
   };
 }

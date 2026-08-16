@@ -109,14 +109,14 @@ runControlChannelContract("Supabase (fake client)", () => new SupabaseControlCha
 runDocumentStoreContract("Supabase (fake client)", () => {
   const f = makeFakeSupabase();
   f.seedDoc("doc-1");
-  return new SupabaseDocumentStore(f.db, "doc-1");
+  return new SupabaseDocumentStore(f.db, "doc-1", { kind: "user", userId: "user-1", clientId: "test-client" });
 });
 
 describe("SupabaseDocumentStore version history", () => {
   it("backup dedups a no-op snapshot (same body as the latest) and records provenance", async () => {
     const f = makeFakeSupabase();
     f.seedDoc("d1");
-    const s = new SupabaseDocumentStore(f.db, "d1");
+    const s = new SupabaseDocumentStore(f.db, "d1", { kind: "user", userId: "user-1", clientId: "test-client" });
     await s.backup("v1", { actor: "agent", kind: "turn", author: "Opus 4.8" });
     await s.backup("v1"); // same body → skipped
     await s.backup("v2");
@@ -132,7 +132,7 @@ describe("SupabaseDocumentStore version history", () => {
       { id: 4, doc_id: "d1", body: "b2", created_at: "2026-01-02", actor: "user", kind: "manual", author: "me" }, // same created_at as id 2
       { id: 3, doc_id: "d2", body: "c", created_at: "2026-01-03", actor: "user", kind: "manual", author: "x" },
     );
-    const s = new SupabaseDocumentStore(f.db, "d1");
+    const s = new SupabaseDocumentStore(f.db, "d1", { kind: "user", userId: "user-1", clientId: "test-client" });
     expect((await s.listVersions(10)).map((v) => v.id)).toEqual([4, 2, 1]); // d1 only; created_at desc, then id desc
     expect((await s.listVersions(1)).map((v) => v.id)).toEqual([4]); // limit honored
   });
@@ -140,7 +140,7 @@ describe("SupabaseDocumentStore version history", () => {
   it("getVersion returns a version's body scoped to the doc; null when absent or another doc's", async () => {
     const f = makeFakeSupabase();
     f.tables.doc_versions.push({ id: 7, doc_id: "d1", body: "hello" }, { id: 8, doc_id: "other", body: "nope" });
-    const s = new SupabaseDocumentStore(f.db, "d1");
+    const s = new SupabaseDocumentStore(f.db, "d1", { kind: "user", userId: "user-1", clientId: "test-client" });
     expect(await s.getVersion(7)).toBe("hello");
     expect(await s.getVersion(8)).toBeNull(); // belongs to another doc
     expect(await s.getVersion(999)).toBeNull();
@@ -197,7 +197,7 @@ describe("SupabaseControlChannel error + presence paths", () => {
 });
 
 describe("SupabaseDocumentStore error paths", () => {
-  const store = () => new SupabaseDocumentStore(erroringDb(), "d");
+  const store = () => new SupabaseDocumentStore(erroringDb(), "d", { kind: "user", userId: "user-1", clientId: "test-client" });
   it("surfaces a Postgres error from reads, writes, and backup", async () => {
     await expect(store().loadDoc()).rejects.toThrow(/read body failed: boom/);
     await expect(store().getCanonical()).rejects.toThrow(/read canonical failed: boom/);

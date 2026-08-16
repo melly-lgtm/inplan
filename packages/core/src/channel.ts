@@ -97,9 +97,11 @@ export interface ProposalRow {
 export function mintProposalId(): string {
   const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
   if (c?.randomUUID) return c.randomUUID();
-  // Extremely defensive fallback (no secure-uuid runtime): time + randomness, still unique enough
-  // for a per-doc proposal namespace.
-  return `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  // Fallback for runtimes without randomUUID: still RFC-4122 v4 SHAPED — the id lands in a
+  // Postgres uuid column, which rejects anything else. Uniqueness (not unguessability) is the
+  // requirement here; ids are scoped per doc and authorization never derives from them.
+  const hex = (n: number) => Math.floor(Math.random() * n).toString(16);
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (ch) => (ch === "x" ? hex(16) : ((Math.floor(Math.random() * 4) + 8).toString(16))));
 }
 
 export interface DocumentStore {

@@ -94,6 +94,13 @@ for (const [name, make] of Object.entries(BACKENDS)) {
       expect(await b.store.getProposal(id)).toMatchObject({ id, state: "pending" });
     });
 
+    it("re-parking IDENTICAL content with no id keeps the same proposal identity (a retry, not a successor)", async () => {
+      const a = await b.store.createProposal({ content: "same text", baseHash: "h", baseContent: "c" });
+      const again = await b.store.createProposal({ content: "same text", baseHash: "h", baseContent: "c" });
+      expect(again.id).toBe(a.id);
+      expect(await b.store.getProposal(a.id)).toMatchObject({ state: "pending" }); // never superseded by its own retry
+    });
+
     it("re-parking with the SAME id converges (idempotent retry), updating content and base", async () => {
       const { id } = await b.store.createProposal({ id: "p-fixed", content: "v1", baseHash: "h1", baseContent: "c1" });
       expect(id).toBe("p-fixed");

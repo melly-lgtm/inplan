@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LogEventType, MemoryControlChannel, MemoryDocumentStore, type LogEntry } from "@inplan/core/node";
 import { acceptanceFrom, waitCycle, type WaitBackend } from "../src/cli";
+import { proposedContent } from "./helpers";
 
 let home: string;
 beforeEach(() => {
@@ -26,11 +27,6 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
-
-/** The caller-visible pending proposal content (proposals v1 surface). */
-async function proposedContent(store: { myPendingProposal(): Promise<{ content: string } | null> }): Promise<string | null> {
-  return (await store.myPendingProposal())?.content ?? null;
-}
 
 const globalAuto = () => writeFileSync(join(home, "settings.json"), JSON.stringify({ acceptance: "auto" }));
 

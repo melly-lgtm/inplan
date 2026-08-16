@@ -101,7 +101,10 @@ export class MemoryDocumentStore implements DocumentStore {
     return Promise.resolve();
   }
   createProposal(input: ProposalInput): Promise<{ id: string }> {
-    const id = input.id ?? mintProposalId();
+    // Identical content with no explicit id re-parks the SAME proposal (a retry, not a successor):
+    // minting a fresh id would supersede the original identity on every retry.
+    const pendingSame = input.id ? undefined : this.proposals.find((r) => r.state === "pending" && r.content === input.content);
+    const id = input.id ?? pendingSame?.id ?? mintProposalId();
     const existing = this.proposals.find((r) => r.id === id);
     if (existing) {
       // Idempotent re-park: converge content/base while still pending; a decided row is immutable.

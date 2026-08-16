@@ -58,7 +58,7 @@ describe("Session.dispatchLog", () => {
     const h = handlers();
     session.dispatchLog([entry("agent", LogEventType.AgentRevisionProposed, { bytes: 22 }), entry("agent", LogEventType.AgentRevised)], h);
     await new Promise((r) => setTimeout(r, 0)); // pendingProposal is row-backed and async now
-    expect(h.onProposal).toHaveBeenCalledWith("# Plan\n\nPROPOSED rewrite.\n", undefined); // legacy content-file park carries no row id
+    expect(h.onProposal).toHaveBeenCalledWith("# Plan\n\nPROPOSED rewrite.\n", expect.any(String)); // the legacy park is ADOPTED as a row and gains a real identity
     expect(h.onExternalChange).not.toHaveBeenCalled(); // baseline never moves → no empty-diff race
     expect(h.onAgentActive).toHaveBeenCalled();
   });

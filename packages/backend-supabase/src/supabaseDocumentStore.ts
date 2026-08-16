@@ -60,9 +60,10 @@ export class SupabaseDocumentStore implements DocumentStore {
   constructor(
     private readonly db: SupabaseClient,
     private readonly docId: string,
-    /** Defaults suit the web editor (a signed-in user reviewing in the browser). CLI and agent
-     *  callers pass their own identity so "my pending proposal" means theirs. */
-    private readonly proposer: ProposerIdentity = { kind: "user", clientId: "web" },
+    /** REQUIRED — no default. "My pending proposal" must mean exactly one proposer: a defaulted
+     *  identity without a userId matched every user-kind row, and on the service-role path (which
+     *  bypasses RLS) that let one caller read, supersede, or withdraw another's pending proposal. */
+    private readonly proposer: ProposerIdentity,
   ) {}
 
   /** Filter for the caller's own proposal rows. */
@@ -89,7 +90,10 @@ export class SupabaseDocumentStore implements DocumentStore {
   }
 
   async createProposal(input: ProposalInput): Promise<{ id: string }> {
-    const id = input.id ?? mintProposalId();
+    // Identical content with no explicit id re-parks the SAME proposal (a retry, not a
+    // successor) — same rule as the memory/fs backends, pinned by the shared contract.
+    const reuse = input.id ? null : await this.myPendingProposal();
+    const id = input.id ?? (reuse && reuse.content === input.content ? reuse.id : mintProposalId());
     // Look BEFORE any mutation: a stale retry of a DECIDED id must return untouched — running
     // the supersede first would let it displace the caller's newer live proposal. Terminal
     // states are immutable; the decision wins every race below.
@@ -128,9 +132,17 @@ export class SupabaseDocumentStore implements DocumentStore {
       state: "pending",
     });
     if (error) {
-      // Unique violation (the id, or the one-pending-per-proposer index) = another writer of OURS
-      // got there first; the park converges on whatever exists rather than failing.
-      if ((error as { code?: string }).code === "23505" && (await this.getProposal(id))) return { id };
+      if ((error as { code?: string }).code === "23505") {
+        // Unique violation = another writer of OURS got there first (the id, or the one-pending-
+        // per-proposer index). CONVERGE PROPERLY: re-run the pending-scoped update so the caller's
+        // content actually lands (returning bare {id} would silently drop it), tolerating a row
+        // that went terminal in the same window — the decision wins.
+        const { error: convergeErr } = await this.db
+          .from("proposals")
+          .update({ content: input.content, base_hash: input.baseHash, base_content: input.baseContent })
+          .match({ doc_id: this.docId, id, state: "pending", ...this.mineFilter() });
+        if (!convergeErr && (await this.getProposal(id))) return { id };
+      }
       throw new Error(`createProposal failed: ${error.message}`);
     }
     return { id };

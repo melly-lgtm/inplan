@@ -12,9 +12,15 @@
 
 import { LogEventType, MemoryControlChannel, MemoryDocumentStore, type LogEntry } from "@inplan/core";
 
-// Browser-safe content hash for the harness's proposal metadata (core's hashBody is sha256 via
-// node:crypto, unavailable here; the harness only needs a stable fingerprint, not crypto).
-function harnessHash(text: string): string {
+// Browser-safe sha-256 hex, matching core's node-only hashBody byte for byte so the harness's
+// proposal metadata is format-compatible with what durable stores and the CLI record. Falls back
+// to a marked FNV fingerprint only where WebCrypto is missing entirely.
+async function harnessHash(text: string): Promise<string> {
+  const subtle = (globalThis as { crypto?: { subtle?: SubtleCrypto } }).crypto?.subtle;
+  if (subtle) {
+    const digest = await subtle.digest("SHA-256", new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+  }
   let h = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) {
     h ^= text.charCodeAt(i);
@@ -167,8 +173,8 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
     proposeRevision(content: string) {
       return (async () => {
         const base = (await store.getCanonical()) ?? (await store.loadDoc());
-        const { id } = await store.createProposal({ content, baseHash: harnessHash(base), baseContent: base });
-        await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: content.length, hash: harnessHash(content), proposal_id: id } });
+        const { id } = await store.createProposal({ content, baseHash: await harnessHash(base), baseContent: base });
+        await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: content.length, hash: await harnessHash(content), proposal_id: id } });
         // Surfaced AFTER the row exists so the payload carries the identity the decision needs.
         for (const cb of proposal) cb({ content, id });
       })();

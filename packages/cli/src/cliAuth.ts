@@ -12,7 +12,9 @@ import { dirname, join } from "node:path";
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
 import WebSocket from "ws";
 import type { ControlChannel, DocumentStore } from "@inplan/core";
+import { mintProposalId } from "@inplan/core";
 import { SupabaseControlChannel, SupabaseDocumentStore } from "@inplan/backend-supabase";
+import { sidecarRoot } from "./paths";
 
 // supabase-js builds a RealtimeClient eagerly in createClient, which throws on a
 // Node without a global WebSocket (e.g. Electron's bundled Node 20, used when the
@@ -322,6 +324,27 @@ export interface RemoteBackend {
   token: string;
 }
 
+/** Stable per-machine proposer client id (proposals v1): minted once, kept beside the sidecars
+ *  (INPLAN_HOME-aware, so tests stay isolated). Losing it merely orphans a pending row — which
+ *  stays reviewable — and the next park mints a new row. */
+function machineClientId(): string {
+  const p = join(dirname(sidecarRoot()), "proposer-client-id");
+  try {
+    const v = readFileSync(p, "utf8").trim();
+    if (v) return v;
+  } catch {
+    /* mint below */
+  }
+  const v = mintProposalId();
+  try {
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, v);
+  } catch {
+    /* unwritable home: an ephemeral id still works for this process */
+  }
+  return v;
+}
+
 /**
  * Bind an authenticated client to one cloud document. Returns null when not
  * logged in (the caller prints "run `inplan login`").
@@ -332,7 +355,9 @@ export async function remoteBackend(docId: string, consumerId = "cli-agent", ske
   return {
     db: s.db,
     channel: new SupabaseControlChannel(s.db, docId, consumerId),
-    store: new SupabaseDocumentStore(s.db, docId),
+    // The CLI proposes as the signed-in USER on this MACHINE: RLS scopes user-kind rows, and the
+    // stable client id keeps two of the same human's machines from superseding each other.
+    store: new SupabaseDocumentStore(s.db, docId, { kind: "user", userId: s.session.user.id, clientId: machineClientId() }),
     token: s.session.access_token,
   };
 }

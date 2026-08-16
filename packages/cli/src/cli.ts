@@ -1298,8 +1298,17 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       backup: (c, m) => localStore.backup(c, m),
       myPendingProposal: () => live.store.myPendingProposal(),
       getProposal: (id) => live.store.getProposal(id),
-      withdrawProposal: (id) => live.store.withdrawProposal(id),
-      decideProposal: (id, st) => live.store.decideProposal(id, st),
+      // Cloud-side lifecycle transitions settle the LOCAL record too, or it would stay
+      // pending_review while its cloud row is terminal — and the id-reuse on the next park
+      // would then converge against an immutable row and the content would never land.
+      withdrawProposal: async (id) => {
+        await live.store.withdrawProposal(id);
+        if (rds.pendingProposal()?.id === id) rds.resolveProposal("withdrawn");
+      },
+      decideProposal: async (id, st) => {
+        await live.store.decideProposal(id, st);
+        if (rds.pendingProposal()?.id === id) rds.resolveProposal(st);
+      },
       createProposal: async (input) => {
         // Re-parking identical content reuses the LOCAL record's id, so a retry after a lost
         // response converges on the same row (client-generated-id idempotency). Only a failed
