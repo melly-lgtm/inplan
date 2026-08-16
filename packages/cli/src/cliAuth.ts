@@ -335,7 +335,7 @@ function machineClientId(): string {
   // Anchored to the stable INPLAN_HOME root, NOT sidecarRoot(): the sidecar dir has its own
   // documented override, and a proposer identity that moves with it would strand the previous
   // pending cloud row (invisible to its own lookups → duplicate pending rows on retry).
-  const home = process.env.INPLAN_HOME ?? join(homedir(), ".inplan");
+  const home = process.env.INPLAN_HOME || join(homedir(), ".inplan"); // `||`: an EMPTY env var must not anchor the identity to the cwd
   const p = join(home, "proposer-client-id");
   try {
     const v = readFileSync(p, "utf8").trim();

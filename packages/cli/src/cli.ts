@@ -1306,16 +1306,19 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       // human decision that landed first — the decision wins, locally too.
       withdrawProposal: async (id) => {
         await live.store.withdrawProposal(id);
+        // The local record settles ONLY from a read-back non-pending row: a transient or missing
+        // read must not stamp the requested outcome over a decision that won the state-guarded
+        // race. Left pending, the next attach reconciles from the cloud's truth.
         if (rds.pendingProposal()?.id === id) {
           const row = await live.store.getProposal(id).catch(() => null);
-          rds.resolveProposal(row && row.state !== "pending" ? row.state : "withdrawn");
+          if (row && row.state !== "pending") rds.resolveProposal(row.state);
         }
       },
       decideProposal: async (id, st) => {
         await live.store.decideProposal(id, st);
         if (rds.pendingProposal()?.id === id) {
           const row = await live.store.getProposal(id).catch(() => null);
-          rds.resolveProposal(row && row.state !== "pending" ? row.state : st);
+          if (row && row.state !== "pending") rds.resolveProposal(row.state);
         }
       },
       createProposal: async (input) => {
