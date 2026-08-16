@@ -1217,7 +1217,17 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
         if (displaced && outcome === null) {
           rds.noteOutcomeMissing(); // defer both the finalization and the repark one run
         } else {
-          if (displaced && outcome) justFinalized = rds.resolveProposal(outcome) !== null;
+          if (displaced && outcome) {
+            const finalized = rds.resolveProposal(outcome);
+            // Corpse-restore for the DISPLACED record must run HERE, against the record we just
+            // finalized: parking the slot's content below makes latestProposal() the NEW pending
+            // record, so the generic check after this block could never match — leaving a stale
+            // working copy that next turn would quarantine and push OVER the slot's proposal.
+            if (finalized && !rds.replayPending() && isDecidedProposalCorpse(finalized, rds.readWorkFile())) {
+              rds.writeWorkFile(canonical);
+              rds.recordSynced(canonical);
+            }
+          }
           rds.parkProposal(slot);
         }
       } catch (e) {
@@ -1302,6 +1312,15 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     const onSaveLocallyGate = localFile
       ? async (info: { proposal?: { state: "pending_review" | "park_failed"; bytes: number; hash: string } }) => {
           const body = await gate.readCanonical();
+          // The handoff writes CANONICAL to the local file. A working copy diverging from the
+          // last sync at this moment holds an edit that never reached the hub (e.g. this turn's
+          // park failed) — it stays in the remote sidecar, where nothing will replay it once the
+          // doc is local. Not silently: say where it is, and the moved_local output already
+          // carries the park_failed signal via `info`.
+          const leftover = rds.readWorkFile();
+          if (leftover !== null && hashBody(leftover) !== (rds.hydrateInput().syncedHash ?? "") && parse(leftover).body !== parse(body).body) {
+            process.stderr.write(`inplan: the doc moved local, but an unpushed edit remains at ${workFile} — merge it into ${localFile} by hand if you still want it.\n`);
+          }
           writeFileSync(localFile, body);
           writeStatus(docPaths(localFile).statusPath, { location: "local", originalPath: localFile, lastSyncedHash: hashBody(body) });
           const pid = spawnApp(localFile);
