@@ -39,7 +39,7 @@ import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenceReason, type PluginGate } from "./pluginGate";
 import { demoteSource, shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
-import { RemoteDocState, resolutionFromEvents, utf8Bytes } from "./remoteDocState";
+import { RemoteDocState, needsReparkFromSlot, resolutionFromEvents, utf8Bytes } from "./remoteDocState";
 import { announcePresence, presenceTokenResolver } from "./presence";
 import { awaitReopen, wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
@@ -1155,16 +1155,27 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     // (accepted / partially_accepted / rejected), so "did my edit land?" stays answerable from
     // disk even though agent_revision_proposed left the wait output long ago. A transient slot
     // read failure just retries next run; the record stays pending.
+    // Reconcile with the CLOUD slot first (#88): the slot is the authoritative side of a park, so
+    // a proposal it holds that this machine has no live record of (a crash between the confirmed
+    // push and the record publish, a re-park after a finalization) is re-parked from the slot's
+    // own text, recreating the truthful pending record. Then resolve a pending record whose slot
+    // has emptied: the decision events name the outcome; when none is readable yet, the record
+    // waits one more run (a slot-clear can race ahead of its decision event) before degrading to
+    // 'decided'. A transient slot read failure skips both — retry next run.
+    const slot = await live.store.getProposed().catch(() => undefined);
+    if (typeof slot === "string" && needsReparkFromSlot(rds.latestProposal(), slot)) {
+      rds.parkProposal(slot);
+    }
     const parkedEarlier = rds.pendingProposal();
-    if (parkedEarlier) {
-      const slot = await live.store.getProposed().catch(() => undefined);
-      if (slot === null) {
-        try {
-          const { entries } = await live.channel.readSince(0);
-          rds.resolveProposal(resolutionFromEvents(entries, parkedEarlier));
-        } catch {
-          /* transient history read failure: leave the record pending and retry next run */
-        }
+    if (parkedEarlier && slot === null) {
+      try {
+        const { entries } = await live.channel.readSince(0);
+        const outcome = resolutionFromEvents(entries, parkedEarlier);
+        if (outcome !== "decided") rds.resolveProposal(outcome);
+        else if (parkedEarlier.awaitingOutcomeSince) rds.resolveProposal("decided");
+        else rds.noteOutcomeMissing();
+      } catch {
+        /* transient history read failure: leave the record pending and retry next run */
       }
     }
 
@@ -1195,17 +1206,21 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       backup: (c, m) => localStore.backup(c, m),
       getProposed: () => live.store.getProposed(),
       setProposed: async (c) => {
-        // The durable record is written ONLY after a confirmed push, and BOTH steps count as the
-        // park: a failed push leaves the working copy as the only copy of the edit, and a failed
-        // record write (push ok, fs error) leaves this machine without its recovery signal — in
-        // either case the post-turn path must keep-local instead of re-syncing the copy away, so
-        // both flag the turn as a degraded write.
+        // Only a failed PUSH is a failed park (the edit's sole copy stays local; the post-turn
+        // path must keep-local). A failed local record write after a confirmed push is NOT — the
+        // proposal is live in the cloud, the human can already see it, and the record is
+        // reconciled from the slot at the next attach; masquerading it as a failed push would
+        // deny a park that actually happened.
         try {
           await live.store.setProposed(c);
-          rds.parkProposal(c);
         } catch (e) {
           hubParkFailed = true;
           throw e;
+        }
+        try {
+          rds.parkProposal(c);
+        } catch (e) {
+          process.stderr.write(`inplan: could not write the local proposal record (${String(e)}); the proposal is live in the cloud and the record will be reconciled on the next run\n`);
         }
       },
       clearProposed: () => live.store.clearProposed(),

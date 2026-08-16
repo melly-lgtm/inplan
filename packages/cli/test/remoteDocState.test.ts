@@ -10,7 +10,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LogEventType, hashBody, type LogEntry } from "@inplan/core/node";
-import { RemoteDocState, resolutionFromEvents, utf8Bytes } from "../src/remoteDocState";
+import { RemoteDocState, needsReparkFromSlot, resolutionFromEvents, utf8Bytes } from "../src/remoteDocState";
 import { shouldHydrateWorkFile } from "../src/liveSync";
 
 let dir: string;
@@ -95,9 +95,9 @@ describe("resolutionFromEvents", () => {
     expect(resolutionFromEvents(entries, PARK)).toBe("decided");
   });
 
-  it("an un-hashed park event (older CLI) still anchors as the last park", () => {
+  it("an un-hashed park event (older CLI) still anchors when it plausibly IS this park (within clock slack)", () => {
     const entries = [
-      parkEvent("2026-08-15T12:01:00.000Z"), // no hash payload
+      parkEvent("2026-08-15T12:00:03.000Z"), // no hash payload; stamped ~our park time
       entry(LogEventType.RevisionAcceptedAll, "2026-08-15T12:05:00.000Z"),
     ];
     expect(resolutionFromEvents(entries, PARK)).toBe("accepted");
@@ -110,6 +110,18 @@ describe("resolutionFromEvents", () => {
     const entries = [
       parkEvent("2026-08-15T11:00:00.000Z", "hash-OLD"),
       entry(LogEventType.RevisionAcceptedAll, "2026-08-15T11:30:00.000Z"), // the OLD proposal's decision
+    ];
+    expect(resolutionFromEvents(entries, PARK)).toBe("decided");
+  });
+
+  it("a LATER machine's park never becomes our weak anchor — its decision postdates us but is still not ours", () => {
+    // Our park's append failed AND another machine parked after us. The later park event must not
+    // anchor our window (its ts postdates our recorded park time), and the window must close at
+    // that park even without an anchor — the timestamp filter alone cannot exclude the later
+    // decision, because it genuinely postdates our park.
+    const entries = [
+      parkEvent("2026-08-15T12:10:00.000Z", "hash-P2"), // the other machine's park, after ours (12:00)
+      entry(LogEventType.RevisionAcceptedAll, "2026-08-15T12:15:00.000Z"), // P2's decision
     ];
     expect(resolutionFromEvents(entries, PARK)).toBe("decided");
   });
@@ -186,70 +198,58 @@ describe("park / audit / resolve", () => {
     expect(s.latestProposal()).toBeNull();
   });
 
-  it("a corrupt or missing record RECOVERS from the orphan text (the park's crash window)", () => {
-    // parkProposal writes text first, record last: a kill between the writes leaves a
-    // confirmed-pushed proposal with no record. The text alone reconstructs a truthful one.
+  it("the publish is atomic: a corrupt record reads as absent (no torn write-pair), no .tmp remains", () => {
     s.parkProposal("v1");
+    expect(existsSync(join(dir, "remote", "doc-1.plan.md.proposed.json.tmp"))).toBe(false);
     const recordPath = join(dir, "remote", "doc-1.plan.md.proposed.json");
-    writeFileSync(recordPath, "{ this is not json"); // crash mid-record-write
-    expect(s.latestProposal()).toMatchObject({ state: "pending_review", hash: hashBody("v1") });
-    rmSync(recordPath); // crash before the record write entirely
-    expect(s.pendingProposal()).toMatchObject({ state: "pending_review", hash: hashBody("v1") });
-    expect(s.latestProposal()?.docId).toBe("doc-1");
-  });
-
-  it("no record AND no text reads as no proposal, never a crash", () => {
-    expect(s.latestProposal()).toBeNull();
+    writeFileSync(recordPath, "{ this is not json"); // external damage
+    expect(s.latestProposal()).toBeNull(); // no heuristics — reconciliation from the cloud slot heals this
     expect(s.pendingProposal()).toBeNull();
   });
 
-  it("a FINALIZED proposal whose record is damaged recovers as finalized, never as pending", () => {
-    // finalize leaves the text in place; resurrecting a decided proposal as pending would
-    // re-resolve it and append a duplicate history line under a fresh mtime-based `at`.
-    const parked = s.parkProposal("v1");
+  it("no record reads as no proposal, never a crash", () => {
+    expect(s.latestProposal()).toBeNull();
+    expect(s.pendingProposal()).toBeNull();
+    expect(s.proposedText()).toBeNull();
+  });
+
+  it("two proposals with IDENTICAL content and park time keep distinct identities in the history", () => {
+    // History idempotency is by unique id, not content: a genuine second proposal that happens to
+    // repeat earlier content (even at the same recorded time) must not be swallowed as a
+    // crash-retry of the first.
+    const at = new Date("2026-08-15T00:00:00.000Z");
+    const first = s.parkProposal("same text", at);
     s.resolveProposal("accepted");
-    const recordPath = join(dir, "remote", "doc-1.plan.md.proposed.json");
-    const textPath = join(dir, "remote", "doc-1.plan.md.proposed.md");
-    utimesSync(textPath, new Date(parked.at), new Date(parked.at)); // pin mtime = park time (deterministic)
-    rmSync(recordPath);
-    const recovered = s.latestProposal();
-    expect(recovered).toMatchObject({ state: "accepted", at: parked.at });
-    expect(s.pendingProposal()).toBeNull(); // never re-resolved
-    s.resolveProposal("rejected"); // a stray re-resolution attempt is a no-op
+    const second = s.parkProposal("same text", at); // terminal record → a NEW proposal is minted
+    expect(second.id).not.toBe(first.id);
+    s.resolveProposal("rejected");
     const history = readFileSync(join(dir, "remote", "doc-1.plan.md.proposals.jsonl"), "utf8").trim().split("\n");
-    expect(history).toHaveLength(1);
+    expect(history).toHaveLength(2);
+    expect(JSON.parse(history[0]!)).toMatchObject({ id: first.id, state: "accepted" });
+    expect(JSON.parse(history[1]!)).toMatchObject({ id: second.id, state: "rejected" });
   });
 
-  it("a LATER park reusing identical text is pending, even though the history tail matches its hash", () => {
-    const first = s.parkProposal("same text");
-    s.resolveProposal("accepted");
-    s.parkProposal("same text"); // a new proposal with identical content
-    const recordPath = join(dir, "remote", "doc-1.plan.md.proposed.json");
-    const textPath = join(dir, "remote", "doc-1.plan.md.proposed.md");
-    // The re-park rewrote the text well after the finalized park's `at`:
-    const later = new Date(Date.parse(first.at) + 60_000);
-    utimesSync(textPath, later, later);
-    writeFileSync(recordPath, "{ truncated"); // crash mid-record-write on the SECOND park
-    expect(s.latestProposal()).toMatchObject({ state: "pending_review", hash: hashBody("same text") });
-    expect(s.pendingProposal()).not.toBeNull();
-  });
-
-  it("recovery returns the reconstruction even when republishing the record file fails", () => {
+  it("noteOutcomeMissing marks once, keeps the record pending, and finalize clears the marker", () => {
     s.parkProposal("v1");
-    const recordPath = join(dir, "remote", "doc-1.plan.md.proposed.json");
-    rmSync(recordPath);
-    mkdirSync(recordPath); // a directory at the record path makes the republish write throw
-    expect(s.latestProposal()).toMatchObject({ state: "pending_review", hash: hashBody("v1") });
+    const marked = s.noteOutcomeMissing(new Date("2026-08-15T01:00:00.000Z"));
+    expect(marked?.awaitingOutcomeSince).toBe("2026-08-15T01:00:00.000Z");
+    expect(s.pendingProposal()?.awaitingOutcomeSince).toBe("2026-08-15T01:00:00.000Z"); // still pending
+    expect(s.noteOutcomeMissing()).toBeNull(); // already marked — second sighting is the caller's cue to finalize
+    const finalized = s.resolveProposal("decided");
+    expect(finalized?.awaitingOutcomeSince).toBeUndefined(); // the grace marker never outlives the decision
+    expect(s.latestProposal()?.state).toBe("decided");
   });
 
   it("a record failing the full shape check reads as absent — never finalized with bad metadata", () => {
     const recordPath = join(dir, "remote", "doc-1.plan.md.proposed.json");
-    const good = { docId: "doc-1", hash: "h", bytes: 3, at: "2026-08-15T00:00:00.000Z", state: "pending_review" };
+    const good = { id: "p-1", docId: "doc-1", hash: "h", bytes: 3, at: "2026-08-15T00:00:00.000Z", state: "pending_review", text: "abc" };
     for (const bad of [
       { ...good, docId: "some-other-doc" }, // a record copied from another doc
       { ...good, bytes: "3" }, // non-numeric bytes
       { ...good, at: "not-a-date" }, // unparseable park time
       { ...good, state: "unknown_state" }, // outside the allowed states
+      { ...good, id: undefined }, // no identity
+      { ...good, text: undefined }, // no embedded text — a torn legacy shape
       { docId: "doc-1", state: "pending_review" }, // partial record
     ]) {
       writeFileSync(recordPath, JSON.stringify(bad));
@@ -257,7 +257,46 @@ describe("park / audit / resolve", () => {
       expect(s.pendingProposal()).toBeNull();
     }
     writeFileSync(recordPath, JSON.stringify(good));
-    expect(s.latestProposal()).toEqual(good);
+    const { text: _text, ...record } = good;
+    expect(s.latestProposal()).toEqual(record);
+    expect(s.proposedText()).toBe("abc");
+  });
+});
+
+describe("needsReparkFromSlot — reconciliation from the cloud's authoritative side", () => {
+  const pendingV1 = () => s.parkProposal("v1");
+
+  it("no slot → nothing to reconcile, regardless of local state", () => {
+    expect(needsReparkFromSlot(null, null)).toBe(false);
+    expect(needsReparkFromSlot(null, undefined)).toBe(false); // transient read failure — retry later
+    expect(needsReparkFromSlot(pendingV1(), null)).toBe(false);
+  });
+
+  it("a slot with NO local record re-parks (the push landed; the record publish crashed)", () => {
+    expect(needsReparkFromSlot(null, "v1")).toBe(true);
+  });
+
+  it("a slot with a TERMINAL local record re-parks — even for identical content (a re-park after a finalization)", () => {
+    pendingV1();
+    const finalized = s.resolveProposal("accepted")!;
+    expect(needsReparkFromSlot(finalized, "v1")).toBe(true);
+    expect(needsReparkFromSlot(finalized, "v2")).toBe(true);
+  });
+
+  it("a slot about DIFFERENT content than the pending record re-parks (the newer park's publish was lost)", () => {
+    expect(needsReparkFromSlot(pendingV1(), "v2")).toBe(true);
+  });
+
+  it("a healthy pending record matching the slot does nothing", () => {
+    expect(needsReparkFromSlot(pendingV1(), "v1")).toBe(false);
+  });
+
+  it("re-parking from the slot recreates a truthful pending record", () => {
+    pendingV1();
+    s.resolveProposal("accepted");
+    const rec = s.parkProposal("v1"); // what runRemote does when needsReparkFromSlot says true
+    expect(rec.state).toBe("pending_review");
+    expect(s.pendingProposal()?.hash).toBe(hashBody("v1"));
   });
 });
 

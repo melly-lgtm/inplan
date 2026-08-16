@@ -81,9 +81,11 @@ output carries `proposal: { state: "pending_review", bytes, hash }`, an
 
 How to audit "did my edit land?", in order:
 1. **This turn:** the `proposal` field in the wait JSON (`pending_review` = safely parked), or
-   a `document_edited` entry (= applied directly to canonical). The `proposal` field also rides
-   a `wait_failed`, `superseded`, or `moved_local` ending — losing the wait afterwards does not
-   un-park your edit, so check the field (and the record below) before classifying it.
+   a `document_edited` entry (= applied directly to canonical). The `proposal` field rides
+   **every** turn-ending output when a park happened this turn — `your_turn`/`activity`,
+   `closed`, `navigated`, `wait_failed`, `superseded`, and `moved_local` — losing or handing
+   off the wait afterwards does not un-park your edit, so check the field (and the record
+   below) before classifying it.
 2. **Any later turn:** read `<workingCopy>.proposed.json` — the durable record. Its `state`
    becomes `accepted`, `partially_accepted`, or `rejected` once the human decides (or
    `decided` when history is readable but no usable outcome event can be recovered — a

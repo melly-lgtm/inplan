@@ -9,18 +9,24 @@
 //   <docId>.plan.md                 the working copy the agent reads/edits
 //   <docId>.plan.md.pending        marker: a local fallback edit awaits a hub push
 //   <docId>.plan.md.synced         hash of the working copy at our last write/sync
-//   <docId>.plan.md.proposed.json  the latest proposal record (see ProposalRecord)
-//   <docId>.plan.md.proposed.md    the latest proposal's exact pushed text
-//   <docId>.plan.md.proposals.jsonl  append-only history of finalized records (never pruned)
+//   <docId>.plan.md.proposed.json  the AUTHORITATIVE proposal record + its exact text,
+//                                  published atomically (tmp + rename)
+//   <docId>.plan.md.proposed.md    a derived, read-convenience copy of the proposed text
+//   <docId>.plan.md.proposals.jsonl  append-only history of finalized records (never pruned;
+//                                  metadata only — accepted text lives in canonical history)
 //
 // The proposal record is the durable half of the landing signal: `agent_revision_proposed`
 // appears in exactly one wait output (the cursor advances past it), so an agent auditing a
-// turn later needs state on disk. The record is written BEFORE the end-of-turn re-sync
-// overwrites the working copy with canonical, so a parked edit is always recoverable from
-// `.proposed.md` — the clobber that made the 2026-08-11 work-deletion inevitable no longer
-// destroys the only local copy.
+// turn later needs state on disk. Persistence is deliberately crash-shaped:
+//  - the record and its text publish as ONE atomic rename, so no torn write-pair can ever
+//    advertise a proposal without its text (or vice versa);
+//  - each park carries a unique `id`, so history idempotency and supersede detection never
+//    confuse two proposals that happen to share content;
+//  - anything this machine still misses after a crash is reconciled from the CLOUD's proposed
+//    slot at the next attach (see `needsReparkFromSlot`) — the slot is the authoritative side
+//    of the push, so it, not local heuristics, is the recovery source.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { hashBody, LogEventType, type LogEntry } from "@inplan/core/node";
 import type { HydrateInput } from "./liveSync";
@@ -34,6 +40,8 @@ export type ProposalOutcome = "accepted" | "partially_accepted" | "rejected" | "
 export const utf8Bytes = (text: string): number => Buffer.byteLength(text, "utf8");
 
 export interface ProposalRecord {
+  /** Unique per park (content may repeat; identity must not). */
+  id: string;
   docId: string;
   /** hashBody of the full proposed text (comments included — same hash family as `.synced`). */
   hash: string;
@@ -42,6 +50,15 @@ export interface ProposalRecord {
   /** ISO-8601 park time. */
   at: string;
   state: "pending_review" | ProposalOutcome;
+  /** Set when the cloud slot was seen empty but no decision event was readable yet — the record
+   *  stays pending for one more look before degrading to `decided`, so a slot-clear racing ahead
+   *  of its decision event can't permanently erase the real outcome. */
+  awaitingOutcomeSince?: string;
+}
+
+/** The persisted shape of `.proposed.json`: the record plus its exact text, one atomic unit. */
+interface StoredProposal extends ProposalRecord {
+  text: string;
 }
 
 /**
@@ -49,45 +66,42 @@ export interface ProposalRecord {
  * wins. Binding is by the log's own order, not the clock: the park appended
  * `agent_revision_proposed` carrying the proposal's hash, so the decision window is (this park's
  * event, the next park event] — decisions for a LATER proposal (parked and decided by another
- * machine while this one was offline) can never be misattributed to this record. Fallbacks, in
- * order: an un-hashed park event (older CLI) matches as the last park event; no park event at all
- * (the append failed) falls back to timestamp comparison against the recorded park time, where
- * CLI-clock vs server-timestamp skew can at worst degrade a fast decision to "decided".
+ * machine while this one was offline) can never be misattributed to this record. When no event
+ * carries this hash (the append failed, or an older CLI wrote no hash), the anchor degrades to
+ * the newest park event that does not POSTDATE this record's park time — a later machine's park
+ * must not become our window — and the timestamp filter stays on inside a weak window, preferring
+ * a degraded "decided" over finalizing this record with another proposal's outcome.
  */
 export function resolutionFromEvents(entries: LogEntry[], park: { at: string; hash: string }): ProposalOutcome {
-  // This park's event: the last agent_revision_proposed whose payload hash matches the record —
-  // or, when no event carries this hash (this park's append failed, or an older CLI wrote no
-  // hash), the last park event of any kind as a WEAK anchor.
+  const parkedAt = Date.parse(park.at);
   let start = -1;
   let matched = false;
-  let lastPark = -1;
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i]!;
     if (e.type !== LogEventType.AgentRevisionProposed) continue;
-    if (lastPark < 0) lastPark = i;
     if ((e.payload as { hash?: unknown } | undefined)?.hash === park.hash) {
       start = i;
       matched = true;
       break;
     }
-  }
-  if (start < 0) start = lastPark;
-  // The window closes at the NEXT park event after ours: decisions beyond it belong to a newer
-  // proposal.
-  let end = entries.length;
-  if (start >= 0) {
-    for (let i = start + 1; i < entries.length; i++) {
-      if (entries[i]!.type === LogEventType.AgentRevisionProposed) {
-        end = i;
-        break;
-      }
+    // Weak-anchor candidate: the newest park event that could plausibly BE this park — i.e. not
+    // stamped after our recorded park time (5s slack for CLI-vs-server clock disagreement).
+    if (start < 0) {
+      const ts = Date.parse(e.ts);
+      if (!Number.isFinite(parkedAt) || !Number.isFinite(ts) || ts <= parkedAt + 5_000) start = i;
     }
   }
-  // Only a hash-MATCHED anchor earns pure log-order trust. A weak anchor may be an OLDER park
-  // (ours never appended), so its window can contain a PREVIOUS proposal's decision — the
-  // timestamp filter still applies there, preferring a degraded "decided" over finalizing this
-  // record with another proposal's outcome.
-  const parkedAt = Date.parse(park.at);
+  // The window closes at the NEXT park event after the anchor: decisions beyond it belong to a
+  // newer proposal. This applies even with NO anchor (every park event postdates us): the first
+  // park event still starts someone else's window, and a later proposal's decision carries a
+  // later timestamp too — the timestamp filter alone could not exclude it.
+  let end = entries.length;
+  for (let i = start + 1; i < entries.length; i++) {
+    if (entries[i]!.type === LogEventType.AgentRevisionProposed) {
+      end = i;
+      break;
+    }
+  }
   for (let i = end - 1; i > start; i--) {
     const e = entries[i]!;
     if (!matched) {
@@ -99,6 +113,19 @@ export function resolutionFromEvents(entries: LogEntry[], park: { at: string; ha
     if (e.type === LogEventType.RevisionHunkAccepted || e.type === LogEventType.RevisionHunkRejected) return "partially_accepted";
   }
   return "decided";
+}
+
+/**
+ * Whether the CLOUD's proposed slot holds a proposal this machine has no live record of — the
+ * reconciliation check run at attach. True when a slot exists but the latest local record is
+ * absent, terminal, or about different content: whatever local write was lost (a crash between
+ * the confirmed push and the record publish, a re-park of identical text after a finalization),
+ * re-parking the slot's own text recreates the truthful pending record from the authoritative
+ * side. Cheap and idempotent — a healthy pending record simply returns false.
+ */
+export function needsReparkFromSlot(latest: ProposalRecord | null, slotText: string | null | undefined): boolean {
+  if (typeof slotText !== "string") return false;
+  return latest === null || latest.state !== "pending_review" || latest.hash !== hashBody(slotText);
 }
 
 export class RemoteDocState {
@@ -167,25 +194,29 @@ export class RemoteDocState {
   // ── Proposal record: the durable "did my edit land?" signal (#88) ─────────────────────────────
 
   /**
-   * Park a proposal: write the record (`pending_review`) and the exact pushed text. Call BEFORE
-   * anything overwrites the working copy. A still-pending previous record with a different hash is
-   * finalized into the history as `superseded` first, so no record is ever silently lost.
+   * Park a proposal: publish the record + its exact text as ONE atomic rename, then refresh the
+   * derived `.proposed.md` copy (best-effort — the JSON is authoritative). A still-pending
+   * previous record about different content is finalized into the history as `superseded` first,
+   * so no record is ever silently lost; re-parking identical content keeps the existing pending
+   * identity (same proposal, re-pushed) instead of minting a new one.
    */
   parkProposal(text: string, at: Date = new Date()): ProposalRecord {
     const prior = this.pendingProposal();
-    if (prior && prior.hash !== hashBody(text)) this.finalize(prior, "superseded");
+    const hash = hashBody(text);
+    if (prior && prior.hash === hash) {
+      this.writeDerivedText(text);
+      return prior;
+    }
+    if (prior) this.finalize(prior, "superseded");
     const record: ProposalRecord = {
+      id: `${at.getTime().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       docId: this.docId,
-      hash: hashBody(text),
+      hash,
       bytes: utf8Bytes(text),
       at: at.toISOString(),
       state: "pending_review",
     };
-    // Text first, record last: the record is the publish point, so a process killed between the
-    // two writes leaves an unadvertised text file — never a pending_review record whose text is
-    // missing (which would defeat the recovery path the record exists to provide).
-    writeFileSync(this.textPath, text);
-    writeFileSync(this.recordPath, JSON.stringify(record, null, 2));
+    this.publish({ ...record, text });
     return record;
   }
 
@@ -193,66 +224,10 @@ export class RemoteDocState {
    *  shape check (wrong doc, non-numeric bytes, unparseable park time, unknown state). A partial
    *  record must read as absent, or it could be finalized with missing metadata. */
   latestProposal(): ProposalRecord | null {
-    if (!existsSync(this.recordPath)) return this.recoverOrphanText();
-    try {
-      const p = JSON.parse(readFileSync(this.recordPath, "utf8")) as Partial<ProposalRecord>;
-      const validState = p.state === "pending_review" || p.state === "accepted" || p.state === "partially_accepted" || p.state === "rejected" || p.state === "decided" || p.state === "superseded";
-      if (p.docId !== this.docId || typeof p.hash !== "string" || typeof p.bytes !== "number" || !Number.isFinite(Date.parse(p.at ?? "")) || !validState) return this.recoverOrphanText();
-      return p as ProposalRecord;
-    } catch {
-      return this.recoverOrphanText();
-    }
-  }
-
-  /**
-   * Crash recovery for the park's write pair: `parkProposal` writes the text, then the record. A
-   * process killed between the two (or mid-record) leaves a confirmed-pushed proposal with its
-   * text on disk but no readable record — and if the human accepts it while the CLI is down, no
-   * later run would ever recreate one (the working copy stops diverging). The text alone is
-   * enough to reconstruct a truthful record: the text is only ever written after a confirmed
-   * push, so `pending_review` is correct, and the park time falls back to the file's mtime.
-   *
-   * One disambiguation: `finalize` leaves the text in place, so a damaged record may belong to
-   * an already-FINALIZED proposal — resurrecting that as pending would re-resolve it and append
-   * a duplicate history line under a fresh mtime-based `at`. When the history's tail finalized
-   * this exact text AND the text hasn't been rewritten since (a later park reuses the file and
-   * bumps its mtime), recover the finalized record verbatim. On ambiguity, prefer pending: a
-   * duplicate history line is cosmetic; hiding a genuinely pending proposal is not.
-   */
-  private recoverOrphanText(): ProposalRecord | null {
-    if (!existsSync(this.textPath)) return null;
-    let text: string;
-    let mtimeMs: number;
-    try {
-      text = readFileSync(this.textPath, "utf8");
-      mtimeMs = statSync(this.textPath).mtime.getTime();
-    } catch {
-      return null;
-    }
-    const tail = this.historyTail();
-    const record: ProposalRecord =
-      tail && tail.hash === hashBody(text) && mtimeMs <= Date.parse(tail.at) + 5_000
-        ? tail
-        : { docId: this.docId, hash: hashBody(text), bytes: utf8Bytes(text), at: new Date(mtimeMs).toISOString(), state: "pending_review" };
-    try {
-      writeFileSync(this.recordPath, JSON.stringify(record, null, 2));
-    } catch {
-      /* best-effort republish — the reconstruction is still the truth, so return it regardless */
-    }
+    const stored = this.readStored();
+    if (!stored) return null;
+    const { text: _text, ...record } = stored;
     return record;
-  }
-
-  /** The history log's last finalized record, or null (absent/unreadable/invalid). */
-  private historyTail(): ProposalRecord | null {
-    if (!existsSync(this.historyPath)) return null;
-    try {
-      const lines = readFileSync(this.historyPath, "utf8").trim().split("\n");
-      const last = JSON.parse(lines[lines.length - 1]!) as Partial<ProposalRecord>;
-      if (last.docId !== this.docId || typeof last.hash !== "string" || typeof last.bytes !== "number" || !Number.isFinite(Date.parse(last.at ?? "")) || typeof last.state !== "string") return null;
-      return last as ProposalRecord;
-    } catch {
-      return null;
-    }
   }
 
   /** The latest record only while it awaits the human's decision. */
@@ -263,12 +238,29 @@ export class RemoteDocState {
 
   /** The latest proposal's exact pushed text (recovery path after the working-copy re-sync). */
   proposedText(): string | null {
-    return existsSync(this.textPath) ? readFileSync(this.textPath, "utf8") : null;
+    return this.readStored()?.text ?? null;
   }
 
   /**
-   * Finalize the pending record with the human's decision: rewrite its state in place (the latest
-   * outcome stays one `cat` away) and append it to the never-pruned history log.
+   * First sighting of "slot empty but no decision event readable yet": mark the record instead of
+   * finalizing, so a slot-clear that races ahead of its decision event gets one more run to
+   * surface the real outcome. Returns the updated record (or null when nothing is pending).
+   */
+  noteOutcomeMissing(at: Date = new Date()): ProposalRecord | null {
+    const stored = this.readStored();
+    if (!stored || stored.state !== "pending_review" || stored.awaitingOutcomeSince) return null;
+    const updated: StoredProposal = { ...stored, awaitingOutcomeSince: at.toISOString() };
+    this.publish(updated);
+    const { text: _text, ...record } = updated;
+    return record;
+  }
+
+  /**
+   * Finalize the pending record with the human's decision: append it to the never-pruned history
+   * log FIRST (metadata only — an accepted text's fate is canonical history's job), then
+   * republish the record. A crash between the writes leaves the record pending, so the next
+   * resolution retries — and the retry is idempotent because the history tail already carries
+   * this park's unique id.
    */
   resolveProposal(outcome: ProposalOutcome): ProposalRecord | null {
     const pending = this.pendingProposal();
@@ -277,19 +269,55 @@ export class RemoteDocState {
   }
 
   private finalize(record: ProposalRecord, outcome: ProposalOutcome): ProposalRecord {
-    const finalized: ProposalRecord = { ...record, state: outcome };
-    // History first, record last: a crash between the writes leaves the record pending, so the
-    // next resolution retries — and the retry is idempotent because a history tail line matching
-    // this park (hash + at) is not appended twice. The reverse order would leave a terminal
-    // record with its history line missing forever (nothing would ever retry the append).
-    if (!this.historyEndsWith(record)) appendFileSync(this.historyPath, `${JSON.stringify(finalized)}\n`);
-    writeFileSync(this.recordPath, JSON.stringify(finalized, null, 2));
+    const { awaitingOutcomeSince: _grace, ...rest } = record;
+    const finalized: ProposalRecord = { ...rest, state: outcome };
+    const tail = this.historyTail();
+    if (!tail || tail.id !== finalized.id) appendFileSync(this.historyPath, `${JSON.stringify(finalized)}\n`);
+    const stored = this.readStored();
+    this.publish({ ...finalized, text: stored?.id === finalized.id ? stored.text : "" });
     return finalized;
   }
 
-  /** Whether the history's last line already records this park (crash-retry idempotency). */
-  private historyEndsWith(record: ProposalRecord): boolean {
-    const tail = this.historyTail();
-    return tail !== null && tail.hash === record.hash && tail.at === record.at;
+  // ── Persistence primitives ────────────────────────────────────────────────────────────────────
+
+  /** Atomic publish: the record + text land as one rename, then the derived .md refreshes. */
+  private publish(stored: StoredProposal): void {
+    const tmp = `${this.recordPath}.tmp`;
+    writeFileSync(tmp, JSON.stringify(stored, null, 2));
+    renameSync(tmp, this.recordPath);
+    this.writeDerivedText(stored.text);
+  }
+
+  private writeDerivedText(text: string): void {
+    try {
+      writeFileSync(this.textPath, text);
+    } catch {
+      /* derived copy only — the authoritative text is inside .proposed.json */
+    }
+  }
+
+  private readStored(): StoredProposal | null {
+    if (!existsSync(this.recordPath)) return null;
+    try {
+      const p = JSON.parse(readFileSync(this.recordPath, "utf8")) as Partial<StoredProposal>;
+      const validState = p.state === "pending_review" || p.state === "accepted" || p.state === "partially_accepted" || p.state === "rejected" || p.state === "decided" || p.state === "superseded";
+      if (typeof p.id !== "string" || p.docId !== this.docId || typeof p.hash !== "string" || typeof p.bytes !== "number" || !Number.isFinite(Date.parse(p.at ?? "")) || !validState || typeof p.text !== "string") return null;
+      return p as StoredProposal;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The history log's last finalized record, or null (absent/unreadable/invalid). */
+  private historyTail(): ProposalRecord | null {
+    if (!existsSync(this.historyPath)) return null;
+    try {
+      const lines = readFileSync(this.historyPath, "utf8").trim().split("\n");
+      const last = JSON.parse(lines[lines.length - 1]!) as Partial<ProposalRecord>;
+      if (typeof last.id !== "string" || last.docId !== this.docId || typeof last.hash !== "string" || typeof last.state !== "string") return null;
+      return last as ProposalRecord;
+    } catch {
+      return null;
+    }
   }
 }
