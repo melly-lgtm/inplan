@@ -98,9 +98,17 @@ How to audit "did my edit land?", in order:
    `revision_hunk_accepted`, or `revision_rejected_all`.
 
 If the park itself fails, the wait JSON carries `proposal: { state: "park_failed", bytes,
-hash }` (and stderr says the push FAILED) — there is no `agent_revision_proposed` event and
-no `pending_review` record; your edit stays in the working copy, and the next `wait` run
-re-detects the divergence and retries the park. Do not re-create the edit; just re-run.
+hash }` (and stderr says the push FAILED) — `park_failed` means exactly that the **cloud push
+was not confirmed**: no `agent_revision_proposed` event, no `pending_review` record; your edit
+stays in the working copy, and the next `wait` run re-detects the divergence and retries the
+park. Do not re-create the edit; just re-run.
+
+The converse also holds: a CONFIRMED push stays parked even when a piece of local bookkeeping
+failed around it. The event append or the local record write can fail after the push landed —
+stderr says so when it happens — and the next `wait --remote` run reconciles the missing
+artifacts from the cloud's own proposed slot. A temporarily missing event or record therefore
+never means the park failed; only `park_failed` (or the absence of any park signal plus a
+still-diverged working copy) means that.
 
 Two things are **normal and must never be read as data loss**: after a healthy turn the
 working copy is re-synced to the current canonical (so your parked edit is no longer in it —
