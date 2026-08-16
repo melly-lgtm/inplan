@@ -177,10 +177,20 @@ export class FsDocumentStore implements DocumentStore {
     if (raw === null) return [];
     try {
       const rows = JSON.parse(raw) as ProposalRow[];
-      return Array.isArray(rows) ? rows : [];
+      if (Array.isArray(rows)) return rows;
     } catch {
-      return [];
+      /* fall through to preservation */
     }
+    // A damaged rows file must never be silently replaced by the next write — it is the proposal
+    // history. Move the bytes aside (evidence, hand-recoverable) and start fresh; if even the
+    // rename fails, leave it in place and still return empty (reads degrade, writes will attempt
+    // the tmp+rename publish and may fail loudly, which beats destroying the original).
+    try {
+      renameSync(this.proposalsPath(), `${this.proposalsPath()}.corrupt-${Date.now()}`);
+    } catch {
+      /* preserved in place */
+    }
+    return [];
   }
 
   private writeRows(rows: ProposalRow[]): void {

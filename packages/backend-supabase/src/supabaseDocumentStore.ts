@@ -90,22 +90,32 @@ export class SupabaseDocumentStore implements DocumentStore {
 
   async createProposal(input: ProposalInput): Promise<{ id: string }> {
     const id = input.id ?? mintProposalId();
-    // Supersede the caller's OWN previous pending row when the id differs. Sequential statements
-    // rather than a transaction: the worst interleaving (a decision landing in between) leaves
-    // either a decided row — immutable below — or one extra superseded row, both benign; a
-    // proposer only races itself here (single live waiter per client).
-    await this.db.from("proposals").update({ state: "superseded" }).match({ doc_id: this.docId, state: "pending", ...this.mineFilter() }).neq("id", id);
-    // Converge-if-pending FIRST (a plain upsert would resurrect a decided row back to pending —
-    // terminal states are immutable). Zero rows updated + row exists ⇒ decided while we retried:
-    // the decision wins and the call converges as a no-op on that id.
-    const { data: updated, error: upErr } = await this.db
+    // Look BEFORE any mutation: a stale retry of a DECIDED id must return untouched — running
+    // the supersede first would let it displace the caller's newer live proposal. Terminal
+    // states are immutable; the decision wins every race below.
+    const existing = await this.getProposal(id);
+    if (existing) {
+      if (existing.state !== "pending") return { id };
+      // Converge-if-pending, scoped to the caller's own rows (defense-in-depth beside RLS: the
+      // service-role path bypasses RLS, and an id must never let one proposer rewrite another's
+      // pending content). Zero rows = decided or not ours in the meantime — converge as a no-op.
+      const { error } = await this.db
+        .from("proposals")
+        .update({ content: input.content, base_hash: input.baseHash, base_content: input.baseContent })
+        .match({ doc_id: this.docId, id, state: "pending", ...this.mineFilter() });
+      if (error) throw new Error(`createProposal failed: ${error.message}`);
+      return { id };
+    }
+    // New id: supersede the caller's OWN previous pending row, then insert. Sequential statements
+    // rather than a transaction — a proposer only races itself (single live waiter per client),
+    // and the phase-B partial unique index (one pending per proposer per doc) backstops the rest:
+    // a concurrent insert surfaces as a unique violation, handled as convergence below.
+    const { error: supersedeErr } = await this.db
       .from("proposals")
-      .update({ content: input.content, base_hash: input.baseHash, base_content: input.baseContent })
-      .match({ doc_id: this.docId, id, state: "pending" })
-      .select("id");
-    if (upErr) throw new Error(`createProposal failed: ${upErr.message}`);
-    if ((updated ?? []).length > 0) return { id };
-    if (await this.getProposal(id)) return { id }; // exists but not pending — terminal, immutable
+      .update({ state: "superseded" })
+      .match({ doc_id: this.docId, state: "pending", ...this.mineFilter() })
+      .neq("id", id);
+    if (supersedeErr) throw new Error(`createProposal failed: ${supersedeErr.message}`);
     const { error } = await this.db.from("proposals").insert({
       id,
       doc_id: this.docId,
@@ -117,7 +127,12 @@ export class SupabaseDocumentStore implements DocumentStore {
       base_content: input.baseContent,
       state: "pending",
     });
-    if (error) throw new Error(`createProposal failed: ${error.message}`);
+    if (error) {
+      // Unique violation (the id, or the one-pending-per-proposer index) = another writer of OURS
+      // got there first; the park converges on whatever exists rather than failing.
+      if ((error as { code?: string }).code === "23505" && (await this.getProposal(id))) return { id };
+      throw new Error(`createProposal failed: ${error.message}`);
+    }
     return { id };
   }
 

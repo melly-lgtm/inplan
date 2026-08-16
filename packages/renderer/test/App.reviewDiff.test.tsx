@@ -30,7 +30,7 @@ const REVISED = "# Plan\n\nAlpha CHANGED.\n\nBeta CHANGED.\n\n<!--inplan v1\n[]\
 let agent: MemoryAgent;
 
 type Win = {
-  api: { getProposal(): Promise<string | null> };
+  api: { getProposal(): Promise<{ id?: string; content: string } | null> };
 };
 
 function mount(content: string) {
@@ -274,6 +274,6 @@ describe("App review diff controls (memory-backed)", () => {
     await waitFor(() => expect(document.body.textContent).toContain("Agent proposed changes"));
     expect(document.body.textContent).not.toContain("awaiting your review.");
     // The proposal is still parked (not yet decided).
-    expect(await (window as unknown as Win).api.getProposal()).toBe(REVISED);
+    expect((await (window as unknown as Win).api.getProposal())?.content).toBe(REVISED);
   });
 });

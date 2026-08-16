@@ -113,10 +113,12 @@ export class MemoryDocumentStore implements DocumentStore {
     return Promise.resolve({ id });
   }
   myPendingProposal(): Promise<ProposalRow | null> {
-    return Promise.resolve(this.proposals.find((r) => r.state === "pending") ?? null);
+    const r = this.proposals.find((x) => x.state === "pending");
+    return Promise.resolve(r ? { ...r } : null); // copies — callers must not bypass the lifecycle
   }
   getProposal(id: string): Promise<ProposalRow | null> {
-    return Promise.resolve(this.proposals.find((r) => r.id === id) ?? null);
+    const r = this.proposals.find((x) => x.id === id);
+    return Promise.resolve(r ? { ...r } : null);
   }
   withdrawProposal(id: string): Promise<void> {
     const r = this.proposals.find((x) => x.id === id);

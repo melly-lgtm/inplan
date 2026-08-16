@@ -69,7 +69,7 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
   const telemetryEvents: MemorySession["telemetryEvents"] = [];
 
   const external: Array<(p: DocPayload) => void> = [];
-  const proposal: Array<(p: { content: string }) => void> = [];
+  const proposal: Array<(p: { content: string; id?: string }) => void> = [];
   const done: Array<() => void> = [];
   const active: Array<() => void> = [];
   const reload: Array<() => void> = [];
@@ -142,12 +142,15 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
     async closeWindow(): Promise<void> {
       closed = true;
     },
-    async getProposal(): Promise<string | null> {
-      return (await store.myPendingProposal())?.content ?? null;
-    },
-    async clearProposal(outcome?: "accepted" | "partially_accepted" | "rejected"): Promise<void> {
+    async getProposal(): Promise<{ id?: string; content: string } | null> {
       const mine = await store.myPendingProposal();
-      if (mine) await store.decideProposal(mine.id, outcome ?? "accepted");
+      return mine ? { id: mine.id, content: mine.content } : null;
+    },
+    async clearProposal(outcome?: "accepted" | "partially_accepted" | "rejected", id?: string): Promise<void> {
+      // Settle the EXACT reviewed proposal when its id is known — deciding a row that has since
+      // been superseded is a state-guarded no-op, which beats landing the outcome on a newer row.
+      const target = id ?? (await store.myPendingProposal())?.id;
+      if (target) await store.decideProposal(target, outcome ?? "accepted");
     },
     async openDoc(): Promise<void> {
       /* in-memory harness: no navigation */
@@ -162,12 +165,12 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
       for (const cb of external) cb({ path: "memory://doc", content });
     },
     proposeRevision(content: string) {
-      // Surface synchronously (the review banner must not lag the call), persist behind it.
-      for (const cb of proposal) cb({ content });
       return (async () => {
         const base = (await store.getCanonical()) ?? (await store.loadDoc());
         const { id } = await store.createProposal({ content, baseHash: harnessHash(base), baseContent: base });
         await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: content.length, hash: harnessHash(content), proposal_id: id } });
+        // Surfaced AFTER the row exists so the payload carries the identity the decision needs.
+        for (const cb of proposal) cb({ content, id });
       })();
     },
     markActive() {

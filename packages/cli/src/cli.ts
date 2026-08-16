@@ -1239,7 +1239,7 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
               rds.recordSynced(canonical);
             }
           }
-          rds.parkProposal(slot);
+          rds.parkProposal(slot, undefined, slotRow!.id); // keep the CLOUD row's identity — a fresh local id would split them
         }
       } catch (e) {
         // Local persistence trouble must not stop the attach: the cloud proposal stays live and
