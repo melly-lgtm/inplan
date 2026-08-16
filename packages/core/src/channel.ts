@@ -71,7 +71,9 @@ export type ProposalState = "pending" | "accepted" | "partially_accepted" | "rej
 /** What a proposer parks (proposals v1 — see docs/proposals-v1.plan.md in the cloud repo). */
 export interface ProposalInput {
   /** Client-minted uuid. Re-parking with the SAME id is an idempotent upsert (a retried park
-   *  converges even when an earlier response was lost); omit to mint a fresh one. */
+   *  converges even when an earlier response was lost). When omitted, identical still-pending
+   *  content re-parks under ITS existing id (a retry, not a successor); only genuinely new
+   *  content mints a fresh identity. */
   id?: string;
   /** The full proposed serialization. */
   content: string;

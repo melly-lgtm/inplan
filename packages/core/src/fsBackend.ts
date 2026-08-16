@@ -13,7 +13,7 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
-  rmdirSync,
+  rmSync,
   statSync,
   unlinkSync,
   unwatchFile,
@@ -213,10 +213,13 @@ export class FsDocumentStore implements DocumentStore {
    */
   private withRowsLock<T>(run: () => T): T {
     const lockDir = `${this.proposalsPath()}.lock`;
+    const ownerPath = join(lockDir, "owner");
+    const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const deadline = Date.now() + 2_000;
     for (;;) {
       try {
         mkdirSync(lockDir);
+        writeFileSync(ownerPath, token);
         break;
       } catch {
         let stale = false;
@@ -227,7 +230,7 @@ export class FsDocumentStore implements DocumentStore {
         }
         if (stale) {
           try {
-            rmdirSync(lockDir);
+            rmSync(lockDir, { recursive: true, force: true });
           } catch {
             /* someone else broke it first */
           }
@@ -241,10 +244,13 @@ export class FsDocumentStore implements DocumentStore {
     try {
       return run();
     } finally {
+      // Ownership-checked release: if a holder overstays the staleness window and its lock was
+      // broken, its release must not tear down the NEW holder's lock (that would readmit a third
+      // process mid-mutation and lose rows to last-write-wins).
       try {
-        rmdirSync(lockDir);
+        if (readFileSync(ownerPath, "utf8") === token) rmSync(lockDir, { recursive: true, force: true });
       } catch {
-        /* released by staleness-breaking — nothing to do */
+        /* broken by staleness — the lock is someone else's now */
       }
     }
   }
@@ -308,7 +314,9 @@ export class FsDocumentStore implements DocumentStore {
   }
 
   getProposal(id: string): Promise<ProposalRow | null> {
-    return Promise.resolve(this.readRows().find((r) => r.id === id) ?? null);
+    // Under the lock like every other rows access: a lookup must not race a concurrent
+    // quarantine-recovery rename from another process mid-publish.
+    return Promise.resolve(this.withRowsLock(() => this.readRows().find((r) => r.id === id) ?? null));
   }
 
   withdrawProposal(id: string): Promise<void> {

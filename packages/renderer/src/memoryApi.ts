@@ -36,8 +36,9 @@ export interface MemoryAgent {
   /** Auto-accept: the agent rewrote the document (fires onExternalChange). */
   externalChange(content: string): void;
   /** Review mode: park a proposed revision (fires onProposal; getProposal returns it). */
-  /** Park a Review-mode proposal. The review banner surfaces synchronously; the returned
-   *  promise settles when the proposal row + event are durably recorded. */
+  /** Park a Review-mode proposal. The returned promise settles once the proposal row and its
+   *  event are durably recorded — the review banner surfaces at that point (after persistence),
+   *  carrying the row's identity. */
   proposeRevision(content: string): Promise<void>;
   /** The agent re-engaged this round (clears the editor's "thinking" state). */
   markActive(): void;
@@ -174,7 +175,7 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
       return (async () => {
         const base = (await store.getCanonical()) ?? (await store.loadDoc());
         const { id } = await store.createProposal({ content, baseHash: await harnessHash(base), baseContent: base });
-        await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: content.length, hash: await harnessHash(content), proposal_id: id } });
+        await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: new TextEncoder().encode(content).byteLength, hash: await harnessHash(content), proposal_id: id } });
         // Surfaced AFTER the row exists so the payload carries the identity the decision needs.
         for (const cb of proposal) cb({ content, id });
       })();

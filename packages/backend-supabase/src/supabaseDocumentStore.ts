@@ -68,6 +68,11 @@ export class SupabaseDocumentStore implements DocumentStore {
 
   /** Filter for the caller's own proposal rows. */
   private mineFilter() {
+    // A user-kind identity without a userId would match every user sharing the client id — and
+    // on the service-role path (no RLS) that is a cross-user write filter. Refuse to build one.
+    if (this.proposer.kind === "user" && this.proposer.userId === undefined) {
+      throw new Error("proposer identity of kind 'user' requires a userId");
+    }
     const f: Record<string, string> = { proposer_kind: this.proposer.kind, client_id: this.proposer.clientId };
     if (this.proposer.userId !== undefined) f.proposer_user_id = this.proposer.userId;
     return f;

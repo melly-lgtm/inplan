@@ -149,6 +149,11 @@ export class Session {
    *  row (proposals v1); the derived proposedPath file is cleared by the store. Legacy fallback:
    *  a stray content file with no row is simply removed. */
   async clearProposal(outcome: "accepted" | "partially_accepted" | "rejected" = "accepted", id?: string): Promise<void> {
+    // IPC payloads are runtime data — a malformed outcome would be persisted as an invalid state
+    // and quarantine the rows file on the next read. Validate before touching the store.
+    if (outcome !== "accepted" && outcome !== "partially_accepted" && outcome !== "rejected") {
+      throw new Error(`invalid proposal outcome: ${String(outcome)}`);
+    }
     // Awaited end-to-end (the IPC handler returns this promise): a failed decision must surface
     // to the renderer as a failed invoke, not report success and resurface on the next launch —
     // and an unhandled rejection here would crash the main process.
@@ -211,9 +216,11 @@ export class Session {
     if (entries.some((e) => e.type === LogEventType.AgentRevisionProposed)) {
       void this.pendingProposal().then((proposed) => {
         if (proposed != null) handlers.onProposal(proposed.content, proposed.id);
-      }).catch(() => {
-        /* a corrupted, unpreservable rows file fails loudly on the next explicit operation;
-           the passive dispatch must not crash the main process over it */
+      }).catch((e: unknown) => {
+        // The passive dispatch must not crash the main process, but a swallowed failure here can
+        // also be TRANSIENT (lock contention) and silently drop the review banner — log it so a
+        // missing banner is diagnosable; the failure re-surfaces on the next explicit operation.
+        console.warn("inplan: could not read the pending proposal for review dispatch:", e);
       });
     }
     // An accepted agent edit: the working file holds the agent's revision (the gate

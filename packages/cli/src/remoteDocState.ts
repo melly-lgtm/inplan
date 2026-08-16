@@ -226,7 +226,10 @@ export class RemoteDocState {
       // Same identity, updated content (the cloud converge-if-pending path): the record follows
       // in place. Superseding here would finalize the id into the history and then republish the
       // SAME id as pending — breaking terminal immutability and corrupting the history.
-      const updated: ProposalRecord = { ...prior, hash, bytes: utf8Bytes(text), at: at.toISOString() };
+      // The grace marker never survives updated content: the slot is live again, so a later
+      // empty-slot sighting earns the full grace, not an immediate 'decided' off the old one.
+      const { awaitingOutcomeSince: _stale, ...rest } = prior;
+      const updated: ProposalRecord = { ...rest, hash, bytes: utf8Bytes(text), at: at.toISOString() };
       this.publish({ ...updated, text });
       return updated;
     }
@@ -340,7 +343,7 @@ export class RemoteDocState {
     if (!existsSync(this.recordPath)) return null;
     try {
       const p = JSON.parse(readFileSync(this.recordPath, "utf8")) as Partial<StoredProposal>;
-      const validState = p.state === "pending_review" || p.state === "accepted" || p.state === "partially_accepted" || p.state === "rejected" || p.state === "decided" || p.state === "superseded";
+      const validState = p.state === "pending_review" || p.state === "accepted" || p.state === "partially_accepted" || p.state === "rejected" || p.state === "decided" || p.state === "superseded" || p.state === "withdrawn";
       if (typeof p.id !== "string" || p.docId !== this.docId || typeof p.hash !== "string" || !Number.isInteger(p.bytes) || (p.bytes as number) < 0 || !Number.isFinite(Date.parse(p.at ?? "")) || !validState || typeof p.text !== "string") return null;
       // A PENDING record's text is load-bearing (recovery, re-push, slot comparison), so a
       // valid-JSON-but-corrupted record whose hash/bytes disagree with its own text reads as

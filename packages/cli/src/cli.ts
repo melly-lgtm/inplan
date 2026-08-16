@@ -1300,14 +1300,23 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       getProposal: (id) => live.store.getProposal(id),
       // Cloud-side lifecycle transitions settle the LOCAL record too, or it would stay
       // pending_review while its cloud row is terminal — and the id-reuse on the next park
-      // would then converge against an immutable row and the content would never land.
+      // would then converge against an immutable row and the content would never land. The
+      // local record mirrors the row's ACTUAL terminal state, not the intended one: our
+      // transition is state-guarded and can lose a race (zero rows updated, no error) to a
+      // human decision that landed first — the decision wins, locally too.
       withdrawProposal: async (id) => {
         await live.store.withdrawProposal(id);
-        if (rds.pendingProposal()?.id === id) rds.resolveProposal("withdrawn");
+        if (rds.pendingProposal()?.id === id) {
+          const row = await live.store.getProposal(id).catch(() => null);
+          rds.resolveProposal(row && row.state !== "pending" ? row.state : "withdrawn");
+        }
       },
       decideProposal: async (id, st) => {
         await live.store.decideProposal(id, st);
-        if (rds.pendingProposal()?.id === id) rds.resolveProposal(st);
+        if (rds.pendingProposal()?.id === id) {
+          const row = await live.store.getProposal(id).catch(() => null);
+          rds.resolveProposal(row && row.state !== "pending" ? row.state : st);
+        }
       },
       createProposal: async (input) => {
         // Re-parking identical content reuses the LOCAL record's id, so a retry after a lost
@@ -1320,6 +1329,17 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
         let created: { id: string };
         try {
           created = await live.store.createProposal({ ...input, ...(id ? { id } : {}) });
+          // A reused id can be TERMINAL in the cloud (the human decided mid-session; the local
+          // record only settles at attach or via our own transitions). createProposal returns a
+          // terminal id untouched — verify the park actually landed pending, and if not, settle
+          // the local record from the cloud's terminal state and re-park under a fresh identity.
+          if (id) {
+            const row = await live.store.getProposal(created.id).catch(() => null);
+            if (row && row.state !== "pending") {
+              if (rds.pendingProposal()?.id === created.id) rds.resolveProposal(row.state);
+              created = await live.store.createProposal(input); // fresh id — a genuine successor
+            }
+          }
         } catch (e) {
           hubParkFailed = true;
           throw e;

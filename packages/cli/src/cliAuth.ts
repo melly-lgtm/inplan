@@ -327,22 +327,33 @@ export interface RemoteBackend {
 /** Stable per-machine proposer client id (proposals v1): minted once, kept beside the sidecars
  *  (INPLAN_HOME-aware, so tests stay isolated). Losing it merely orphans a pending row — which
  *  stays reviewable — and the next park mints a new row. */
+let cachedClientId: string | null = null;
 function machineClientId(): string {
+  // Process-lifetime cache: liveRemoteBackend re-mints the backend after token refreshes, and a
+  // changing identity mid-process would orphan the pending row it just parked.
+  if (cachedClientId) return cachedClientId;
   const p = join(dirname(sidecarRoot()), "proposer-client-id");
   try {
     const v = readFileSync(p, "utf8").trim();
-    if (v) return v;
+    if (v) return (cachedClientId = v);
   } catch {
     /* mint below */
   }
   const v = mintProposalId();
   try {
     mkdirSync(dirname(p), { recursive: true });
-    writeFileSync(p, v);
+    // Exclusive create: two processes racing the first mint must converge on ONE identity —
+    // last-writer-wins would leave the loser's future rows invisible to its own lookups.
+    writeFileSync(p, v, { flag: "wx" });
   } catch {
-    /* unwritable home: an ephemeral id still works for this process */
+    try {
+      const w = readFileSync(p, "utf8").trim();
+      if (w) return (cachedClientId = w); // the race winner's id
+    } catch {
+      /* unwritable home: an ephemeral id still works for this process (cached above) */
+    }
   }
-  return v;
+  return (cachedClientId = v);
 }
 
 /**
