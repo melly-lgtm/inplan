@@ -100,9 +100,12 @@ How to audit "did my edit land?", in order:
 
 If the park itself fails, the wait JSON carries `proposal: { state: "park_failed", bytes,
 hash }` (and stderr says the push FAILED) — `park_failed` means exactly that the **cloud push
-was not confirmed**: no `agent_revision_proposed` event, no `pending_review` record; your edit
-stays in the working copy, and the next `wait` run re-detects the divergence and retries the
-park. Do not re-create the edit; just re-run.
+was not confirmed**. It does NOT prove the push didn't land: a lost response can leave the
+proposal live in the cloud while the local event and record are missing. Either way the retry
+is safe and automatic — the next `wait` run first reconciles the cloud's proposal slot (a
+landed push is adopted as the pending record, not re-sent), and re-pushing identical content
+is idempotent (same proposal identity, no duplicate). Your edit stays in the working copy;
+do not re-create it — just re-run.
 
 The converse also holds: a CONFIRMED push stays parked even when a piece of local bookkeeping
 failed around it. The event append or the local record write can fail after the push landed —
