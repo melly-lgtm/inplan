@@ -204,6 +204,9 @@ export class Session {
     if (entries.some((e) => e.type === LogEventType.AgentRevisionProposed)) {
       void this.pendingProposal().then((proposed) => {
         if (proposed != null) handlers.onProposal(proposed.content, proposed.id);
+      }).catch(() => {
+        /* a corrupted, unpreservable rows file fails loudly on the next explicit operation;
+           the passive dispatch must not crash the main process over it */
       });
     }
     // An accepted agent edit: the working file holds the agent's revision (the gate
