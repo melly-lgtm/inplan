@@ -279,6 +279,19 @@ describe("park / audit / resolve", () => {
     expect(s.latestProposal()?.state).toBe("decided");
   });
 
+  it("a malformed awaiting-outcome marker is stripped, never treated as an elapsed grace", () => {
+    // A truthy-but-garbage marker would read as "already waited one run" and finalize 'decided'
+    // on the first slot clear. The pending proposal itself is intact — only the marker drops.
+    s.parkProposal("v1");
+    const recordPath = join(dir, "remote", "doc-1.plan.md.proposed.json");
+    const stored = JSON.parse(readFileSync(recordPath, "utf8"));
+    writeFileSync(recordPath, JSON.stringify({ ...stored, awaitingOutcomeSince: "not-a-timestamp" }, null, 2));
+    const pending = s.pendingProposal();
+    expect(pending).not.toBeNull();
+    expect(pending?.awaitingOutcomeSince).toBeUndefined(); // stripped → the caller grants the full grace
+    expect(s.noteOutcomeMissing(new Date("2026-08-15T01:00:00.000Z"))?.awaitingOutcomeSince).toBe("2026-08-15T01:00:00.000Z");
+  });
+
   it("re-pushing identical text RESETS a stale awaiting-outcome marker — the slot is live again", () => {
     // Without the reset, a later slot-clear would finalize 'decided' immediately off the old
     // sighting instead of granting the full grace for the decision event to surface.

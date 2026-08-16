@@ -438,7 +438,7 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
     // contradict each other about whether agent_revision_proposed was logged.
     process.stderr.write(
       applied.eventLogged === false
-        ? "inplan: review mode — your edit was parked as a proposal, but its notification event could NOT be logged: the proposal is safe in the cloud, and the human's editor may not show it until they reload. Not a sync failure.\n"
+        ? "inplan: review mode — your edit was parked as a proposal, but its notification event could NOT be logged: the proposal is safely stored, and the human's editor may not show it until they reload. Not a sync failure.\n"
         : "inplan: review mode — your edit was parked as a proposal (agent_revision_proposed); the canonical body is unchanged until the human accepts. This is normal, not a sync failure.\n",
     );
   }

@@ -336,6 +336,11 @@ export class RemoteDocState {
       // absent — reconciliation from the cloud slot rebuilds the truth. Finalized records
       // tolerate the mismatch: their text is historical convenience, not a recovery input.
       if (p.state === "pending_review" && (hashBody(p.text) !== p.hash || utf8Bytes(p.text) !== p.bytes)) return null;
+      // The optional grace marker must be a real timestamp or absent: a malformed truthy value
+      // would read as "already waited one run" and finalize 'decided' on the first slot clear,
+      // skipping the grace entirely. Strip it rather than reject the record — the pending
+      // proposal itself is intact; only the marker is damaged.
+      if (p.awaitingOutcomeSince !== undefined && !Number.isFinite(Date.parse(p.awaitingOutcomeSince))) delete p.awaitingOutcomeSince;
       return p as StoredProposal;
     } catch {
       return null;
