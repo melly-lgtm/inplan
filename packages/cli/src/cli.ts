@@ -312,10 +312,20 @@ function modeFrom(entries: LogEntry[]): { cadence: string; wake: "turn-end" | "a
   return { cadence: "turn", wake: "turn-end", locksEditor: true };
 }
 
-/** Agent-change acceptance — a **global** setting (settings.json), read fresh each turn via
- *  settingsFromEntries (global file + this session's settings_changed), default "review". */
-function acceptanceFrom(entries: LogEntry[]): "auto" | "review" {
-  return settingsFromEntries(entries).acceptance === "auto" ? "auto" : "review";
+/** Agent-change acceptance. Per-doc intent wins (#94): the LATEST protocol event that carries an
+ *  acceptance — the editor's mode picker records it into `mode_changed`, the settings surface into
+ *  `settings_changed` — decides, newest first regardless of type; only with no such event in the
+ *  doc's history does the machine-global settings.json (default "review") apply. Previously the
+ *  `mode_changed` payload's acceptance was dropped, so a doc the human set to review in the mode
+ *  picker was silently bypassed by a machine-global "auto" (a direct canonical write, no review). */
+export function acceptanceFrom(entries: LogEntry[]): "auto" | "review" {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]!;
+    if (e.type !== LogEventType.ModeChanged && e.type !== LogEventType.SettingsChanged) continue;
+    const a = (e.payload as { acceptance?: unknown } | undefined)?.acceptance;
+    if (a === "auto" || a === "review") return a; // events without a usable acceptance are skipped
+  }
+  return settingsFromEntries([]).acceptance === "auto" ? "auto" : "review"; // = the global file
 }
 
 /** The highest seq in the protocol history (0 if empty). */
