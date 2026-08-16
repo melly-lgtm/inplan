@@ -1333,8 +1333,10 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
           // record only settles at attach or via our own transitions). createProposal returns a
           // terminal id untouched — verify the park actually landed pending, and if not, settle
           // the local record from the cloud's terminal state and re-park under a fresh identity.
+          // The verification lookup is NOT allowed to fail silently: an unknown state must report
+          // an unconfirmed park (park_failed means exactly that), never a claimed pending_review.
           if (id) {
-            const row = await live.store.getProposal(created.id).catch(() => null);
+            const row = await live.store.getProposal(created.id);
             if (row && row.state !== "pending") {
               if (rds.pendingProposal()?.id === created.id) rds.resolveProposal(row.state);
               // Fresh id — a genuine successor. Strip any caller-supplied id: passing input
@@ -1342,6 +1344,14 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
               // untouched again and never landing the content.
               created = await live.store.createProposal({ content: input.content, baseHash: input.baseHash, baseContent: input.baseContent });
             }
+          }
+          // A DIFFERENT id displaces the prior local pending record — but the cloud may have
+          // DECIDED that prior mid-session (our supersede is state-guarded and skips terminal
+          // rows). Mirror the cloud's actual state before the local park would mark it
+          // superseded; the decision wins, locally too. Lookup failures degrade the park.
+          if (prior && prior.id !== created.id) {
+            const priorRow = await live.store.getProposal(prior.id);
+            if (priorRow && priorRow.state !== "pending" && priorRow.state !== "superseded") rds.resolveProposal(priorRow.state);
           }
         } catch (e) {
           hubParkFailed = true;
