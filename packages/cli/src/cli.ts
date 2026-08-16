@@ -1348,17 +1348,23 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
               created = await live.store.createProposal({ content: input.content, baseHash: input.baseHash, baseContent: input.baseContent });
             }
           }
-          // A DIFFERENT id displaces the prior local pending record — but the cloud may have
-          // DECIDED that prior mid-session (our supersede is state-guarded and skips terminal
-          // rows). Mirror the cloud's actual state before the local park would mark it
-          // superseded; the decision wins, locally too. Lookup failures degrade the park.
+        } catch (e) {
+          hubParkFailed = true;
+          throw e;
+        }
+        // A DIFFERENT id displaces the prior local pending record — but the cloud may have
+        // DECIDED that prior mid-session (our supersede is state-guarded and skips terminal
+        // rows). Mirror the cloud's actual state before the local park would mark it superseded;
+        // the decision wins, locally too. This reconciliation is OUTSIDE the park's failure
+        // envelope: the park is confirmed by now, and a transient lookup here must not
+        // masquerade as park_failed — on failure the next attach settles it from the cloud.
+        try {
           if (prior && prior.id !== created.id) {
             const priorRow = await live.store.getProposal(prior.id);
             if (priorRow && priorRow.state !== "pending" && priorRow.state !== "superseded") rds.resolveProposal(priorRow.state);
           }
-        } catch (e) {
-          hubParkFailed = true;
-          throw e;
+        } catch {
+          /* deferred to next-attach reconciliation */
         }
         try {
           rds.parkProposal(input.content, undefined, created.id);
