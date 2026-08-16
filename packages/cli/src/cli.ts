@@ -1188,27 +1188,38 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     // has emptied: the decision events name the outcome; when none is readable yet, the record
     // waits one more run (a slot-clear can race ahead of its decision event) before degrading to
     // 'decided'. A transient slot read failure skips both — retry next run.
+    // Whether THIS attach transitioned a record pending → terminal. The corpse restore below is
+    // gated on it: only a just-decided proposal's leftover text is a corpse — on any later attach
+    // an identical working copy is a deliberate re-edit (an agent may legitimately re-propose
+    // byte-identical content after a rejection), and overwriting it would destroy real work.
+    let justFinalized = false;
     const slot = await live.store.getProposed().catch(() => undefined);
     if (typeof slot === "string" && needsReparkFromSlot(rds.latestProposal(), slot)) {
       try {
         // A pending record the slot no longer matches was DISPLACED while we were away — but not
         // necessarily superseded: the human may have decided it before another machine parked the
         // slot's new content. Resolve it from the decision events FIRST, so a real acceptance is
-        // never mislabeled; only when no decision is readable does 'superseded' apply (the slot's
-        // replacement content is itself the proof of displacement, so no grace is owed here).
+        // never mislabeled. When no decision is readable, the record gets the same one-run grace
+        // as the empty-slot path (the decision event can lag the slot change) — the repark is
+        // deferred with it, and a still-unreadable outcome next run finalizes as 'superseded'.
         const displaced = rds.pendingProposal();
+        let outcome: ProposalOutcome | null = "superseded";
         if (displaced) {
-          let outcome: ProposalOutcome = "superseded";
           try {
             const { entries } = await live.channel.readSince(0);
             const resolved = resolutionFromEvents(entries, displaced);
             if (resolved !== "decided") outcome = resolved;
+            else if (!displaced.awaitingOutcomeSince) outcome = null; // first sighting — grace
           } catch {
-            /* events unreadable — displacement is still certain, so 'superseded' stands */
+            if (!displaced.awaitingOutcomeSince) outcome = null; // unreadable — same grace
           }
-          rds.resolveProposal(outcome);
         }
-        rds.parkProposal(slot);
+        if (displaced && outcome === null) {
+          rds.noteOutcomeMissing(); // defer both the finalization and the repark one run
+        } else {
+          if (displaced && outcome) justFinalized = rds.resolveProposal(outcome) !== null;
+          rds.parkProposal(slot);
+        }
       } catch (e) {
         // Local persistence trouble must not stop the attach: the cloud proposal stays live and
         // reconciliation retries on the next run.
@@ -1220,20 +1231,21 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       try {
         const { entries } = await live.channel.readSince(0);
         const outcome = resolutionFromEvents(entries, parkedEarlier);
-        if (outcome !== "decided") rds.resolveProposal(outcome);
-        else if (parkedEarlier.awaitingOutcomeSince) rds.resolveProposal("decided");
+        if (outcome !== "decided") justFinalized = rds.resolveProposal(outcome) !== null;
+        else if (parkedEarlier.awaitingOutcomeSince) justFinalized = rds.resolveProposal("decided") !== null;
         else rds.noteOutcomeMissing();
       } catch {
         /* transient history read failure: leave the record pending and retry next run */
       }
     }
 
-    // A working copy equal to a DECIDED proposal's text is not "unsynced agent edits" — the
+    // A working copy equal to a JUST-decided proposal's text is not "unsynced agent edits" — the
     // post-turn re-sync died before running, and the human has since decided. Restore canonical
     // (the decision stands, whichever way it went); keeping the copy would quarantine it again
-    // next turn and re-park a proposal the human may have just rejected. Skip when a replay is
-    // pending — that marker means the copy holds an unpushed direct edit, not a proposal corpse.
-    if (!rds.replayPending() && isDecidedProposalCorpse(rds.latestProposal(), rds.readWorkFile())) {
+    // next turn and re-park a proposal the human may have just rejected. Gated on justFinalized:
+    // on any LATER attach an identical copy is a deliberate re-edit to preserve, not a corpse.
+    // Skip when a replay is pending — that copy holds an unpushed direct edit.
+    if (justFinalized && !rds.replayPending() && isDecidedProposalCorpse(rds.latestProposal(), rds.readWorkFile())) {
       rds.writeWorkFile(canonical);
       rds.recordSynced(canonical);
     }
