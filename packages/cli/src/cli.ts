@@ -1208,23 +1208,30 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
         if (myRow && pending?.id !== myRow.id) {
           // The cloud holds a pending proposal of mine this machine has no live record of. A
           // DIFFERENT local pending record settles from ITS OWN row first — the human may have
-          // decided it before this newer proposal displaced it, and the row names which. A row
-          // that is missing (never created — the id was minted for a park whose push then took a
+          // decided it before this newer proposal displaced it, and the row names which. Only a
+          // DEFINITIVE lookup may finalize: a transient failure (undefined) defers the whole
+          // reconciliation — finalizing on it could append an irreversible wrong outcome, and
+          // adopting the row would supersede the record locally through the park. A row that is
+          // definitively missing (null — the id was minted for a park whose push then took a
           // fresh identity) or still pending finalizes as superseded: my one-pending-per-proposer
           // row is now `myRow`, so the old record is displaced either way.
+          let settled = true;
           if (pending) {
-            const priorRow = await live.store.getProposal(pending.id).catch(() => null);
-            const finalized = rds.resolveProposal(priorRow && priorRow.state !== "pending" ? priorRow.state : "superseded");
-            // Corpse-restore for the DISPLACED record must run HERE, against the record we just
-            // finalized: adopting the row below makes latestProposal() the NEW pending record,
-            // so the generic check after this block could never match — leaving a stale working
-            // copy that next turn would quarantine and push OVER the row's proposal.
-            if (finalized && !rds.replayPending() && isDecidedProposalCorpse(finalized, rds.readWorkFile())) {
-              rds.writeWorkFile(canonical);
-              rds.recordSynced(canonical);
+            const priorRow = await live.store.getProposal(pending.id).catch(() => undefined);
+            if (priorRow === undefined) settled = false; // transient — retry the whole block next attach
+            else {
+              const finalized = rds.resolveProposal(priorRow && priorRow.state !== "pending" ? priorRow.state : "superseded");
+              // Corpse-restore for the DISPLACED record must run HERE, against the record we just
+              // finalized: adopting the row below makes latestProposal() the NEW pending record,
+              // so the generic check after this block could never match — leaving a stale working
+              // copy that next turn would quarantine and push OVER the row's proposal.
+              if (finalized && !rds.replayPending() && isDecidedProposalCorpse(finalized, rds.readWorkFile())) {
+                rds.writeWorkFile(canonical);
+                rds.recordSynced(canonical);
+              }
             }
           }
-          rds.parkProposal(myRow.content, undefined, myRow.id); // adopt the row's identity — a fresh local id would split them
+          if (settled) rds.parkProposal(myRow.content, undefined, myRow.id); // adopt the row's identity — a fresh local id would split them
         } else if (myRow && pending && pending.hash !== hashBody(myRow.content)) {
           // Same identity, different content: the row is the pushed side of the pair — a crash
           // after the push but before the record write left the record on the older text. The

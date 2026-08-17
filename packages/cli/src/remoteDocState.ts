@@ -149,8 +149,10 @@ export class RemoteDocState {
     if (prior && id !== undefined && id === prior.id && prior.hash !== hash) {
       // Same identity, updated content (the cloud converge-if-pending path): the record follows
       // in place. Superseding here would finalize the id into the history and then republish the
-      // SAME id as pending — breaking terminal immutability and corrupting the history.
-      const updated: ProposalRecord = { ...prior, hash, bytes: utf8Bytes(text), at: at.toISOString() };
+      // SAME id as pending — breaking terminal immutability and corrupting the history. `at`
+      // stays the ORIGINAL park time — it documents when the proposal was parked, not when a
+      // reconciliation last touched the record.
+      const updated: ProposalRecord = { ...prior, hash, bytes: utf8Bytes(text) };
       this.publish({ ...updated, text });
       return updated;
     }

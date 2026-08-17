@@ -208,10 +208,11 @@ describe("row adoption — reconciliation from the cloud's authoritative side", 
   });
 
   it("a pending record follows its own row's converged content in place — same id, no supersede", () => {
-    const first = s.parkProposal("old text", undefined, "row-7");
-    const followed = s.parkProposal("new text", undefined, "row-7");
+    const first = s.parkProposal("old text", new Date("2026-08-15T00:00:00.000Z"), "row-7");
+    const followed = s.parkProposal("new text", new Date("2026-08-16T00:00:00.000Z"), "row-7");
     expect(followed.id).toBe(first.id);
     expect(followed.hash).toBe(hashBody("new text"));
+    expect(followed.at).toBe(first.at); // the ORIGINAL park time — convergence is not a new park
     expect(s.proposedText()).toBe("new text");
     expect(existsSync(join(dir, "remote", "doc-1.plan.md.proposals.jsonl"))).toBe(false); // nothing finalized
   });
