@@ -55,6 +55,15 @@ describe("merge3", () => {
     expect(merge3(base, ours, theirs)).toBe(doc("a", "c", "d", "e"));
   });
 
+  it("ADJACENT replacements on different sides are independent — both land, never a conflict", () => {
+    // [0,1) and [1,2) share only a boundary point; treating them as one region would hand the
+    // canonical's line-1 edit to the proposal and silently drop it.
+    const base = doc("a", "b", "c");
+    const ours = doc("A!", "b", "c"); // canonical replaced line 1
+    const theirs = doc("a", "B!", "c"); // proposal replaced the ADJACENT line 2
+    expect(merge3(base, ours, theirs)).toBe(doc("A!", "B!", "c"));
+  });
+
   it("an insertion at the edge of the other side's change is one region, decided as a whole", () => {
     // Interleaving line-by-line here could stitch half of each side together; the region policy
     // hands the whole ambiguity to the proposal, whose hunk the reviewer then judges.

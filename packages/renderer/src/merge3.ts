@@ -88,10 +88,17 @@ export function merge3(base: string, ours: string, theirs: string): string {
   const blocksO = changeBlocks(B, ours.split("\n"));
   const blocksT = changeBlocks(B, theirs.split("\n"));
 
-  // Group blocks from both sides into regions of the base: blocks whose base spans touch
-  // (inclusive of insertion points — an insertion at the boundary of the other side's change is
-  // ambiguous and must be decided as one region, not interleaved line by line).
+  // Group blocks from both sides into regions of the base. A REPLACEMENT [s, s+count) touches
+  // another block only on strict overlap — two sides editing ADJACENT lines are independent
+  // changes that must both land, never a conflict. An INSERTION (count 0) occupies its point
+  // INCLUSIVELY: inserted at the boundary of the other side's change, its position relative to
+  // that change is ambiguous, so the whole region is decided as one — not interleaved line by
+  // line.
   type Tagged = ChangeBlock & { side: "ours" | "theirs" };
+  const touches = (a: Tagged, b: Tagged): boolean => {
+    if (a.count > 0 && b.count > 0) return a.start < b.start + b.count && b.start < a.start + a.count;
+    return a.start <= b.start + b.count && b.start <= a.start + a.count;
+  };
   const all: Tagged[] = [...blocksO.map((b) => ({ ...b, side: "ours" as const })), ...blocksT.map((b) => ({ ...b, side: "theirs" as const }))].sort(
     (a, b) => a.start - b.start || a.side.localeCompare(b.side),
   );
@@ -100,13 +107,13 @@ export function merge3(base: string, ours: string, theirs: string): string {
   let base_idx = 0;
   let k = 0;
   while (k < all.length) {
-    // Grow the region transitively: [lo, hi] in base coords, spans touching when they intersect
-    // as closed ranges (an insertion has count 0 and still occupies its point).
+    // Grow the region transitively (blocks are sorted by start, so a non-toucher can still be
+    // followed only by blocks that don't touch anything before it once its start clears hi).
     let lo = all[k]!.start;
     let hi = all[k]!.start + all[k]!.count;
     const region: Tagged[] = [all[k]!];
     k++;
-    while (k < all.length && all[k]!.start <= hi) {
+    while (k < all.length && all[k]!.start <= hi && region.some((r) => touches(r, all[k]!))) {
       hi = Math.max(hi, all[k]!.start + all[k]!.count);
       region.push(all[k]!);
       k++;

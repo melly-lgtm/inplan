@@ -1325,18 +1325,23 @@ export function App(props: EditorProps = {}): JSX.Element {
       // reverted on reload, because save({apply}) is a no-op in the unified-Yjs model (the server is
       // the sole writer of documents.body, from the binding). File-backed editors have no binding, so
       // they fall back to a silent canonical save (accepting a proposal must not end the turn).
-      if (syncExternalDoc(finalDoc, prevDoc.comments, prevDoc.body)) {
-        setCheckpoint(serialized);
-      } else {
-        void hostApi().save(serialized, { kind: "apply", cadence }).then(() => setCheckpoint(serialized));
-      }
+      // PERSIST BEFORE SETTLING: the proposal row may only leave `pending` once the accepted
+      // content is durably saved — settled-but-unsaved would lose the acceptance (the row no
+      // longer resurfaces for review, and the content never landed). On the collab path the
+      // binding/store own persistence synchronously; on the file path the save is awaited first,
+      // and a FAILED save leaves the row pending (the review resurfaces — the retry).
+      const persisted = syncExternalDoc(finalDoc, prevDoc.comments, prevDoc.body)
+        ? Promise.resolve().then(() => setCheckpoint(serialized))
+        : hostApi()
+            .save(serialized, { kind: "apply", cadence })
+            .then(() => setCheckpoint(serialized));
       // A failed settlement must be visible: the content is applied and the review UI is gone, but
       // the row stays pending and WILL resurface for review on the next launch — announce that
       // (the resurfacing is the retry) instead of letting it look like a mystery double-review.
       // On success, advance the QUEUE: the next-oldest pending proposal (another proposer's park)
       // surfaces immediately — reviewed one at a time, in order.
-      hostApi()
-        .clearProposal(acceptedCount === accepted.length ? "accepted" : acceptedCount === 0 ? "rejected" : "partially_accepted", proposal.id)
+      persisted
+        .then(() => hostApi().clearProposal(acceptedCount === accepted.length ? "accepted" : acceptedCount === 0 ? "rejected" : "partially_accepted", proposal.id))
         .then(
           () =>
             hostApi()
@@ -1345,7 +1350,7 @@ export function App(props: EditorProps = {}): JSX.Element {
               .catch(() => {
                 /* the advance is best-effort — a queued proposal re-surfaces on the next launch/park */
               }),
-          () => setStatus("the decision could not be recorded — this proposal will reappear for review"),
+          () => setStatus("the decision could not be completed (save or settle failed) — this proposal will reappear for review"),
         );
       // The decision event names WHICH proposal was decided (proposals v1) — an auditor binds it
       // to the row by id, never by inferring from event order.
