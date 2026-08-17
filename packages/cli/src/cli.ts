@@ -352,6 +352,11 @@ export interface WaitBackend {
    *  and is responsible for emitting its own result — including the turn's landing
    *  signal, passed through `info`, so the handoff can't hide a parked proposal. */
   onSaveLocally?: (info: { proposal?: { state: "pending_review" | "park_failed"; id?: string; bytes: number; hash: string } }) => Promise<void>;
+  /** The still-pending prior proposal's id, from LOCAL state only — read when a park fails, to
+   *  name the proposal that remains live in the `park_failed` output. Must never touch the
+   *  network: the park just failed, so a remote read here would stall the failure report on the
+   *  very outage it is reporting. Unset (or undefined) simply omits the id. */
+  localPendingProposalId?: () => string | undefined;
 }
 
 /** Local sidecar-file backend for a document on disk. */
@@ -462,8 +467,10 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
   // no-change turn — stderr alone is not a signal contract. The id makes the later audit a
   // lookup (getProposal / the .proposed.json record share it); a failed park has no confirmed
   // identity of its own, so it carries the STILL-PENDING prior proposal's id when one exists
-  // (the failed re-push left that proposal live) and omits the field otherwise.
-  const parkFailedId = applied.parkFailed ? await store.myPendingProposal().then((r) => r?.id, () => undefined) : undefined;
+  // (the failed re-push left that proposal live) and omits the field otherwise. The id comes
+  // from LOCAL state only (backend.localPendingProposalId) — never a remote read, which would
+  // stall the park_failed report on the very outage it is reporting.
+  const parkFailedId = applied.parkFailed ? backend.localPendingProposalId?.() : undefined;
   const proposalOut: { proposal?: { state: "pending_review" | "park_failed"; id?: string; bytes: number; hash: string } } = applied.proposed
     ? { proposal: { state: "pending_review", ...(applied.proposalId ? { id: applied.proposalId } : {}), bytes: utf8Bytes(current), hash: hashBody(current) } }
     : applied.parkFailed
@@ -1408,6 +1415,7 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
         store: gateStore, // …the agent reads/edits a local working copy; proposals go to the cloud…
         history: async () => (await live.channel.readSince(0)).entries,
         logExit: () => {},
+        localPendingProposalId: () => rds.pendingProposal()?.id, // local file read only — see WaitBackend
         ...(onSaveLocallyGate ? { onSaveLocally: onSaveLocallyGate } : {}),
       },
       explicitCursor,
