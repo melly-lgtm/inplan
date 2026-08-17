@@ -78,7 +78,7 @@ describe("applyGatedEdit — file path (no plugin)", () => {
     };
     const channel = new MemoryControlChannel();
     const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "agent body", canonicalText: "canon", quarantine: true, gate: null });
-    expect(applied).toEqual({ proposed: true });
+    expect(applied).toEqual({ proposed: true, proposalId: (await store.myPendingProposal())?.id }); // the id names the parked row
     expect(await proposedContent(store)).toBe("agent body");
     expect(await store.loadDoc()).toBe("agent body"); // revert failed — edit stays put
     expect(await types(channel)).toEqual([LogEventType.AgentRevisionProposed]); // the park is logged
@@ -91,7 +91,7 @@ describe("applyGatedEdit — file path (no plugin)", () => {
       throw new Error("log unavailable");
     };
     const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "agent body", canonicalText: "canon", quarantine: true, gate: null });
-    expect(applied).toEqual({ proposed: true, eventLogged: false }); // no crash, no false failure — and the missing event is reported
+    expect(applied).toEqual({ proposed: true, proposalId: (await store.myPendingProposal())?.id, eventLogged: false }); // no crash, no false failure — and the missing event is reported
     expect(await proposedContent(store)).toBe("agent body");
     expect(await store.loadDoc()).toBe("canon"); // the revert did run
   });

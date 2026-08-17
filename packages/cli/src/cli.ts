@@ -39,7 +39,7 @@ import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
 import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenceReason, type PluginGate } from "./pluginGate";
 import { demoteSource, shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
-import { RemoteDocState, isDecidedProposalCorpse, needsReparkFromSlot, resolutionFromEvents, utf8Bytes, type ProposalOutcome } from "./remoteDocState";
+import { RemoteDocState, isDecidedProposalCorpse, utf8Bytes } from "./remoteDocState";
 import { announcePresence, presenceTokenResolver } from "./presence";
 import { awaitReopen, wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
@@ -351,7 +351,12 @@ export interface WaitBackend {
    *  and that event wakes the wait, this runs instead of the normal status output
    *  and is responsible for emitting its own result — including the turn's landing
    *  signal, passed through `info`, so the handoff can't hide a parked proposal. */
-  onSaveLocally?: (info: { proposal?: { state: "pending_review" | "park_failed"; bytes: number; hash: string } }) => Promise<void>;
+  onSaveLocally?: (info: { proposal?: { state: "pending_review" | "park_failed"; id?: string; bytes: number; hash: string } }) => Promise<void>;
+  /** The still-pending prior proposal's id, from LOCAL state only — read when a park fails, to
+   *  name the proposal that remains live in the `park_failed` output. Must never touch the
+   *  network: the park just failed, so a remote read here would stall the failure report on the
+   *  very outage it is reporting. Unset (or undefined) simply omits the id. */
+  localPendingProposalId?: () => string | undefined;
 }
 
 /** Local sidecar-file backend for a document on disk. */
@@ -459,11 +464,17 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
   // including wait_failed and superseded, where mistaking a parked edit for a failed sync is
   // exactly the misread this field exists to prevent. A FAILED park is machine-readable too
   // (state "park_failed"): an agent parsing only the JSON must never read a failed push as a
-  // no-change turn — stderr alone is not a signal contract.
-  const proposalOut: { proposal?: { state: "pending_review" | "park_failed"; bytes: number; hash: string } } = applied.proposed
-    ? { proposal: { state: "pending_review", bytes: utf8Bytes(current), hash: hashBody(current) } }
+  // no-change turn — stderr alone is not a signal contract. The id makes the later audit a
+  // lookup (getProposal / the .proposed.json record share it); a failed park has no confirmed
+  // identity of its own, so it carries the STILL-PENDING prior proposal's id when one exists
+  // (the failed re-push left that proposal live) and omits the field otherwise. The id comes
+  // from LOCAL state only (backend.localPendingProposalId) — never a remote read, which would
+  // stall the park_failed report on the very outage it is reporting.
+  const parkFailedId = applied.parkFailed ? backend.localPendingProposalId?.() : undefined;
+  const proposalOut: { proposal?: { state: "pending_review" | "park_failed"; id?: string; bytes: number; hash: string } } = applied.proposed
+    ? { proposal: { state: "pending_review", ...(applied.proposalId ? { id: applied.proposalId } : {}), bytes: utf8Bytes(current), hash: hashBody(current) } }
     : applied.parkFailed
-      ? { proposal: { state: "park_failed", bytes: utf8Bytes(current), hash: hashBody(current) } }
+      ? { proposal: { state: "park_failed", ...(parkFailedId ? { id: parkFailedId } : {}), bytes: utf8Bytes(current), hash: hashBody(current) } }
       : {};
 
   // Signal the agent has (re)engaged this round so the editor can clear its
@@ -1186,77 +1197,66 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
       exitAfterFlush(EXIT_PLUGIN_UNAVAILABLE);
       return; // the `finally` below tears presence down on the way out
     }
-    // A proposal parked on an EARLIER run resolves here (#88): if the cloud's proposed slot has
-    // emptied, the human decided — finalize the record with the outcome the decision events name
-    // (accepted / partially_accepted / rejected), so "did my edit land?" stays answerable from
-    // disk even though agent_revision_proposed left the wait output long ago. A transient slot
-    // read failure just retries next run; the record stays pending.
-    // Reconcile with the CLOUD slot first (#88): the slot is the authoritative side of a park, so
-    // a proposal it holds that this machine has no live record of (a crash between the confirmed
-    // push and the record publish, a re-park after a finalization) is re-parked from the slot's
-    // own text, recreating the truthful pending record. Then resolve a pending record whose slot
-    // has emptied: the decision events name the outcome; when none is readable yet, the record
-    // waits one more run (a slot-clear can race ahead of its decision event) before degrading to
-    // 'decided'. A transient slot read failure skips both — retry next run.
+    // A proposal parked on an EARLIER run resolves here (#88 → proposals v1): the local record's
+    // id IS the cloud row's id, so "did my edit land?" is a lookup, never an inference. My own
+    // pending ROW is the authoritative live side — a record this machine lost (a crash between
+    // the confirmed push and the record publish) is rebuilt from it; a pending record whose row
+    // has gone terminal mirrors the row's actual outcome verbatim. A transient read failure
+    // skips reconciliation — the record stays pending and the next attach retries.
     // Whether THIS attach transitioned a record pending → terminal. The corpse restore below is
     // gated on it: only a just-decided proposal's leftover text is a corpse — on any later attach
     // an identical working copy is a deliberate re-edit (an agent may legitimately re-propose
     // byte-identical content after a rejection), and overwriting it would destroy real work.
     let justFinalized = false;
-    const slotRow = await live.store.myPendingProposal().catch(() => undefined);
-    const slot = slotRow === undefined ? undefined : (slotRow?.content ?? null);
-    if (typeof slot === "string" && needsReparkFromSlot(rds.latestProposal(), slot)) {
+    const myRow = await live.store.myPendingProposal().catch(() => undefined); // undefined = unreadable this run
+    if (myRow !== undefined) {
       try {
-        // A pending record the slot no longer matches was DISPLACED while we were away — but not
-        // necessarily superseded: the human may have decided it before another machine parked the
-        // slot's new content. Resolve it from the decision events FIRST, so a real acceptance is
-        // never mislabeled. When no decision is readable, the record gets the same one-run grace
-        // as the empty-slot path (the decision event can lag the slot change) — the repark is
-        // deferred with it, and a still-unreadable outcome next run finalizes as 'superseded'.
-        const displaced = rds.pendingProposal();
-        let outcome: ProposalOutcome | null = "superseded";
-        if (displaced) {
-          try {
-            const { entries } = await live.channel.readSince(0);
-            const resolved = resolutionFromEvents(entries, displaced);
-            if (resolved !== "decided") outcome = resolved;
-            else if (!displaced.awaitingOutcomeSince) outcome = null; // first sighting — grace
-          } catch {
-            if (!displaced.awaitingOutcomeSince) outcome = null; // unreadable — same grace
-          }
-        }
-        if (displaced && outcome === null) {
-          rds.noteOutcomeMissing(); // defer both the finalization and the repark one run
-        } else {
-          if (displaced && outcome) {
-            const finalized = rds.resolveProposal(outcome);
-            // Corpse-restore for the DISPLACED record must run HERE, against the record we just
-            // finalized: parking the slot's content below makes latestProposal() the NEW pending
-            // record, so the generic check after this block could never match — leaving a stale
-            // working copy that next turn would quarantine and push OVER the slot's proposal.
-            if (finalized && !rds.replayPending() && isDecidedProposalCorpse(finalized, rds.readWorkFile())) {
-              rds.writeWorkFile(canonical);
-              rds.recordSynced(canonical);
+        const pending = rds.pendingProposal();
+        if (myRow && pending?.id !== myRow.id) {
+          // The cloud holds a pending proposal of mine this machine has no live record of. A
+          // DIFFERENT local pending record settles from ITS OWN row first — the human may have
+          // decided it before this newer proposal displaced it, and the row names which. Only a
+          // DEFINITIVE lookup may finalize: a transient failure (undefined) defers the whole
+          // reconciliation — finalizing on it could append an irreversible wrong outcome, and
+          // adopting the row would supersede the record locally through the park. A row that is
+          // definitively missing (null — the id was minted for a park whose push then took a
+          // fresh identity) or still pending finalizes as superseded: my one-pending-per-proposer
+          // row is now `myRow`, so the old record is displaced either way.
+          let settled = true;
+          if (pending) {
+            const priorRow = await live.store.getProposal(pending.id).catch(() => undefined);
+            if (priorRow === undefined) settled = false; // transient — retry the whole block next attach
+            else {
+              const finalized = rds.resolveProposal(priorRow && priorRow.state !== "pending" ? priorRow.state : "superseded");
+              // Corpse-restore for the DISPLACED record must run HERE, against the record we just
+              // finalized: adopting the row below makes latestProposal() the NEW pending record,
+              // so the generic check after this block could never match — leaving a stale working
+              // copy that next turn would quarantine and push OVER the row's proposal.
+              if (finalized && !rds.replayPending() && isDecidedProposalCorpse(finalized, rds.readWorkFile())) {
+                rds.writeWorkFile(canonical);
+                rds.recordSynced(canonical);
+              }
             }
           }
-          rds.parkProposal(slot, undefined, slotRow!.id); // keep the CLOUD row's identity — a fresh local id would split them
+          if (settled) rds.parkProposal(myRow.content, undefined, myRow.id); // adopt the row's identity — a fresh local id would split them
+        } else if (myRow && pending && pending.hash !== hashBody(myRow.content)) {
+          // Same identity, different content: the row is the pushed side of the pair — a crash
+          // after the push but before the record write left the record on the older text. The
+          // record follows the row in place (same id, converged content).
+          rds.parkProposal(myRow.content, undefined, myRow.id);
+        } else if (!myRow && pending) {
+          // No pending row of mine, but a pending local record: its row names the outcome.
+          // `null` (row gone — a legacy park with no row, or a purged doc) degrades to 'decided':
+          // the human acted, which way is unknowable. A row still pending under an identity
+          // myPendingProposal no longer matches is left alone — the next attach retries.
+          const row = await live.store.getProposal(pending.id).catch(() => undefined);
+          if (row === null) justFinalized = rds.resolveProposal("decided") !== null;
+          else if (row && row.state !== "pending") justFinalized = rds.resolveProposal(row.state) !== null;
         }
       } catch (e) {
         // Local persistence trouble must not stop the attach: the cloud proposal stays live and
         // reconciliation retries on the next run.
         process.stderr.write(`inplan: could not reconcile the local proposal record (${String(e)}); continuing — it will retry next run\n`);
-      }
-    }
-    const parkedEarlier = rds.pendingProposal();
-    if (parkedEarlier && slot === null) {
-      try {
-        const { entries } = await live.channel.readSince(0);
-        const outcome = resolutionFromEvents(entries, parkedEarlier);
-        if (outcome !== "decided") justFinalized = rds.resolveProposal(outcome) !== null;
-        else if (parkedEarlier.awaitingOutcomeSince) justFinalized = rds.resolveProposal("decided") !== null;
-        else rds.noteOutcomeMissing();
-      } catch {
-        /* transient history read failure: leave the record pending and retry next run */
       }
     }
 
@@ -1381,7 +1381,7 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
     // live.store isn't updated by gate.applyRevision, so reading it would write a stale doc. If
     // the hub read fails we throw BEFORE writing status, so the doc isn't switched to local.
     const onSaveLocallyGate = localFile
-      ? async (info: { proposal?: { state: "pending_review" | "park_failed"; bytes: number; hash: string } }) => {
+      ? async (info: { proposal?: { state: "pending_review" | "park_failed"; id?: string; bytes: number; hash: string } }) => {
           const body = await gate.readCanonical();
           // The handoff writes CANONICAL to the local file. A working copy diverging from the
           // last sync at this moment holds an edit that never reached the hub (e.g. this turn's
@@ -1415,6 +1415,7 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
         store: gateStore, // …the agent reads/edits a local working copy; proposals go to the cloud…
         history: async () => (await live.channel.readSince(0)).entries,
         logExit: () => {},
+        localPendingProposalId: () => rds.pendingProposal()?.id, // local file read only — see WaitBackend
         ...(onSaveLocallyGate ? { onSaveLocally: onSaveLocallyGate } : {}),
       },
       explicitCursor,
