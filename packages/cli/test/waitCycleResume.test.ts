@@ -161,8 +161,9 @@ describe("waitCycle resume is a loop, not a re-entry", () => {
       await reloadThenAct(h.channel);
       await expect(run).resolves.toBe("ok");
 
-      const last = h.lastJson() as ReturnType<typeof h.lastJson> & { proposal?: { state: string; bytes: number; hash: string } };
-      expect(last.proposal).toEqual({ state: "pending_review", bytes: utf8Bytes(DOC_B), hash: hashBody(DOC_B) });
+      const last = h.lastJson() as ReturnType<typeof h.lastJson> & { proposal?: { state: string; id?: string; bytes: number; hash: string } };
+      // The id in the output is the parked row's own id — the audit lookup key (proposals v1).
+      expect(last.proposal).toEqual({ state: "pending_review", id: (await h.store.myPendingProposal())?.id, bytes: utf8Bytes(DOC_B), hash: hashBody(DOC_B) });
       expect(h.stderr()).toContain("parked as a proposal");
       expect(await proposedContent(h.store)).toBe(DOC_B);
     } finally {

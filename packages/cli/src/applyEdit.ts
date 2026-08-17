@@ -27,7 +27,7 @@ export async function applyGatedEdit(
   channel: ControlChannel,
   ev: AgentEditEvaluation,
   ctx: { current: string; canonicalText: string; quarantine: boolean; gate: PluginGate | null },
-): Promise<{ proposed: boolean; parkFailed?: boolean; eventLogged?: boolean }> {
+): Promise<{ proposed: boolean; proposalId?: string; parkFailed?: boolean; eventLogged?: boolean }> {
   const { current, canonicalText, quarantine, gate } = ctx;
   if (ev.removedIds.length > 0) {
     // Confirmed deletions: drop the orphaned comment objects. On the plugin path push the result
@@ -58,7 +58,7 @@ export async function applyGatedEdit(
       // contain its post-commit failures itself — the cloud proposal is live and the human can
       // see it, so surfacing that partial failure here would misreport a real park as a failed
       // push. The gateStore does exactly that: it swallows the local record-write failure and
-      // relies on slot reconciliation at the next attach.
+      // relies on row reconciliation at the next attach.
       return { proposed: false, parkFailed: true };
     }
     // From here the park is REAL — the store holds the proposal (and on the remote path the
@@ -77,18 +77,18 @@ export async function applyGatedEdit(
       await channel.append({
         actor: "agent",
         type: LogEventType.AgentRevisionProposed,
-        // The hash identifies WHICH proposal this event parked, so a later resolution can bind
-        // decision events to this exact proposal (not merely the doc's latest park).
+        // proposal_id names WHICH proposal this event parked — the row/record id, the same one
+        // the wait output carries. bytes/hash stay as human-auditable descriptors of the text.
         payload: { bytes: utf8Bytes(current), hash: hashBody(current), proposal_id: proposalId },
       });
     } catch {
-      // The park stands without its event; resolution falls back to its lesser anchors, which is
-      // exactly what those fallbacks exist for. Report it, though: the event is also what nudges
-      // a live editor to show the review panel, so the caller should tell the agent the proposal
-      // may stay invisible to the human until their editor next reloads.
-      return { proposed: true, eventLogged: false };
+      // The park stands without its event — the proposal row/record is the durable signal now.
+      // Report it, though: the event is also what nudges a live editor to show the review panel,
+      // so the caller should tell the agent the proposal may stay invisible to the human until
+      // their editor next reloads.
+      return { proposed: true, proposalId, eventLogged: false };
     }
-    return { proposed: true };
+    return { proposed: true, proposalId };
   } else if (ev.changed) {
     // Auto-accept (auto mode, or review mode with comment-only changes): advance the base. On the
     // plugin path that means pushing into the plugin's doc; otherwise advance the persisted canonical.

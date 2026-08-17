@@ -75,44 +75,49 @@ history the CLI maintains).
 
 **Review mode parks your edit — that is success, not failure.** Most cloud docs are in review
 mode: your body edit is NOT applied to the canonical; it is pushed to the cloud as a
-**proposal** for the human to accept or reject in their editor. When that happens the wait
-output carries `proposal: { state: "pending_review", bytes, hash }`, an
-`agent_revision_proposed` entry appears in `entries`, and stderr says the edit was parked.
+**proposal** for the human to accept or reject in their editor. Every proposal is a
+first-class object with its own **id** — the same id names it in the wait output, in the local
+record, and in the cloud. When a park happens the wait output carries
+`proposal: { state: "pending_review", id, bytes, hash }`, an `agent_revision_proposed` entry
+(payload `proposal_id`) appears in `entries`, and stderr says the edit was parked.
 
-How to audit "did my edit land?", in order:
-1. **This turn:** the `proposal` field in the wait JSON (`pending_review` = safely parked), or
-   a `document_edited` entry (= applied directly to canonical). The `proposal` field rides
-   **every** turn-ending output when a park happened this turn — `your_turn`/`activity`,
-   `closed`, `navigated`, `wait_failed`, `superseded`, and `moved_local` — losing or handing
-   off the wait afterwards does not un-park your edit, so check the field (and the record
-   below) before classifying it.
-2. **Any later turn:** read `<workingCopy>.proposed.json` — the durable record. Its `state`
-   becomes `accepted`, `partially_accepted`, or `rejected` once the human decides (or
-   `decided` when history is readable but no usable outcome event can be recovered — a
-   transient history-read failure instead leaves the record pending and retries next run), and
-   `superseded` when a newer proposal of yours replaced it — the newest record is the
-   authoritative one. The exact text you pushed is embedded in the record itself (its `text`
-   field — audit from there); `<workingCopy>.proposed.md` is only a derived, read-convenience
-   copy that can be missing or stale until the next run reconciles it. Every finalized record
-   is appended to `<workingCopy>.proposals.jsonl`.
-3. A later wait's `entries` may also carry the decision itself: `revision_accepted_all`,
-   `revision_hunk_accepted`, or `revision_rejected_all`.
+How to audit "did my edit land?" — the answer is a **lookup by that id**, never an inference:
+1. **This turn:** the `proposal` field in the wait JSON (`pending_review` = safely parked, and
+   `id` is the proposal's identity), or a `document_edited` entry (= applied directly to
+   canonical). The `proposal` field rides **every** turn-ending output when a park happened
+   this turn — `your_turn`/`activity`, `closed`, `navigated`, `wait_failed`, `superseded`, and
+   `moved_local` — losing or handing off the wait afterwards does not un-park your edit, so
+   check the field (and the record below) before classifying it.
+2. **Any later turn:** read `<workingCopy>.proposed.json` — the durable record, keyed by the
+   same id. Its `state` mirrors the cloud proposal's own state verbatim once the next
+   `wait --remote` run reconciles: `accepted`, `partially_accepted`, or `rejected` when the
+   human decides, `superseded` when a newer proposal of yours replaced it, `withdrawn` when
+   the agent retracted it — the newest record is the authoritative one. (`decided` appears
+   only when the proposal itself is gone from the cloud — a legacy park with no row — and
+   means the human acted but which way is unknowable.) The exact text you pushed is embedded
+   in the record itself (its `text` field — audit from there); `<workingCopy>.proposed.md` is
+   only a derived, read-convenience copy that can be missing or stale until the next run
+   reconciles it. Every finalized record is appended to `<workingCopy>.proposals.jsonl`.
+3. A later wait's `entries` may also carry the decision event, whose payload names the decided
+   proposal: `revision_accepted_all`, `revision_hunk_accepted`, or `revision_rejected_all`.
 
 If the park itself fails, the wait JSON carries `proposal: { state: "park_failed", bytes,
 hash }` (and stderr says the push FAILED) — `park_failed` means exactly that the **cloud push
 was not confirmed**. It does NOT prove the push didn't land: a lost response can leave the
-proposal live in the cloud while the local event and record are missing. Either way the retry
-is safe and automatic — the next `wait` run first reconciles the cloud's proposal slot (a
-landed push is adopted as the pending record, not re-sent), and re-pushing identical content
-is idempotent (same proposal identity, no duplicate). Your edit stays in the working copy;
-do not re-create it — just re-run.
+proposal live in the cloud while the local event and record are missing. (When an EARLIER
+proposal of yours is still pending — the failed push was a re-push — the field carries that
+proposal's `id`.) Either way the retry is safe and automatic — the next `wait` run first
+reconciles from your own pending proposal in the cloud (a landed push is adopted as the
+pending record under its cloud id, not re-sent), and re-pushing identical content is
+idempotent (same proposal identity, no duplicate). Your edit stays in the working copy; do
+not re-create it — just re-run.
 
 The converse also holds: a CONFIRMED push stays parked even when a piece of local bookkeeping
 failed around it. The event append or the local record write can fail after the push landed —
-stderr says so when it happens — and the next `wait --remote` run reconciles the missing
-artifacts from the cloud's own proposed slot. A temporarily missing event or record therefore
-never means the park failed; only `park_failed` (or the absence of any park signal plus a
-still-diverged working copy) means that.
+stderr says so when it happens — and the next `wait --remote` run rebuilds the missing record
+from the cloud proposal itself. A temporarily missing event or record therefore never means
+the park failed; only `park_failed` (or the absence of any park signal plus a still-diverged
+working copy) means that.
 
 Two things are **normal and must never be read as data loss**: after a healthy turn the
 working copy is re-synced to the current canonical (so your parked edit is no longer in it —
