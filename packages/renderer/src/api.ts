@@ -294,13 +294,18 @@ export interface Api {
   onAgentMessage?(cb: (msg: { text: string; ts: string }) => void): (() => void) | void;
   /** Close the editor window (used by the reload countdown's auto-close). */
   closeWindow(): Promise<void>;
-  /** Read the parked Review-mode proposal pending decision (null if none) — for durable re-show on launch. */
-  getProposal(): Promise<{ id?: string; content: string } | null>;
+  /** Read the review queue's HEAD — the oldest parked proposal pending decision (null if none) —
+   *  for durable re-show on launch and for advancing to the next proposal after a decision.
+   *  `baseContent` is the canonical the proposal was written against (staleness detection + the
+   *  3-way review merge); `pending` is the queue length for the count badge. Both optional:
+   *  legacy hosts omit them and review degrades to single-proposal, no-staleness behavior. */
+  getProposal(): Promise<{ id?: string; content: string; baseContent?: string; pending?: number } | null>;
   /** Settle the parked proposal after the human decides. The outcome is recorded on the
    *  proposal itself (proposals v1); omitted = legacy callers, treated as accepted. */
   clearProposal(outcome?: "accepted" | "partially_accepted" | "rejected", id?: string): Promise<void>;
-  /** A Review-mode proposal was parked by the agent this session — surface it for review. */
-  onProposal(cb: (payload: { content: string; id?: string }) => void): () => void;
+  /** A Review-mode proposal was parked by the agent this session — surface it for review.
+   *  Same optional queue fields as {@link Api.getProposal}. */
+  onProposal(cb: (payload: { content: string; id?: string; baseContent?: string; pending?: number }) => void): () => void;
   /**
    * Open another document by its resolved path (a relative Markdown link, joined
    * against this doc's path). Local: the sibling file; web: /docs/<org>/<repo>/<path>.

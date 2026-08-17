@@ -133,11 +133,13 @@ export class Session {
   }
 
   /** The parked Review-mode proposal, if one is pending. Row-backed (proposals v1) with a
-   *  legacy fallback to the derived content file (a pre-rows sidecar). */
-  async pendingProposal(): Promise<{ id?: string; content: string } | null> {
+   *  legacy fallback to the derived content file (a pre-rows sidecar). The base rides along for
+   *  stale-proposal review (3-way merge); the desktop queue is the single local agent's own
+   *  pending row, so `pending` is 1 whenever a proposal exists. */
+  async pendingProposal(): Promise<{ id?: string; content: string; baseContent?: string; pending?: number } | null> {
     const store = new FsDocumentStore(this.paths);
     const mine = await store.myPendingProposal();
-    if (mine) return { id: mine.id, content: mine.content };
+    if (mine) return { id: mine.id, content: mine.content, baseContent: mine.baseContent, pending: 1 };
     // Once row-backed state exists, the rows are the ONLY truth: a leftover derived content file
     // (its cleanup can fail independently) must never resurface a decided proposal as an id-less
     // review. The bare-file read only serves genuinely pre-rows sidecars.
@@ -147,7 +149,7 @@ export class Session {
     // be a real row's content served WITHOUT its id, and an id-less review resolves whatever is
     // pending at Apply time. One re-lookup collapses that race to the row (with its identity).
     const raced = await store.myPendingProposal();
-    if (raced) return { id: raced.id, content: raced.content };
+    if (raced) return { id: raced.id, content: raced.content, baseContent: raced.baseContent, pending: 1 };
     return existsSync(this.paths.proposedPath) ? { content: readFileSync(this.paths.proposedPath, "utf8") } : null;
   }
 
@@ -221,7 +223,7 @@ export class Session {
     }
     if (entries.some((e) => e.type === LogEventType.AgentRevisionProposed)) {
       void this.pendingProposal().then((proposed) => {
-        if (proposed != null) handlers.onProposal(proposed.content, proposed.id);
+        if (proposed != null) handlers.onProposal(proposed.content, proposed.id, proposed.baseContent, proposed.pending);
       }).catch((e: unknown) => {
         // The passive dispatch must not crash the main process, but a swallowed failure here can
         // also be TRANSIENT (lock contention) and silently drop the review banner — log it so a
@@ -250,7 +252,7 @@ export interface WatchHandlers {
   onExternalChange: (content: string) => void;
   onAgentDone: () => void;
   onAgentActive: () => void;
-  onProposal: (content: string, id?: string) => void;
+  onProposal: (content: string, id?: string, baseContent?: string, pending?: number) => void;
   onReload: () => void;
   onAgentMessage: (text: string, ts: string) => void;
 }

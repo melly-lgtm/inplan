@@ -51,6 +51,7 @@ import { ONBOARDING_SAMPLE } from "./onboardingSample";
 import { createMemoryApi } from "./memoryApi";
 import { useT } from "./i18n";
 import { applySegments, isChange, lineSegments, wordDiff, type DiffSegment, type WordPart } from "./textdiff";
+import { merge3 } from "./merge3";
 
 const USER_AUTHOR = "You";
 const EMPTY: ParsedDocument = { body: "", comments: [] };
@@ -167,6 +168,11 @@ interface Proposal {
   id?: string;
   baseBody: string;
   next: ParsedDocument;
+  /** Written against an older canonical: `next.body` is the 3-way merge of its stored base,
+   *  the current body, and the proposed body — surfaced to the reviewer as a notice. */
+  stale?: boolean;
+  /** Queue length (this proposal is the oldest of `pending`) — the count badge. */
+  pending?: number;
 }
 
 type FindMatch = { scope: "body"; from: number; to: number } | { scope: "comment"; id: string; from: number; to: number };
@@ -335,16 +341,32 @@ export function App(props: EditorProps = {}): JSX.Element {
     });
   }, []);
 
+  // The agent's version is parked as a proposal row; review it against the current (canonical)
+  // body. The working doc stays unchanged until Apply. A STALE proposal — written against an
+  // older canonical (its stored base no longer matches) — is reviewed as the 3-way merge of
+  // base → current → proposal, so the reviewer sees the proposal's own edits as hunks against
+  // today's document; the same path covers accepting several queued proposals in sequence.
+  // Component-level (not inside the mount effect): the post-decision queue advance calls it too.
+  const showProposal = useCallback((content: string, id?: string, baseContent?: string, pending?: number) => {
+    const next = parse(content);
+    const baseBody = docRef.current.body;
+    const baseParsed = baseContent !== undefined ? parse(baseContent).body : undefined;
+    const stale = baseParsed !== undefined && baseParsed !== baseBody;
+    setProposal({
+      ...(id ? { id } : {}),
+      baseBody,
+      next: stale ? { ...next, body: merge3(baseParsed, baseBody, next.body) } : next,
+      ...(stale ? { stale } : {}),
+      ...(pending !== undefined ? { pending } : {}),
+    });
+    setReviewOpen(true);
+    setAgentThinking(false);
+    setStatus(t("msg.proposedReview"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setters/refs are stable; t matches the mount effect's stale-t tolerance
+  }, []);
+
   // --- load + agent signals ---
   useEffect(() => {
-    const showProposal = (content: string, id?: string) => {
-      // The agent's version is parked as a proposal row; review it against the
-      // current (canonical) body. The working doc stays unchanged until Apply.
-      setProposal({ ...(id ? { id } : {}), baseBody: docRef.current.body, next: parse(content) });
-      setReviewOpen(true);
-      setAgentThinking(false);
-      setStatus(t("msg.proposedReview"));
-    };
 
     const commentStore = hostApi().commentStore ?? null;
 
@@ -359,11 +381,14 @@ export function App(props: EditorProps = {}): JSX.Element {
         // serialized body — source them from the store; its observer keeps them in sync.
         const d = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
         setDoc(d);
+        // Sync the ref NOW (it normally follows on render): the re-show below runs in this same
+        // microtask chain and must diff/merge against the doc just loaded, not the initial state.
+        docRef.current = d;
         savedRef.current = serialize(d);
         setLoaded(true);
         // Durable re-show: if a proposal was parked (e.g. the app was closed
         // mid-review), surface it again rather than silently accepting it.
-        void hostApi().getProposal().then((parked) => parked != null && showProposal(parked.content, parked.id));
+        void hostApi().getProposal().then((parked) => parked != null && showProposal(parked.content, parked.id, parked.baseContent, parked.pending));
       })
       .catch(() => setLoaded(true));
 
@@ -391,7 +416,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         setStatus(t("msg.agentUpdated"));
       }),
       // Review-mode body changes arrive parked, as a proposal to accept/reject.
-      hostApi().onProposal(({ content, id }) => showProposal(content, id)),
+      hostApi().onProposal(({ content, id, baseContent, pending }) => showProposal(content, id, baseContent, pending)),
       hostApi().onAgentDone(() => setAgentDone(true)),
       hostApi().onReload(() => {
         setReloadReady(true);
@@ -422,6 +447,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         const parsed = parse(content);
         const d = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
         setDoc(d);
+        docRef.current = d; // sync now — the re-show below must see the navigated doc (as above)
         savedRef.current = serialize(d);
         setDirty(false);
         const restored = historyByDoc.current.get(path);
@@ -434,7 +460,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         setAgentMessages([]); // notes belong to the doc we just left — don't carry them over
         setActivePreviewLine(null); // a synced line belongs to the doc we just left, not this one
         setStatus(`opened ${path.split("/").pop() ?? path}`);
-        void hostApi().getProposal().then((parked) => parked != null && showProposal(parked.content, parked.id));
+        void hostApi().getProposal().then((parked) => parked != null && showProposal(parked.content, parked.id, parked.baseContent, parked.pending));
       }),
       hostApi().onNavState?.((s) => setNavState(s)),
       // Desktop only: a newer npm version is available.
@@ -1307,13 +1333,30 @@ export function App(props: EditorProps = {}): JSX.Element {
       // A failed settlement must be visible: the content is applied and the review UI is gone, but
       // the row stays pending and WILL resurface for review on the next launch — announce that
       // (the resurfacing is the retry) instead of letting it look like a mystery double-review.
+      // On success, advance the QUEUE: the next-oldest pending proposal (another proposer's park)
+      // surfaces immediately — reviewed one at a time, in order.
       hostApi()
         .clearProposal(acceptedCount === accepted.length ? "accepted" : acceptedCount === 0 ? "rejected" : "partially_accepted", proposal.id)
-        .catch(() => setStatus("the decision could not be recorded — this proposal will reappear for review"));
-      void hostApi().logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", { accepted: acceptedCount, total: accepted.length });
+        .then(
+          () =>
+            hostApi()
+              .getProposal()
+              .then((queued) => queued != null && showProposal(queued.content, queued.id, queued.baseContent, queued.pending))
+              .catch(() => {
+                /* the advance is best-effort — a queued proposal re-surfaces on the next launch/park */
+              }),
+          () => setStatus("the decision could not be recorded — this proposal will reappear for review"),
+        );
+      // The decision event names WHICH proposal was decided (proposals v1) — an auditor binds it
+      // to the row by id, never by inferring from event order.
+      void hostApi().logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", {
+        accepted: acceptedCount,
+        total: accepted.length,
+        ...(proposal.id ? { proposal_id: proposal.id } : {}),
+      });
       setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`);
     },
-    [proposal, cadence, editingLocked, syncExternalDoc],
+    [proposal, cadence, editingLocked, syncExternalDoc, showProposal],
   );
 
   // --- inline review state (shared by the preview + source panes and the bar) ---
@@ -1721,7 +1764,7 @@ export function App(props: EditorProps = {}): JSX.Element {
 
       {proposal && !reviewOpen && (
         <div className="ap-banner">
-          {t("banner.proposalPending")}{" "}
+          {(proposal.pending ?? 1) > 1 ? t("banner.proposalQueue", { n: proposal.pending! }) : t("banner.proposalPending")}{" "}
           <button onClick={() => setReviewOpen(true)}>{t("banner.review")}</button>
         </div>
       )}
@@ -1729,6 +1772,8 @@ export function App(props: EditorProps = {}): JSX.Element {
       {proposal && reviewOpen && (
         <div className="ap-review-bar">
           <strong>{t("banner.proposedChanges")}</strong>{" "}
+          {(proposal.pending ?? 1) > 1 && <span className="ap-muted">{t("banner.queuePosition", { n: proposal.pending! })} </span>}
+          {proposal.stale && <span className="ap-muted" title={t("banner.staleTitle")}>{t("banner.stale")} </span>}
           {t(changeCount === 1 ? "banner.changesShown" : "banner.changesShownPlural", { n: changeCount })}
           <span className="ap-spacer" />
           <button onClick={reviewNext} disabled={!changeCount} title={t("banner.scrollToNext")}>
