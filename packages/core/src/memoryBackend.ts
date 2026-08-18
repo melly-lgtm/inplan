@@ -128,13 +128,14 @@ export class MemoryDocumentStore implements DocumentStore {
     if (r && r.state === "pending") r.state = "withdrawn";
     return Promise.resolve();
   }
-  decideProposal(id: string, state: "accepted" | "partially_accepted" | "rejected"): Promise<void> {
+  decideProposal(id: string, state: "accepted" | "partially_accepted" | "rejected"): Promise<{ transitioned: boolean }> {
     const r = this.proposals.find((x) => x.id === id);
     if (r && r.state === "pending") {
       r.state = state;
       r.decidedAt = new Date().toISOString();
+      return Promise.resolve({ transitioned: true });
     }
-    return Promise.resolve();
+    return Promise.resolve({ transitioned: false });
   }
   backup(content: string): Promise<void> {
     this.backups.push(content);

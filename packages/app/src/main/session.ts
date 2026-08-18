@@ -177,15 +177,19 @@ export class Session {
     const mine = await store.myPendingProposal();
     // Settle the EXACT reviewed proposal when its id is known; deciding a since-superseded row
     // is a state-guarded no-op — better than landing the outcome on a newer row. The invoke
-    // RESOLVES only when this row verifiably settled with this outcome: a zero-row no-op
-    // (another reviewer/CLI decided it mid-flight) must reject, or the renderer would log a
-    // decision event that never happened and advance past a decision that was not this one.
+    // RESOLVES only when THIS call performed the pending → terminal transition (decideProposal
+    // reports it atomically): a no-op — no row left, or another reviewer/CLI decided it
+    // mid-flight, even with the SAME outcome — must reject, or the renderer would log a
+    // decision event for a settlement this call never made and advance past it.
     const target = id ?? mine?.id;
     if (target) {
-      await store.decideProposal(target, outcome);
-      const row = await store.getProposal(target);
-      if (row?.state !== outcome) throw new Error(`proposal ${target} was decided elsewhere (state: ${row?.state ?? "gone"})`);
-    } else if (!store.hasProposalHistory() && existsSync(this.paths.proposedPath)) unlinkSync(this.paths.proposedPath);
+      const { transitioned } = await store.decideProposal(target, outcome);
+      if (!transitioned) throw new Error(`proposal ${target} was decided elsewhere`);
+    } else if (!store.hasProposalHistory() && existsSync(this.paths.proposedPath)) {
+      unlinkSync(this.paths.proposedPath); // a genuinely pre-rows sidecar: settling IS removing the file
+    } else {
+      throw new Error("no pending proposal to settle (it was decided or withdrawn elsewhere)");
+    }
   }
 
   /** Record why the session ended (logged at most once) so the agent's `wait` can report it. */

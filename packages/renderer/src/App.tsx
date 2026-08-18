@@ -1344,8 +1344,10 @@ export function App(props: EditorProps = {}): JSX.Element {
       // pending proposal (another proposer's park) surfaces immediately, reviewed one at a time.
       persisted
         .then(() => {
-          savedRef.current = serialized;
-          setDirty(false);
+          savedRef.current = serialized; // this snapshot IS persisted, whatever happened since
+          // Clear dirty only if the doc still equals the applied snapshot — the user may have
+          // kept editing while the save was in flight, and THAT work is still unsaved.
+          if (docRef.current === finalDoc) setDirty(false);
           setCheckpoint(serialized);
           return hostApi().clearProposal(acceptedCount === accepted.length ? "accepted" : acceptedCount === 0 ? "rejected" : "partially_accepted", proposal.id);
         })

@@ -181,12 +181,17 @@ export class SupabaseDocumentStore implements DocumentStore {
     if (error) throw new Error(`withdrawProposal failed: ${error.message}`);
   }
 
-  async decideProposal(id: string, state: "accepted" | "partially_accepted" | "rejected"): Promise<void> {
-    const { error } = await this.db
+  async decideProposal(id: string, state: "accepted" | "partially_accepted" | "rejected"): Promise<{ transitioned: boolean }> {
+    // `.select("id")` makes the state-guarded update report its affected rows, so the transition
+    // answer is ATOMIC — a read-back cannot tell this call's decision from one that raced ahead
+    // of it with the same outcome.
+    const { data, error } = await this.db
       .from("proposals")
       .update({ state, decided_at: new Date().toISOString() })
-      .match({ doc_id: this.docId, id, state: "pending" });
+      .match({ doc_id: this.docId, id, state: "pending" })
+      .select("id");
     if (error) throw new Error(`decideProposal failed: ${error.message}`);
+    return { transitioned: ((data as unknown[] | null) ?? []).length > 0 };
   }
 
   async backup(content: string, meta?: VersionMeta): Promise<void> {
