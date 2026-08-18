@@ -176,10 +176,16 @@ export class Session {
     const store = new FsDocumentStore(this.paths);
     const mine = await store.myPendingProposal();
     // Settle the EXACT reviewed proposal when its id is known; deciding a since-superseded row
-    // is a state-guarded no-op — better than landing the outcome on a newer row.
+    // is a state-guarded no-op — better than landing the outcome on a newer row. The invoke
+    // RESOLVES only when this row verifiably settled with this outcome: a zero-row no-op
+    // (another reviewer/CLI decided it mid-flight) must reject, or the renderer would log a
+    // decision event that never happened and advance past a decision that was not this one.
     const target = id ?? mine?.id;
-    if (target) await store.decideProposal(target, outcome);
-    else if (!store.hasProposalHistory() && existsSync(this.paths.proposedPath)) unlinkSync(this.paths.proposedPath);
+    if (target) {
+      await store.decideProposal(target, outcome);
+      const row = await store.getProposal(target);
+      if (row?.state !== outcome) throw new Error(`proposal ${target} was decided elsewhere (state: ${row?.state ?? "gone"})`);
+    } else if (!store.hasProposalHistory() && existsSync(this.paths.proposedPath)) unlinkSync(this.paths.proposedPath);
   }
 
   /** Record why the session ended (logged at most once) so the agent's `wait` can report it. */

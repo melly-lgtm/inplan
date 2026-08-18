@@ -1313,6 +1313,9 @@ export function App(props: EditorProps = {}): JSX.Element {
       const comments = merged.map((c) => (!c.parentId && c.anchor !== "doc" && !body.includes(`](#${c.id})`) ? { ...c, anchor: "doc" as const } : c));
       const finalDoc: ParsedDocument = { body, comments };
       setDoc(finalDoc);
+      // The applied body is UNSAVED work until persistence confirms below — dirty engages the
+      // close-prompt/quit-save protection for it; the success path clears it again.
+      setDirty(true);
       setProposal(null);
       setReviewOpen(false);
       const serialized = serialize(finalDoc);
@@ -1367,7 +1370,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                 /* the advance is best-effort — a queued proposal re-surfaces on the next launch/park */
               });
           },
-          () => setStatus("the decision could not be completed (save or settle failed) — this proposal will reappear for review"),
+          () => setStatus("the decision could not be completed — if the proposal is still pending it will reappear for review; if someone else decided it, their decision stands"),
         );
       setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`);
     },

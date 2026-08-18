@@ -158,8 +158,14 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
     async clearProposal(outcome?: "accepted" | "partially_accepted" | "rejected", id?: string): Promise<void> {
       // Settle the EXACT reviewed proposal when its id is known — deciding a row that has since
       // been superseded is a state-guarded no-op, which beats landing the outcome on a newer row.
+      // The promise RESOLVES only when this row verifiably settled with this outcome: a zero-row
+      // no-op (another reviewer decided it mid-flight) must reject, or the caller would log a
+      // decision event that never happened and advance past a decision that was not ours.
       const target = id ?? (await store.myPendingProposal())?.id;
-      if (target) await store.decideProposal(target, outcome ?? "accepted");
+      if (!target) return;
+      await store.decideProposal(target, outcome ?? "accepted");
+      const row = await store.getProposal(target);
+      if (row?.state !== (outcome ?? "accepted")) throw new Error(`proposal ${target} was decided elsewhere (state: ${row?.state ?? "gone"})`);
     },
     async openDoc(): Promise<void> {
       /* in-memory harness: no navigation */

@@ -137,6 +137,33 @@ describe("proposal queue (phase D)", () => {
     expect(decisions).toEqual([{ outcome: "accepted", id: "row-stale" }]);
   });
 
+  it("a decision raced by another reviewer logs NO event and does not advance", async () => {
+    install(DOC, [
+      { id: "row-raced", content: DOC.replace("Alpha line.", "Alpha RACED."), baseContent: DOC },
+      { id: "row-next", content: DOC.replace("Beta line.", "Beta NEXT."), baseContent: DOC },
+    ]);
+    // The host's verify-settle rejects: someone else decided the row while Apply was in flight.
+    const api = (window as unknown as { api: Api }).api;
+    api.clearProposal = async () => {
+      throw new Error("proposal row-raced was decided elsewhere (state: rejected)");
+    };
+    await mount();
+    await applyAll();
+    await waitFor(() => expect(document.body.textContent).toContain("could not be completed"));
+    // No phantom decision event for a settlement that never happened, and no advance past a
+    // decision that was not ours.
+    expect(logged.filter((l) => l.type.startsWith("revision_"))).toEqual([]);
+    expect(document.body.textContent).not.toContain("Beta NEXT.");
+  });
+
+  it("memory host: clearProposal rejects when the row was decided elsewhere", async () => {
+    const session = createMemoryApi({ content: DOC });
+    await session.agent.proposeRevision(DOC.replace("Alpha line.", "X."));
+    const head = await session.api.getProposal();
+    await session.api.clearProposal("rejected", head!.id); // the other reviewer's decision lands first
+    await expect(session.api.clearProposal("accepted", head!.id)).rejects.toThrow(/decided elsewhere/);
+  });
+
   it("a proposal whose base matches the current canonical shows no stale notice", async () => {
     install(DOC, [{ id: "row-fresh", content: DOC.replace("Beta line.", "Beta FRESH."), baseContent: DOC }]);
     await mount();
