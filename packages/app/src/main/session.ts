@@ -132,6 +132,14 @@ export class Session {
     this.pendingContent = content;
   }
 
+  /** An ADOPTED legacy row (a pre-rows proposed.md, baseHash "" sentinel) has no real base:
+   *  surfacing its empty baseContent would read as "written against an empty document" and put
+   *  the renderer on a false stale-merge path — omit the queue fields and let review degrade to
+   *  the documented legacy single-proposal flow. */
+  private proposalPayload(row: { id: string; content: string; baseHash: string; baseContent: string }): { id: string; content: string; baseContent?: string; pending?: number } {
+    return row.baseHash === "" ? { id: row.id, content: row.content } : { id: row.id, content: row.content, baseContent: row.baseContent, pending: 1 };
+  }
+
   /** The parked Review-mode proposal, if one is pending. Row-backed (proposals v1) with a
    *  legacy fallback to the derived content file (a pre-rows sidecar). The base rides along for
    *  stale-proposal review (3-way merge); the desktop queue is the single local agent's own
@@ -139,7 +147,7 @@ export class Session {
   async pendingProposal(): Promise<{ id?: string; content: string; baseContent?: string; pending?: number } | null> {
     const store = new FsDocumentStore(this.paths);
     const mine = await store.myPendingProposal();
-    if (mine) return { id: mine.id, content: mine.content, baseContent: mine.baseContent, pending: 1 };
+    if (mine) return this.proposalPayload(mine);
     // Once row-backed state exists, the rows are the ONLY truth: a leftover derived content file
     // (its cleanup can fail independently) must never resurface a decided proposal as an id-less
     // review. The bare-file read only serves genuinely pre-rows sidecars.
@@ -149,7 +157,7 @@ export class Session {
     // be a real row's content served WITHOUT its id, and an id-less review resolves whatever is
     // pending at Apply time. One re-lookup collapses that race to the row (with its identity).
     const raced = await store.myPendingProposal();
-    if (raced) return { id: raced.id, content: raced.content, baseContent: raced.baseContent, pending: 1 };
+    if (raced) return this.proposalPayload(raced);
     return existsSync(this.paths.proposedPath) ? { content: readFileSync(this.paths.proposedPath, "utf8") } : null;
   }
 

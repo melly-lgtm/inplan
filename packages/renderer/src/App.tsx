@@ -1316,8 +1316,6 @@ export function App(props: EditorProps = {}): JSX.Element {
       setProposal(null);
       setReviewOpen(false);
       const serialized = serialize(finalDoc);
-      savedRef.current = serialized;
-      setDirty(false);
       const acceptedCount = accepted.filter(Boolean).length;
       // Decision made → push the accepted doc to the collaborative owners (comments → store, body →
       // the binding that owns the SOURCE pane + the shared/persisted doc). WITHOUT this, a collab
@@ -1329,36 +1327,48 @@ export function App(props: EditorProps = {}): JSX.Element {
       // content is durably saved — settled-but-unsaved would lose the acceptance (the row no
       // longer resurfaces for review, and the content never landed). On the collab path the
       // binding/store own persistence synchronously; on the file path the save is awaited first,
-      // and a FAILED save leaves the row pending (the review resurfaces — the retry).
+      // and a FAILED save leaves the row pending (the review resurfaces — the retry). The dirty
+      // baseline clears only on success too: until then the applied body is UNSAVED work the
+      // close-prompt must protect, not a phantom already-persisted state.
       const persisted = syncExternalDoc(finalDoc, prevDoc.comments, prevDoc.body)
-        ? Promise.resolve().then(() => setCheckpoint(serialized))
-        : hostApi()
-            .save(serialized, { kind: "apply", cadence })
-            .then(() => setCheckpoint(serialized));
+        ? Promise.resolve()
+        : hostApi().save(serialized, { kind: "apply", cadence });
       // A failed settlement must be visible: the content is applied and the review UI is gone, but
       // the row stays pending and WILL resurface for review on the next launch — announce that
       // (the resurfacing is the retry) instead of letting it look like a mystery double-review.
-      // On success, advance the QUEUE: the next-oldest pending proposal (another proposer's park)
-      // surfaces immediately — reviewed one at a time, in order.
+      // On success: the decision EVENT is appended only now — for a row still pending it would
+      // record a decision that never happened — and then the QUEUE advances: the next-oldest
+      // pending proposal (another proposer's park) surfaces immediately, reviewed one at a time.
       persisted
-        .then(() => hostApi().clearProposal(acceptedCount === accepted.length ? "accepted" : acceptedCount === 0 ? "rejected" : "partially_accepted", proposal.id))
+        .then(() => {
+          savedRef.current = serialized;
+          setDirty(false);
+          setCheckpoint(serialized);
+          return hostApi().clearProposal(acceptedCount === accepted.length ? "accepted" : acceptedCount === 0 ? "rejected" : "partially_accepted", proposal.id);
+        })
         .then(
-          () =>
-            hostApi()
+          () => {
+            // The decision event names WHICH proposal was decided (proposals v1) — an auditor
+            // binds it to the row by id, never by inferring from event order. Logging is
+            // best-effort: the row itself already carries the authoritative outcome.
+            void hostApi()
+              .logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", {
+                accepted: acceptedCount,
+                total: accepted.length,
+                ...(proposal.id ? { proposal_id: proposal.id } : {}),
+              })
+              .catch(() => {
+                /* the row's state is the durable truth; a lost event only delays the editor refresh */
+              });
+            return hostApi()
               .getProposal()
               .then((queued) => queued != null && showProposal(queued.content, queued.id, queued.baseContent, queued.pending))
               .catch(() => {
                 /* the advance is best-effort — a queued proposal re-surfaces on the next launch/park */
-              }),
+              });
+          },
           () => setStatus("the decision could not be completed (save or settle failed) — this proposal will reappear for review"),
         );
-      // The decision event names WHICH proposal was decided (proposals v1) — an auditor binds it
-      // to the row by id, never by inferring from event order.
-      void hostApi().logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", {
-        accepted: acceptedCount,
-        total: accepted.length,
-        ...(proposal.id ? { proposal_id: proposal.id } : {}),
-      });
       setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`);
     },
     [proposal, cadence, editingLocked, syncExternalDoc, showProposal],

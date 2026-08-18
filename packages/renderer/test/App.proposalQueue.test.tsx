@@ -78,10 +78,15 @@ const applyAll = async () => {
 };
 
 describe("proposal queue (phase D)", () => {
-  it("reviews the queue oldest-first with a count, settles the exact row, and advances", async () => {
+  it("reviews the queue oldest-first with a count, settles exact rows, and sequential accepts preserve each other", async () => {
+    // Both proposals were written against the SAME base (two proposers parked concurrently).
+    // After row-a is accepted, row-b is stale relative to the new canonical — the merge path is
+    // what keeps row-a's accepted edit alive through row-b's acceptance. Asserting the FINAL
+    // document is the point: the queue mechanics can all pass while a whole-doc overwrite
+    // silently reverts the earlier acceptance.
     install(DOC, [
-      { id: "row-a", content: DOC.replace("Alpha line.", "Alpha FROM-A.") },
-      { id: "row-b", content: DOC.replace("Beta line.", "Beta FROM-B.") },
+      { id: "row-a", content: DOC.replace("Alpha line.", "Alpha FROM-A."), baseContent: DOC },
+      { id: "row-b", content: DOC.replace("Beta line.", "Beta FROM-B."), baseContent: DOC },
     ]);
     await mount();
 
@@ -92,16 +97,22 @@ describe("proposal queue (phase D)", () => {
     await applyAll();
 
     // The decision settled row-a EXACTLY, and the decision event names it.
-    expect(decisions).toEqual([{ outcome: "accepted", id: "row-a" }]);
+    await waitFor(() => expect(decisions).toEqual([{ outcome: "accepted", id: "row-a" }]));
     expect(logged).toContainEqual({ type: "revision_accepted_all", payload: expect.objectContaining({ proposal_id: "row-a" }) });
 
-    // The queue advanced: row-b's review surfaced without any new park signal.
+    // The queue advanced: row-b's review surfaced without any new park signal, stale against
+    // the just-accepted canonical.
     await waitFor(() => expect(document.body.textContent).toContain("Beta FROM-B."));
     expect(document.body.textContent).not.toContain("1 of 2"); // last one — no queue chip
+    expect(document.body.textContent).toContain("written against an older version");
 
     await applyAll();
-    expect(decisions[1]).toEqual({ outcome: "accepted", id: "row-b" });
+    await waitFor(() => expect(decisions[1]).toEqual({ outcome: "accepted", id: "row-b" }));
     await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"));
+    // BOTH accepted edits are in the final document — the second acceptance replayed onto the
+    // first instead of reverting it.
+    expect(document.body.textContent).toContain("Alpha FROM-A.");
+    expect(document.body.textContent).toContain("Beta FROM-B.");
   });
 
   it("a stale proposal is reviewed as a 3-way merge that keeps the current document's own changes", async () => {

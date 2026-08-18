@@ -19,7 +19,16 @@ interface ChangeBlock {
 
 /** Extract change blocks of base -> next from an LCS walk (same shape as textdiff's, but
  *  positioned by base line index, which the merge needs and DiffSegment does not carry). */
-function changeBlocks(base: string[], next: string[]): ChangeBlock[] {
+function changeBlocks(fullBase: string[], fullNext: string[]): ChangeBlock[] {
+  // Trim the common prefix/suffix FIRST: a proposal touches a small region of a possibly large
+  // document, and the O(n·m) LCS matrix below must only ever see the changed middle — on a long
+  // Markdown file the untrimmed matrix freezes the renderer before the review can even paint.
+  let pre = 0;
+  while (pre < fullBase.length && pre < fullNext.length && fullBase[pre] === fullNext[pre]) pre++;
+  let suf = 0;
+  while (suf < fullBase.length - pre && suf < fullNext.length - pre && fullBase[fullBase.length - 1 - suf] === fullNext[fullNext.length - 1 - suf]) suf++;
+  const base = fullBase.slice(pre, fullBase.length - suf);
+  const next = fullNext.slice(pre, fullNext.length - suf);
   const n = base.length;
   const m = next.length;
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
@@ -60,6 +69,8 @@ function changeBlocks(base: string[], next: string[]): ChangeBlock[] {
     open(n).out.push(next[j]!);
     j++;
   }
+  // Re-anchor into the FULL base's coordinates (the merge walks full-base indices).
+  for (const b of blocks) b.start += pre;
   return blocks;
 }
 

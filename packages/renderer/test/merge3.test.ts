@@ -77,6 +77,22 @@ describe("merge3", () => {
     expect(merge3("", "ours", "theirs")).toBe("theirs");
   });
 
+  it("a small edit in a large document merges without quadratic blowup (prefix/suffix trim)", () => {
+    // 20k lines with one edit per side near opposite ends: the untrimmed O(n·m) LCS matrix here
+    // is 400M cells — this must complete instantly because the DP only ever sees the changed
+    // middle between the common prefix and suffix.
+    const lines = Array.from({ length: 20_000 }, (_, i) => `line ${i}`);
+    const base = lines.join("\n");
+    const ours = [...lines.slice(0, 5), "OURS EDIT", ...lines.slice(6)].join("\n");
+    const theirs = [...lines.slice(0, 19_990), "THEIRS EDIT", ...lines.slice(19_991)].join("\n");
+    const started = performance.now();
+    const merged = merge3(base, ours, theirs);
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(merged).toContain("OURS EDIT");
+    expect(merged).toContain("THEIRS EDIT");
+    expect(merged.split("\n")).toHaveLength(20_000);
+  });
+
   it("trailing-region changes after the last common line merge cleanly", () => {
     const base = doc("a", "b");
     const ours = doc("a", "b", "c-ours"); // canonical appended
