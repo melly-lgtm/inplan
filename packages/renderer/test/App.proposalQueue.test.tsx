@@ -37,6 +37,7 @@ interface QueueRow {
 let queue: QueueRow[];
 let decisions: Array<{ outcome?: string; id?: string }>;
 let logged: Array<{ type: string; payload?: unknown }>;
+let agentRef: ReturnType<typeof createMemoryApi>["agent"] | null = null;
 
 function install(content: string, rows: QueueRow[]): void {
   document.body.innerHTML = '<div id="root"></div>';
@@ -44,6 +45,7 @@ function install(content: string, rows: QueueRow[]): void {
   decisions = [];
   logged = [];
   const session = createMemoryApi({ content });
+  agentRef = session.agent;
   const api: Api = {
     ...session.api,
     // The host serves the queue HEAD (oldest pending), with the live count.
@@ -162,6 +164,25 @@ describe("proposal queue (phase D)", () => {
     const head = await session.api.getProposal();
     await session.api.clearProposal("rejected", head!.id); // the other reviewer's decision lands first
     await expect(session.api.clearProposal("accepted", head!.id)).rejects.toThrow(/decided elsewhere/);
+  });
+
+  it("an external change landing mid-review REBASES the open review — Apply cannot overwrite it", async () => {
+    install(DOC, [{ id: "row-open", content: DOC.replace("Beta line.", "Beta FROM-PROPOSAL."), baseContent: DOC }]);
+    await mount();
+    expect(document.body.textContent).not.toContain("written against an older version");
+
+    // The canonical changes underneath the open review (an auto-accepted agent edit elsewhere).
+    const changed = DOC.replace("Alpha line.", "Alpha CHANGED-UNDERNEATH.");
+    await act(async () => {
+      agentRef!.externalChange(changed);
+    });
+
+    // The review rebased: now marked stale, and applying keeps BOTH the external change and the
+    // proposal's own edit — the frozen pre-change diff base would have overwritten the former.
+    await waitFor(() => expect(document.body.textContent).toContain("written against an older version"));
+    await applyAll();
+    await waitFor(() => expect(document.body.textContent).toContain("Alpha CHANGED-UNDERNEATH."));
+    expect(document.body.textContent).toContain("Beta FROM-PROPOSAL.");
   });
 
   it("a proposal whose base matches the current canonical shows no stale notice", async () => {

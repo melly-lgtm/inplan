@@ -62,7 +62,9 @@ describe("Session.dispatchLog", () => {
     // fields: its baseHash is the "" sentinel (no real base was recorded), and surfacing an
     // empty baseContent would put the renderer on a false stale-merge path. Review degrades to
     // the documented legacy single-proposal flow.
-    expect(h.onProposal).toHaveBeenCalledWith("# Plan\n\nPROPOSED rewrite.\n", expect.any(String), undefined, undefined);
+    // …and the dispatch is stamped with the session's own doc path, so a late event from a
+    // navigated-away document can be ignored by the renderer.
+    expect(h.onProposal).toHaveBeenCalledWith("# Plan\n\nPROPOSED rewrite.\n", expect.any(String), undefined, undefined, session.paths.file);
     expect(h.onExternalChange).not.toHaveBeenCalled(); // baseline never moves → no empty-diff race
     expect(h.onAgentActive).toHaveBeenCalled();
   });

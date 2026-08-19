@@ -241,7 +241,9 @@ export class Session {
     }
     if (entries.some((e) => e.type === LogEventType.AgentRevisionProposed)) {
       void this.pendingProposal().then((proposed) => {
-        if (proposed != null) handlers.onProposal(proposed.content, proposed.id, proposed.baseContent, proposed.pending);
+        // Stamped with THIS session's doc path: the window can navigate between documents, and a
+        // late dispatch from the previous session must not surface against the new one.
+        if (proposed != null) handlers.onProposal(proposed.content, proposed.id, proposed.baseContent, proposed.pending, this.paths.file);
       }).catch((e: unknown) => {
         // The passive dispatch must not crash the main process, but a swallowed failure here can
         // also be TRANSIENT (lock contention) and silently drop the review banner — log it so a
@@ -270,7 +272,7 @@ export interface WatchHandlers {
   onExternalChange: (content: string) => void;
   onAgentDone: () => void;
   onAgentActive: () => void;
-  onProposal: (content: string, id?: string, baseContent?: string, pending?: number) => void;
+  onProposal: (content: string, id?: string, baseContent?: string, pending?: number, path?: string) => void;
   onReload: () => void;
   onAgentMessage: (text: string, ts: string) => void;
 }

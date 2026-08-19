@@ -326,7 +326,7 @@ function watchSession(): (() => void) | null {
     onExternalChange: (content) => win?.webContents.send("doc:external-change", { path: s.paths.file, content }),
     onAgentDone: () => win?.webContents.send("agent:done"),
     onAgentActive: () => win?.webContents.send("agent:active"),
-    onProposal: (content, id, baseContent, pending) => win?.webContents.send("doc:proposal", { content, ...(id ? { id } : {}), ...(baseContent !== undefined ? { baseContent } : {}), ...(pending !== undefined ? { pending } : {}) }),
+    onProposal: (content, id, baseContent, pending, path) => win?.webContents.send("doc:proposal", { content, ...(id ? { id } : {}), ...(baseContent !== undefined ? { baseContent } : {}), ...(pending !== undefined ? { pending } : {}), ...(path !== undefined ? { path } : {}) }),
     onReload: () => win?.webContents.send("agent:reload"),
     onAgentMessage: (text, ts) => win?.webContents.send("agent:message", { text, ts }),
   });

@@ -304,8 +304,10 @@ export interface Api {
    *  proposal itself (proposals v1); omitted = legacy callers, treated as accepted. */
   clearProposal(outcome?: "accepted" | "partially_accepted" | "rejected", id?: string): Promise<void>;
   /** A Review-mode proposal was parked by the agent this session — surface it for review.
-   *  Same optional queue fields as {@link Api.getProposal}. */
-  onProposal(cb: (payload: { content: string; id?: string; baseContent?: string; pending?: number }) => void): () => void;
+   *  Same optional queue fields as {@link Api.getProposal}. `path` (optional) names the document
+   *  the park belongs to — hosts whose window can navigate between documents stamp it so a late
+   *  event from the previous document is ignored; single-document hosts omit it. */
+  onProposal(cb: (payload: { content: string; id?: string; baseContent?: string; pending?: number; path?: string }) => void): () => void;
   /**
    * Open another document by its resolved path (a relative Markdown link, joined
    * against this doc's path). Local: the sibling file; web: /docs/<org>/<repo>/<path>.
