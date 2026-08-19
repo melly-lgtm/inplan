@@ -342,15 +342,17 @@ export class FsDocumentStore implements DocumentStore {
     });
   }
 
-  async decideProposal(id: string, state: "accepted" | "partially_accepted" | "rejected"): Promise<void> {
-    this.withRowsLock(() => {
+  async decideProposal(id: string, state: "accepted" | "partially_accepted" | "rejected"): Promise<{ transitioned: boolean }> {
+    return this.withRowsLock(() => {
       const rows = this.readRowsAdoptingLegacy();
       const r = rows.find((x) => x.id === id);
       if (r && r.state === "pending") {
         r.state = state;
         r.decidedAt = new Date().toISOString();
         this.writeRows(rows);
+        return { transitioned: true };
       }
+      return { transitioned: false };
     });
   }
 

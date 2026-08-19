@@ -51,6 +51,7 @@ import { ONBOARDING_SAMPLE } from "./onboardingSample";
 import { createMemoryApi } from "./memoryApi";
 import { useT } from "./i18n";
 import { applySegments, isChange, lineSegments, wordDiff, type DiffSegment, type WordPart } from "./textdiff";
+import { merge3 } from "./merge3";
 
 const USER_AUTHOR = "You";
 const EMPTY: ParsedDocument = { body: "", comments: [] };
@@ -167,6 +168,16 @@ interface Proposal {
   id?: string;
   baseBody: string;
   next: ParsedDocument;
+  /** Written against an older canonical: `next.body` is the 3-way merge of its stored base,
+   *  the current body, and the proposed body — surfaced to the reviewer as a notice. */
+  stale?: boolean;
+  /** The exact serialized content this review was built from — a re-notification carrying the
+   *  same id AND the same raw content is metadata-only (never a rebuild that would reset the
+   *  reviewer's in-progress hunk state). */
+  raw?: string;
+  /** The proposal's stored base serialization (see Api.getProposal), kept so an external change
+   *  landing mid-review can REBASE the open review against the fresh document. */
+  base?: string;
 }
 
 type FindMatch = { scope: "body"; from: number; to: number } | { scope: "comment"; id: string; from: number; to: number };
@@ -279,6 +290,12 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [activePreviewLine, setActivePreviewLine] = useState<number | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false); // is the review panel visible (vs. parked behind a banner)
+  const [settling, setSettling] = useState(false); // a decision's settle is in flight — Apply is disabled (no double-apply)
+  // The queue length lives OUTSIDE the Proposal identity: a count-only change (another proposer
+  // parked behind the open head) must never re-key the review state — reviewSegs / accepted /
+  // edits all derive from `proposal`, and a new object identity would reset the reviewer's
+  // in-progress hunk decisions.
+  const [queueCount, setQueueCount] = useState<number | undefined>(undefined);
   const [findOpen, setFindOpen] = useState(false);
   const [findOpts, setFindOpts] = useState<{ query: string; ci: boolean; inPreview: boolean; inEditor: boolean; inComments: boolean }>({ query: "", ci: false, inPreview: true, inEditor: false, inComments: false });
   const [openPanel, setOpenPanel] = useState<string | null>(null); // id of the open host-injected side panel (e.g. the cloud TOC), or null
@@ -287,6 +304,41 @@ export function App(props: EditorProps = {}): JSX.Element {
   const lastOpenPanelRef = useRef<SidePanelSpec | null>(null);
 
   const docRef = useRef(doc);
+  const proposalRef = useRef(proposal);
+  proposalRef.current = proposal;
+  const queueCountRef = useRef(queueCount);
+  queueCountRef.current = queueCount;
+  const reviewOpenRef = useRef(reviewOpen);
+  reviewOpenRef.current = reviewOpen;
+  const settlingRef = useRef(settling);
+  settlingRef.current = settling;
+  /** A host-initiated navigation that arrived mid-settle, held until the settle completes. */
+  const pendingNavRef = useRef<{ content: string; path: string; readOnly?: boolean; focusCommentId?: string } | null>(null);
+  const processNavigatedRef = useRef<((p: { content: string; path: string; readOnly?: boolean; focusCommentId?: string }) => void) | null>(null);
+  /** Every renderer-initiated document navigation funnels through here: while a decision's
+   *  settle+save is in flight, navigation is refused — after a WON settle the accepted content
+   *  persists through the CURRENT session only, so navigating away could leave a terminal row
+   *  whose content never landed anywhere. The window is one settle+save round trip. */
+  /** Hold an exit-class action (quit / close / reload / restart) until an in-flight settle and
+   *  its publish finish — the accepted content exists only in that continuation until then, and
+   *  the host's quit-save persists the PRE-Apply document (dirty is not yet set), so closing
+   *  mid-settle would strand a terminal row's content forever. Bounded: a hung settle must not
+   *  hold the window hostage — after ~10s the action proceeds (the pre-existing exposure). */
+  const awaitSettled = useCallback(async () => {
+    for (let i = 0; i < 100 && settlingRef.current; i++) await new Promise((r) => setTimeout(r, 100));
+  }, []);
+  const navigateGuarded = useCallback((go: () => void) => {
+    if (settlingRef.current) {
+      setStatus(t("msg.navWhileSettling"));
+      return;
+    }
+    go();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setStatus stable; t stale-tolerated as elsewhere
+  }, []);
+  // Navigation generation: bumped whenever the mounted DOCUMENT changes (load, in-window
+  // navigation). Async proposal reads/continuations capture it and drop their results when it
+  // moved — a response that started against one document must never touch another.
+  const docGenRef = useRef(0);
   docRef.current = doc;
   const previewRef = useRef<HTMLElement>(null);
   const ctxBlockRef = useRef<HTMLElement | null>(null); // block under the last right-click (for "Select line")
@@ -335,22 +387,44 @@ export function App(props: EditorProps = {}): JSX.Element {
     });
   }, []);
 
+  // The agent's version is parked as a proposal row; review it against the current (canonical)
+  // body. The working doc stays unchanged until Apply. A STALE proposal — written against an
+  // older canonical (its stored base no longer matches) — is reviewed as the 3-way merge of
+  // base → current → proposal, so the reviewer sees the proposal's own edits as hunks against
+  // today's document; the same path covers accepting several queued proposals in sequence.
+  // Component-level (not inside the mount effect): the post-decision queue advance calls it too.
+  const showProposal = useCallback((content: string, id?: string, baseContent?: string, pending?: number, openPanel = true) => {
+    const next = parse(content);
+    const baseBody = docRef.current.body;
+    const baseParsed = baseContent !== undefined ? parse(baseContent).body : undefined;
+    const stale = baseParsed !== undefined && baseParsed !== baseBody;
+    setProposal({
+      ...(id ? { id } : {}),
+      baseBody,
+      next: stale ? { ...next, body: merge3(baseParsed, baseBody, next.body) } : next,
+      ...(stale ? { stale } : {}),
+      raw: content,
+      ...(baseContent !== undefined ? { base: baseContent } : {}),
+    });
+    setQueueCount(pending);
+    // The rebase path preserves the reviewer's explicit park-behind-the-banner choice: only a
+    // genuinely new/updated review opens the panel unbidden.
+    if (openPanel) setReviewOpen(true);
+    setAgentThinking(false);
+    setStatus(t("msg.proposedReview"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setters/refs are stable; t matches the mount effect's stale-t tolerance
+  }, []);
+
   // --- load + agent signals ---
   useEffect(() => {
-    const showProposal = (content: string, id?: string) => {
-      // The agent's version is parked as a proposal row; review it against the
-      // current (canonical) body. The working doc stays unchanged until Apply.
-      setProposal({ ...(id ? { id } : {}), baseBody: docRef.current.body, next: parse(content) });
-      setReviewOpen(true);
-      setAgentThinking(false);
-      setStatus(t("msg.proposedReview"));
-    };
 
     const commentStore = hostApi().commentStore ?? null;
 
+    const loadGen = docGenRef.current; // navigation before load resolves must win over the older result
     hostApi()
       .load()
       .then(({ content, path, readOnly: ro, focusCommentId }) => {
+        if (docGenRef.current !== loadGen) return; // a navigation already installed a newer document
         docPathRef.current = path;
         setReadOnly(!!ro);
         setPendingFocusCommentId(focusCommentId ?? null);
@@ -359,15 +433,69 @@ export function App(props: EditorProps = {}): JSX.Element {
         // serialized body — source them from the store; its observer keeps them in sync.
         const d = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
         setDoc(d);
+        // Sync the ref NOW (it normally follows on render): the re-show below runs in this same
+        // microtask chain and must diff/merge against the doc just loaded, not the initial state.
+        docRef.current = d;
         savedRef.current = serialize(d);
         setLoaded(true);
         // Durable re-show: if a proposal was parked (e.g. the app was closed
-        // mid-review), surface it again rather than silently accepting it.
-        void hostApi().getProposal().then((parked) => parked != null && showProposal(parked.content, parked.id));
+        // mid-review), surface it again rather than silently accepting it. Generation-guarded:
+        // a slow read must not surface against a document navigated to since.
+        const gen = ++docGenRef.current;
+        void hostApi()
+          .getProposal()
+          .then((parked) => docGenRef.current === gen && parked != null && showProposal(parked.content, parked.id, parked.baseContent, parked.pending))
+          .catch(() => {
+            /* best-effort — the proposal re-surfaces on the next park event or launch */
+          });
       })
       .catch(() => setLoaded(true));
 
     // Auto-accept (and review-mode comment-only changes) arrive as a file rewrite.
+    // Navigation processing, extracted so the subscription can DEFER it: host-initiated
+    // navigation bypasses navigateGuarded, and processing it while a decision's settle+save is
+    // in flight would let the generation guard drop a WON settlement's accepted content (the
+    // row is already terminal; it would never resurface). The flush effect below runs it once
+    // the settle completes.
+    const processNavigated = ({ content, path, readOnly: ro, focusCommentId }: { content: string; path: string; readOnly?: boolean; focusCommentId?: string }): void => {
+      // Undo/redo is per-doc: stash the leaving doc's stacks so returning restores them, and load
+      // the destination's own (empty on first visit). Per-doc still holds — an undo can never pull
+      // another doc's content — but the history now survives navigation instead of being dropped.
+      if (docPathRef.current) historyByDoc.current.set(docPathRef.current, { undo: history.current, redo: future.current });
+      docPathRef.current = path;
+      setReadOnly(!!ro); // the destination doc may have its own read-only state
+      // The @-mention roster is cached per-doc-open — the doc we're navigating to may belong to
+      // a different org, so the previous doc's cached roster must not leak into this one.
+      resetMentionRoster();
+      // Overwrite (not merge) even when absent: any stale pending focus from the doc we just
+      // left must not carry over and fire against the wrong document.
+      setPendingFocusCommentId(focusCommentId ?? null);
+      const parsed = parse(content);
+      const d = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
+      setDoc(d);
+      docRef.current = d; // sync now — the re-show below must see the navigated doc (as above)
+      const gen = ++docGenRef.current; // a new document: in-flight proposal reads are now stale
+      savedRef.current = serialize(d);
+      setDirty(false);
+      const restored = historyByDoc.current.get(path);
+      history.current = restored?.undo ?? [];
+      future.current = restored?.redo ?? [];
+      setProposal(null);
+      setReviewOpen(false);
+      setAgentThinking(false);
+      setAgentDone(false);
+      setAgentMessages([]); // notes belong to the doc we just left — don't carry them over
+      setActivePreviewLine(null); // a synced line belongs to the doc we just left, not this one
+      setStatus(`opened ${path.split("/").pop() ?? path}`);
+      void hostApi()
+        .getProposal()
+        .then((parked) => docGenRef.current === gen && parked != null && showProposal(parked.content, parked.id, parked.baseContent, parked.pending))
+        .catch(() => {
+          /* best-effort — the proposal re-surfaces on the next park event or launch */
+        });
+    };
+    processNavigatedRef.current = processNavigated;
+
     // Collect every host subscription's disposer so a remount (e.g. Replay tutorial)
     // can't stack ipcRenderer listeners and double-handle events.
     const subs: Array<(() => void) | void> = [
@@ -388,10 +516,39 @@ export function App(props: EditorProps = {}): JSX.Element {
         // broadcast already delivered the body (normal auto-accept turns). File-backed editors have no
         // binding and keep using the controlled value.
         syncExternalDoc(next, prevDoc.comments, prevDoc.body);
+        // Sync the ref for EVERY replacement (it normally follows on render): any pending
+        // proposal read resolving after this must build its review against the fresh text, or
+        // applying it could overwrite this very change.
+        docRef.current = next;
+        // A review OPEN over the old canonical is now built on sand: its frozen diff base would
+        // make Apply overwrite this very change. Rebase it — re-show the same proposal against
+        // the fresh document (the stored base drives the 3-way merge; hunk selections reset,
+        // which is honest: the ground they were chosen on moved).
+        const open = proposalRef.current;
+        if (open?.raw !== undefined && open.base !== undefined) {
+          // Only a base-carrying review can actually rebase. A legacy base-less proposal would
+          // gain nothing (no merge without a base) and lose everything — the new object identity
+          // resets the reviewer's in-progress hunk selections — so it is left untouched.
+          showProposal(open.raw, open.id, open.base, queueCountRef.current, reviewOpenRef.current);
+        }
         setStatus(t("msg.agentUpdated"));
       }),
       // Review-mode body changes arrive parked, as a proposal to accept/reject.
-      hostApi().onProposal(({ content, id }) => showProposal(content, id)),
+      hostApi().onProposal(({ content, id, baseContent, pending, path }) => {
+        // A late event from a document we've navigated away from must not surface here (the
+        // desktop stamps its payloads with the session's doc path; hosts without multi-doc
+        // sessions omit it).
+        if (path !== undefined && docPathRef.current !== "" && path !== docPathRef.current) return;
+        // A re-notification about the proposal ALREADY under review (same id, same content —
+        // e.g. another proposer parked behind it and the head's count changed) updates the queue
+        // metadata only: rebuilding would reset the reviewer's in-progress hunk selections.
+        const cur = proposalRef.current;
+        if (cur && cur.id !== undefined && cur.id === id && cur.raw === content && cur.base === baseContent) {
+          if (pending !== undefined) setQueueCount(pending); // count only — review state untouched
+          return;
+        }
+        showProposal(content, id, baseContent, pending);
+      }),
       hostApi().onAgentDone(() => setAgentDone(true)),
       hostApi().onReload(() => {
         setReloadReady(true);
@@ -406,35 +563,12 @@ export function App(props: EditorProps = {}): JSX.Element {
       hostApi().onAgentMessage?.((msg) => setAgentMessages((prev) => [...prev, msg])),
       // Desktop only: the window followed a link to another doc — reset to it (a fresh
       // load), clearing any in-flight proposal/turn state, then re-show a parked proposal.
-      hostApi().onNavigated?.(({ content, path, readOnly: ro, focusCommentId }) => {
-        // Undo/redo is per-doc: stash the leaving doc's stacks so returning restores them, and load
-        // the destination's own (empty on first visit). Per-doc still holds — an undo can never pull
-        // another doc's content — but the history now survives navigation instead of being dropped.
-        if (docPathRef.current) historyByDoc.current.set(docPathRef.current, { undo: history.current, redo: future.current });
-        docPathRef.current = path;
-        setReadOnly(!!ro); // the destination doc may have its own read-only state
-        // The @-mention roster is cached per-doc-open — the doc we're navigating to may belong to
-        // a different org, so the previous doc's cached roster must not leak into this one.
-        resetMentionRoster();
-        // Overwrite (not merge) even when absent: any stale pending focus from the doc we just
-        // left must not carry over and fire against the wrong document.
-        setPendingFocusCommentId(focusCommentId ?? null);
-        const parsed = parse(content);
-        const d = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
-        setDoc(d);
-        savedRef.current = serialize(d);
-        setDirty(false);
-        const restored = historyByDoc.current.get(path);
-        history.current = restored?.undo ?? [];
-        future.current = restored?.redo ?? [];
-        setProposal(null);
-        setReviewOpen(false);
-        setAgentThinking(false);
-        setAgentDone(false);
-        setAgentMessages([]); // notes belong to the doc we just left — don't carry them over
-        setActivePreviewLine(null); // a synced line belongs to the doc we just left, not this one
-        setStatus(`opened ${path.split("/").pop() ?? path}`);
-        void hostApi().getProposal().then((parked) => parked != null && showProposal(parked.content, parked.id));
+      hostApi().onNavigated?.((payload) => {
+        if (settlingRef.current) {
+          pendingNavRef.current = payload; // deferred — flushed by the settle-completion effect
+          return;
+        }
+        processNavigated(payload);
       }),
       hostApi().onNavState?.((s) => setNavState(s)),
       // Desktop only: a newer npm version is available.
@@ -457,12 +591,22 @@ export function App(props: EditorProps = {}): JSX.Element {
     };
   }, []);
 
+  // Flush a navigation deferred during a settle: once the settle (and its publish/save) is done,
+  // the held navigation proceeds exactly as if it had just arrived.
+  useEffect(() => {
+    if (!settling && pendingNavRef.current && processNavigatedRef.current) {
+      const payload = pendingNavRef.current;
+      pendingNavRef.current = null;
+      processNavigatedRef.current(payload);
+    }
+  }, [settling]);
+
   // Reload countdown: once a new build is signalled, tick down and auto-close the
   // window at zero (the agent relaunches) — unless the user cancels first.
   useEffect(() => {
     if (reloadIn === null) return;
     if (reloadIn <= 0) {
-      void hostApi().closeWindow();
+      void awaitSettled().then(() => hostApi().closeWindow());
       return;
     }
     const timer = setTimeout(() => setReloadIn((s) => (s === null ? null : s - 1)), 1000);
@@ -907,8 +1051,11 @@ export function App(props: EditorProps = {}): JSX.Element {
   // Confirmed quit: the host always saves the latest content, signals the agent (if build mode),
   // then leaves.
   const confirmQuit = useCallback((opts: { startBuild: boolean }) => {
-    realHostApi().exit?.quit(serialize(docRef.current), opts);
+    // Deferred past an in-flight settle: once it publishes, docRef holds the applied document
+    // and the quit's own save persists it.
+    void awaitSettled().then(() => realHostApi().exit?.quit(serialize(docRef.current), opts));
     setQuitOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- awaitSettled is stable
   }, []);
   // The desktop window-close intercept is a HOST concern, so subscribe on the REAL host
   // (the onboarding sample has no onRequest). During the tour, closing just quits the
@@ -1285,13 +1432,8 @@ export function App(props: EditorProps = {}): JSX.Element {
       // accepted body (e.g. added during review) would make the doc invalid —
       // demote it to a doc-level comment instead of corrupting the document.
       const comments = merged.map((c) => (!c.parentId && c.anchor !== "doc" && !body.includes(`](#${c.id})`) ? { ...c, anchor: "doc" as const } : c));
-      const finalDoc: ParsedDocument = { body, comments };
-      setDoc(finalDoc);
-      setProposal(null);
-      setReviewOpen(false);
-      const serialized = serialize(finalDoc);
-      savedRef.current = serialized;
-      setDirty(false);
+      let finalDoc: ParsedDocument = { body, comments };
+      let serialized = serialize(finalDoc);
       const acceptedCount = accepted.filter(Boolean).length;
       // Decision made → push the accepted doc to the collaborative owners (comments → store, body →
       // the binding that owns the SOURCE pane + the shared/persisted doc). WITHOUT this, a collab
@@ -1299,21 +1441,154 @@ export function App(props: EditorProps = {}): JSX.Element {
       // reverted on reload, because save({apply}) is a no-op in the unified-Yjs model (the server is
       // the sole writer of documents.body, from the binding). File-backed editors have no binding, so
       // they fall back to a silent canonical save (accepting a proposal must not end the turn).
-      if (syncExternalDoc(finalDoc, prevDoc.comments, prevDoc.body)) {
-        setCheckpoint(serialized);
-      } else {
-        void hostApi().save(serialized, { kind: "apply", cadence }).then(() => setCheckpoint(serialized));
-      }
-      // A failed settlement must be visible: the content is applied and the review UI is gone, but
-      // the row stays pending and WILL resurface for review on the next launch — announce that
-      // (the resurfacing is the retry) instead of letting it look like a mystery double-review.
+      // SETTLE BEFORE PUBLISHING: clearProposal's atomic transition answer is the RESERVATION —
+      // the accepted content becomes visible (and therefore saveable by autosave / Save / quit)
+      // ONLY after this call verifiably moved the row pending → terminal. Publishing first left a
+      // window where a save could persist content whose settlement then LOST — a losing reviewer
+      // writing an unaccepted proposal into canonical. Apply is disabled while the settle is in
+      // flight (`settling`), so the reviewer cannot double-apply either. The remaining failure
+      // mode divides cleanly:
+      //  • settle LOST (another reviewer decided mid-Apply): nothing was published — the document
+      //    is untouched by construction; say so and refresh the queue (their decision stands).
+      //  • settle WON but the save then fails: the decision is fact (the row is terminal) and the
+      //    content is NOT lost — it stays applied in the editor as dirty/unsaved work, protected
+      //    by the close-prompt and quit-save, and persists on the next save.
+      // The decision event logs only after the settle — it records a settlement THIS call made;
+      // logging stays best-effort (the row is the durable truth). All continuations are
+      // generation-guarded: a result landing after a navigation must not touch the new document.
+      const gen = docGenRef.current;
+      const advance = (attempt = 0): Promise<void> =>
+        hostApi()
+          .getProposal()
+          .then((queued) => {
+            if (docGenRef.current !== gen) return;
+            if (queued != null) showProposal(queued.content, queued.id, queued.baseContent, queued.pending);
+          })
+          .catch(() => {
+            if (docGenRef.current !== gen) return;
+            // One short retry: a transient head-read failure would otherwise strand the next
+            // queued proposal undisplayed until a reload or a new park. If the retry fails too,
+            // say so — silence here reads as "queue empty".
+            if (attempt < 1) return new Promise<void>((res) => setTimeout(res, 2_000)).then(() => advance(attempt + 1));
+            setStatus(t("msg.queueRefreshFailed"));
+          });
+      setSettling(true);
       hostApi()
         .clearProposal(acceptedCount === accepted.length ? "accepted" : acceptedCount === 0 ? "rejected" : "partially_accepted", proposal.id)
-        .catch(() => setStatus("the decision could not be recorded — this proposal will reappear for review"));
-      void hostApi().logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", { accepted: acceptedCount, total: accepted.length });
-      setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`);
+        .then(
+          () => {
+            if (docGenRef.current !== gen) return; // navigated away mid-settle — the row is settled; the doc here is another document
+            // An external rewrite may have landed WHILE the settle was in flight: publishing the
+            // captured snapshot would overwrite it. Both sides diverged from the same prevDoc, so
+            // rebase — replay the accepted changes onto the fresh document with the same 3-way
+            // merge (and the same comment-union rules) the stale-review path uses.
+            const current = docRef.current;
+            if (current !== prevDoc) {
+              // Argument order matters: merge3's conflict policy hands contested regions to
+              // `theirs`. In the REVIEW path the proposal may win — a human judges the hunk —
+              // but this result publishes unreviewed, so the concurrent EXTERNAL edit must win:
+              // it rides as `theirs`, the accepted changes as `ours`.
+              const rebasedBody = merge3(prevDoc.body, finalDoc.body, current.body);
+              const currentIds = new Set(current.comments.map((c) => c.id));
+              const rebasedComments = [...current.comments, ...finalDoc.comments.filter((c) => !currentIds.has(c.id))].map((c) =>
+                !c.parentId && c.anchor !== "doc" && !rebasedBody.includes(`](#${c.id})`) ? { ...c, anchor: "doc" as const } : c,
+              );
+              finalDoc = { body: rebasedBody, comments: rebasedComments };
+              serialized = serialize(finalDoc);
+            }
+            setDoc(finalDoc);
+            docRef.current = finalDoc; // sync now — continuations below compare against it pre-render
+            setDirty(true); // unsaved until persistence confirms; close-prompt protects it
+            setProposal(null);
+            setReviewOpen(false);
+            void hostApi()
+              .logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", {
+                accepted: acceptedCount,
+                total: accepted.length,
+                ...(proposal.id ? { proposal_id: proposal.id } : {}),
+              })
+              .catch(() => {
+                /* the row's state is the durable truth; a lost event only delays the editor refresh */
+              });
+            const persisted = syncExternalDoc(finalDoc, current.comments, current.body)
+              ? Promise.resolve()
+              : hostApi().save(serialized, { kind: "apply", cadence });
+            return persisted.then(
+              () => {
+                if (docGenRef.current !== gen) return;
+                // The baseline moves only while the doc still equals the applied snapshot: an
+                // external rewrite (or user edit) that landed mid-save has already established
+                // its own baseline/dirty state, and stamping the older snapshot over it would
+                // misjudge the next unsaved-close comparison.
+                if (docRef.current === finalDoc) {
+                  savedRef.current = serialized;
+                  setDirty(false);
+                  setCheckpoint(serialized);
+                } else {
+                  // An EXTERNAL rewrite landed while this save was in flight: the doc believes
+                  // itself saved (its handler set the baseline), but the file now holds our
+                  // STALE write. Converge disk to the newest state. User edits (dirty) are left
+                  // to their own save flow — an unsolicited canonical save is not ours to make.
+                  const cur = serialize(docRef.current);
+                  if (savedRef.current === cur) {
+                    void hostApi()
+                      .save(cur, { kind: "apply", cadence })
+                      .catch(() => {
+                        /* best-effort — the next external change or explicit save converges it */
+                      });
+                  }
+                }
+                // Status AFTER the advance — the next review's own status must not bury it.
+                return advance().then(() => docGenRef.current === gen && setStatus(t("msg.appliedRevision", { accepted: acceptedCount, total: accepted.length })));
+              },
+              () => {
+                if (docGenRef.current !== gen) return;
+                // The row is terminal either way — without advancing, the rest of the queue
+                // would stall (a settled row never resurfaces to trigger the next review). The
+                // failure status is set AFTER the advance so the next review's own status
+                // cannot bury it.
+                return advance().then(() => docGenRef.current === gen && setStatus(t("msg.decisionSaveFailed")));
+              },
+            );
+          },
+          () => {
+            if (docGenRef.current !== gen) return;
+            // Nothing was published either way — but "settle failed" covers two very different
+            // worlds: the row was decided elsewhere (rejection from the atomic transition), or a
+            // TRANSIENT transport/storage error. A follow-up head lookup separates them: the same
+            // row still heading the queue means still-pending — keep the review and invite a
+            // retry; anything else means the row is gone — their decision stands.
+            return hostApi()
+              .getProposal()
+              .then((head) => {
+                if (docGenRef.current !== gen) return;
+                const sameRow =
+                  head != null &&
+                  head.content === proposal.raw &&
+                  head.baseContent === proposal.base &&
+                  (proposal.id !== undefined ? head.id === proposal.id : head.id === undefined);
+                if (sameRow) {
+                  // Still pending (id match — or, for an id-less legacy proposal, content match):
+                  // keep the review and its hunk selections; the reviewer just retries Apply.
+                  setStatus(t("msg.decisionFailedRetry"));
+                  return;
+                }
+                setProposal(null);
+                setReviewOpen(false);
+                if (head != null) showProposal(head.content, head.id, head.baseContent, head.pending);
+                setStatus(t("msg.decidedElsewhere"));
+              })
+              .catch(() => {
+                // The follow-up lookup itself failed: pending-vs-decided is UNKNOWABLE right
+                // now. Directing a retry could push the reviewer into a guaranteed-failing loop
+                // (if the row was in fact decided elsewhere) — report the ambiguity instead.
+                if (docGenRef.current === gen) setStatus(t("msg.decisionUnconfirmed"));
+              });
+          },
+        )
+        .finally(() => setSettling(false));
     },
-    [proposal, cadence, editingLocked, syncExternalDoc],
+    [proposal, cadence, editingLocked, syncExternalDoc, showProposal],
   );
 
   // --- inline review state (shared by the preview + source panes and the bar) ---
@@ -1624,7 +1899,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         agentThinking={agentThinking}
         nav={
           typeof hostApi().navigate === "function"
-            ? { canBack: navState.canBack, canForward: navState.canForward, onBack: () => void hostApi().navigate?.("back"), onForward: () => void hostApi().navigate?.("forward") }
+            ? { canBack: navState.canBack, canForward: navState.canForward, onBack: () => navigateGuarded(() => void hostApi().navigate?.("back")), onForward: () => navigateGuarded(() => void hostApi().navigate?.("forward")) }
             : undefined
         }
       />
@@ -1653,7 +1928,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         <div className="ap-banner ap-banner-reload">
           {t("banner.newBuild")} <strong>{t("banner.reloadingIn", { n: reloadIn ?? 0 })}</strong>{" "}
           <span className="ap-spacer" />
-          <button className="ap-primary" onClick={() => void hostApi().closeWindow()}>
+          <button className="ap-primary" onClick={() => void awaitSettled().then(() => hostApi().closeWindow())}>
             {t("banner.reloadNow")}
           </button>
           <button
@@ -1681,7 +1956,12 @@ export function App(props: EditorProps = {}): JSX.Element {
                   // back to a plain close if the host can't relaunch). Await the save
                   // first: the main-process restart calls app.exit(0) immediately, so an
                   // un-awaited save could be cut off before the write lands.
-                  if (dirty) await hostApi().save(serialize(docRef.current), { kind: "apply", cadence });
+                  await awaitSettled(); // an in-flight decision publishes first (its content is only in that continuation)
+                  // Recompute unsaved-ness AFTER the wait: the captured `dirty` predates the
+                  // settle, and a publish whose save failed leaves the applied document dirty —
+                  // a stale false here would restart without flushing the accepted decision.
+                  const current = serialize(docRef.current);
+                  if (current !== savedRef.current) await hostApi().save(current, { kind: "apply", cadence });
                   if (hostApi().restartApp) await hostApi().restartApp!();
                   else await hostApi().closeWindow();
                 }}
@@ -1721,7 +2001,7 @@ export function App(props: EditorProps = {}): JSX.Element {
 
       {proposal && !reviewOpen && (
         <div className="ap-banner">
-          {t("banner.proposalPending")}{" "}
+          {(queueCount ?? 1) > 1 ? t("banner.proposalQueue", { n: queueCount! }) : t("banner.proposalPending")}{" "}
           <button onClick={() => setReviewOpen(true)}>{t("banner.review")}</button>
         </div>
       )}
@@ -1729,6 +2009,8 @@ export function App(props: EditorProps = {}): JSX.Element {
       {proposal && reviewOpen && (
         <div className="ap-review-bar">
           <strong>{t("banner.proposedChanges")}</strong>{" "}
+          {(queueCount ?? 1) > 1 && <span className="ap-muted">{t("banner.queuePosition", { n: queueCount! })} </span>}
+          {proposal.stale && <span className="ap-muted" title={t("banner.staleTitle")}>{t("banner.stale")} </span>}
           {t(changeCount === 1 ? "banner.changesShown" : "banner.changesShownPlural", { n: changeCount })}
           <span className="ap-spacer" />
           <button onClick={reviewNext} disabled={!changeCount} title={t("banner.scrollToNext")}>
@@ -1740,7 +2022,7 @@ export function App(props: EditorProps = {}): JSX.Element {
             onCycle={(v) => setAllAccepted(v)}
             disabled={editingLocked || !changeCount}
           />
-          <button className="ap-primary" disabled={editingLocked} onClick={applyReview}>
+          <button className="ap-primary" disabled={editingLocked || settling} onClick={applyReview}>
             {t("banner.apply")}
           </button>
           <button className="ap-link" onClick={() => setReviewOpen(false)}>
@@ -1945,7 +2227,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                 }
                 const href = a.getAttribute("href") ?? "";
                 if (isInternalDocLink(href)) {
-                  void hostApi().openDoc(resolveDocPath(docPathRef.current, href));
+                  navigateGuarded(() => void hostApi().openDoc(resolveDocPath(docPathRef.current, href)));
                   return;
                 }
                 if (/^https?:/.test(href)) window.open(href, "_blank");

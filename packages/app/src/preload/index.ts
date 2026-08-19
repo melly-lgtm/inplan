@@ -4,6 +4,16 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { Comment } from "@inplan/core";
 import type { Acceptance, Api, Cadence, DocPayload, I18nController, I18nState, ProfileController, ProfileState, SaveOptions, Settings } from "@inplan/renderer";
 
+/** The doc:proposal wire payload — one shape for the callback and the IPC handler, so the
+ *  annotation cannot drift as fields are added. */
+interface ProposalPayload {
+  content: string;
+  id?: string;
+  baseContent?: string;
+  pending?: number;
+  path?: string;
+}
+
 /** Action shapes main sends (no functions cross IPC); the preload turns each into
  *  an `onSelect` that invokes the matching main-side action by id. */
 interface ActionDescriptor {
@@ -129,8 +139,8 @@ const api: Api = {
   closeWindow: () => ipcRenderer.invoke("window:close"),
   getProposal: () => ipcRenderer.invoke("proposal:get"),
   clearProposal: (outcome?: "accepted" | "partially_accepted" | "rejected", id?: string) => ipcRenderer.invoke("proposal:clear", outcome, id),
-  onProposal: (cb: (payload: { content: string; id?: string }) => void) => {
-    const h = (_e: unknown, payload: { content: string }): void => cb(payload);
+  onProposal: (cb: (payload: ProposalPayload) => void) => {
+    const h = (_e: unknown, payload: ProposalPayload): void => cb(payload);
     ipcRenderer.on("doc:proposal", h);
     return () => ipcRenderer.removeListener("doc:proposal", h);
   },

@@ -76,7 +76,7 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
   const telemetryEvents: MemorySession["telemetryEvents"] = [];
 
   const external: Array<(p: DocPayload) => void> = [];
-  const proposal: Array<(p: { content: string; id?: string }) => void> = [];
+  const proposal: Array<(p: { content: string; id?: string; baseContent?: string; pending?: number }) => void> = [];
   const done: Array<() => void> = [];
   const active: Array<() => void> = [];
   const reload: Array<() => void> = [];
@@ -149,15 +149,23 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
     async closeWindow(): Promise<void> {
       closed = true;
     },
-    async getProposal(): Promise<{ id?: string; content: string } | null> {
+    async getProposal(): Promise<{ id?: string; content: string; baseContent?: string; pending?: number } | null> {
+      // Single-proposer harness: the queue is my own pending row (length 0 or 1). The base rides
+      // along so stale-proposal review (the 3-way merge path) is exercisable in-memory.
       const mine = await store.myPendingProposal();
-      return mine ? { id: mine.id, content: mine.content } : null;
+      return mine ? { id: mine.id, content: mine.content, baseContent: mine.baseContent, pending: 1 } : null;
     },
     async clearProposal(outcome?: "accepted" | "partially_accepted" | "rejected", id?: string): Promise<void> {
       // Settle the EXACT reviewed proposal when its id is known — deciding a row that has since
       // been superseded is a state-guarded no-op, which beats landing the outcome on a newer row.
+      // The promise RESOLVES only when THIS call performed the pending → terminal transition
+      // (decideProposal reports it atomically): a no-op — no target left, or another reviewer
+      // decided the row mid-flight, even with the SAME outcome — must reject, or the caller
+      // would log a decision event for a settlement this call never made and advance past it.
       const target = id ?? (await store.myPendingProposal())?.id;
-      if (target) await store.decideProposal(target, outcome ?? "accepted");
+      if (!target) throw new Error("no pending proposal to settle (it was decided or withdrawn elsewhere)");
+      const { transitioned } = await store.decideProposal(target, outcome ?? "accepted");
+      if (!transitioned) throw new Error(`proposal ${target} was decided elsewhere`);
     },
     async openDoc(): Promise<void> {
       /* in-memory harness: no navigation */
@@ -177,7 +185,7 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
         const { id } = await store.createProposal({ content, baseHash: await harnessHash(base), baseContent: base });
         await channel.append({ actor: "agent", type: LogEventType.AgentRevisionProposed, payload: { bytes: new TextEncoder().encode(content).byteLength, hash: await harnessHash(content), proposal_id: id } });
         // Surfaced AFTER the row exists so the payload carries the identity the decision needs.
-        for (const cb of proposal) cb({ content, id });
+        for (const cb of proposal) cb({ content, id, baseContent: base, pending: 1 });
       })();
     },
     markActive() {

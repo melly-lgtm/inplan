@@ -132,12 +132,22 @@ export class Session {
     this.pendingContent = content;
   }
 
+  /** An ADOPTED legacy row (a pre-rows proposed.md, baseHash "" sentinel) has no real base:
+   *  surfacing its empty baseContent would read as "written against an empty document" and put
+   *  the renderer on a false stale-merge path — omit the queue fields and let review degrade to
+   *  the documented legacy single-proposal flow. */
+  private proposalPayload(row: { id: string; content: string; baseHash: string; baseContent: string }): { id: string; content: string; baseContent?: string; pending?: number } {
+    return row.baseHash === "" ? { id: row.id, content: row.content } : { id: row.id, content: row.content, baseContent: row.baseContent, pending: 1 };
+  }
+
   /** The parked Review-mode proposal, if one is pending. Row-backed (proposals v1) with a
-   *  legacy fallback to the derived content file (a pre-rows sidecar). */
-  async pendingProposal(): Promise<{ id?: string; content: string } | null> {
+   *  legacy fallback to the derived content file (a pre-rows sidecar). The base rides along for
+   *  stale-proposal review (3-way merge); the desktop queue is the single local agent's own
+   *  pending row, so `pending` is 1 whenever a proposal exists. */
+  async pendingProposal(): Promise<{ id?: string; content: string; baseContent?: string; pending?: number } | null> {
     const store = new FsDocumentStore(this.paths);
     const mine = await store.myPendingProposal();
-    if (mine) return { id: mine.id, content: mine.content };
+    if (mine) return this.proposalPayload(mine);
     // Once row-backed state exists, the rows are the ONLY truth: a leftover derived content file
     // (its cleanup can fail independently) must never resurface a decided proposal as an id-less
     // review. The bare-file read only serves genuinely pre-rows sidecars.
@@ -147,7 +157,7 @@ export class Session {
     // be a real row's content served WITHOUT its id, and an id-less review resolves whatever is
     // pending at Apply time. One re-lookup collapses that race to the row (with its identity).
     const raced = await store.myPendingProposal();
-    if (raced) return { id: raced.id, content: raced.content };
+    if (raced) return this.proposalPayload(raced);
     return existsSync(this.paths.proposedPath) ? { content: readFileSync(this.paths.proposedPath, "utf8") } : null;
   }
 
@@ -166,10 +176,20 @@ export class Session {
     const store = new FsDocumentStore(this.paths);
     const mine = await store.myPendingProposal();
     // Settle the EXACT reviewed proposal when its id is known; deciding a since-superseded row
-    // is a state-guarded no-op — better than landing the outcome on a newer row.
+    // is a state-guarded no-op — better than landing the outcome on a newer row. The invoke
+    // RESOLVES only when THIS call performed the pending → terminal transition (decideProposal
+    // reports it atomically): a no-op — no row left, or another reviewer/CLI decided it
+    // mid-flight, even with the SAME outcome — must reject, or the renderer would log a
+    // decision event for a settlement this call never made and advance past it.
     const target = id ?? mine?.id;
-    if (target) await store.decideProposal(target, outcome);
-    else if (!store.hasProposalHistory() && existsSync(this.paths.proposedPath)) unlinkSync(this.paths.proposedPath);
+    if (target) {
+      const { transitioned } = await store.decideProposal(target, outcome);
+      if (!transitioned) throw new Error(`proposal ${target} was decided elsewhere`);
+    } else if (!store.hasProposalHistory() && existsSync(this.paths.proposedPath)) {
+      unlinkSync(this.paths.proposedPath); // a genuinely pre-rows sidecar: settling IS removing the file
+    } else {
+      throw new Error("no pending proposal to settle (it was decided or withdrawn elsewhere)");
+    }
   }
 
   /** Record why the session ended (logged at most once) so the agent's `wait` can report it. */
@@ -221,7 +241,9 @@ export class Session {
     }
     if (entries.some((e) => e.type === LogEventType.AgentRevisionProposed)) {
       void this.pendingProposal().then((proposed) => {
-        if (proposed != null) handlers.onProposal(proposed.content, proposed.id);
+        // Stamped with THIS session's doc path: the window can navigate between documents, and a
+        // late dispatch from the previous session must not surface against the new one.
+        if (proposed != null) handlers.onProposal(proposed.content, proposed.id, proposed.baseContent, proposed.pending, this.paths.file);
       }).catch((e: unknown) => {
         // The passive dispatch must not crash the main process, but a swallowed failure here can
         // also be TRANSIENT (lock contention) and silently drop the review banner — log it so a
@@ -250,7 +272,7 @@ export interface WatchHandlers {
   onExternalChange: (content: string) => void;
   onAgentDone: () => void;
   onAgentActive: () => void;
-  onProposal: (content: string, id?: string) => void;
+  onProposal: (content: string, id?: string, baseContent?: string, pending?: number, path?: string) => void;
   onReload: () => void;
   onAgentMessage: (text: string, ts: string) => void;
 }

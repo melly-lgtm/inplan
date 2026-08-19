@@ -58,7 +58,13 @@ describe("Session.dispatchLog", () => {
     const h = handlers();
     session.dispatchLog([entry("agent", LogEventType.AgentRevisionProposed, { bytes: 22 }), entry("agent", LogEventType.AgentRevised)], h);
     await new Promise((r) => setTimeout(r, 0)); // pendingProposal is row-backed and async now
-    expect(h.onProposal).toHaveBeenCalledWith("# Plan\n\nPROPOSED rewrite.\n", expect.any(String)); // the legacy park is ADOPTED as a row and gains a real identity
+    // The legacy park is ADOPTED as a row and gains a real identity — but carries NO queue
+    // fields: its baseHash is the "" sentinel (no real base was recorded), and surfacing an
+    // empty baseContent would put the renderer on a false stale-merge path. Review degrades to
+    // the documented legacy single-proposal flow.
+    // …and the dispatch is stamped with the session's own doc path, so a late event from a
+    // navigated-away document can be ignored by the renderer.
+    expect(h.onProposal).toHaveBeenCalledWith("# Plan\n\nPROPOSED rewrite.\n", expect.any(String), undefined, undefined, session.paths.file);
     expect(h.onExternalChange).not.toHaveBeenCalled(); // baseline never moves → no empty-diff race
     expect(h.onAgentActive).toHaveBeenCalled();
   });

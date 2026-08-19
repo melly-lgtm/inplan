@@ -125,8 +125,11 @@ export interface DocumentStore {
    *  (a decision may have raced ahead — the decision wins). */
   withdrawProposal(id: string): Promise<void>;
   /** Record the human's decision on a pending proposal. No-op on a non-pending row (terminal
-   *  states are immutable). */
-  decideProposal(id: string, state: "accepted" | "partially_accepted" | "rejected"): Promise<void>;
+   *  states are immutable). `transitioned` reports whether THIS call performed the pending →
+   *  terminal transition — false means the row was already terminal (or absent), so a caller
+   *  about to announce "decided" can tell its own decision from one that raced ahead of it,
+   *  without a read-back that cannot distinguish the two when the outcomes coincide. */
+  decideProposal(id: string, state: "accepted" | "partially_accepted" | "rejected"): Promise<{ transitioned: boolean }>;
   /** Write an autosave backup checkpoint. `meta` (optional) records its provenance for a history
    *  view; an implementation that keeps history should de-duplicate (skip a no-op snapshot whose
    *  body matches the most recent one). */

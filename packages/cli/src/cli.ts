@@ -1315,11 +1315,14 @@ async function runRemote(cmd: string, docId: string, explicitCursor: number | nu
         }
       },
       decideProposal: async (id, st) => {
-        await live.store.decideProposal(id, st);
+        // The CLI deliberately TOLERATES a lost decision race (transitioned=false): the human's
+        // earlier decision wins, and the local record mirrors the row's actual state either way.
+        const result = await live.store.decideProposal(id, st);
         if (rds.pendingProposal()?.id === id) {
           const row = await live.store.getProposal(id).catch(() => null);
           if (row && row.state !== "pending") rds.resolveProposal(row.state);
         }
+        return result;
       },
       createProposal: async (input) => {
         // Re-parking identical content reuses the LOCAL record's id, so a retry after a lost

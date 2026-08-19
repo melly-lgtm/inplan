@@ -117,10 +117,15 @@ for (const [name, make] of Object.entries(BACKENDS)) {
 
     it("deciding a pending proposal is terminal — later decisions, withdraws, and re-parks are no-ops on it", async () => {
       const { id } = await b.store.createProposal({ content: "v1", baseHash: "h", baseContent: "c" });
-      await b.store.decideProposal(id, "accepted");
+      // `transitioned` is the ATOMIC "this call settled it" answer: true exactly once — a repeat
+      // (even with the SAME outcome) reports false, which is how a caller about to announce a
+      // decision tells its own settlement from one that raced ahead of it.
+      expect(await b.store.decideProposal(id, "accepted")).toEqual({ transitioned: true });
       expect(await b.store.getProposal(id)).toMatchObject({ state: "accepted" });
       expect((await b.store.getProposal(id))?.decidedAt).toBeTruthy();
-      await b.store.decideProposal(id, "rejected"); // immutable
+      expect(await b.store.decideProposal(id, "accepted")).toEqual({ transitioned: false }); // same outcome — no transition
+      expect(await b.store.decideProposal("no-such-id", "accepted")).toEqual({ transitioned: false }); // absent row
+      expect(await b.store.decideProposal(id, "rejected")).toEqual({ transitioned: false }); // immutable
       await b.store.withdrawProposal(id); // immutable
       await b.store.createProposal({ id, content: "sneaky rewrite", baseHash: "h2", baseContent: "c2" });
       expect(await b.store.getProposal(id)).toMatchObject({ state: "accepted", content: "v1" });
