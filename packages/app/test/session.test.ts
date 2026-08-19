@@ -10,7 +10,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LogEventType, type LogEntry } from "@inplan/core/node";
+import { FsDocumentStore, hashBody, LogEventType, type LogEntry } from "@inplan/core/node";
 import { Session } from "../src/main/session";
 
 let dir: string;
@@ -100,6 +100,42 @@ describe("Session.dispatchLog", () => {
     const h = handlers();
     session.dispatchLog([], h);
     expect(h.onExternalChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("Session.load with a parked proposal (#95)", () => {
+  it("blank canonical + working file holding the parked text → load serves the canonical; the proposal stays reviewable", async () => {
+    // The CLI's #95 wipe guard keeps the parked text in the working file instead of materializing
+    // a blank canonical over it. The editor must then baseline on the CANONICAL: served as the
+    // file, the re-shown proposal would diff against itself — no hunks for what is an
+    // all-additions review against the blank canonical.
+    const parked = "# Plan\n\nfirst content, straight from the agent.\n";
+    const file = join(dir, "FRESH.md");
+    writeFileSync(file, parked);
+    const s = new Session(file);
+    writeFileSync(s.paths.canonicalPath, ""); // `open` seeded an authoritative-empty canonical
+    // Park the proposal exactly as the CLI gate does (row-backed, base = the blank canonical).
+    await new FsDocumentStore(s.paths).createProposal({ content: parked, baseHash: hashBody(""), baseContent: "" });
+
+    const loaded = await s.load();
+    expect(loaded.content).toBe(""); // the baseline is the canonical, not the proposal under review
+    expect((await s.pendingProposal())?.content).toBe(parked); // and the review still shows the parked text
+    expect(readFileSync(file, "utf8")).toBe(parked); // load never rewrites the working file
+  });
+
+  it("load still serves the working file when it differs from the pending proposal", async () => {
+    // The substitution is strictly for "the file IS the proposal": a file the human has since
+    // edited (or any accepted doc with a stale sidecar) must load as-is.
+    const file = join(dir, "EDITED.md");
+    writeFileSync(file, "# Plan\n\nthe human's own edit.\n");
+    const s = new Session(file);
+    writeFileSync(s.paths.canonicalPath, "");
+    await new FsDocumentStore(s.paths).createProposal({ content: "# Plan\n\nsomething else entirely.\n", baseHash: hashBody(""), baseContent: "" });
+    expect((await s.load()).content).toBe("# Plan\n\nthe human's own edit.\n");
+  });
+
+  it("load with no pending proposal serves the working file unchanged", async () => {
+    expect((await session.load()).content).toBe("# Plan\n\nACCEPTED body.\n");
   });
 });
 

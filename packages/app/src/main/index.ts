@@ -380,7 +380,7 @@ async function refreshPluginAndView(file: string): Promise<void> {
   await startDesktopPlugin(file, pluginToken);
   if (!win || !session) return;
   if (pluginInfo()) win.webContents.send("plugin:reactivate"); // renderer re-binds + re-mounts the editor
-  else win.webContents.send("doc:navigated", session.load());
+  else win.webContents.send("doc:navigated", await session.load());
 }
 
 /** Record the close reason once and exit, bypassing the confirm-quit dialog.

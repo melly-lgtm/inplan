@@ -65,10 +65,24 @@ export class Session {
     }
   }
 
-  load(): { path: string; content: string } {
+  async load(): Promise<{ path: string; content: string }> {
     const content = readFileSync(this.paths.file, "utf8");
     if (!existsSync(this.paths.canonicalPath)) {
       writeFileSync(this.paths.canonicalPath, content);
+      return { path: this.paths.file, content };
+    }
+    // When the working file IS the pending proposal — the CLI's #95 wipe guard leaves the parked
+    // text in place rather than materializing a blank canonical over it — the editor's baseline
+    // must be the CANONICAL: the file's content is the proposal under review, not the accepted
+    // document. Served as-is, the re-shown proposal (pendingProposal) would diff against itself
+    // (an empty diff) instead of proposal-vs-canonical. The equality check keeps every other
+    // shape untouched: a file the human has since edited, or an accepted doc with a stale
+    // sidecar, still loads as the file. Covers the legacy no-rows park too — pendingProposal()
+    // already falls back to the derived proposed.md, and "the file equals the parked text"
+    // means the same thing there.
+    const pending = await this.pendingProposal();
+    if (pending !== null && pending.content === content) {
+      return { path: this.paths.file, content: readFileSync(this.paths.canonicalPath, "utf8") };
     }
     return { path: this.paths.file, content };
   }
