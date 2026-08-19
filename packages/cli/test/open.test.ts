@@ -7,7 +7,7 @@
 // ensureDoc.test.ts; here we exercise the real `open` command end-to-end.)
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,14 +35,29 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true });
 });
 
-async function waitForFile(path: string, timeoutMs: number): Promise<boolean> {
+async function waitFor(cond: () => boolean, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (existsSync(path)) return true;
+    if (cond()) return true;
     await new Promise((r) => setTimeout(r, 20));
   }
-  return existsSync(path);
+  return cond();
 }
+
+const waitForFile = (path: string, timeoutMs: number): Promise<boolean> => waitFor(() => existsSync(path), timeoutMs);
+
+/** The named sidecar file under this run's single control dir (`$INPLAN_SIDECAR_DIR/<key>/<name>`), else null. */
+function sidecarPath(name: string): string | null {
+  const root = join(home, "sidecars");
+  if (!existsSync(root)) return null;
+  for (const key of readdirSync(root)) {
+    const candidate = join(root, key, name);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+const waitForSidecar = (name: string, timeoutMs: number): Promise<boolean> => waitFor(() => sidecarPath(name) !== null, timeoutMs);
 
 describe("inplan open", () => {
   it("creates an empty doc for a fresh path (open-then-fill), not 'file not found'", async () => {
@@ -69,6 +84,46 @@ describe("inplan open", () => {
     expect(r.stderr).toMatch(/file not found/i);
     expect(existsSync(file)).toBe(false); // wait never creates the file
   });
+
+  it("SIGTERM before the first human action never clobbers the file to the empty canonical (#95)", async () => {
+    // The live incident: `open` on a fresh path seeded an EMPTY canonical; the agent filled the
+    // file; a relaunched waiter parked the fill as a review proposal and reverted the working
+    // file to the empty canonical; SIGTERM landed before any human action — the doc was 0 bytes
+    // on disk, recoverable only from the proposed sidecar. The original bytes must survive.
+    const file = join(home, "clobber.plan.md");
+    const plan = `# The plan\n\n${"A paragraph of real content that must survive.\n".repeat(40)}`;
+
+    // 1. `open` a fresh path: creates the empty doc, seeds the empty canonical, blocks in waitCycle.
+    const first = spawn(process.execPath, [CLI, "open", file], { env });
+    try {
+      expect(await waitForSidecar("canonical.md", 10_000)).toBe(true);
+      expect(readFileSync(sidecarPath("canonical.md")!, "utf8")).toBe(""); // the incident's shape: canonical is authoritative-empty
+
+      // 2. The agent fills the doc in place (open-then-fill) while the session is up.
+      writeFileSync(file, plan);
+    } finally {
+      first.kill("SIGTERM"); // the incident's first waiter death
+    }
+
+    // 3. A relaunched waiter processes the turn: default Review mode parks the fill as a proposal.
+    //    `agent_revision_proposed` in the log means the park — and any revert — has already run.
+    const second = spawn(process.execPath, [CLI, "open", file], { env });
+    try {
+      expect(
+        await waitFor(() => {
+          const log = sidecarPath("log.jsonl");
+          return log !== null && readFileSync(log, "utf8").includes("agent_revision_proposed");
+        }, 10_000),
+      ).toBe(true);
+    } finally {
+      second.kill("SIGTERM"); // before any human action — the incident's second waiter death
+    }
+    await waitFor(() => second.exitCode !== null || second.signalCode !== null, 5000);
+
+    // 4. The park is real (the proposal sidecar holds the text) AND the working file kept its bytes.
+    expect(readFileSync(sidecarPath("proposed.md")!, "utf8")).toBe(plan);
+    expect(readFileSync(file, "utf8")).toBe(plan); // never materialized emptier content than it read
+  }, 30_000);
 
   it("deprecates `open --remote` and runs it as `wait --remote`", () => {
     // A cloud doc has no local editor to launch — the only thing `open` adds locally — so

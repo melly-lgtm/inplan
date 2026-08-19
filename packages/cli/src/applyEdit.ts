@@ -4,7 +4,7 @@
 // edit lands in the file model or a runtime plugin's document. Split out of cli.ts so it's
 // unit-testable without running the CLI's top-level main().
 
-import { type ControlChannel, type DocumentStore, LogEventType, hashBody } from "@inplan/core/node";
+import { type ControlChannel, type DocumentStore, LogEventType, hashBody, parse } from "@inplan/core/node";
 import type { AgentEditEvaluation } from "./gate";
 import type { PluginGate } from "./pluginGate";
 import { utf8Bytes } from "./remoteDocState";
@@ -42,8 +42,9 @@ export async function applyGatedEdit(
   } else if (ev.changed && quarantine) {
     // Quarantine: park the proposal for the human to accept/reject in the editor. The proposal
     // sidecar is file-based either way; on the file path also revert the working file to canonical
-    // (the human's accept later writes canonical). On the plugin path the plugin owns the working
-    // doc, so there's no .md to revert.
+    // (the human's accept later writes canonical) — unless the revert would wipe real content
+    // with a blank canonical, the #95 clobber (see revertWouldWipe). On the plugin path the
+    // plugin owns the working doc, so there's no .md to revert.
     let proposalId: string;
     try {
       ({ id: proposalId } = await store.createProposal({ content: current, baseHash: hashBody(canonicalText), baseContent: canonicalText }));
@@ -65,7 +66,7 @@ export async function applyGatedEdit(
     // durable record is already on disk). Every failure below is local housekeeping and must not
     // be reported as a failed park: claiming "FAILED, will be re-pushed" for a proposal the human
     // can already see in their editor is the same class of false signal #88 exists to kill.
-    if (!gate) {
+    if (!gate && !revertWouldWipe(canonicalText, current)) {
       try {
         await store.saveDoc(canonicalText);
       } catch {
@@ -100,6 +101,29 @@ export async function applyGatedEdit(
     await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: utf8Bytes(current) } });
   }
   return { proposed: false };
+}
+
+/**
+ * Would reverting the working file to `canonicalText` replace real content with a blank body?
+ * (#95) `open` on a fresh path seeds an EMPTY canonical, so on a brand-new doc whose first
+ * content arrives from the agent, the quarantine revert used to materialize that empty canonical
+ * over the only copy of the text — killing the session (SIGTERM) before the first human action
+ * then left the working file at 0 bytes, with the content surviving only in the proposal sidecar.
+ * When the revert would be a total wipe (blank canonical body over a non-blank working body),
+ * skip it: the proposal is already parked and the working file keeps the text, exactly like the
+ * failed-revert path below — the next turn re-parks the identical text as a no-op, and the
+ * human's accept still writes canonical. An open/wait must never write the working file emptier
+ * than what it read; only a real human decision may.
+ */
+function revertWouldWipe(canonicalText: string, current: string): boolean {
+  const blank = (text: string): boolean => {
+    try {
+      return parse(text).body.trim() === "";
+    } catch {
+      return text.trim() === ""; // unparseable comment block — judge the raw text
+    }
+  };
+  return blank(canonicalText) && !blank(current);
 }
 
 /** An edit that lands directly moots the caller's own parked proposal, if any — retract it. */
