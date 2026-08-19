@@ -158,6 +158,21 @@ describe("proposal queue (phase D)", () => {
     expect(document.body.textContent).not.toContain("Alpha RACED.");
   });
 
+  it("a TRANSIENT settle failure keeps the still-pending review open and invites a retry", async () => {
+    install(DOC, [{ id: "row-flaky", content: DOC.replace("Alpha line.", "Alpha FLAKY."), baseContent: DOC }]);
+    // The settle rejects but the row is STILL the queue head — a transport blip, not a decision.
+    const api = (window as unknown as { api: Api }).api;
+    api.clearProposal = async () => {
+      throw new Error("network hiccup");
+    };
+    await mount();
+    await applyAll();
+    await waitFor(() => expect(document.body.textContent).toContain("try Apply again"));
+    // The review is still there (same proposal, still pending) and no decision event was logged.
+    expect(document.body.textContent).toContain("Agent proposed changes");
+    expect(logged.filter((l) => l.type.startsWith("revision_"))).toEqual([]);
+  });
+
   it("memory host: clearProposal rejects when the row was decided elsewhere", async () => {
     const session = createMemoryApi({ content: DOC });
     await session.agent.proposeRevision(DOC.replace("Alpha line.", "X."));

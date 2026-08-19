@@ -246,6 +246,7 @@ export const EN: Catalog = {
   "banner.staleTitle": "The document changed after this proposal was written. The diff below replays the proposal's edits onto the current text (a 3-way merge from its recorded base).",
   "banner.review": "Review",
   "msg.appliedRevision": "Applied agent revision ({accepted}/{total} hunks).",
+  "msg.decisionFailedRetry": "The decision could not be recorded — the proposal is still pending; try Apply again.",
   "msg.decidedElsewhere": "This proposal was decided elsewhere — your apply was not recorded and the document is unchanged.",
   "msg.decisionSaveFailed": "The decision was recorded but the content could not be saved — it stays in the editor as unsaved work and persists on your next save or quit.",
   "banner.proposedChanges": "Agent proposed changes",

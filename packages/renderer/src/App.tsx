@@ -454,7 +454,10 @@ export function App(props: EditorProps = {}): JSX.Element {
         // the fresh document (the stored base drives the 3-way merge; hunk selections reset,
         // which is honest: the ground they were chosen on moved).
         const open = proposalRef.current;
-        if (open?.raw !== undefined) {
+        if (open?.raw !== undefined && open.base !== undefined) {
+          // Only a base-carrying review can actually rebase. A legacy base-less proposal would
+          // gain nothing (no merge without a base) and lose everything — the new object identity
+          // resets the reviewer's in-progress hunk selections — so it is left untouched.
           showProposal(open.raw, open.id, open.base, queueCountRef.current, reviewOpenRef.current);
         }
         setStatus(t("msg.agentUpdated"));
@@ -1474,10 +1477,27 @@ export function App(props: EditorProps = {}): JSX.Element {
           },
           () => {
             if (docGenRef.current !== gen) return;
-            // The settle was not ours — nothing was published, the document is untouched.
-            setProposal(null);
-            setReviewOpen(false);
-            return advance().then(() => docGenRef.current === gen && setStatus(t("msg.decidedElsewhere")));
+            // Nothing was published either way — but "settle failed" covers two very different
+            // worlds: the row was decided elsewhere (rejection from the atomic transition), or a
+            // TRANSIENT transport/storage error. A follow-up head lookup separates them: the same
+            // row still heading the queue means still-pending — keep the review and invite a
+            // retry; anything else means the row is gone — their decision stands.
+            return hostApi()
+              .getProposal()
+              .then((head) => {
+                if (docGenRef.current !== gen) return;
+                if (head != null && proposal.id !== undefined && head.id === proposal.id) {
+                  setStatus(t("msg.decisionFailedRetry"));
+                  return;
+                }
+                setProposal(null);
+                setReviewOpen(false);
+                if (head != null) showProposal(head.content, head.id, head.baseContent, head.pending);
+                setStatus(t("msg.decidedElsewhere"));
+              })
+              .catch(() => {
+                if (docGenRef.current === gen) setStatus(t("msg.decisionFailedRetry"));
+              });
           },
         )
         .finally(() => setSettling(false));
