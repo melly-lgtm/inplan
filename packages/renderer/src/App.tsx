@@ -415,7 +415,12 @@ export function App(props: EditorProps = {}): JSX.Element {
         // mid-review), surface it again rather than silently accepting it. Generation-guarded:
         // a slow read must not surface against a document navigated to since.
         const gen = ++docGenRef.current;
-        void hostApi().getProposal().then((parked) => docGenRef.current === gen && parked != null && showProposal(parked.content, parked.id, parked.baseContent, parked.pending));
+        void hostApi()
+          .getProposal()
+          .then((parked) => docGenRef.current === gen && parked != null && showProposal(parked.content, parked.id, parked.baseContent, parked.pending))
+          .catch(() => {
+            /* best-effort — the proposal re-surfaces on the next park event or launch */
+          });
       })
       .catch(() => setLoaded(true));
 
@@ -514,7 +519,12 @@ export function App(props: EditorProps = {}): JSX.Element {
         setAgentMessages([]); // notes belong to the doc we just left — don't carry them over
         setActivePreviewLine(null); // a synced line belongs to the doc we just left, not this one
         setStatus(`opened ${path.split("/").pop() ?? path}`);
-        void hostApi().getProposal().then((parked) => docGenRef.current === gen && parked != null && showProposal(parked.content, parked.id, parked.baseContent, parked.pending));
+        void hostApi()
+          .getProposal()
+          .then((parked) => docGenRef.current === gen && parked != null && showProposal(parked.content, parked.id, parked.baseContent, parked.pending))
+          .catch(() => {
+            /* best-effort — the proposal re-surfaces on the next park event or launch */
+          });
       }),
       hostApi().onNavState?.((s) => setNavState(s)),
       // Desktop only: a newer npm version is available.
@@ -1450,7 +1460,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                 if (docRef.current === finalDoc) setDirty(false);
                 setCheckpoint(serialized);
                 // Status AFTER the advance — the next review's own status must not bury it.
-                return advance().then(() => docGenRef.current === gen && setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`));
+                return advance().then(() => docGenRef.current === gen && setStatus(t("msg.appliedRevision", { accepted: acceptedCount, total: accepted.length })));
               },
               () => {
                 if (docGenRef.current !== gen) return;
