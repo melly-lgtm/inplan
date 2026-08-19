@@ -185,6 +185,30 @@ describe("proposal queue (phase D)", () => {
     expect(document.body.textContent).toContain("Beta FROM-PROPOSAL.");
   });
 
+  it("an external rewrite landing MID-SETTLE is not overwritten — the publish rebases onto it", async () => {
+    install(DOC, [{ id: "row-slow", content: DOC.replace("Beta line.", "Beta ACCEPTED."), baseContent: DOC }]);
+    const api = (window as unknown as { api: Api }).api;
+    const origClear = api.clearProposal.bind(api);
+    let release!: () => void;
+    api.clearProposal = (outcome, id) =>
+      new Promise((res) => {
+        release = () => res(origClear(outcome, id));
+      });
+    await mount();
+    await applyAll(); // the settle is now in flight — nothing published yet
+
+    // An auto-accepted agent edit rewrites the document while the settle is pending.
+    await act(async () => {
+      agentRef!.externalChange(DOC.replace("Alpha line.", "Alpha MID-SETTLE."));
+    });
+    await act(async () => {
+      release(); // the settle wins now — the publish must rebase, not overwrite
+    });
+
+    await waitFor(() => expect(document.body.textContent).toContain("Alpha MID-SETTLE."));
+    expect(document.body.textContent).toContain("Beta ACCEPTED.");
+  });
+
   it("a proposal whose base matches the current canonical shows no stale notice", async () => {
     install(DOC, [{ id: "row-fresh", content: DOC.replace("Beta line.", "Beta FRESH."), baseContent: DOC }]);
     await mount();

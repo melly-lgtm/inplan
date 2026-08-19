@@ -171,8 +171,6 @@ interface Proposal {
   /** Written against an older canonical: `next.body` is the 3-way merge of its stored base,
    *  the current body, and the proposed body — surfaced to the reviewer as a notice. */
   stale?: boolean;
-  /** Queue length (this proposal is the oldest of `pending`) — the count badge. */
-  pending?: number;
   /** The exact serialized content this review was built from — a re-notification carrying the
    *  same id AND the same raw content is metadata-only (never a rebuild that would reset the
    *  reviewer's in-progress hunk state). */
@@ -293,6 +291,11 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false); // is the review panel visible (vs. parked behind a banner)
   const [settling, setSettling] = useState(false); // a decision's settle is in flight — Apply is disabled (no double-apply)
+  // The queue length lives OUTSIDE the Proposal identity: a count-only change (another proposer
+  // parked behind the open head) must never re-key the review state — reviewSegs / accepted /
+  // edits all derive from `proposal`, and a new object identity would reset the reviewer's
+  // in-progress hunk decisions.
+  const [queueCount, setQueueCount] = useState<number | undefined>(undefined);
   const [findOpen, setFindOpen] = useState(false);
   const [findOpts, setFindOpts] = useState<{ query: string; ci: boolean; inPreview: boolean; inEditor: boolean; inComments: boolean }>({ query: "", ci: false, inPreview: true, inEditor: false, inComments: false });
   const [openPanel, setOpenPanel] = useState<string | null>(null); // id of the open host-injected side panel (e.g. the cloud TOC), or null
@@ -303,6 +306,8 @@ export function App(props: EditorProps = {}): JSX.Element {
   const docRef = useRef(doc);
   const proposalRef = useRef(proposal);
   proposalRef.current = proposal;
+  const queueCountRef = useRef(queueCount);
+  queueCountRef.current = queueCount;
   // Navigation generation: bumped whenever the mounted DOCUMENT changes (load, in-window
   // navigation). Async proposal reads/continuations capture it and drop their results when it
   // moved — a response that started against one document must never touch another.
@@ -371,10 +376,10 @@ export function App(props: EditorProps = {}): JSX.Element {
       baseBody,
       next: stale ? { ...next, body: merge3(baseParsed, baseBody, next.body) } : next,
       ...(stale ? { stale } : {}),
-      ...(pending !== undefined ? { pending } : {}),
       raw: content,
       ...(baseContent !== undefined ? { base: baseContent } : {}),
     });
+    setQueueCount(pending);
     setReviewOpen(true);
     setAgentThinking(false);
     setStatus(t("msg.proposedReview"));
@@ -438,7 +443,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         const open = proposalRef.current;
         if (open?.raw !== undefined) {
           docRef.current = next; // sync now — the re-show must diff against the fresh doc pre-render
-          showProposal(open.raw, open.id, open.base, open.pending);
+          showProposal(open.raw, open.id, open.base, queueCountRef.current);
         }
         setStatus(t("msg.agentUpdated"));
       }),
@@ -453,7 +458,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         // metadata only: rebuilding would reset the reviewer's in-progress hunk selections.
         const cur = proposalRef.current;
         if (cur && cur.id !== undefined && cur.id === id && cur.raw === content) {
-          if (pending !== undefined && pending !== cur.pending) setProposal({ ...cur, pending });
+          if (pending !== undefined) setQueueCount(pending); // count only — review state untouched
           return;
         }
         showProposal(content, id, baseContent, pending);
@@ -1353,8 +1358,8 @@ export function App(props: EditorProps = {}): JSX.Element {
       // accepted body (e.g. added during review) would make the doc invalid —
       // demote it to a doc-level comment instead of corrupting the document.
       const comments = merged.map((c) => (!c.parentId && c.anchor !== "doc" && !body.includes(`](#${c.id})`) ? { ...c, anchor: "doc" as const } : c));
-      const finalDoc: ParsedDocument = { body, comments };
-      const serialized = serialize(finalDoc);
+      let finalDoc: ParsedDocument = { body, comments };
+      let serialized = serialize(finalDoc);
       const acceptedCount = accepted.filter(Boolean).length;
       // Decision made → push the accepted doc to the collaborative owners (comments → store, body →
       // the binding that owns the SOURCE pane + the shared/persisted doc). WITHOUT this, a collab
@@ -1394,6 +1399,20 @@ export function App(props: EditorProps = {}): JSX.Element {
         .then(
           () => {
             if (docGenRef.current !== gen) return; // navigated away mid-settle — the row is settled; the doc here is another document
+            // An external rewrite may have landed WHILE the settle was in flight: publishing the
+            // captured snapshot would overwrite it. Both sides diverged from the same prevDoc, so
+            // rebase — replay the accepted changes onto the fresh document with the same 3-way
+            // merge (and the same comment-union rules) the stale-review path uses.
+            const current = docRef.current;
+            if (current !== prevDoc) {
+              const rebasedBody = merge3(prevDoc.body, current.body, finalDoc.body);
+              const currentIds = new Set(current.comments.map((c) => c.id));
+              const rebasedComments = [...current.comments, ...finalDoc.comments.filter((c) => !currentIds.has(c.id))].map((c) =>
+                !c.parentId && c.anchor !== "doc" && !rebasedBody.includes(`](#${c.id})`) ? { ...c, anchor: "doc" as const } : c,
+              );
+              finalDoc = { body: rebasedBody, comments: rebasedComments };
+              serialized = serialize(finalDoc);
+            }
             setDoc(finalDoc);
             docRef.current = finalDoc; // sync now — continuations below compare against it pre-render
             setDirty(true); // unsaved until persistence confirms; close-prompt protects it
@@ -1409,7 +1428,7 @@ export function App(props: EditorProps = {}): JSX.Element {
               .catch(() => {
                 /* the row's state is the durable truth; a lost event only delays the editor refresh */
               });
-            const persisted = syncExternalDoc(finalDoc, prevDoc.comments, prevDoc.body)
+            const persisted = syncExternalDoc(finalDoc, current.comments, current.body)
               ? Promise.resolve()
               : hostApi().save(serialized, { kind: "apply", cadence });
             return persisted.then(
@@ -1422,7 +1441,13 @@ export function App(props: EditorProps = {}): JSX.Element {
                 setCheckpoint(serialized);
                 return advance();
               },
-              () => docGenRef.current === gen && setStatus(t("msg.decisionSaveFailed")),
+              () => {
+                if (docGenRef.current !== gen) return;
+                setStatus(t("msg.decisionSaveFailed"));
+                // The row is terminal either way — without advancing, the rest of the queue
+                // would stall (a settled row never resurfaces to trigger the next review).
+                return advance();
+              },
             );
           },
           () => {
@@ -1844,7 +1869,7 @@ export function App(props: EditorProps = {}): JSX.Element {
 
       {proposal && !reviewOpen && (
         <div className="ap-banner">
-          {(proposal.pending ?? 1) > 1 ? t("banner.proposalQueue", { n: proposal.pending! }) : t("banner.proposalPending")}{" "}
+          {(queueCount ?? 1) > 1 ? t("banner.proposalQueue", { n: queueCount! }) : t("banner.proposalPending")}{" "}
           <button onClick={() => setReviewOpen(true)}>{t("banner.review")}</button>
         </div>
       )}
@@ -1852,7 +1877,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       {proposal && reviewOpen && (
         <div className="ap-review-bar">
           <strong>{t("banner.proposedChanges")}</strong>{" "}
-          {(proposal.pending ?? 1) > 1 && <span className="ap-muted">{t("banner.queuePosition", { n: proposal.pending! })} </span>}
+          {(queueCount ?? 1) > 1 && <span className="ap-muted">{t("banner.queuePosition", { n: queueCount! })} </span>}
           {proposal.stale && <span className="ap-muted" title={t("banner.staleTitle")}>{t("banner.stale")} </span>}
           {t(changeCount === 1 ? "banner.changesShown" : "banner.changesShownPlural", { n: changeCount })}
           <span className="ap-spacer" />
