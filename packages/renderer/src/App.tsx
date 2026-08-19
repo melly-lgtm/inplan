@@ -308,6 +308,8 @@ export function App(props: EditorProps = {}): JSX.Element {
   proposalRef.current = proposal;
   const queueCountRef = useRef(queueCount);
   queueCountRef.current = queueCount;
+  const reviewOpenRef = useRef(reviewOpen);
+  reviewOpenRef.current = reviewOpen;
   // Navigation generation: bumped whenever the mounted DOCUMENT changes (load, in-window
   // navigation). Async proposal reads/continuations capture it and drop their results when it
   // moved — a response that started against one document must never touch another.
@@ -366,7 +368,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   // base → current → proposal, so the reviewer sees the proposal's own edits as hunks against
   // today's document; the same path covers accepting several queued proposals in sequence.
   // Component-level (not inside the mount effect): the post-decision queue advance calls it too.
-  const showProposal = useCallback((content: string, id?: string, baseContent?: string, pending?: number) => {
+  const showProposal = useCallback((content: string, id?: string, baseContent?: string, pending?: number, openPanel = true) => {
     const next = parse(content);
     const baseBody = docRef.current.body;
     const baseParsed = baseContent !== undefined ? parse(baseContent).body : undefined;
@@ -380,7 +382,9 @@ export function App(props: EditorProps = {}): JSX.Element {
       ...(baseContent !== undefined ? { base: baseContent } : {}),
     });
     setQueueCount(pending);
-    setReviewOpen(true);
+    // The rebase path preserves the reviewer's explicit park-behind-the-banner choice: only a
+    // genuinely new/updated review opens the panel unbidden.
+    if (openPanel) setReviewOpen(true);
     setAgentThinking(false);
     setStatus(t("msg.proposedReview"));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- setters/refs are stable; t matches the mount effect's stale-t tolerance
@@ -443,7 +447,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         const open = proposalRef.current;
         if (open?.raw !== undefined) {
           docRef.current = next; // sync now — the re-show must diff against the fresh doc pre-render
-          showProposal(open.raw, open.id, open.base, queueCountRef.current);
+          showProposal(open.raw, open.id, open.base, queueCountRef.current, reviewOpenRef.current);
         }
         setStatus(t("msg.agentUpdated"));
       }),
@@ -452,12 +456,12 @@ export function App(props: EditorProps = {}): JSX.Element {
         // A late event from a document we've navigated away from must not surface here (the
         // desktop stamps its payloads with the session's doc path; hosts without multi-doc
         // sessions omit it).
-        if (path !== undefined && docPathRef.current !== null && path !== docPathRef.current) return;
+        if (path !== undefined && docPathRef.current !== "" && path !== docPathRef.current) return;
         // A re-notification about the proposal ALREADY under review (same id, same content —
         // e.g. another proposer parked behind it and the head's count changed) updates the queue
         // metadata only: rebuilding would reset the reviewer's in-progress hunk selections.
         const cur = proposalRef.current;
-        if (cur && cur.id !== undefined && cur.id === id && cur.raw === content) {
+        if (cur && cur.id !== undefined && cur.id === id && cur.raw === content && cur.base === baseContent) {
           if (pending !== undefined) setQueueCount(pending); // count only — review state untouched
           return;
         }
@@ -1443,10 +1447,11 @@ export function App(props: EditorProps = {}): JSX.Element {
               },
               () => {
                 if (docGenRef.current !== gen) return;
-                setStatus(t("msg.decisionSaveFailed"));
                 // The row is terminal either way — without advancing, the rest of the queue
-                // would stall (a settled row never resurfaces to trigger the next review).
-                return advance();
+                // would stall (a settled row never resurfaces to trigger the next review). The
+                // failure status is set AFTER the advance so the next review's own status
+                // cannot bury it.
+                return advance().then(() => docGenRef.current === gen && setStatus(t("msg.decisionSaveFailed")));
               },
             );
           },
