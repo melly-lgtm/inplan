@@ -104,21 +104,27 @@ describe("inplan open", () => {
     } finally {
       first.kill("SIGTERM"); // the incident's first waiter death
     }
+    // JOIN the first process before relaunching: both runs key the SAME sidecar dir (waitlock,
+    // log.jsonl), so overlapping teardown would make the lifecycle timing-dependent — and a park
+    // the dying first run manages to squeeze in must be counted as PRE-EXISTING, not mistaken
+    // for the second run's.
+    expect(await waitFor(() => first.exitCode !== null || first.signalCode !== null, 5000)).toBe(true);
+    const parkCount = (): number => {
+      const log = sidecarPath("log.jsonl");
+      return log === null ? 0 : (readFileSync(log, "utf8").match(/agent_revision_proposed/g) ?? []).length;
+    };
+    const parksBefore = parkCount();
 
     // 3. A relaunched waiter processes the turn: default Review mode parks the fill as a proposal.
-    //    `agent_revision_proposed` in the log means the park — and any revert — has already run.
+    //    A NEW `agent_revision_proposed` (count increase) means the park — and any revert — has
+    //    already run in the second process; a leftover first-run event can never satisfy this.
     const second = spawn(process.execPath, [CLI, "open", file], { env });
     try {
-      expect(
-        await waitFor(() => {
-          const log = sidecarPath("log.jsonl");
-          return log !== null && readFileSync(log, "utf8").includes("agent_revision_proposed");
-        }, 10_000),
-      ).toBe(true);
+      expect(await waitFor(() => parkCount() > parksBefore, 10_000)).toBe(true);
     } finally {
       second.kill("SIGTERM"); // before any human action — the incident's second waiter death
     }
-    await waitFor(() => second.exitCode !== null || second.signalCode !== null, 5000);
+    expect(await waitFor(() => second.exitCode !== null || second.signalCode !== null, 5000)).toBe(true);
 
     // 4. The park is real (the proposal sidecar holds the text) AND the working file kept its bytes.
     expect(readFileSync(sidecarPath("proposed.md")!, "utf8")).toBe(plan);
