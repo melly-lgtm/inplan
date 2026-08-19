@@ -1313,6 +1313,10 @@ export function App(props: EditorProps = {}): JSX.Element {
       const comments = merged.map((c) => (!c.parentId && c.anchor !== "doc" && !body.includes(`](#${c.id})`) ? { ...c, anchor: "doc" as const } : c));
       const finalDoc: ParsedDocument = { body, comments };
       setDoc(finalDoc);
+      // Sync the ref NOW (it normally follows on render): the settle continuation below compares
+      // against it to decide whether a rollback/dirty-clear is still safe, and it can run before
+      // React re-renders.
+      docRef.current = finalDoc;
       // The applied body is UNSAVED work until persistence confirms below — dirty engages the
       // close-prompt/quit-save protection for it; the success path clears it again.
       setDirty(true);
@@ -1326,36 +1330,28 @@ export function App(props: EditorProps = {}): JSX.Element {
       // reverted on reload, because save({apply}) is a no-op in the unified-Yjs model (the server is
       // the sole writer of documents.body, from the binding). File-backed editors have no binding, so
       // they fall back to a silent canonical save (accepting a proposal must not end the turn).
-      // PERSIST BEFORE SETTLING: the proposal row may only leave `pending` once the accepted
-      // content is durably saved — settled-but-unsaved would lose the acceptance (the row no
-      // longer resurfaces for review, and the content never landed). On the collab path the
-      // binding/store own persistence synchronously; on the file path the save is awaited first,
-      // and a FAILED save leaves the row pending (the review resurfaces — the retry). The dirty
-      // baseline clears only on success too: until then the applied body is UNSAVED work the
-      // close-prompt must protect, not a phantom already-persisted state.
-      const persisted = syncExternalDoc(finalDoc, prevDoc.comments, prevDoc.body)
-        ? Promise.resolve()
-        : hostApi().save(serialized, { kind: "apply", cadence });
-      // A failed settlement must be visible: the content is applied and the review UI is gone, but
-      // the row stays pending and WILL resurface for review on the next launch — announce that
-      // (the resurfacing is the retry) instead of letting it look like a mystery double-review.
-      // On success: the decision EVENT is appended only now — for a row still pending it would
-      // record a decision that never happened — and then the QUEUE advances: the next-oldest
-      // pending proposal (another proposer's park) surfaces immediately, reviewed one at a time.
-      persisted
-        .then(() => {
-          savedRef.current = serialized; // this snapshot IS persisted, whatever happened since
-          // Clear dirty only if the doc still equals the applied snapshot — the user may have
-          // kept editing while the save was in flight, and THAT work is still unsaved.
-          if (docRef.current === finalDoc) setDirty(false);
-          setCheckpoint(serialized);
-          return hostApi().clearProposal(acceptedCount === accepted.length ? "accepted" : acceptedCount === 0 ? "rejected" : "partially_accepted", proposal.id);
-        })
+      // SETTLE BEFORE PERSISTING: clearProposal's atomic transition answer is the RESERVATION —
+      // only the call that actually moved the row pending → terminal may write the accepted
+      // content. The two failure modes divide cleanly:
+      //  • settle LOST (another reviewer decided mid-Apply, either outcome): canonical must not
+      //    change for a review that failed — restore the pre-apply doc (guarded: only if nothing
+      //    else touched it since) and refresh the queue; their decision stands.
+      //  • settle WON but the save then fails: the decision is fact (the row is terminal) and the
+      //    content is NOT lost — it stays applied in the editor as dirty/unsaved work, protected
+      //    by the close-prompt and quit-save, and persists on the next save.
+      // The decision event is appended only after the settle succeeds — it records a settlement
+      // THIS call verifiably made; logging stays best-effort (the row is the durable truth).
+      const advance = () =>
+        hostApi()
+          .getProposal()
+          .then((queued) => queued != null && showProposal(queued.content, queued.id, queued.baseContent, queued.pending))
+          .catch(() => {
+            /* best-effort — a queued proposal re-surfaces on the next launch/park */
+          });
+      hostApi()
+        .clearProposal(acceptedCount === accepted.length ? "accepted" : acceptedCount === 0 ? "rejected" : "partially_accepted", proposal.id)
         .then(
           () => {
-            // The decision event names WHICH proposal was decided (proposals v1) — an auditor
-            // binds it to the row by id, never by inferring from event order. Logging is
-            // best-effort: the row itself already carries the authoritative outcome.
             void hostApi()
               .logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", {
                 accepted: acceptedCount,
@@ -1365,14 +1361,32 @@ export function App(props: EditorProps = {}): JSX.Element {
               .catch(() => {
                 /* the row's state is the durable truth; a lost event only delays the editor refresh */
               });
-            return hostApi()
-              .getProposal()
-              .then((queued) => queued != null && showProposal(queued.content, queued.id, queued.baseContent, queued.pending))
-              .catch(() => {
-                /* the advance is best-effort — a queued proposal re-surfaces on the next launch/park */
-              });
+            const persisted = syncExternalDoc(finalDoc, prevDoc.comments, prevDoc.body)
+              ? Promise.resolve()
+              : hostApi().save(serialized, { kind: "apply", cadence });
+            return persisted.then(
+              () => {
+                savedRef.current = serialized; // this snapshot IS persisted, whatever happened since
+                // Clear dirty only if the doc still equals the applied snapshot — the user may
+                // have kept editing while the save was in flight; THAT work is still unsaved.
+                if (docRef.current === finalDoc) setDirty(false);
+                setCheckpoint(serialized);
+                return advance();
+              },
+              () => setStatus("the decision was recorded but the content could not be saved — it stays in the editor as unsaved work and persists on your next save or quit"),
+            );
           },
-          () => setStatus("the decision could not be completed — if the proposal is still pending it will reappear for review; if someone else decided it, their decision stands"),
+          () => {
+            // The settle was not ours — restore the pre-apply document (their decision stands),
+            // unless something else (a collab update, a user edit) moved it since.
+            if (docRef.current === finalDoc) {
+              setDoc(prevDoc);
+              docRef.current = prevDoc;
+              setDirty(savedRef.current !== serialize(prevDoc));
+            }
+            setStatus("this proposal was decided elsewhere — your apply was not recorded and the document is unchanged");
+            return advance();
+          },
         );
       setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`);
     },

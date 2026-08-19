@@ -137,23 +137,23 @@ describe("proposal queue (phase D)", () => {
     expect(decisions).toEqual([{ outcome: "accepted", id: "row-stale" }]);
   });
 
-  it("a decision raced by another reviewer logs NO event and does not advance", async () => {
-    install(DOC, [
-      { id: "row-raced", content: DOC.replace("Alpha line.", "Alpha RACED."), baseContent: DOC },
-      { id: "row-next", content: DOC.replace("Beta line.", "Beta NEXT."), baseContent: DOC },
-    ]);
-    // The host's verify-settle rejects: someone else decided the row while Apply was in flight.
+  it("a decision raced by another reviewer logs NO event and restores the pre-apply document", async () => {
+    install(DOC, [{ id: "row-raced", content: DOC.replace("Alpha line.", "Alpha RACED."), baseContent: DOC }]);
+    // The host's settle rejects: someone else decided the row while Apply was in flight — and
+    // their decision consumed the queue.
     const api = (window as unknown as { api: Api }).api;
     api.clearProposal = async () => {
-      throw new Error("proposal row-raced was decided elsewhere (state: rejected)");
+      queue = [];
+      throw new Error("proposal row-raced was decided elsewhere");
     };
     await mount();
     await applyAll();
-    await waitFor(() => expect(document.body.textContent).toContain("could not be completed"));
-    // No phantom decision event for a settlement that never happened, and no advance past a
-    // decision that was not ours.
+    await waitFor(() => expect(document.body.textContent).toContain("decided elsewhere"));
+    // No phantom decision event for a settlement this call never made — and canonical is
+    // untouched: the applied body was rolled back to the pre-apply document.
     expect(logged.filter((l) => l.type.startsWith("revision_"))).toEqual([]);
-    expect(document.body.textContent).not.toContain("Beta NEXT.");
+    await waitFor(() => expect(document.body.textContent).toContain("Alpha line."));
+    expect(document.body.textContent).not.toContain("Alpha RACED.");
   });
 
   it("memory host: clearProposal rejects when the row was decided elsewhere", async () => {
