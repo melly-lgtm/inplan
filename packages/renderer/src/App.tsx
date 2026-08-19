@@ -440,13 +440,16 @@ export function App(props: EditorProps = {}): JSX.Element {
         // broadcast already delivered the body (normal auto-accept turns). File-backed editors have no
         // binding and keep using the controlled value.
         syncExternalDoc(next, prevDoc.comments, prevDoc.body);
+        // Sync the ref for EVERY replacement (it normally follows on render): any pending
+        // proposal read resolving after this must build its review against the fresh text, or
+        // applying it could overwrite this very change.
+        docRef.current = next;
         // A review OPEN over the old canonical is now built on sand: its frozen diff base would
         // make Apply overwrite this very change. Rebase it — re-show the same proposal against
         // the fresh document (the stored base drives the 3-way merge; hunk selections reset,
         // which is honest: the ground they were chosen on moved).
         const open = proposalRef.current;
         if (open?.raw !== undefined) {
-          docRef.current = next; // sync now — the re-show must diff against the fresh doc pre-render
           showProposal(open.raw, open.id, open.base, queueCountRef.current, reviewOpenRef.current);
         }
         setStatus(t("msg.agentUpdated"));
@@ -1409,7 +1412,11 @@ export function App(props: EditorProps = {}): JSX.Element {
             // merge (and the same comment-union rules) the stale-review path uses.
             const current = docRef.current;
             if (current !== prevDoc) {
-              const rebasedBody = merge3(prevDoc.body, current.body, finalDoc.body);
+              // Argument order matters: merge3's conflict policy hands contested regions to
+              // `theirs`. In the REVIEW path the proposal may win — a human judges the hunk —
+              // but this result publishes unreviewed, so the concurrent EXTERNAL edit must win:
+              // it rides as `theirs`, the accepted changes as `ours`.
+              const rebasedBody = merge3(prevDoc.body, finalDoc.body, current.body);
               const currentIds = new Set(current.comments.map((c) => c.id));
               const rebasedComments = [...current.comments, ...finalDoc.comments.filter((c) => !currentIds.has(c.id))].map((c) =>
                 !c.parentId && c.anchor !== "doc" && !rebasedBody.includes(`](#${c.id})`) ? { ...c, anchor: "doc" as const } : c,
@@ -1422,7 +1429,6 @@ export function App(props: EditorProps = {}): JSX.Element {
             setDirty(true); // unsaved until persistence confirms; close-prompt protects it
             setProposal(null);
             setReviewOpen(false);
-            setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`);
             void hostApi()
               .logAction(acceptedCount === accepted.length ? "revision_accepted_all" : acceptedCount === 0 ? "revision_rejected_all" : "revision_hunk_accepted", {
                 accepted: acceptedCount,
@@ -1443,7 +1449,8 @@ export function App(props: EditorProps = {}): JSX.Element {
                 // have kept editing while the save was in flight; THAT work is still unsaved.
                 if (docRef.current === finalDoc) setDirty(false);
                 setCheckpoint(serialized);
-                return advance();
+                // Status AFTER the advance — the next review's own status must not bury it.
+                return advance().then(() => docGenRef.current === gen && setStatus(`applied agent revision (${acceptedCount}/${accepted.length} hunks)`));
               },
               () => {
                 if (docGenRef.current !== gen) return;
@@ -1460,8 +1467,7 @@ export function App(props: EditorProps = {}): JSX.Element {
             // The settle was not ours — nothing was published, the document is untouched.
             setProposal(null);
             setReviewOpen(false);
-            setStatus(t("msg.decidedElsewhere"));
-            return advance();
+            return advance().then(() => docGenRef.current === gen && setStatus(t("msg.decidedElsewhere")));
           },
         )
         .finally(() => setSettling(false));
