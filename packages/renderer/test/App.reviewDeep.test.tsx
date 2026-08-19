@@ -43,11 +43,17 @@ afterEach(cleanup);
 async function mountAndPropose() {
   const { App } = await import("../src/App");
   render(<App />);
-  await waitFor(() => expect(document.body.textContent).toContain("Alpha line."));
+  await waitFor(() => expect(document.body.textContent).toContain("Alpha line."), { timeout: 5000 });
+  // AWAIT the proposal inside act. Fire-and-forget let setProposal land outside act (the
+  // propose chain hops the microtask queue through hashing), so the review bar could be
+  // observed after its first commit but BEFORE the effect that initializes the per-hunk
+  // accept state had flushed — a click in that window is a no-op on the empty state or is
+  // overwritten by the init (the reject silently reverts to all-accepted). Awaiting inside
+  // act makes act drain that render AND its effects before the helper returns.
   await act(async () => {
-    agent.proposeRevision(REVISED);
+    await agent.proposeRevision(REVISED);
   });
-  await waitFor(() => expect(document.body.textContent).toContain("Agent proposed changes"));
+  await waitFor(() => expect(document.body.textContent).toContain("Agent proposed changes"), { timeout: 5000 });
 }
 
 describe("App deep review flow (memory-backed)", () => {
@@ -61,22 +67,29 @@ describe("App deep review flow (memory-backed)", () => {
     await act(async () => {
       tri.click();
     });
-    expect(document.querySelector(".ap-tri--reject")).toBeTruthy();
+    // Don't Apply until the reject-all observably committed — Apply reads the toggle state.
+    await waitFor(() => expect(document.querySelector(".ap-tri--reject")).toBeTruthy(), { timeout: 5000 });
     await act(async () => {
       apply.click();
     });
 
-    // Review bar is gone and the parked proposal was cleared.
-    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"));
-    expect(await api().getProposal()).toBeNull();
+    // Review bar is gone and the parked proposal was cleared. The settle and the decision
+    // log entry are chained promises behind Apply, so poll them rather than read once.
+    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"), { timeout: 5000 });
+    await waitFor(async () => expect(await api().getProposal()).toBeNull(), { timeout: 5000 });
 
     // The proposed text was NOT adopted — the original body survives.
     expect(document.body.textContent).toContain("Alpha line.");
     expect(document.body.textContent).not.toContain("Alpha CHANGED.");
 
     // Rejecting every hunk logs the rejected-all decision.
-    const log = await agent.log();
-    expect(log.some((e) => e.type === "revision_rejected_all")).toBe(true);
+    await waitFor(
+      async () => {
+        const log = await agent.log();
+        expect(log.some((e) => e.type === "revision_rejected_all")).toBe(true);
+      },
+      { timeout: 5000 },
+    );
   });
 
   it('"later" parks the review behind an "awaiting your review" banner that re-shows it', async () => {
@@ -88,7 +101,7 @@ describe("App deep review flow (memory-backed)", () => {
     });
 
     // The review bar is parked; a banner offers to re-open it.
-    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"));
+    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"), { timeout: 5000 });
     expect(document.body.textContent).toContain("awaiting your review");
     // The proposal itself is still parked (not discarded).
     expect(await api().getProposal()).not.toBeNull();
@@ -98,7 +111,7 @@ describe("App deep review flow (memory-backed)", () => {
     await act(async () => {
       reShow.click();
     });
-    await waitFor(() => expect(document.body.textContent).toContain("Agent proposed changes"));
+    await waitFor(() => expect(document.body.textContent).toContain("Agent proposed changes"), { timeout: 5000 });
     expect(document.body.textContent).not.toContain("awaiting your review");
   });
 

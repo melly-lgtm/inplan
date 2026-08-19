@@ -56,11 +56,17 @@ describe("App review decision matrix (memory-backed)", () => {
   async function renderAndPropose(revision = REVISED) {
     const { App } = await import("../src/App");
     render(<App />);
-    await waitFor(() => expect(document.body.textContent).toContain("Alpha line."));
+    await waitFor(() => expect(document.body.textContent).toContain("Alpha line."), { timeout: 5000 });
+    // AWAIT the proposal inside act. Fire-and-forget let setProposal land outside act (the
+    // propose chain hops the microtask queue through hashing), so the review bar could be
+    // observed after its first commit but BEFORE the effect that initializes the per-hunk
+    // accept state had flushed — a click in that window is a no-op on the empty state or is
+    // overwritten by the init (the reject/edit silently reverts to all-accepted). Awaiting
+    // inside act makes act drain that render AND its effects before the helper returns.
     await act(async () => {
-      agent.proposeRevision(revision);
+      await agent.proposeRevision(revision);
     });
-    await waitFor(() => expect(document.body.textContent).toContain("Agent proposed changes"));
+    await waitFor(() => expect(document.body.textContent).toContain("Agent proposed changes"), { timeout: 5000 });
   }
 
   it("a parked proposal shows the diff with N hunks (one switch per hunk)", async () => {
@@ -89,15 +95,16 @@ describe("App review decision matrix (memory-backed)", () => {
     expect(tri().getAttribute("aria-checked")).toBe("true");
     expect(document.querySelector(".ap-tri--accept")).toBeTruthy();
 
-    // Cycle once: accept → reject. aria-checked becomes false.
+    // Cycle once: accept → reject. aria-checked becomes false. Wait for each cycle's
+    // state before clicking again — the next click's meaning depends on it.
     await act(async () => fireEvent.click(tri()));
-    expect(tri().getAttribute("aria-checked")).toBe("false");
+    await waitFor(() => expect(tri().getAttribute("aria-checked")).toBe("false"), { timeout: 5000 });
     expect(document.querySelector(".ap-tri--reject")).toBeTruthy();
     expect(document.body.textContent).not.toContain("will be accepted");
 
     // Cycle again: reject → accept.
     await act(async () => fireEvent.click(tri()));
-    expect(tri().getAttribute("aria-checked")).toBe("true");
+    await waitFor(() => expect(tri().getAttribute("aria-checked")).toBe("true"), { timeout: 5000 });
     expect(document.querySelector(".ap-tri--accept")).toBeTruthy();
   });
 
@@ -109,8 +116,9 @@ describe("App review decision matrix (memory-backed)", () => {
     expect(hunk1Before.checked).toBe(true);
     expect(hunk2Before.checked).toBe(true);
 
-    // Reject ONLY change 1.
+    // Reject ONLY change 1 — and wait for the reject to observably commit.
     await act(async () => fireEvent.click(hunk1Before));
+    await waitFor(() => expect((screen.getAllByRole("switch", { name: /accept change 1/ })[0] as HTMLInputElement).checked).toBe(false), { timeout: 5000 });
 
     const hunk1 = screen.getAllByRole("switch", { name: /accept change 1/ })[0] as HTMLInputElement;
     const hunk2 = screen.getAllByRole("switch", { name: /accept change 2/ })[0] as HTMLInputElement;
@@ -125,7 +133,7 @@ describe("App review decision matrix (memory-backed)", () => {
 
     // One click on the mixed tri resolves the whole set back to accept.
     await act(async () => fireEvent.click(tri()));
-    expect(document.querySelector(".ap-tri--accept")).toBeTruthy();
+    await waitFor(() => expect(document.querySelector(".ap-tri--accept")).toBeTruthy(), { timeout: 5000 });
     expect((screen.getAllByRole("switch", { name: /accept change 1/ })[0] as HTMLInputElement).checked).toBe(true);
   });
 
@@ -136,32 +144,34 @@ describe("App review decision matrix (memory-backed)", () => {
       fireEvent.click(screen.getByRole("button", { name: /^Apply$/ }));
     });
 
-    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"));
+    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"), { timeout: 5000 });
     // Both accepted hunks landed in the applied (preview) body.
     expect(document.body.textContent).toContain("Alpha CHANGED.");
     expect(document.body.textContent).toContain("Beta CHANGED.");
     expect(document.body.textContent).not.toContain("Alpha line.");
     expect(document.body.textContent).not.toContain("Beta line.");
-    // Decision made → proposal discarded.
-    expect(await (window as unknown as Win).api.getProposal()).toBeNull();
+    // Decision made → proposal discarded — the settle is a chained promise
+    // (clearProposal → decideProposal), so poll rather than read once.
+    await waitFor(async () => expect(await (window as unknown as Win).api.getProposal()).toBeNull(), { timeout: 5000 });
   });
 
   it("Reject-all then Apply discards the proposal and leaves the body unchanged", async () => {
     await renderAndPropose();
-    // accept → reject (one click rejects every hunk).
+    // accept → reject (one click rejects every hunk). Don't Apply until the reject
+    // observably committed — Apply reads the toggle state.
     await act(async () => fireEvent.click(tri()));
-    expect(document.querySelector(".ap-tri--reject")).toBeTruthy();
+    await waitFor(() => expect(document.querySelector(".ap-tri--reject")).toBeTruthy(), { timeout: 5000 });
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /^Apply$/ }));
     });
 
-    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"));
+    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"), { timeout: 5000 });
     // Original body intact; nothing from the proposal survived.
     expect(document.body.textContent).toContain("Alpha line.");
     expect(document.body.textContent).toContain("Beta line.");
     expect(document.body.textContent).not.toContain("CHANGED");
-    expect(await (window as unknown as Win).api.getProposal()).toBeNull();
+    await waitFor(async () => expect(await (window as unknown as Win).api.getProposal()).toBeNull(), { timeout: 5000 });
   });
 
   it("the pencil edits a hunk's proposed text and Apply uses the EDITED text", async () => {
@@ -180,11 +190,14 @@ describe("App review decision matrix (memory-backed)", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /save edit/i }));
     });
+    // Don't Apply until the saved edit is observably part of the review (the diff
+    // preview renders the edited proposed text) — Apply reads the edits state.
+    await waitFor(() => expect(document.body.textContent).toContain("Alpha EDITED."), { timeout: 5000 });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /^Apply$/ }));
     });
 
-    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"));
+    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"), { timeout: 5000 });
     // The human's edit wins over the agent's proposal for hunk 1; hunk 2 still applies.
     expect(document.body.textContent).toContain("Alpha EDITED.");
     expect(document.body.textContent).not.toContain("Alpha CHANGED.");
@@ -203,13 +216,16 @@ describe("App review decision matrix (memory-backed)", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /save edit/i }));
     });
-    // Now reject change 1 entirely.
+    await waitFor(() => expect(document.body.textContent).toContain("Alpha EDITED."), { timeout: 5000 });
+    // Now reject change 1 entirely — and wait for the reject to observably commit
+    // before Apply reads the toggle state.
     await act(async () => fireEvent.click(screen.getAllByRole("switch", { name: /accept change 1/ })[0]!));
+    await waitFor(() => expect((screen.getAllByRole("switch", { name: /accept change 1/ })[0] as HTMLInputElement).checked).toBe(false), { timeout: 5000 });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /^Apply$/ }));
     });
 
-    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"));
+    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"), { timeout: 5000 });
     // Rejected hunk keeps the ORIGINAL line; the saved edit is discarded with the rejection.
     expect(document.body.textContent).toContain("Alpha line.");
     expect(document.body.textContent).not.toContain("Alpha EDITED.");
