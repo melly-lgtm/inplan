@@ -1444,7 +1444,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       // logging stays best-effort (the row is the durable truth). All continuations are
       // generation-guarded: a result landing after a navigation must not touch the new document.
       const gen = docGenRef.current;
-      const advance = () =>
+      const advance = (attempt = 0): Promise<void> =>
         hostApi()
           .getProposal()
           .then((queued) => {
@@ -1452,7 +1452,12 @@ export function App(props: EditorProps = {}): JSX.Element {
             if (queued != null) showProposal(queued.content, queued.id, queued.baseContent, queued.pending);
           })
           .catch(() => {
-            /* best-effort — a queued proposal re-surfaces on the next launch/park */
+            if (docGenRef.current !== gen) return;
+            // One short retry: a transient head-read failure would otherwise strand the next
+            // queued proposal undisplayed until a reload or a new park. If the retry fails too,
+            // say so — silence here reads as "queue empty".
+            if (attempt < 1) return new Promise<void>((res) => setTimeout(res, 2_000)).then(() => advance(attempt + 1));
+            setStatus(t("msg.queueRefreshFailed"));
           });
       setSettling(true);
       hostApi()
