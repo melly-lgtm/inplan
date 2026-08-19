@@ -420,9 +420,11 @@ export function App(props: EditorProps = {}): JSX.Element {
 
     const commentStore = hostApi().commentStore ?? null;
 
+    const loadGen = docGenRef.current; // navigation before load resolves must win over the older result
     hostApi()
       .load()
       .then(({ content, path, readOnly: ro, focusCommentId }) => {
+        if (docGenRef.current !== loadGen) return; // a navigation already installed a newer document
         docPathRef.current = path;
         setReadOnly(!!ro);
         setPendingFocusCommentId(focusCommentId ?? null);
@@ -1560,7 +1562,11 @@ export function App(props: EditorProps = {}): JSX.Element {
               .getProposal()
               .then((head) => {
                 if (docGenRef.current !== gen) return;
-                const sameRow = head != null && (proposal.id !== undefined ? head.id === proposal.id : head.id === undefined && head.content === proposal.raw);
+                const sameRow =
+                  head != null &&
+                  head.content === proposal.raw &&
+                  head.baseContent === proposal.base &&
+                  (proposal.id !== undefined ? head.id === proposal.id : head.id === undefined);
                 if (sameRow) {
                   // Still pending (id match — or, for an id-less legacy proposal, content match):
                   // keep the review and its hunk selections; the reviewer just retries Apply.
