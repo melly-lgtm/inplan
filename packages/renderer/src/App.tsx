@@ -319,6 +319,14 @@ export function App(props: EditorProps = {}): JSX.Element {
    *  settle+save is in flight, navigation is refused — after a WON settle the accepted content
    *  persists through the CURRENT session only, so navigating away could leave a terminal row
    *  whose content never landed anywhere. The window is one settle+save round trip. */
+  /** Hold an exit-class action (quit / close / reload / restart) until an in-flight settle and
+   *  its publish finish — the accepted content exists only in that continuation until then, and
+   *  the host's quit-save persists the PRE-Apply document (dirty is not yet set), so closing
+   *  mid-settle would strand a terminal row's content forever. Bounded: a hung settle must not
+   *  hold the window hostage — after ~10s the action proceeds (the pre-existing exposure). */
+  const awaitSettled = useCallback(async () => {
+    for (let i = 0; i < 100 && settlingRef.current; i++) await new Promise((r) => setTimeout(r, 100));
+  }, []);
   const navigateGuarded = useCallback((go: () => void) => {
     if (settlingRef.current) {
       setStatus(t("msg.navWhileSettling"));
@@ -596,7 +604,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   useEffect(() => {
     if (reloadIn === null) return;
     if (reloadIn <= 0) {
-      void hostApi().closeWindow();
+      void awaitSettled().then(() => hostApi().closeWindow());
       return;
     }
     const timer = setTimeout(() => setReloadIn((s) => (s === null ? null : s - 1)), 1000);
@@ -1041,8 +1049,11 @@ export function App(props: EditorProps = {}): JSX.Element {
   // Confirmed quit: the host always saves the latest content, signals the agent (if build mode),
   // then leaves.
   const confirmQuit = useCallback((opts: { startBuild: boolean }) => {
-    realHostApi().exit?.quit(serialize(docRef.current), opts);
+    // Deferred past an in-flight settle: once it publishes, docRef holds the applied document
+    // and the quit's own save persists it.
+    void awaitSettled().then(() => realHostApi().exit?.quit(serialize(docRef.current), opts));
     setQuitOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- awaitSettled is stable
   }, []);
   // The desktop window-close intercept is a HOST concern, so subscribe on the REAL host
   // (the onboarding sample has no onRequest). During the tour, closing just quits the
@@ -1911,7 +1922,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         <div className="ap-banner ap-banner-reload">
           {t("banner.newBuild")} <strong>{t("banner.reloadingIn", { n: reloadIn ?? 0 })}</strong>{" "}
           <span className="ap-spacer" />
-          <button className="ap-primary" onClick={() => void hostApi().closeWindow()}>
+          <button className="ap-primary" onClick={() => void awaitSettled().then(() => hostApi().closeWindow())}>
             {t("banner.reloadNow")}
           </button>
           <button
@@ -1939,6 +1950,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                   // back to a plain close if the host can't relaunch). Await the save
                   // first: the main-process restart calls app.exit(0) immediately, so an
                   // un-awaited save could be cut off before the write lands.
+                  await awaitSettled(); // an in-flight decision publishes first (its content is only in that continuation)
                   if (dirty) await hostApi().save(serialize(docRef.current), { kind: "apply", cadence });
                   if (hostApi().restartApp) await hostApi().restartApp!();
                   else await hostApi().closeWindow();
