@@ -247,6 +247,7 @@ export const EN: Catalog = {
   "banner.review": "Review",
   "msg.appliedRevision": "Applied agent revision ({accepted}/{total} hunks).",
   "msg.navWhileSettling": "Finishing the review decision — try the link again in a moment.",
+  "msg.decisionUnconfirmed": "The decision could not be confirmed — this proposal's current state is unknown; it will reconcile on the next reload or park.",
   "msg.decisionFailedRetry": "The decision could not be recorded — the proposal is still pending; try Apply again.",
   "msg.decidedElsewhere": "This proposal was decided elsewhere — your apply was not recorded and the document is unchanged.",
   "msg.decisionSaveFailed": "The decision was recorded but the content could not be saved — it stays in the editor as unsaved work and persists on your next save or quit.",

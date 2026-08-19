@@ -312,6 +312,18 @@ export function App(props: EditorProps = {}): JSX.Element {
   reviewOpenRef.current = reviewOpen;
   const settlingRef = useRef(settling);
   settlingRef.current = settling;
+  /** Every renderer-initiated document navigation funnels through here: while a decision's
+   *  settle+save is in flight, navigation is refused — after a WON settle the accepted content
+   *  persists through the CURRENT session only, so navigating away could leave a terminal row
+   *  whose content never landed anywhere. The window is one settle+save round trip. */
+  const navigateGuarded = useCallback((go: () => void) => {
+    if (settlingRef.current) {
+      setStatus(t("msg.navWhileSettling"));
+      return;
+    }
+    go();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setStatus stable; t stale-tolerated as elsewhere
+  }, []);
   // Navigation generation: bumped whenever the mounted DOCUMENT changes (load, in-window
   // navigation). Async proposal reads/continuations capture it and drop their results when it
   // moved — a response that started against one document must never touch another.
@@ -1459,11 +1471,15 @@ export function App(props: EditorProps = {}): JSX.Element {
             return persisted.then(
               () => {
                 if (docGenRef.current !== gen) return;
-                savedRef.current = serialized; // this snapshot IS persisted, whatever happened since
-                // Clear dirty only if the doc still equals the applied snapshot — the user may
-                // have kept editing while the save was in flight; THAT work is still unsaved.
-                if (docRef.current === finalDoc) setDirty(false);
-                setCheckpoint(serialized);
+                // The baseline moves only while the doc still equals the applied snapshot: an
+                // external rewrite (or user edit) that landed mid-save has already established
+                // its own baseline/dirty state, and stamping the older snapshot over it would
+                // misjudge the next unsaved-close comparison.
+                if (docRef.current === finalDoc) {
+                  savedRef.current = serialized;
+                  setDirty(false);
+                  setCheckpoint(serialized);
+                }
                 // Status AFTER the advance — the next review's own status must not bury it.
                 return advance().then(() => docGenRef.current === gen && setStatus(t("msg.appliedRevision", { accepted: acceptedCount, total: accepted.length })));
               },
@@ -1501,7 +1517,10 @@ export function App(props: EditorProps = {}): JSX.Element {
                 setStatus(t("msg.decidedElsewhere"));
               })
               .catch(() => {
-                if (docGenRef.current === gen) setStatus(t("msg.decisionFailedRetry"));
+                // The follow-up lookup itself failed: pending-vs-decided is UNKNOWABLE right
+                // now. Directing a retry could push the reviewer into a guaranteed-failing loop
+                // (if the row was in fact decided elsewhere) — report the ambiguity instead.
+                if (docGenRef.current === gen) setStatus(t("msg.decisionUnconfirmed"));
               });
           },
         )
@@ -1818,7 +1837,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         agentThinking={agentThinking}
         nav={
           typeof hostApi().navigate === "function"
-            ? { canBack: navState.canBack, canForward: navState.canForward, onBack: () => void hostApi().navigate?.("back"), onForward: () => void hostApi().navigate?.("forward") }
+            ? { canBack: navState.canBack, canForward: navState.canForward, onBack: () => navigateGuarded(() => void hostApi().navigate?.("back")), onForward: () => navigateGuarded(() => void hostApi().navigate?.("forward")) }
             : undefined
         }
       />
@@ -2141,15 +2160,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                 }
                 const href = a.getAttribute("href") ?? "";
                 if (isInternalDocLink(href)) {
-                  if (settlingRef.current) {
-                    // A decision's settle is in flight: after a WON settle, the accepted content
-                    // persists through the CURRENT session only — navigating now could leave a
-                    // terminal row whose content never landed anywhere. The window is one
-                    // settle+save round trip; the reviewer just clicks again.
-                    setStatus(t("msg.navWhileSettling"));
-                    return;
-                  }
-                  void hostApi().openDoc(resolveDocPath(docPathRef.current, href));
+                  navigateGuarded(() => void hostApi().openDoc(resolveDocPath(docPathRef.current, href)));
                   return;
                 }
                 if (/^https?:/.test(href)) window.open(href, "_blank");
