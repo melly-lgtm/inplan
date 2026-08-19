@@ -310,6 +310,8 @@ export function App(props: EditorProps = {}): JSX.Element {
   queueCountRef.current = queueCount;
   const reviewOpenRef = useRef(reviewOpen);
   reviewOpenRef.current = reviewOpen;
+  const settlingRef = useRef(settling);
+  settlingRef.current = settling;
   // Navigation generation: bumped whenever the mounted DOCUMENT changes (load, in-window
   // navigation). Async proposal reads/continuations capture it and drop their results when it
   // moved — a response that started against one document must never touch another.
@@ -1486,7 +1488,10 @@ export function App(props: EditorProps = {}): JSX.Element {
               .getProposal()
               .then((head) => {
                 if (docGenRef.current !== gen) return;
-                if (head != null && proposal.id !== undefined && head.id === proposal.id) {
+                const sameRow = head != null && (proposal.id !== undefined ? head.id === proposal.id : head.id === undefined && head.content === proposal.raw);
+                if (sameRow) {
+                  // Still pending (id match — or, for an id-less legacy proposal, content match):
+                  // keep the review and its hunk selections; the reviewer just retries Apply.
                   setStatus(t("msg.decisionFailedRetry"));
                   return;
                 }
@@ -2136,6 +2141,14 @@ export function App(props: EditorProps = {}): JSX.Element {
                 }
                 const href = a.getAttribute("href") ?? "";
                 if (isInternalDocLink(href)) {
+                  if (settlingRef.current) {
+                    // A decision's settle is in flight: after a WON settle, the accepted content
+                    // persists through the CURRENT session only — navigating now could leave a
+                    // terminal row whose content never landed anywhere. The window is one
+                    // settle+save round trip; the reviewer just clicks again.
+                    setStatus(t("msg.navWhileSettling"));
+                    return;
+                  }
                   void hostApi().openDoc(resolveDocPath(docPathRef.current, href));
                   return;
                 }
