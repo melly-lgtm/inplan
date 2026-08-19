@@ -1951,7 +1951,11 @@ export function App(props: EditorProps = {}): JSX.Element {
                   // first: the main-process restart calls app.exit(0) immediately, so an
                   // un-awaited save could be cut off before the write lands.
                   await awaitSettled(); // an in-flight decision publishes first (its content is only in that continuation)
-                  if (dirty) await hostApi().save(serialize(docRef.current), { kind: "apply", cadence });
+                  // Recompute unsaved-ness AFTER the wait: the captured `dirty` predates the
+                  // settle, and a publish whose save failed leaves the applied document dirty —
+                  // a stale false here would restart without flushing the accepted decision.
+                  const current = serialize(docRef.current);
+                  if (current !== savedRef.current) await hostApi().save(current, { kind: "apply", cadence });
                   if (hostApi().restartApp) await hostApi().restartApp!();
                   else await hostApi().closeWindow();
                 }}
