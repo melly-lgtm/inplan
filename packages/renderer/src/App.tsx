@@ -312,6 +312,9 @@ export function App(props: EditorProps = {}): JSX.Element {
   reviewOpenRef.current = reviewOpen;
   const settlingRef = useRef(settling);
   settlingRef.current = settling;
+  /** A host-initiated navigation that arrived mid-settle, held until the settle completes. */
+  const pendingNavRef = useRef<{ content: string; path: string; readOnly?: boolean; focusCommentId?: string } | null>(null);
+  const processNavigatedRef = useRef<((p: { content: string; path: string; readOnly?: boolean; focusCommentId?: string }) => void) | null>(null);
   /** Every renderer-initiated document navigation funnels through here: while a decision's
    *  settle+save is in flight, navigation is refused — after a WON settle the accepted content
    *  persists through the CURRENT session only, so navigating away could leave a terminal row
@@ -439,6 +442,50 @@ export function App(props: EditorProps = {}): JSX.Element {
       .catch(() => setLoaded(true));
 
     // Auto-accept (and review-mode comment-only changes) arrive as a file rewrite.
+    // Navigation processing, extracted so the subscription can DEFER it: host-initiated
+    // navigation bypasses navigateGuarded, and processing it while a decision's settle+save is
+    // in flight would let the generation guard drop a WON settlement's accepted content (the
+    // row is already terminal; it would never resurface). The flush effect below runs it once
+    // the settle completes.
+    const processNavigated = ({ content, path, readOnly: ro, focusCommentId }: { content: string; path: string; readOnly?: boolean; focusCommentId?: string }): void => {
+      // Undo/redo is per-doc: stash the leaving doc's stacks so returning restores them, and load
+      // the destination's own (empty on first visit). Per-doc still holds — an undo can never pull
+      // another doc's content — but the history now survives navigation instead of being dropped.
+      if (docPathRef.current) historyByDoc.current.set(docPathRef.current, { undo: history.current, redo: future.current });
+      docPathRef.current = path;
+      setReadOnly(!!ro); // the destination doc may have its own read-only state
+      // The @-mention roster is cached per-doc-open — the doc we're navigating to may belong to
+      // a different org, so the previous doc's cached roster must not leak into this one.
+      resetMentionRoster();
+      // Overwrite (not merge) even when absent: any stale pending focus from the doc we just
+      // left must not carry over and fire against the wrong document.
+      setPendingFocusCommentId(focusCommentId ?? null);
+      const parsed = parse(content);
+      const d = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
+      setDoc(d);
+      docRef.current = d; // sync now — the re-show below must see the navigated doc (as above)
+      const gen = ++docGenRef.current; // a new document: in-flight proposal reads are now stale
+      savedRef.current = serialize(d);
+      setDirty(false);
+      const restored = historyByDoc.current.get(path);
+      history.current = restored?.undo ?? [];
+      future.current = restored?.redo ?? [];
+      setProposal(null);
+      setReviewOpen(false);
+      setAgentThinking(false);
+      setAgentDone(false);
+      setAgentMessages([]); // notes belong to the doc we just left — don't carry them over
+      setActivePreviewLine(null); // a synced line belongs to the doc we just left, not this one
+      setStatus(`opened ${path.split("/").pop() ?? path}`);
+      void hostApi()
+        .getProposal()
+        .then((parked) => docGenRef.current === gen && parked != null && showProposal(parked.content, parked.id, parked.baseContent, parked.pending))
+        .catch(() => {
+          /* best-effort — the proposal re-surfaces on the next park event or launch */
+        });
+    };
+    processNavigatedRef.current = processNavigated;
+
     // Collect every host subscription's disposer so a remount (e.g. Replay tutorial)
     // can't stack ipcRenderer listeners and double-handle events.
     const subs: Array<(() => void) | void> = [
@@ -506,42 +553,12 @@ export function App(props: EditorProps = {}): JSX.Element {
       hostApi().onAgentMessage?.((msg) => setAgentMessages((prev) => [...prev, msg])),
       // Desktop only: the window followed a link to another doc — reset to it (a fresh
       // load), clearing any in-flight proposal/turn state, then re-show a parked proposal.
-      hostApi().onNavigated?.(({ content, path, readOnly: ro, focusCommentId }) => {
-        // Undo/redo is per-doc: stash the leaving doc's stacks so returning restores them, and load
-        // the destination's own (empty on first visit). Per-doc still holds — an undo can never pull
-        // another doc's content — but the history now survives navigation instead of being dropped.
-        if (docPathRef.current) historyByDoc.current.set(docPathRef.current, { undo: history.current, redo: future.current });
-        docPathRef.current = path;
-        setReadOnly(!!ro); // the destination doc may have its own read-only state
-        // The @-mention roster is cached per-doc-open — the doc we're navigating to may belong to
-        // a different org, so the previous doc's cached roster must not leak into this one.
-        resetMentionRoster();
-        // Overwrite (not merge) even when absent: any stale pending focus from the doc we just
-        // left must not carry over and fire against the wrong document.
-        setPendingFocusCommentId(focusCommentId ?? null);
-        const parsed = parse(content);
-        const d = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
-        setDoc(d);
-        docRef.current = d; // sync now — the re-show below must see the navigated doc (as above)
-        const gen = ++docGenRef.current; // a new document: in-flight proposal reads are now stale
-        savedRef.current = serialize(d);
-        setDirty(false);
-        const restored = historyByDoc.current.get(path);
-        history.current = restored?.undo ?? [];
-        future.current = restored?.redo ?? [];
-        setProposal(null);
-        setReviewOpen(false);
-        setAgentThinking(false);
-        setAgentDone(false);
-        setAgentMessages([]); // notes belong to the doc we just left — don't carry them over
-        setActivePreviewLine(null); // a synced line belongs to the doc we just left, not this one
-        setStatus(`opened ${path.split("/").pop() ?? path}`);
-        void hostApi()
-          .getProposal()
-          .then((parked) => docGenRef.current === gen && parked != null && showProposal(parked.content, parked.id, parked.baseContent, parked.pending))
-          .catch(() => {
-            /* best-effort — the proposal re-surfaces on the next park event or launch */
-          });
+      hostApi().onNavigated?.((payload) => {
+        if (settlingRef.current) {
+          pendingNavRef.current = payload; // deferred — flushed by the settle-completion effect
+          return;
+        }
+        processNavigated(payload);
       }),
       hostApi().onNavState?.((s) => setNavState(s)),
       // Desktop only: a newer npm version is available.
@@ -563,6 +580,16 @@ export function App(props: EditorProps = {}): JSX.Element {
       for (const dispose of subs) dispose?.();
     };
   }, []);
+
+  // Flush a navigation deferred during a settle: once the settle (and its publish/save) is done,
+  // the held navigation proceeds exactly as if it had just arrived.
+  useEffect(() => {
+    if (!settling && pendingNavRef.current && processNavigatedRef.current) {
+      const payload = pendingNavRef.current;
+      pendingNavRef.current = null;
+      processNavigatedRef.current(payload);
+    }
+  }, [settling]);
 
   // Reload countdown: once a new build is signalled, tick down and auto-close the
   // window at zero (the agent relaunches) — unless the user cancels first.
@@ -1479,6 +1506,19 @@ export function App(props: EditorProps = {}): JSX.Element {
                   savedRef.current = serialized;
                   setDirty(false);
                   setCheckpoint(serialized);
+                } else {
+                  // An EXTERNAL rewrite landed while this save was in flight: the doc believes
+                  // itself saved (its handler set the baseline), but the file now holds our
+                  // STALE write. Converge disk to the newest state. User edits (dirty) are left
+                  // to their own save flow — an unsolicited canonical save is not ours to make.
+                  const cur = serialize(docRef.current);
+                  if (savedRef.current === cur) {
+                    void hostApi()
+                      .save(cur, { kind: "apply", cadence })
+                      .catch(() => {
+                        /* best-effort — the next external change or explicit save converges it */
+                      });
+                  }
                 }
                 // Status AFTER the advance — the next review's own status must not bury it.
                 return advance().then(() => docGenRef.current === gen && setStatus(t("msg.appliedRevision", { accepted: acceptedCount, total: accepted.length })));
