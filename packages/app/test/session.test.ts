@@ -135,6 +135,17 @@ describe("Session.load with a parked proposal (#95)", () => {
   });
 
   it("load with no pending proposal serves the working file unchanged", async () => {
+    // Seed the canonical first: with it missing, load() short-circuits on the seed branch and
+    // this test would never reach the pendingProposal branch it exists to exercise.
+    writeFileSync(session.paths.canonicalPath, "# Plan\n\nACCEPTED body.\n");
+    expect((await session.load()).content).toBe("# Plan\n\nACCEPTED body.\n");
+  });
+
+  it("a failed proposal lookup never blocks loading — load falls back to the working file", async () => {
+    // The lookup can reject (rows-lock contention past its deadline, an unreadable sidecar).
+    // Sidecar availability must not decide whether the document opens.
+    writeFileSync(session.paths.canonicalPath, ""); // canonical present, so the lookup branch runs
+    vi.spyOn(session, "pendingProposal").mockRejectedValue(new Error("rows lock timeout"));
     expect((await session.load()).content).toBe("# Plan\n\nACCEPTED body.\n");
   });
 });

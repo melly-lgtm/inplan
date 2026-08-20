@@ -80,7 +80,16 @@ export class Session {
     // sidecar, still loads as the file. Covers the legacy no-rows park too — pendingProposal()
     // already falls back to the derived proposed.md, and "the file equals the parked text"
     // means the same thing there.
-    const pending = await this.pendingProposal();
+    // A FAILED lookup (rows-lock contention past its deadline, an unreadable sidecar) must never
+    // block opening the document: fall back to the working content already read. Worst case is
+    // the pre-substitution behavior — a re-shown review may diff empty until the next dispatch —
+    // never a document that won't load.
+    let pending: { id?: string; content: string } | null;
+    try {
+      pending = await this.pendingProposal();
+    } catch {
+      return { path: this.paths.file, content };
+    }
     if (pending !== null && pending.content === content) {
       return { path: this.paths.file, content: readFileSync(this.paths.canonicalPath, "utf8") };
     }
