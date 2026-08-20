@@ -376,11 +376,19 @@ function navigateTo(file: string): boolean {
  *  new hub) and re-mounts just the editor — far cheaper than a full `webContents.reload()`. With no
  *  plugin, take the light file-backed path (send the new doc to the existing renderer). */
 async function refreshPluginAndView(file: string): Promise<void> {
+  // Capture the session this refresh serves: load() awaits the proposal lookup, and a later
+  // navigation can replace `session` in that window — a stale refresh must never send the OLD
+  // document as `doc:navigated` for the new one.
+  const forSession = session;
   await stopDesktopPlugin();
   await startDesktopPlugin(file, pluginToken);
-  if (!win || !session) return;
+  if (!win || !session || session !== forSession) return;
   if (pluginInfo()) win.webContents.send("plugin:reactivate"); // renderer re-binds + re-mounts the editor
-  else win.webContents.send("doc:navigated", await session.load());
+  else {
+    const payload = await session.load();
+    if (!win || session !== forSession) return; // replaced while loading — the newer refresh owns the send
+    win.webContents.send("doc:navigated", payload);
+  }
 }
 
 /** Record the close reason once and exit, bypassing the confirm-quit dialog.
