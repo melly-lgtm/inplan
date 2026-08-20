@@ -81,19 +81,24 @@ export class Session {
     // already falls back to the derived proposed.md, and "the file equals the parked text"
     // means the same thing there.
     // A FAILED lookup (rows-lock contention past its deadline, an unreadable sidecar) must never
-    // block opening the document: fall back to the working content already read. Worst case is
-    // the pre-substitution behavior — a re-shown review may diff empty until the next dispatch —
+    // block opening the document: fall back to the working file. Worst case is the
+    // pre-substitution behavior — a re-shown review may diff empty until the next dispatch —
     // never a document that won't load.
     let pending: { id?: string; content: string } | null;
     try {
       pending = await this.pendingProposal();
     } catch {
-      return { path: this.paths.file, content };
+      pending = null;
     }
-    if (pending !== null && pending.content === content) {
+    // Re-read the working file AFTER the awaited lookup: a CLI process can rewrite it while the
+    // lookup is in flight, and comparing the proposal against the PRE-await snapshot would mask
+    // that fresh edit behind the canonical. The substitution keys on what the file holds NOW —
+    // and either way the freshest content is what gets served.
+    const current = readFileSync(this.paths.file, "utf8");
+    if (pending !== null && pending.content === current) {
       return { path: this.paths.file, content: readFileSync(this.paths.canonicalPath, "utf8") };
     }
-    return { path: this.paths.file, content };
+    return { path: this.paths.file, content: current };
   }
 
   save(content: string, options: SaveOptions): void {

@@ -148,6 +148,23 @@ describe("Session.load with a parked proposal (#95)", () => {
     vi.spyOn(session, "pendingProposal").mockRejectedValue(new Error("rows lock timeout"));
     expect((await session.load()).content).toBe("# Plan\n\nACCEPTED body.\n");
   });
+
+  it("a rewrite while the lookup is in flight is served, not masked by the canonical", async () => {
+    // The proposal must be compared against what the file holds AFTER the await: a CLI process
+    // can rewrite the file mid-lookup, and matching the pre-await snapshot would serve the
+    // canonical over a fresh edit that is no longer the proposal.
+    const parked = "# Plan\n\nthe parked text.\n";
+    const fresh = "# Plan\n\na newer CLI write, landed mid-lookup.\n";
+    const file = join(dir, "RACE.md");
+    writeFileSync(file, parked);
+    const s = new Session(file);
+    writeFileSync(s.paths.canonicalPath, "");
+    vi.spyOn(s, "pendingProposal").mockImplementation(async () => {
+      writeFileSync(file, fresh); // the CLI rewrites the file while the lookup is in flight
+      return { id: "p-race", content: parked }; // the proposal equals the PRE-await snapshot
+    });
+    expect((await s.load()).content).toBe(fresh); // the fresh edit is served, not the blank canonical
+  });
 });
 
 describe("Session.complete clears the unsaved flag", () => {
