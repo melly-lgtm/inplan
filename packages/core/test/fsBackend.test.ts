@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -121,6 +121,30 @@ describe("FsDocumentStore", () => {
     await store.withdrawProposal(adopted!.id); // the full lifecycle applies to it now
     expect(await store.myPendingProposal()).toBeNull();
     expect(existsSync(paths.proposedPath)).toBe(false); // the derived file follows the lifecycle
+  });
+
+  it("a held rows lock never blocks the event loop — timers keep firing during a contended lookup", async () => {
+    // The desktop editor runs these lookups on Electron's main thread: under contention the old
+    // acquisition loop slept synchronously, freezing the whole process (no timers, no IPC, no
+    // paint) for up to the 2s deadline. Hold the lock as "another process", schedule its release
+    // on a timer, and require the event loop to have kept running while the lookup waited — the
+    // release itself can only happen if timers fire mid-contention.
+    const store = new FsDocumentStore(paths);
+    const lockDir = `${paths.proposedPath}.rows.json.lock`;
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, "owner"), "another-process");
+    let ticks = 0;
+    const tick = setInterval(() => {
+      ticks++;
+    }, 10);
+    const release = setTimeout(() => rmSync(lockDir, { recursive: true, force: true }), 150);
+    try {
+      expect(await store.myPendingProposal()).toBeNull(); // acquires once the timer-driven release runs
+    } finally {
+      clearInterval(tick);
+      clearTimeout(release);
+    }
+    expect(ticks).toBeGreaterThanOrEqual(5); // the event loop stayed live while the lock was held
   });
 
   it("caps autosave backups at the retention limit", async () => {

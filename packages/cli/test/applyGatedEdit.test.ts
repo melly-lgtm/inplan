@@ -45,6 +45,28 @@ describe("applyGatedEdit — file path (no plugin)", () => {
     expect(await types(channel)).toEqual([LogEventType.AgentRevisionProposed]);
   });
 
+  it("quarantine with a BLANK canonical parks the proposal but never wipes the working file (#95)", async () => {
+    // `open` on a fresh path seeds an empty canonical; the agent's first fill is the only copy of
+    // the text. The revert used to materialize the empty canonical over it — a total wipe.
+    const store = new MemoryDocumentStore("the whole plan body");
+    const channel = new MemoryControlChannel();
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "the whole plan body", canonicalText: "", quarantine: true, gate: null });
+    expect(applied.proposed).toBe(true); // review semantics intact: the park still happens
+    expect(await proposedContent(store)).toBe("the whole plan body");
+    expect(await store.loadDoc()).toBe("the whole plan body"); // NOT reverted — this is the only copy
+    expect(await types(channel)).toEqual([LogEventType.AgentRevisionProposed]);
+  });
+
+  it("the wipe guard judges the BODY, not the raw text: a comments-only canonical is still blank", async () => {
+    // A canonical holding only the comment data block (no body) is the same total-wipe shape.
+    const store = new MemoryDocumentStore("the whole plan body");
+    const channel = new MemoryControlChannel();
+    const canonicalText = "<!--inplan\n[]\n-->\n";
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "the whole plan body", canonicalText, quarantine: true, gate: null });
+    expect(applied.proposed).toBe(true);
+    expect(await store.loadDoc()).toBe("the whole plan body"); // NOT reverted
+  });
+
   it("confirmed deletions: writes acceptedText to file + canonical, clears proposed, logs DocumentEdited", async () => {
     const store = new MemoryDocumentStore("with comment");
     const channel = new MemoryControlChannel();
