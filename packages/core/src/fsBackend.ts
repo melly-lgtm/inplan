@@ -210,8 +210,13 @@ export class FsDocumentStore implements DocumentStore {
    * (main process) and a CLI can share one sidecar, and interleaved mutations would lose a
    * lifecycle update. mkdir is the atomic primitive; a stale lock (a crashed holder) is broken
    * after 2s. Mutations here are a few file ops — well under the staleness window.
+   *
+   * Async: contention waits are AWAITED sleeps, never a synchronous spin — the desktop editor
+   * calls this on Electron's main thread, where a sync busy-wait under a held lock froze the
+   * whole UI for up to the 2s deadline. The semantics are unchanged (owner token, ~2s deadline,
+   * atomic take-by-rename release, quarantine behavior); only the wait yields the event loop.
    */
-  private withRowsLock<T>(run: () => T): T {
+  private async withRowsLock<T>(run: () => T): Promise<T> {
     const lockDir = `${this.proposalsPath()}.lock`;
     const ownerPath = join(lockDir, "owner");
     const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -237,8 +242,7 @@ export class FsDocumentStore implements DocumentStore {
           continue;
         }
         if (Date.now() > deadline) throw new Error(`proposal rows lock is held: ${lockDir}`);
-        const buf = new SharedArrayBuffer(4);
-        Atomics.wait(new Int32Array(buf), 0, 0, 25); // sync sleep without spinning a core
+        await new Promise((resolve) => setTimeout(resolve, 25)); // backoff without blocking the event loop
       }
     }
     try {
@@ -332,7 +336,7 @@ export class FsDocumentStore implements DocumentStore {
   }
 
   async withdrawProposal(id: string): Promise<void> {
-    this.withRowsLock(() => {
+    await this.withRowsLock(() => {
       const rows = this.readRowsAdoptingLegacy();
       const r = rows.find((x) => x.id === id);
       if (r && r.state === "pending") {

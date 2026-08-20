@@ -136,9 +136,10 @@ describe("Session.load with a parked proposal (#95)", () => {
 
   it("load with no pending proposal serves the working file unchanged", async () => {
     // Seed the canonical first: with it missing, load() short-circuits on the seed branch and
-    // this test would never reach the pendingProposal branch it exists to exercise.
-    writeFileSync(session.paths.canonicalPath, "# Plan\n\nACCEPTED body.\n");
-    expect((await session.load()).content).toBe("# Plan\n\nACCEPTED body.\n");
+    // this test would never reach the pendingProposal branch it exists to exercise. Seed it with
+    // DISTINCT content — identical strings could not tell which of the two load() served.
+    writeFileSync(session.paths.canonicalPath, "# Plan\n\nan older accepted base.\n");
+    expect((await session.load()).content).toBe("# Plan\n\nACCEPTED body.\n"); // the file, not the canonical
   });
 
   it("a failed proposal lookup never blocks loading — load falls back to the working file", async () => {
