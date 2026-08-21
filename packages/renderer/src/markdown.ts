@@ -27,6 +27,15 @@ const renderHtmlToken = (tokens: Parameters<MarkdownIt["renderer"]["renderToken"
 md.renderer.rules.html_block = (tokens, idx) => renderHtmlToken(tokens, idx);
 md.renderer.rules.html_inline = (tokens, idx) => renderHtmlToken(tokens, idx);
 
+// The preview preserves a paragraph's newlines (`white-space: pre-wrap` on `.ap-rendered p`, so a
+// hand-aligned block keeps its lines and columns). markdown-it's default hardbreak rule emits
+// `<br>\n` — that trailing newline is cosmetic source formatting, invisible under HTML's default
+// whitespace collapsing but a SECOND, real line break once newlines are preserved, which would
+// turn every markdown hard break into a blank line. Emit the `<br>` alone. hardbreak is the only
+// rule that puts a newline INSIDE a paragraph; markdown-it's renderer adds its other newlines
+// around block-level tokens only, which the paragraph-scoped style rule doesn't touch.
+md.renderer.rules.hardbreak = () => "<br>";
+
 // Tag comment-anchor links (`#cmt-...`) so the preview can highlight them and
 // wire up click-to-focus behavior. When `showAnchor(id)` is false (e.g. a resolved
 // comment while "show resolved" is off), the anchor is rendered as PLAIN TEXT —

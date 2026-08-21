@@ -233,6 +233,16 @@ body {
 @media (prefers-reduced-motion: reduce) { .ap-sidepanel, .ap-sidepanel.ap-sidepanel--closing { animation: none; } }
 .ap-preview { flex: 1; min-width: 0; overflow: auto; padding: 28px 36px; border-right: 1px solid var(--line); background: var(--bg); }
 .ap-rendered { max-width: 760px; }
+/* Show a paragraph the way its author typed it. Markdown keeps the author's newlines inside a
+   paragraph and markdown-it emits them inside the <p>, but HTML's default whitespace processing
+   collapses each newline — and each run of alignment spaces — to a single space, so a directory
+   tree or any hand-aligned block pasted into a plan arrived as one run-on line with its columns
+   gone. `pre-wrap` honors both, and still wraps a long line at the pane width (unlike `pre`).
+   Deliberately scoped to paragraph content: markdown-it also emits cosmetic newlines BETWEEN
+   block tags (inside <li>, <blockquote>, <ul>, around a loose list item's <p>), and preserving
+   those would open a blank line before every nested list. Tradeoff: prose whose source is
+   hand-wrapped now shows those line breaks in the preview, matching the source pane. */
+.ap-rendered p { white-space: pre-wrap; }
 .ap-rendered img { max-width: 100%; height: auto; } /* a pasted/picked image is embedded at its native pixel size otherwise */
 .ap-rendered:focus { outline: none; } /* tabIndex={-1}: click-focusable (to receive a native paste event) but not Tab-reachable, so there's no keyboard focus ring to suppress here */
 .ap-rendered h1, .ap-rendered h2, .ap-rendered h3 { font-family: var(--serif); font-weight: 500; letter-spacing: -0.01em; line-height: 1.15; }
