@@ -2266,14 +2266,20 @@ export function App(props: EditorProps = {}): JSX.Element {
             onPaste={onPreviewPasteImage}
             onClick={(e) => {
               const target = e.target as HTMLElement;
+              // A comment anchor is resolved by its data-cmt attribute, not by tag: a PARAGRAPH
+              // anchor is a real markdown link (an <a>), but a FENCED one can't be — fence
+              // content is literal text, so markdown.ts marks the spanned code with a <span
+              // data-cmt> instead. Both must be click-to-focus, and looking for the attribute
+              // covers both (it's also how the rail and the overlap check already find them).
+              const anchor = target.closest("[data-cmt]");
+              if (anchor) {
+                e.preventDefault();
+                focusComment(anchor.getAttribute("data-cmt")!, true); // clicked in the preview — don't re-scroll the preview
+                return;
+              }
               const a = target.closest("a");
               if (a) {
                 e.preventDefault();
-                const cmt = a.getAttribute("data-cmt");
-                if (cmt) {
-                  focusComment(cmt, true); // clicked in the preview — don't re-scroll the preview
-                  return;
-                }
                 const href = a.getAttribute("href") ?? "";
                 if (isInternalDocLink(href)) {
                   navigateGuarded(() => void hostApi().openDoc(resolveDocPath(docPathRef.current, href)));
