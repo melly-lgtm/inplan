@@ -180,6 +180,39 @@ interface Proposal {
   base?: string;
 }
 
+/**
+ * Everything the reviewer can change about a proposal — the per-hunk accept flags, the per-hunk
+ * edits to the PROPOSED (added) text (keyed by change-block index, so a change can be refined
+ * before it's applied), which hunk's inline editor is open, and the "Review next" cursor — tagged
+ * with the proposal it belongs to.
+ *
+ * The tag is what keeps the review's initialization SYNCHRONOUS with the proposal: state carrying
+ * any other key is stale and reads as the pristine default (every hunk accepted, no edits, no open
+ * editor, no cursor) in the very render that first shows the review, so the bar is never on screen
+ * with stale flags behind it. Initializing from an effect instead left a one-flush window in which
+ * the bar was live but `accepted` was still the previous — on a first proposal, empty — array: a
+ * click landing in it either no-oped mapping over that array or was overwritten when the effect
+ * flushed, silently reverting a reject or a saved hunk edit to all-accepted.
+ *
+ * The tag is the proposal's IDENTITY, not its id: re-showing the same proposal object (parked with
+ * "later", or a metadata-only re-notification — both deliberately preserve the object) keeps the
+ * reviewer's in-progress state, exactly as the effect's `[changeCount, proposal]` deps did.
+ */
+interface ReviewState {
+  key: Proposal | null;
+  accepted: boolean[];
+  edits: Record<number, string[]>;
+  editingHunk: number | null;
+  /** Index of the hunk "Review next" last stepped to, or -1 before the first step. */
+  cursor: number;
+}
+
+/** The part of a review the undo/redo timeline steps through (the doc isn't mutated until Apply). */
+type ReviewSnapshot = Pick<ReviewState, "accepted" | "edits">;
+
+/** Before any proposal — also the shape a stale review reads as, via `pristineReview`. */
+const NO_REVIEW: ReviewState = { key: null, accepted: [], edits: {}, editingHunk: null, cursor: -1 };
+
 type FindMatch = { scope: "body"; from: number; to: number } | { scope: "comment"; id: string; from: number; to: number };
 
 /** Props the onboarding wrapper (AppRoot) threads into the editor. All optional —
@@ -1596,11 +1629,26 @@ export function App(props: EditorProps = {}): JSX.Element {
   // same review and the preview alone is a complete review surface in 1-pane mode.
   const reviewSegs = useMemo(() => (proposal ? lineSegments(proposal.baseBody, proposal.next.body) : []), [proposal]);
   const changeCount = useMemo(() => reviewSegs.filter(isChange).length, [reviewSegs]);
-  const [accepted, setAccepted] = useState<boolean[]>([]);
-  // Per-hunk edits to the PROPOSED (added) text, keyed by change-block index — the human can refine
-  // a change before applying it. `editedSegs` overlays them onto the diff so both panes + Apply use
-  // the edited text. Empty by default (the agent's proposal verbatim).
-  const [edits, setEdits] = useState<Record<number, string[]>>({});
+  // The reviewer's state (see ReviewState) is READ THROUGH its proposal tag rather than reset by an
+  // effect: `pristineReview` is what a proposal starts as, and it is what every read sees until an
+  // interaction stores a deviation against that same proposal. So the first commit that renders the
+  // review bar already carries the right flags — there is no window in which a click no-ops on a
+  // stale array or gets overwritten by a late initialization.
+  const [reviewState, setReviewState] = useState<ReviewState>(NO_REVIEW);
+  const pristineReview = useMemo<ReviewState>(
+    () => ({ ...NO_REVIEW, key: proposal, accepted: new Array(changeCount).fill(true) }),
+    [proposal, changeCount],
+  );
+  const { accepted, edits, editingHunk, cursor: reviewCursor } = reviewState.key === proposal ? reviewState : pristineReview;
+  /** Store part of the review. Re-bases onto `pristineReview` when what's stored belongs to an
+   *  older proposal, so the first interaction on a new review can't inherit the previous one's. */
+  const patchReview = useCallback(
+    (patch: Partial<Omit<ReviewState, "key">>) =>
+      setReviewState((cur) => ({ ...(cur.key === proposal ? cur : pristineReview), ...patch, key: proposal })),
+    [proposal, pristineReview],
+  );
+  // `editedSegs` overlays the per-hunk edits onto the diff so both panes + Apply use the edited
+  // text. Empty by default (the agent's proposal verbatim).
   const editedSegs = useMemo(() => {
     let ci = -1;
     return reviewSegs.map((s) => {
@@ -1611,49 +1659,51 @@ export function App(props: EditorProps = {}): JSX.Element {
   }, [reviewSegs, edits]);
   // Review is its own little undo/redo timeline (the doc isn't mutated until Apply): toggling a
   // switch, Accept/Reject all, and editing a hunk all snapshot {accepted, edits} so ⌘Z/⌘⇧Z step
-  // through them while the review is open.
-  const reviewHist = useRef<{ accepted: boolean[]; edits: Record<number, string[]> }[]>([]);
-  const reviewFuture = useRef<{ accepted: boolean[]; edits: Record<number, string[]> }[]>([]);
-  const [editingHunk, setEditingHunk] = useState<number | null>(null);
+  // through them while the review is open. The stacks carry the same proposal tag as the state and
+  // are cleared on first use after a new proposal — clearing them from an effect would leave a
+  // window of its own, one in which ⌘Z could step back into the PREVIOUS review's snapshots.
+  const reviewHist = useRef<{ key: Proposal | null; past: ReviewSnapshot[]; future: ReviewSnapshot[] }>({ key: null, past: [], future: [] });
+  const reviewTimeline = useCallback(() => {
+    const h = reviewHist.current;
+    if (h.key !== proposal) {
+      h.key = proposal;
+      h.past = [];
+      h.future = [];
+    }
+    return h;
+  }, [proposal]);
   const [editDraft, setEditDraft] = useState("");
-  useEffect(() => {
-    setAccepted(new Array(changeCount).fill(true));
-    setEdits({});
-    reviewHist.current = [];
-    reviewFuture.current = [];
-    setEditingHunk(null);
-  }, [changeCount, proposal]);
-  // Commit a review change through the undo timeline.
+  // Commit a review change through the undo timeline. `nextEditingHunk` defaults to leaving the
+  // inline editor as it stands (toggling a switch doesn't close it); saving an edit passes null to
+  // close it in the same commit as the edit it saves.
   const commitReview = useCallback(
-    (nextAccepted: boolean[], nextEdits: Record<number, string[]>) => {
-      reviewHist.current.push({ accepted, edits });
-      if (reviewHist.current.length > 200) reviewHist.current.shift();
-      reviewFuture.current = [];
-      setAccepted(nextAccepted);
-      setEdits(nextEdits);
+    (nextAccepted: boolean[], nextEdits: Record<number, string[]>, nextEditingHunk: number | null = editingHunk) => {
+      const h = reviewTimeline();
+      h.past.push({ accepted, edits });
+      if (h.past.length > 200) h.past.shift();
+      h.future = [];
+      patchReview({ accepted: nextAccepted, edits: nextEdits, editingHunk: nextEditingHunk });
     },
-    [accepted, edits],
+    [accepted, edits, editingHunk, patchReview, reviewTimeline],
   );
   const toggleHunk = useCallback((idx: number, val: boolean) => commitReview(accepted.map((v, k) => (k === idx ? val : v)), edits), [commitReview, accepted, edits]);
   const setAllAccepted = useCallback((val: boolean) => commitReview(new Array(changeCount).fill(val), edits), [commitReview, changeCount, edits]);
   const reviewUndo = useCallback(() => {
-    const prev = reviewHist.current.pop();
+    const h = reviewTimeline();
+    const prev = h.past.pop();
     if (!prev) return;
-    reviewFuture.current.push({ accepted, edits });
-    setEditingHunk(null);
-    setAccepted(prev.accepted);
-    setEdits(prev.edits);
+    h.future.push({ accepted, edits });
+    patchReview({ ...prev, editingHunk: null });
     setStatus(t("msg.undid"));
-  }, [accepted, edits]);
+  }, [accepted, edits, patchReview, reviewTimeline]);
   const reviewRedo = useCallback(() => {
-    const next = reviewFuture.current.pop();
+    const h = reviewTimeline();
+    const next = h.future.pop();
     if (!next) return;
-    reviewHist.current.push({ accepted, edits });
-    setEditingHunk(null);
-    setAccepted(next.accepted);
-    setEdits(next.edits);
+    h.past.push({ accepted, edits });
+    patchReview({ ...next, editingHunk: null });
     setStatus(t("msg.redid"));
-  }, [accepted, edits]);
+  }, [accepted, edits, patchReview, reviewTimeline]);
   reviewUndoRef.current = reviewUndo;
   reviewRedoRef.current = reviewRedo;
   // Open the inline editor for a hunk (seed it with that hunk's current proposed text).
@@ -1661,26 +1711,25 @@ export function App(props: EditorProps = {}): JSX.Element {
     (idx: number) => {
       const blocks = editedSegs.filter(isChange);
       setEditDraft((blocks[idx]?.added ?? []).join("\n"));
-      setEditingHunk(idx);
+      patchReview({ editingHunk: idx });
     },
-    [editedSegs],
+    [editedSegs, patchReview],
   );
   const saveEditHunk = useCallback(() => {
     if (editingHunk == null) return;
-    commitReview(accepted, { ...edits, [editingHunk]: editDraft.split("\n") });
-    setEditingHunk(null);
+    commitReview(accepted, { ...edits, [editingHunk]: editDraft.split("\n") }, null);
   }, [editingHunk, editDraft, commitReview, accepted, edits]);
-  const cancelEditHunk = useCallback(() => setEditingHunk(null), []);
+  const cancelEditHunk = useCallback(() => patchReview({ editingHunk: null }), [patchReview]);
   const applyReview = useCallback(() => applyProposal(editedSegs, accepted), [applyProposal, editedSegs, accepted]);
 
   // "Review next": step through change hunks, scrolling each into view (in both
-  // the preview and, when shown, the source diff) and highlighting it.
-  const [reviewCursor, setReviewCursor] = useState(-1);
-  useEffect(() => setReviewCursor(-1), [proposal]);
+  // the preview and, when shown, the source diff) and highlighting it. The cursor rides in the
+  // review state, so a new proposal starts it back at -1 in the same render that shows the review
+  // (an effect-driven reset could still be overwriting a step taken in that first commit).
   const reviewNext = useCallback(() => {
     if (!changeCount) return;
     const n = (reviewCursor + 1) % changeCount;
-    setReviewCursor(n);
+    patchReview({ cursor: n });
     // Surface the source diff too (2-pane shows one side) so the SAME change is
     // visible in both panes, then center the hunk in each.
     if (panes === 2 && rightTab !== "source") setRightTab("source");
@@ -1692,7 +1741,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       previewRef.current?.querySelector(`[data-hunk="${n}"]`)?.scrollIntoView({ block: "start", behavior: "smooth" });
       document.querySelector(`.ap-diffsource [data-hunk="${n}"]`)?.scrollIntoView({ block: "start", behavior: "smooth" });
     });
-  }, [changeCount, reviewCursor, panes, rightTab]);
+  }, [changeCount, reviewCursor, patchReview, panes, rightTab]);
 
   const threads = useMemo(() => buildThreads(doc.comments), [doc.comments]);
   const ordered = useMemo<OrderedThread[]>(() => {
