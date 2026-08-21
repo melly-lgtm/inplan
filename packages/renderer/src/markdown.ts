@@ -27,6 +27,15 @@ const renderHtmlToken = (tokens: Parameters<MarkdownIt["renderer"]["renderToken"
 md.renderer.rules.html_block = (tokens, idx) => renderHtmlToken(tokens, idx);
 md.renderer.rules.html_inline = (tokens, idx) => renderHtmlToken(tokens, idx);
 
+// The preview preserves a paragraph's newlines (`white-space: pre-wrap` on `.ap-rendered p`, so a
+// hand-aligned block keeps its lines and columns). markdown-it's default hardbreak rule emits
+// `<br>\n` — that trailing newline is cosmetic source formatting, invisible under HTML's default
+// whitespace collapsing but a SECOND, real line break once newlines are preserved, which would
+// turn every markdown hard break into a blank line. Emit the `<br>` alone. hardbreak is the only
+// rule that puts a newline INSIDE a paragraph; markdown-it's renderer adds its other newlines
+// around block-level tokens only, which the paragraph-scoped style rule doesn't touch.
+md.renderer.rules.hardbreak = () => "<br>";
+
 // Tag comment-anchor links (`#cmt-...`) so the preview can highlight them and
 // wire up click-to-focus behavior. When `showAnchor(id)` is false (e.g. a resolved
 // comment while "show resolved" is off), the anchor is rendered as PLAIN TEXT —
@@ -113,12 +122,75 @@ for (const name of BLOCK_RULES) {
     return orig ? orig(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options);
   };
 }
-// Fenced/indented code render as full HTML strings; inject data-line on the <pre>.
+// A comment anchor written INSIDE a code block. CommonMark treats a fence's (or an indented
+// block's) content as LITERAL TEXT, so `[label](#cmt-id)` there is not a link at all: markdown-it
+// hands the renderer the raw characters and the default rule escapes them straight into the
+// <code>. That left the reader looking at anchor SYNTAX as if it were part of the code, while the
+// comment had nothing to point at — no element carrying data-cmt, so the thread was neither
+// clickable in the preview nor reachable from the rail. Nothing stops an author from getting
+// there, either: the source-side gate (docOps' spanCommentBlocker) matches the selection against
+// the body TEXT and is fence-unaware, so commenting on fenced code writes exactly this document.
+//
+// So recognize the wrapper in the code's own content: drop the syntax, keep the code text, and
+// mark the spanned characters. The pattern is deliberately the same one docOps writes and
+// unwraps (its ANCHOR_RE), so what the preview recognizes is exactly what the editor produces.
+// An inline code SPAN (`code_inline`) is untouched — that remains the way to show anchor syntax
+// literally, and a fence still shows `[x](#not-cmt)` and friends verbatim.
+const CODE_ANCHOR_RE = /\[([^\]]*)\]\(#(cmt-[0-9a-z]+)\)/gi;
+// The same pattern without /g, for a presence check — `.test` on a global regex advances its
+// lastIndex between calls. Derived from `.source` so the two can never drift apart.
+const HAS_CODE_ANCHOR = new RegExp(CODE_ANCHOR_RE.source, "i");
+
+/**
+ * A code block's body as HTML: the author's text escaped, with each comment-anchor wrapper
+ * replaced by its label inside a `<span data-cmt class="ap-anchor">` — a <span> and not an <a>
+ * because a link inside <code> would inherit link styling and read as prose, and because every
+ * consumer (the preview's click handler, the rail's scroll/flash) resolves its target by
+ * `[data-cmt]`. When the anchor is hidden (a resolved comment while "show resolved" is off) the
+ * label is emitted bare, matching what the link_open rule does for a paragraph anchor.
+ *
+ * Escaping is not weakened anywhere: EVERY character of the author's content, label included,
+ * goes through `escapeHtml`, and the only markup added is the span — whose id is constrained to
+ * `[0-9a-z]` by the pattern that produced it, so it needs no quoting of its own.
+ */
+function codeBodyWithAnchors(content: string, showAnchor?: (id: string) => boolean): string {
+  let out = "";
+  let last = 0;
+  for (const m of content.matchAll(CODE_ANCHOR_RE)) {
+    out += md.utils.escapeHtml(content.slice(last, m.index));
+    const id = m[2]!.toLowerCase();
+    const label = md.utils.escapeHtml(m[1]!);
+    out += showAnchor && !showAnchor(id) ? label : `<span data-cmt="${id}" class="ap-anchor">${label}</span>`;
+    last = m.index + m[0].length;
+  }
+  return out + md.utils.escapeHtml(content.slice(last));
+}
+
+// Fenced/indented code render as full HTML strings; inject data-line on the <pre>, and render
+// any comment anchor the content carries (see CODE_ANCHOR_RE).
 for (const name of ["fence", "code_block"]) {
   const orig = md.renderer.rules[name];
   md.renderer.rules[name] = (tokens, idx, options, env, self) => {
-    const html = orig ? orig(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options);
+    const render = (): string => (orig ? orig(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options));
     const tok = tokens[idx]!;
+    let html: string;
+    // An ordinary code block — overwhelmingly the common case — goes down the untouched default
+    // path, so this stays a branch rather than a rewrite of how code renders.
+    if (HAS_CODE_ANCHOR.test(tok.content)) {
+      // Ask the DEFAULT rule for this block's shell (`<pre><code class="language-…">`, built
+      // from the info string and the token's attrs) by rendering it with no content, then put
+      // our own body inside it. Nothing about the wrapper is reimplemented, and nothing but
+      // escapeHtml output and our own span reaches the page. markdown-it's fence rule builds
+      // those attrs "without modifying original token", so rendering twice can't duplicate them.
+      const raw = tok.content;
+      tok.content = "";
+      const shell = render();
+      tok.content = raw;
+      const at = shell.lastIndexOf("</code>");
+      html = at < 0 ? render() : shell.slice(0, at) + codeBodyWithAnchors(raw, (env as LinkEnv).showAnchor) + shell.slice(at);
+    } else {
+      html = render();
+    }
     return tok.map ? html.replace(/^<pre/, `<pre data-line="${tok.map[0]}"`) : html;
   };
 }
