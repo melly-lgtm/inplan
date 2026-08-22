@@ -263,10 +263,11 @@ export type SessionFailure = "rejected" | "inconclusive";
  *  server never looked), and not supabase-js's status-0 transport errors. */
 const REJECTING_STATUSES = new Set([400, 401, 403]);
 
-/** Classify a failed `refreshSession` so a caller can tell "your credential is dead" from
- *  "I couldn't reach the server". Anything unrecognised is inconclusive — the safe direction,
- *  since the only action gated on `rejected` is deleting the user's credential. */
-function refreshFailureKind(error: unknown): SessionFailure {
+/** Classify a failed auth call — a refresh OR an access-token identity check — so a caller can tell
+ *  "your credential is dead" from "I couldn't reach the server". Anything unrecognised is
+ *  inconclusive: the safe direction, since the only action gated on `rejected` is deleting the
+ *  user's credential. */
+function authFailureKind(error: unknown): SessionFailure {
   const status = (error as { status?: unknown } | null | undefined)?.status;
   return typeof status === "number" && REJECTING_STATUSES.has(status) ? "rejected" : "inconclusive";
 }
@@ -305,7 +306,7 @@ export async function authedSession(skewS = ACCESS_SKEW_S, onFailure?: (reason: 
     const db = newClient(auth);
     const { data, error } = await db.auth.refreshSession({ refresh_token: auth.refreshToken });
     if (error || !data.session) {
-      onFailure?.(error ? refreshFailureKind(error) : "inconclusive");
+      onFailure?.(error ? authFailureKind(error) : "inconclusive");
       return null;
     }
 
@@ -342,6 +343,45 @@ export async function authedSession(skewS = ACCESS_SKEW_S, onFailure?: (reason: 
   const contended = await reuseCached(loadAuth() ?? cached, 0);
   if (!contended) onFailure?.("inconclusive"); // never acquired the lock ⇒ no verdict on the credential
   return contended;
+}
+
+/**
+ * The outcome of checking a cached access token against the server.
+ * `absent` means there was no token worth checking — not a failure, just nothing to check with.
+ */
+export type CachedSessionCheck = "ok" | "absent" | SessionFailure;
+
+/**
+ * Prove the stored session works RIGHT NOW without spending the single-use refresh token.
+ *
+ * The sign-in page seals its live access token precisely so the CLI has a credential nobody
+ * rotates; redeeming the refresh token to check it would re-run the race that token exists to
+ * avoid. So bind the cached token the way every ordinary command does and make ONE authenticated
+ * round-trip: `getUser` sends the JWT to GoTrue, which either accepts it or does not. `setSession`
+ * alone would prove nothing — it is a local decode, no network involved.
+ *
+ * What this can and cannot prove, precisely:
+ *  - it proves the session authenticates now, so `login` is not reporting an unusable credential;
+ *  - it does NOT prove the refresh token is still live, because the only way to test that is to
+ *    spend it. A long `wait` can therefore still meet a dead refresh token at expiry. That residual
+ *    is inherent to handing the CLI a COPY of the browser's session, and the durable fix is for the
+ *    CLI to receive a session of its own (minted server-side at the rendezvous /complete step)
+ *    rather than a copy — tracked as follow-up, deliberately not built here.
+ *
+ * Returns `absent` when there is no cached token the normal fast path would use, which is the
+ * signal for the caller to fall back to proving the credential the expensive way.
+ */
+export async function verifyCachedAccessToken(): Promise<CachedSessionCheck> {
+  const auth = loadAuth();
+  if (!auth) return "absent";
+  // The SAME bar the ordinary fast path applies (ACCESS_SKEW_S): a token with less headroom than
+  // that would be declined by the very next command and refreshed anyway, so validating it here
+  // would prove something about a credential nobody is going to use.
+  const bound = await reuseCached(auth);
+  if (!bound) return "absent";
+  const { data, error } = await bound.db.auth.getUser(auth.accessToken);
+  if (!error && data?.user) return "ok";
+  return error ? authFailureKind(error) : "inconclusive";
 }
 
 /** The signed-in user (id + email + display name), or null when not logged in / session invalid. */

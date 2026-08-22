@@ -72,11 +72,15 @@ export interface RendezvousLoginOptions extends RendezvousDeps {
    *  cannot distinguish "no browser" from "a browser that is still starting", so keep it generous
    *  and let `launchFailed` catch the common case. Unset (the default) waits the full `timeoutMs`. */
   openAckMs?: number;
-  /** Polled each iteration: has the browser launch already been observed to FAIL (the opener was
-   *  missing, or exited non-zero)? That is a definite answer rather than a timeout's guess, so it
-   *  ends the wait immediately with {@link BrowserDidNotOpenError} — no need to sit out `openAckMs`
-   *  when we already know no browser is coming. */
-  launchFailed?: () => boolean;
+  /** Fires when the browser launch has been observed to FAIL (the opener was missing, or exited
+   *  non-zero). A definite answer rather than a timeout's guess, so it ends the wait immediately
+   *  with {@link BrowserDidNotOpenError} instead of sitting out `openAckMs`.
+   *
+   *  A SIGNAL, not a predicate, because the opener reports asynchronously: the report can land
+   *  while a stalled poll request is in flight, and a predicate could only be re-read after that
+   *  request had run its budget out. Wiring it into the request's abort makes the fallback immediate
+   *  in that case too. */
+  launchSignal?: AbortSignal;
 }
 
 /** A login this process started (or a previous one left behind): everything a later invocation
@@ -286,6 +290,13 @@ export function pollRequestBudgetMs(nowMs: number, deadline: number, openAckDead
   return Math.max(1, Math.min(...budgets));
 }
 
+/** One abort signal covering both reasons to stop a poll request early: its own time budget, and
+ *  the launcher reporting that no browser is coming. */
+function launchAwareSignal(budgetMs: number, launchSignal?: AbortSignal): AbortSignal {
+  const budget = AbortSignal.timeout(budgetMs);
+  return launchSignal ? AbortSignal.any([budget, launchSignal]) : budget;
+}
+
 export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLoginOptions = {}): Promise<AuthFile> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const now = opts.now ?? Date.now;
@@ -295,6 +306,8 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
   const openAckDeadline = opts.openAckMs === undefined ? undefined : now() + opts.openAckMs;
   let nudged = false;
   let sawOpened = false;
+  /** The launch is known to have failed AND the page never acked — an ack outranks the launcher. */
+  const launchDead = (): boolean => !sawOpened && Boolean(opts.launchSignal?.aborted);
 
   while (true) {
     // The nudge is a TIMER, not a response property: if the page hasn't acked `opened` by the
@@ -308,9 +321,7 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
     // guess, so stop now rather than waiting out `openAckMs` — and check it BEFORE the deadline so
     // the definite reason wins. `sawOpened` still overrides: if the page acked, a grumpy exit code
     // from the launcher is irrelevant, the browser plainly got there.
-    if (!sawOpened && opts.launchFailed?.()) {
-      throw new BrowserDidNotOpenError("the browser could not be launched");
-    }
+    if (launchDead()) throw new BrowserDidNotOpenError("the browser could not be launched");
     // Give up EARLY (session untouched) when the caller only wanted to know whether the browser
     // came up: no `opened` ack inside the window means the launch failed, and the caller has a
     // better fallback than waiting out the full timeout.
@@ -334,9 +345,15 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
         // in-flight request must not let either budget overrun by a whole request-timeout. Without
         // the second cap a stalled poll could burn the full REQUEST_TIMEOUT_MS (plus a POLL_MS
         // sleep) before the loop ever re-checks a 6-second ack window.
-        signal: AbortSignal.timeout(pollRequestBudgetMs(now(), deadline, sawOpened ? undefined : openAckDeadline)),
+        // Cut the request short on a launch failure too, not just on the budget: the opener reports
+        // asynchronously, so without this a report landing mid-request would sit behind a stalled
+        // connection for the whole budget before the loop could act on it.
+        signal: launchAwareSignal(pollRequestBudgetMs(now(), deadline, sawOpened ? undefined : openAckDeadline), opts.launchSignal),
       });
     } catch {
+      // Was that abort the launcher telling us there is no browser? Then it is the answer, not a
+      // blip — fall back now instead of sleeping and retrying against a browser that never opened.
+      if (launchDead()) throw new BrowserDidNotOpenError("the browser could not be launched");
       // Transient transport failure (DNS blip, dropped connection, a stalled request cut by the
       // per-request timeout): retry like a 5xx — the session is still valid, and the foreground
       // deadline above bounds the total wait. Only a 404 (below) ends the session for good.

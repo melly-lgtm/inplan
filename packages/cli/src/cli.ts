@@ -28,7 +28,7 @@ import {
 } from "@inplan/core/node";
 import { agentAuthorFor } from "./agentAuthor";
 import { gitProvenance } from "./provenance";
-import { authedSession, authPath, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, type AuthFile, type SessionFailure } from "./cliAuth";
+import { authedSession, authPath, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, verifyCachedAccessToken, type AuthFile, type SessionFailure } from "./cliAuth";
 import { BrowserDidNotOpenError, LoginSessionExpiredError, clearPendingLogin, createLoginSession, loadPendingLogin, openInBrowser, pollLoginSession, rendezvousLogin, type PendingLogin } from "./cliLogin";
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
 import { checkForUpdate, selfUpdate, UPDATE_PKG, warnIfOutdated } from "./update";
@@ -777,13 +777,11 @@ async function doLogin(args: string[]): Promise<void> {
         minted = await createLoginSession();
         // Watch the launch, don't just fire it: the opener's own error/exit code is a definite "no
         // browser here", so the poll below can bail on that instead of inferring it from silence.
-        let launchFailed = false;
-        openInBrowser(minted.url, () => {
-          launchFailed = true;
-        });
+        const launch = new AbortController();
+        openInBrowser(minted.url, () => launch.abort());
         const auth = await pollLoginSession(minted, {
           openAckMs: OPEN_ACK_MS,
-          launchFailed: () => launchFailed,
+          launchSignal: launch.signal,
           onNudge: printLoginNudge,
         });
         saveAuth(auth);
@@ -855,62 +853,90 @@ function canAttemptBrowserLaunch(): boolean {
 }
 
 /**
- * Validate the credential we just stored, by taking its FIRST refresh now.
+ * Validate the credential we just stored, before `login` claims it worked.
  *
- * The handoff carries a refresh token but no access token, so every later command must refresh —
- * and Supabase refresh tokens are single-use. If the token arrives already spent, the old flow
- * still printed `logged_in` (the only thing that would have noticed was `persistCloudIdentity`,
- * whose `catch {}` swallows it) and the failure surfaced later as a baffling "not logged in" on an
- * unrelated command. Spend the rotation here instead: on success it also caches the access token,
- * so subsequent commands take the fast path and never touch the single-use token.
+ * The old flow printed `logged_in` for a credential nobody had checked: the handoff carried a
+ * refresh token, Supabase refresh tokens are single-use, and if the sign-in page's own client had
+ * already rotated the session the token arrived spent. The only code that would have noticed was
+ * `persistCloudIdentity`, whose `catch {}` swallows exactly that — so the failure resurfaced later
+ * as a baffling "not logged in" on an unrelated command.
+ *
+ * Two routes, and which one runs matters:
+ *
+ *  1. The handoff sealed a live ACCESS token ⇒ validate NON-DESTRUCTIVELY. One authenticated
+ *     round-trip proves the session works, and the single-use refresh token stays unspent. This is
+ *     the whole point of the page sealing that token: forcing a refresh here would re-run the very
+ *     race the sealed token exists to avoid, and would make the page's half buy nothing.
+ *
+ *  2. No usable access token (an older page, or one already near expiry) ⇒ force the refresh, which
+ *     is then the only proof available. A spent token must fail HERE, with the browser still open
+ *     and an actionable message, rather than an hour later mid-`wait` with nothing to recover with.
+ *
+ * Be clear about the limit of route 1: it proves the session authenticates NOW. It deliberately
+ * does NOT prove the refresh token is still live, because the only way to test that is to spend it.
+ * So a long `wait` can still meet a dead refresh token when the access token expires. That residual
+ * is inherent to handing the CLI a COPY of the browser's session; the durable fix is for the CLI to
+ * get a session of its OWN, minted server-side at the rendezvous /complete step. Tracked as
+ * follow-up — deliberately not built here.
  */
 export async function primeSessionOrFail(retryDelayMs = 750): Promise<void> {
-  // Force the REFRESH path, don't just ask for "a session". When the handoff carries an unexpired
-  // access token, authedSession's fast path would hand one back without ever redeeming the refresh
-  // token — so a spent refresh token would sail through login and only surface an hour later, when
-  // a long `wait` tries to renew and dies. A skew wider than any token's lifetime makes reuseCached
-  // decline the cached token, so the refresh runs here, once, and its rotation is persisted.
-  const FORCE_REFRESH_SKEW_S = 10 * 365 * 24 * 3600;
-  // WHY the reason matters: authedSession collapses every failure to null — a spent token, a
-  // dropped connection, a 5xx, and losing the refresh lock to a live `wait` all look identical.
-  // Deleting the credential is only defensible for the first; on the others we would destroy a
-  // working session AND tell the user something false about why.
-  const attempt = async (): Promise<"ok" | SessionFailure> => {
-    let reason: SessionFailure = "inconclusive";
-    const session = await authedSession(FORCE_REFRESH_SKEW_S, (r) => {
-      reason = r;
-    });
-    return session ? "ok" : reason;
-  };
-  let outcome = await attempt();
-  if (outcome === "ok") return;
-  // Retry ONLY when the first attempt was inconclusive (lock contention from a concurrent `wait`,
-  // a transport blip). Re-presenting a token the server has already refused buys nothing, and
-  // GoTrue treats a second use of a spent token as reuse — which can revoke the whole family.
-  if (outcome !== "rejected") {
-    await new Promise((r) => setTimeout(r, retryDelayMs));
-    outcome = await attempt();
-    if (outcome === "ok") return;
-  }
-  if (outcome === "rejected") {
+  // A verdict is only worth acting on when we know which kind it is. authedSession collapses every
+  // failure to null — a spent token, a dropped connection, a 5xx, a 429, losing the refresh lock to
+  // a live `wait` — and deleting the user's credential is defensible for exactly one of those.
+  const refused = (what: string): never => {
     clearAuth();
     process.stderr.write(
-      "inplan login: signed in, but the server rejected the credential the browser handed over —\n" +
-        "  its refresh token had already been spent, so it could never have been used.\n" +
+      `inplan login: signed in, but the server rejected the credential the browser handed over — ${what}\n` +
         "  Sign in again. If this repeats, the browser session is rotating the token before the CLI\n" +
         "  can claim it, and the sign-in page needs to hand over an unused token (or an access token).\n",
     );
     process.exit(1);
-  }
-  // Inconclusive: KEEP the credential — it may well be fine, and a network blip must not force the
-  // whole browser handoff again. Still exit non-zero: this command's whole point is to stop
-  // claiming a success it has not verified.
-  process.stderr.write(
-    "inplan login: signed in, but the credential could not be verified — the check did not get a\n" +
-      "  answer from the server (network, an outage, or another `inplan` holding the refresh lock).\n" +
-      "  The credential is KEPT, not discarded: run the command again, or `inplan whoami` to check.\n",
-  );
-  process.exit(1);
+  };
+  // KEEP the credential: it may well be fine, and a blip must not cost the whole browser handoff.
+  // Still exit non-zero — not claiming an unverified success is this command's entire purpose.
+  const unproven = (): never => {
+    process.stderr.write(
+      "inplan login: signed in, but the credential could not be verified — the check did not get an\n" +
+        "  answer from the server (network, an outage, or another `inplan` holding the refresh lock).\n" +
+        "  The credential is KEPT, not discarded: run the command again, or `inplan whoami` to check.\n",
+    );
+    process.exit(1);
+  };
+  /** Run `check` once, and once more after a pause if it was merely unanswered. */
+  const withOneRetry = async <T extends string>(check: () => Promise<T | "inconclusive">): Promise<T | "inconclusive"> => {
+    const first = await check();
+    if (first !== "inconclusive") return first;
+    await new Promise((r) => setTimeout(r, retryDelayMs));
+    return check();
+  };
+
+  // Route 1 — the cheap, non-destructive proof.
+  const cached = await withOneRetry(verifyCachedAccessToken);
+  if (cached === "ok") return;
+  if (cached === "rejected") refused("its access token was not accepted.");
+  if (cached === "inconclusive") unproven();
+
+  // Route 2 — no usable access token, so spend the rotation. A skew wider than any token's lifetime
+  // makes reuseCached decline the cache, so the refresh actually runs.
+  const FORCE_REFRESH_SKEW_S = 10 * 365 * 24 * 3600;
+  const forceRefresh = async (): Promise<"ok" | SessionFailure> => {
+    const before = loadAuth()?.refreshToken;
+    let reason: SessionFailure = "inconclusive";
+    const session = await authedSession(FORCE_REFRESH_SKEW_S, (r) => {
+      reason = r;
+    });
+    if (!session) return reason;
+    // A session is NOT proof the refresh happened. When authedSession cannot get the refresh lock it
+    // falls back to any not-yet-expired cached token (skew 0) — deliberately, so a long `wait`
+    // survives lock churn — and that fallback would let a handoff with a spent refresh token report
+    // `logged_in` having redeemed nothing. The ROTATION is the proof: only a live refresh token
+    // yields a new one, and cliAuth persists it before returning.
+    return loadAuth()?.refreshToken !== before ? "ok" : "inconclusive";
+  };
+  const refreshed = await withOneRetry(forceRefresh);
+  if (refreshed === "ok") return;
+  if (refreshed === "rejected") refused("its refresh token had already been spent, so it could never have been used.");
+  unproven();
 }
 
 /** Best-effort: write the signed-in cloud account's name/email to the local profile. */

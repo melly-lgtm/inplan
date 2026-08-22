@@ -245,7 +245,7 @@ describe("pollLoginSession", () => {
     expect(auth.refreshToken).toBe(payload.refresh);
   });
 
-  it("launchFailed: a reported launch failure ends the wait AT ONCE, without sitting out openAckMs", async () => {
+  it("launchSignal: a reported launch failure ends the wait AT ONCE, without sitting out openAckMs", async () => {
     // The opener's own error/exit code is knowledge, not a guess. Waiting out the ack window on top
     // of it is pure latency — and the window has to be generous (a cold browser is slow), so the
     // two must not be serialised.
@@ -253,30 +253,52 @@ describe("pollLoginSession", () => {
     const { fetchImpl: createFetch } = fakeServer([]);
     const pending = await createLoginSession({ ...OPTS, fetchImpl: createFetch, now: c.now });
     const { fetchImpl, seen } = fakeServer(Array.from({ length: 200 }, () => () => ({ status: "pending" })));
+    const launch = new AbortController();
+    launch.abort(); // the opener was missing / exited non-zero before the first poll
     await expect(
-      pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep, openAckMs: 20_000, launchFailed: () => true }),
+      pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep, openAckMs: 20_000, launchSignal: launch.signal }),
     ).rejects.toThrow(BrowserDidNotOpenError);
     expect(seen).toEqual([]); // gave up before even polling…
     expect(c.now()).toBe(0); // …and without burning a single sleep of the 20s window
     expect(await loadPendingLogin(c.now())).toEqual(pending); // the URL stays claimable for the human
   });
 
-  it("launchFailed: an `opened` ack outranks a grumpy exit code from the launcher", async () => {
+  it("launchSignal: a failure reported DURING a stalled request aborts it, rather than waiting out its budget", async () => {
+    // The opener reports asynchronously, so the report routinely lands mid-request. A request that
+    // hangs (captive portal, black-holed connection) would otherwise hold the fallback hostage for
+    // the whole per-request budget, which is the delay this signal exists to remove.
+    const c = clock();
+    const { fetchImpl: createFetch } = fakeServer([]);
+    const pending = await createLoginSession({ ...OPTS, fetchImpl: createFetch, now: c.now });
+    const launch = new AbortController();
+    // A fetch that never resolves on its own: it settles only when its abort signal fires.
+    const fetchImpl = ((_url: string, init?: { signal?: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        setTimeout(() => launch.abort(), 5); // the launcher's verdict arrives while we hang here
+      })) as unknown as typeof fetch;
+    await expect(
+      pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep, openAckMs: 20_000, launchSignal: launch.signal }),
+    ).rejects.toThrow(BrowserDidNotOpenError);
+    expect(c.now()).toBe(0); // no POLL_MS sleep, no ack window burned — the abort WAS the answer
+  });
+
+  it("launchSignal: an `opened` ack outranks a grumpy exit code from the launcher", async () => {
     // Some openers hand the URL off successfully and still exit non-zero. Once the page has acked,
     // the browser is demonstrably there and the launcher's opinion is irrelevant.
     const c = clock();
     const { fetchImpl: createFetch } = fakeServer([]);
     const pending = await createLoginSession({ ...OPTS, fetchImpl: createFetch, now: c.now });
     const pub = pubOf(pending.url);
-    let launchFailed = false;
+    const launch = new AbortController();
     const { fetchImpl } = fakeServer([
       () => {
-        launchFailed = true; // the opener exits non-zero right after the page reports itself open
+        launch.abort(); // the opener exits non-zero right after the page reports itself open
         return { status: "opened" };
       },
       async () => ({ status: "completed", ...(await sealLikeThePage(pub, payload)) }),
     ]);
-    const auth = await pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep, openAckMs: 20_000, launchFailed: () => launchFailed });
+    const auth = await pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep, openAckMs: 20_000, launchSignal: launch.signal });
     expect(auth.refreshToken).toBe(payload.refresh);
   });
 
