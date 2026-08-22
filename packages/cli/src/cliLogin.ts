@@ -267,6 +267,18 @@ export class BrowserDidNotOpenError extends Error {}
  * when the session is gone server-side (also clears the sidecar), or a plain Error on foreground
  * timeout (the sidecar survives so the NEXT invocation picks the login up — the coding-agent loop).
  */
+/** How long a single poll request may take: the smaller of the per-request cap, the foreground
+ *  budget, and — while we are still waiting for the page's `opened` ack — the ack window. Without
+ *  that last term a stalled request burns the full REQUEST_TIMEOUT_MS (plus a POLL_MS sleep) before
+ *  the loop re-checks a 6-second window, so the browser-did-not-open fallback arrives far too late
+ *  to be the "cheap attempt" it is meant to be. Never returns 0 — AbortSignal.timeout(0) aborts
+ *  immediately, turning a tight budget into a request that never goes out at all. */
+export function pollRequestBudgetMs(nowMs: number, deadline: number, openAckDeadline?: number): number {
+  const budgets = [REQUEST_TIMEOUT_MS, deadline - nowMs];
+  if (openAckDeadline !== undefined) budgets.push(openAckDeadline - nowMs);
+  return Math.max(1, Math.min(...budgets));
+}
+
 export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLoginOptions = {}): Promise<AuthFile> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const now = opts.now ?? Date.now;
@@ -304,9 +316,11 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
         // The poll credential rides a header (never a URL, so never an access log) — see
         // PendingLogin.pollToken: the session id alone must not read or destroy the handoff.
         headers: { "x-inplan-poll-token": pending.pollToken },
-        // Capped to the REMAINING deadline: an in-flight request must not let the foreground
-        // wait overrun its budget by a whole request-timeout.
-        signal: AbortSignal.timeout(Math.max(1, Math.min(REQUEST_TIMEOUT_MS, deadline - now()))),
+        // Capped to the REMAINING deadline — and to the openAck deadline when one is set: an
+        // in-flight request must not let either budget overrun by a whole request-timeout. Without
+        // the second cap a stalled poll could burn the full REQUEST_TIMEOUT_MS (plus a POLL_MS
+        // sleep) before the loop ever re-checks a 6-second ack window.
+        signal: AbortSignal.timeout(pollRequestBudgetMs(now(), deadline, sawOpened ? undefined : openAckDeadline)),
       });
     } catch {
       // Transient transport failure (DNS blip, dropped connection, a stalled request cut by the

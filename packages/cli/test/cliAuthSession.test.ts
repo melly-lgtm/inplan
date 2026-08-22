@@ -93,6 +93,24 @@ describe("authedSession", () => {
     expect(readFileSync(authPath(), "utf8")).toBe(before); // …and no rewrite of auth.json
   });
 
+  it("a skew wider than the token's life forces a refresh, so login can prove the refresh token works", async () => {
+    // What `primeSessionOrFail` relies on: with a valid cached access token the fast path would
+    // return a session without ever redeeming the refresh token, so a token the sign-in page had
+    // already spent would pass login and only fail an hour later, mid-`wait`.
+    saveAuth({
+      url: "https://x.supabase.co",
+      anonKey: "anon",
+      refreshToken: "rt",
+      email: "e@x.io",
+      accessToken: "cached-jwt",
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
+    });
+    refreshResult = { data: { session: session() }, error: null };
+    const s = await authedSession(10 * 365 * 24 * 3600);
+    expect(refreshSession).toHaveBeenCalled(); // the cached token was declined ⇒ refresh ran
+    expect(s?.session.access_token).toBe("jwt-123"); // and its result is what we got back
+  });
+
   it("falls through to refresh when the cached access token is expired", async () => {
     saveAuth({
       url: "https://x.supabase.co",

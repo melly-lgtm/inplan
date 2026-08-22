@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BrowserDidNotOpenError,
   LoginSessionExpiredError,
+  pollRequestBudgetMs,
   createLoginSession,
   loadPendingLogin,
   pendingLoginPath,
@@ -114,6 +115,29 @@ describe("createLoginSession", () => {
     await createLoginSession({ ...OPTS, fetchImpl, now: clock().now });
     expect(existsSync(pendingLoginPath())).toBe(true);
     if (process.platform !== "win32") expect(statSync(process.env.INPLAN_HOME).mode & 0o777).toBe(0o700);
+  });
+});
+
+describe("pollRequestBudgetMs", () => {
+  const REQ = 15_000;
+
+  it("caps a single request by the ack window, so the bail-out isn't delayed by a stalled poll", () => {
+    // 6s ack window still open, foreground budget huge: the request must not be allowed the full
+    // 15s per-request cap, or the 6s window is missed by ~11s (request + POLL_MS sleep).
+    expect(pollRequestBudgetMs(1_000, 1_000 + 180_000, 1_000 + 6_000)).toBe(6_000);
+  });
+
+  it("falls back to the per-request cap once the ack arrived (no ack deadline passed in)", () => {
+    expect(pollRequestBudgetMs(1_000, 1_000 + 180_000, undefined)).toBe(REQ);
+  });
+
+  it("still honours the foreground deadline when it is the tightest budget", () => {
+    expect(pollRequestBudgetMs(1_000, 1_000 + 900, 1_000 + 6_000)).toBe(900);
+  });
+
+  it("never returns 0 — AbortSignal.timeout(0) would abort before the request leaves", () => {
+    expect(pollRequestBudgetMs(5_000, 5_000, 5_000)).toBe(1);
+    expect(pollRequestBudgetMs(9_000, 1_000, 1_000)).toBe(1);
   });
 });
 

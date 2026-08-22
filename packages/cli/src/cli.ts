@@ -851,11 +851,17 @@ function canAttemptBrowserLaunch(): boolean {
  * so subsequent commands take the fast path and never touch the single-use token.
  */
 async function primeSessionOrFail(): Promise<void> {
+  // Force the REFRESH path, don't just ask for "a session". When the handoff carries an unexpired
+  // access token, authedSession's fast path would hand one back without ever redeeming the refresh
+  // token — so a spent refresh token would sail through login and only surface an hour later, when
+  // a long `wait` tries to renew and dies. A skew wider than any token's lifetime makes reuseCached
+  // decline the cached token, so the refresh runs here, once, and its rotation is persisted.
+  const FORCE_REFRESH_SKEW_S = 10 * 365 * 24 * 3600;
   // One retry: authedSession also returns null when it loses the refresh lock to a concurrent
   // process (a live `wait`), which is contention, not a bad credential.
-  if (await authedSession()) return;
+  if (await authedSession(FORCE_REFRESH_SKEW_S)) return;
   await new Promise((r) => setTimeout(r, 750));
-  if (await authedSession()) return;
+  if (await authedSession(FORCE_REFRESH_SKEW_S)) return;
   clearAuth();
   process.stderr.write(
     "inplan login: signed in, but the server rejected the credential the browser handed over —\n" +
