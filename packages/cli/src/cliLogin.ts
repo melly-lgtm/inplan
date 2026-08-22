@@ -65,6 +65,11 @@ export interface RendezvousLoginOptions extends RendezvousDeps {
   onUrl?: (url: string) => void;
   /** Fired once if the page hasn't acked `opened` within NUDGE_MS — "open the URL manually". */
   onNudge?: () => void;
+  /** Bail out with {@link BrowserDidNotOpenError} when the page hasn't acked `opened` within this
+   *  window. Lets a caller *try* launching a browser and fall back to the print-the-URL flow only
+   *  when the launch demonstrably failed — the ack is what makes that observable, since the
+   *  spawn itself is fire-and-forget. Unset (the default) waits the full `timeoutMs`. */
+  openAckMs?: number;
 }
 
 /** A login this process started (or a previous one left behind): everything a later invocation
@@ -251,6 +256,11 @@ export async function createLoginSession(opts: RendezvousLoginOptions = {}): Pro
  *  foreground timeout (sidecar kept; a later invocation resumes). */
 export class LoginSessionExpiredError extends Error {}
 
+/** The browser never acked `opened` within `openAckMs`, so the launch almost certainly failed.
+ *  The rendezvous session is left INTACT (not cleared): the caller is expected to hand the URL to
+ *  a human and resume this same session, so it must stay claimable. */
+export class BrowserDidNotOpenError extends Error {}
+
 /**
  * Poll `pending` until the page posts the sealed handoff, then decrypt + return the credentials
  * (the sidecar is deleted on success — sessions are single-use). Throws LoginSessionExpiredError
@@ -263,6 +273,7 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const deadline = now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const nudgeAt = now() + NUDGE_MS;
+  const openAckDeadline = opts.openAckMs === undefined ? undefined : now() + opts.openAckMs;
   let nudged = false;
   let sawOpened = false;
 
@@ -273,6 +284,12 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
     if (!nudged && !sawOpened && now() >= nudgeAt) {
       nudged = true;
       opts.onNudge?.();
+    }
+    // Give up EARLY (session untouched) when the caller only wanted to know whether the browser
+    // came up: no `opened` ack inside the window means the launch failed, and the caller has a
+    // better fallback than waiting out the full timeout.
+    if (openAckDeadline !== undefined && !sawOpened && now() >= openAckDeadline) {
+      throw new BrowserDidNotOpenError("the browser did not open");
     }
     if (now() >= pending.expiresAt) {
       await clearPendingLoginFor(pending.sessionId);
@@ -375,9 +392,31 @@ async function unsealHandoff(privateKeyPkcs8: string, sealed: { epk: string; iv:
     ["decrypt"],
   );
   const pt = await subtle.decrypt({ name: "AES-GCM", iv: Buffer.from(sealed.iv, "base64") }, aes, Buffer.from(sealed.ct, "base64"));
-  const parsed = JSON.parse(new TextDecoder().decode(pt)) as { url?: string; anon?: string; refresh?: string; email?: string };
+  const parsed = JSON.parse(new TextDecoder().decode(pt)) as {
+    url?: string;
+    anon?: string;
+    refresh?: string;
+    email?: string;
+    /** OPTIONAL, and the reason this half exists: a refresh token is single-use, so a handoff that
+     *  carries one alone is only good for exactly one rotation — and if the page's own client
+     *  rotates first, for none at all. When the page also seals its live ACCESS token, the CLI can
+     *  work off that until it expires and never has to spend the refresh token to get started.
+     *  Absent on older pages, so both fields stay optional and the flow degrades to refresh-only. */
+    access?: string;
+    /** Epoch SECONDS (Supabase's `session.expires_at`), matching AuthFile.expiresAt. */
+    expiresAt?: number;
+  };
   if (typeof parsed.url !== "string" || typeof parsed.anon !== "string" || typeof parsed.refresh !== "string") {
     throw new Error("sign-in handoff was malformed");
   }
-  return { url: parsed.url, anonKey: parsed.anon, refreshToken: parsed.refresh, ...(parsed.email ? { email: parsed.email } : {}) };
+  // Take the access token only as a matched pair with its expiry: a token whose lifetime we can't
+  // check is worse than none, since reuseCached would have to either trust it blindly or ignore it.
+  const cached = typeof parsed.access === "string" && typeof parsed.expiresAt === "number" ? { accessToken: parsed.access, expiresAt: parsed.expiresAt } : {};
+  return {
+    url: parsed.url,
+    anonKey: parsed.anon,
+    refreshToken: parsed.refresh,
+    ...(parsed.email ? { email: parsed.email } : {}),
+    ...cached,
+  };
 }

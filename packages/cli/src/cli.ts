@@ -29,7 +29,7 @@ import {
 import { agentAuthorFor } from "./agentAuthor";
 import { gitProvenance } from "./provenance";
 import { authedSession, authPath, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, type AuthFile } from "./cliAuth";
-import { LoginSessionExpiredError, clearPendingLogin, createLoginSession, loadPendingLogin, pollLoginSession, rendezvousLogin, type PendingLogin } from "./cliLogin";
+import { BrowserDidNotOpenError, LoginSessionExpiredError, clearPendingLogin, createLoginSession, loadPendingLogin, openInBrowser, pollLoginSession, rendezvousLogin, type PendingLogin } from "./cliLogin";
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
 import { checkForUpdate, selfUpdate, UPDATE_PKG, warnIfOutdated } from "./update";
 import { runningEditorPid } from "./editorProcess";
@@ -754,6 +754,7 @@ async function doLogin(args: string[]): Promise<void> {
         process.stderr.write(`inplan: waiting for the pending browser sign-in to finish…\n  ${pending.url}\n`);
         const auth = await pollLoginSession(pending, { onNudge: printLoginNudge });
         saveAuth(auth);
+        await primeSessionOrFail();
         await persistCloudIdentity();
         output({ status: "logged_in", url: auth.url, ...(auth.email ? { email: auth.email } : {}) });
         return;
@@ -763,6 +764,38 @@ async function doLogin(args: string[]): Promise<void> {
           process.exit(1);
         }
         /* expired → fall through to a fresh pending session */
+      }
+    }
+    // Try the browser FIRST when this environment plausibly has an opener. Detection of a coding
+    // agent decides where to fall BACK to, not whether to attempt a launch at all: plenty of agent
+    // shells (this one included) can open a browser, and doing so saves the human two round-trips
+    // of copy-pasting a URL. The page's `opened` ack is what makes the attempt verifiable, so a
+    // failed launch costs only OPEN_ACK_MS before the printed-URL path takes over.
+    if (canAttemptBrowserLaunch()) {
+      let minted: PendingLogin | undefined;
+      try {
+        minted = await createLoginSession();
+        openInBrowser(minted.url);
+        const auth = await pollLoginSession(minted, { openAckMs: OPEN_ACK_MS, onNudge: printLoginNudge });
+        saveAuth(auth);
+        await primeSessionOrFail();
+        await persistCloudIdentity();
+        output({ status: "logged_in", url: auth.url, ...(auth.email ? { email: auth.email } : {}) });
+        return;
+      } catch (e) {
+        // No ack: hand the SAME session to the human via the printed-URL flow.
+        if (e instanceof BrowserDidNotOpenError) {
+          await pendingLoginExit(minted);
+          process.exit(1);
+        }
+        // Anything else (expired link, unreadable handoff, a rejected credential from
+        // primeSessionOrFail's exit) is a real failure — don't silently retry a different way.
+        if (e instanceof LoginSessionExpiredError) {
+          await pendingLoginExit();
+          process.exit(1);
+        }
+        process.stderr.write(`inplan login: ${e instanceof Error ? e.message : String(e)}\n`);
+        process.exit(1);
       }
     }
     await pendingLoginExit();
@@ -785,12 +818,52 @@ async function doLogin(args: string[]): Promise<void> {
         })
       : await defaultRendezvousLogin();
     saveAuth(auth);
+    await primeSessionOrFail();
     await persistCloudIdentity();
     output({ status: "logged_in", url: auth.url, ...(auth.email ? { email: auth.email } : {}) });
   } catch (e) {
     process.stderr.write(`inplan login: ${e instanceof Error ? e.message : String(e)}\n`);
     process.exit(1);
   }
+}
+
+/** How long to wait for the page's `opened` ack before deciding the browser never launched.
+ *  Short on purpose: it is pure latency on the path where there is no browser, and the printed-URL
+ *  fallback is right behind it. */
+const OPEN_ACK_MS = 6_000;
+
+/** May we *attempt* to launch a browser? Distinct from {@link canInteractiveLogin}, which asks
+ *  whether we may BLOCK on one: an attempt is cheap and self-verifying (the page acks `opened`),
+ *  so it is worth trying wherever an opener could plausibly exist. CI has no display, and
+ *  INPLAN_NO_BROWSER is an explicit "never". */
+function canAttemptBrowserLaunch(): boolean {
+  return !process.env.CI && !process.env.INPLAN_NO_BROWSER;
+}
+
+/**
+ * Validate the credential we just stored, by taking its FIRST refresh now.
+ *
+ * The handoff carries a refresh token but no access token, so every later command must refresh —
+ * and Supabase refresh tokens are single-use. If the token arrives already spent, the old flow
+ * still printed `logged_in` (the only thing that would have noticed was `persistCloudIdentity`,
+ * whose `catch {}` swallows it) and the failure surfaced later as a baffling "not logged in" on an
+ * unrelated command. Spend the rotation here instead: on success it also caches the access token,
+ * so subsequent commands take the fast path and never touch the single-use token.
+ */
+async function primeSessionOrFail(): Promise<void> {
+  // One retry: authedSession also returns null when it loses the refresh lock to a concurrent
+  // process (a live `wait`), which is contention, not a bad credential.
+  if (await authedSession()) return;
+  await new Promise((r) => setTimeout(r, 750));
+  if (await authedSession()) return;
+  clearAuth();
+  process.stderr.write(
+    "inplan login: signed in, but the server rejected the credential the browser handed over —\n" +
+      "  its refresh token had already been spent, so it could never have been used.\n" +
+      "  Sign in again. If this repeats, the browser session is rotating the token before the CLI\n" +
+      "  can claim it, and the sign-in page needs to hand over an unused token (or an access token).\n",
+  );
+  process.exit(1);
 }
 
 /** Best-effort: write the signed-in cloud account's name/email to the local profile. */
@@ -948,11 +1021,14 @@ export function scrubAgentEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  * simply the command that just ran, because ensureLoggedIn resumes the pending sidecar. The JSON
  * line carries the same fields for parsers, and the distinct exit code lets wrappers branch.
  */
-async function pendingLoginExit(): Promise<void> {
+async function pendingLoginExit(existing?: PendingLogin): Promise<void> {
   let url: string;
   let expiresInSec: number;
   try {
-    const pending = await createLoginSession();
+    // Reuse a session the caller already minted (the try-the-browser-first path below) instead of
+    // minting a second one: the human is about to be handed THIS url, and the resume must claim
+    // the same rendezvous row.
+    const pending = existing ?? (await createLoginSession());
     url = pending.url;
     expiresInSec = Math.max(0, Math.floor((pending.expiresAt - Date.now()) / 1000));
   } catch (e) {

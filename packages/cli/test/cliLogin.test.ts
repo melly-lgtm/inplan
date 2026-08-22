@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  BrowserDidNotOpenError,
   LoginSessionExpiredError,
   createLoginSession,
   loadPendingLogin,
@@ -167,6 +168,65 @@ describe("pollLoginSession", () => {
     const onNudge = vi.fn();
     await pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep, onNudge });
     expect(onNudge).not.toHaveBeenCalled();
+  });
+
+  it("handoff carrying an access token + expiry caches them (no refresh needed to get started)", async () => {
+    const c = clock();
+    const { fetchImpl: createFetch } = fakeServer([]);
+    const pending = await createLoginSession({ ...OPTS, fetchImpl: createFetch, now: c.now });
+    const pub = pubOf(pending.url);
+    const withAccess = { ...payload, access: "jwt-access-token", expiresAt: 1893456000 };
+    const { fetchImpl } = fakeServer([async () => ({ status: "completed", ...(await sealLikeThePage(pub, withAccess)) })]);
+    const auth = await pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep });
+    expect(auth.accessToken).toBe("jwt-access-token");
+    expect(auth.expiresAt).toBe(1893456000);
+  });
+
+  it("an access token WITHOUT its expiry is ignored (an uncheckable lifetime is worse than none)", async () => {
+    const c = clock();
+    const { fetchImpl: createFetch } = fakeServer([]);
+    const pending = await createLoginSession({ ...OPTS, fetchImpl: createFetch, now: c.now });
+    const pub = pubOf(pending.url);
+    const { fetchImpl } = fakeServer([
+      async () => ({ status: "completed", ...(await sealLikeThePage(pub, { ...payload, access: "jwt-access-token" })) }),
+    ]);
+    const auth = await pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep });
+    expect(auth.accessToken).toBeUndefined();
+    expect(auth.refreshToken).toBe(payload.refresh);
+  });
+
+  it("openAckMs: no `opened` ack inside the window throws BrowserDidNotOpenError, sidecar INTACT", async () => {
+    const c = clock();
+    const { fetchImpl: createFetch } = fakeServer([]);
+    const pending = await createLoginSession({ ...OPTS, fetchImpl: createFetch, now: c.now });
+    const { fetchImpl } = fakeServer(Array.from({ length: 200 }, () => () => ({ status: "pending" })));
+    await expect(pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep, openAckMs: 6_000 })).rejects.toThrow(
+      BrowserDidNotOpenError,
+    );
+    // The caller's whole point is to hand this same URL to a human — the row must stay claimable.
+    expect(existsSync(pendingLoginPath())).toBe(true);
+    expect(await loadPendingLogin(c.now())).toEqual(pending);
+  });
+
+  it("openAckMs: an `opened` ack disarms the bail-out, so a slow human still completes", async () => {
+    const c = clock();
+    const { fetchImpl: createFetch } = fakeServer([]);
+    const pending = await createLoginSession({ ...OPTS, fetchImpl: createFetch, now: c.now });
+    const pub = pubOf(pending.url);
+    // Acked immediately, then a long sign-in that runs well past openAckMs.
+    const polls: Array<() => Promise<unknown> | unknown> = Array.from({ length: 30 }, () => () => ({ status: "opened" }));
+    polls.push(async () => ({ status: "completed", ...(await sealLikeThePage(pub, payload)) }));
+    const { fetchImpl } = fakeServer(polls);
+    const auth = await pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep, openAckMs: 6_000 });
+    expect(auth.refreshToken).toBe(payload.refresh);
+  });
+
+  it("openAckMs unset (default) waits out the full timeout rather than bailing early", async () => {
+    const c = clock();
+    const { fetchImpl: createFetch } = fakeServer([]);
+    const pending = await createLoginSession({ ...OPTS, fetchImpl: createFetch, now: c.now });
+    const { fetchImpl } = fakeServer(Array.from({ length: 200 }, () => () => ({ status: "pending" })));
+    await expect(pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep, timeoutMs: 10_000 })).rejects.toThrow(/timed out/);
   });
 
   it("foreground timeout keeps the sidecar (the NEXT invocation resumes the login)", async () => {
