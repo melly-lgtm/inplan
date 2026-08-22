@@ -243,9 +243,40 @@ async function reuseCached(auth: AuthFile, skewS = ACCESS_SKEW_S): Promise<Authe
  *  a wide margin there would only rotate the single-use token more often than necessary. */
 export const LIVE_REFRESH_SKEW_S = 10 * 60;
 
-export async function authedSession(skewS = ACCESS_SKEW_S): Promise<AuthedSession | null> {
+/**
+ * Why {@link authedSession} returned null. It collapses every failure to `null` because almost all
+ * of its callers only need "can I act as this user right now?" — but ONE caller (login's credential
+ * priming) has to decide whether to DELETE the stored credential, and that decision is only sound
+ * for a failure known to be terminal.
+ *
+ * - `rejected` — the server looked at the refresh token and refused it (spent / invalid). No retry
+ *   revives it, so the credential is genuinely dead.
+ * - `inconclusive` — we never got a verdict: a dropped connection, a 5xx, lock contention, or a
+ *   refresh response we declined to trust. Says nothing about the credential, only that we could
+ *   not ask. Discarding a credential on this evidence throws away a working session.
+ */
+export type SessionFailure = "rejected" | "inconclusive";
+
+/** GoTrue statuses that are a verdict on the *credential* rather than on the request's luck.
+ *  400 is what `refresh_token_already_used` / `invalid_grant` arrive as; 401/403 are the same class
+ *  of "this token is not acceptable". Deliberately NOT 408/429 (retry later) and not 5xx (the
+ *  server never looked), and not supabase-js's status-0 transport errors. */
+const REJECTING_STATUSES = new Set([400, 401, 403]);
+
+/** Classify a failed `refreshSession` so a caller can tell "your credential is dead" from
+ *  "I couldn't reach the server". Anything unrecognised is inconclusive — the safe direction,
+ *  since the only action gated on `rejected` is deleting the user's credential. */
+function refreshFailureKind(error: unknown): SessionFailure {
+  const status = (error as { status?: unknown } | null | undefined)?.status;
+  return typeof status === "number" && REJECTING_STATUSES.has(status) ? "rejected" : "inconclusive";
+}
+
+export async function authedSession(skewS = ACCESS_SKEW_S, onFailure?: (reason: SessionFailure) => void): Promise<AuthedSession | null> {
   const cached = loadAuth();
-  if (!cached) return null;
+  if (!cached) {
+    onFailure?.("inconclusive"); // no credentials at all: nothing was rejected, there was nothing to ask with
+    return null;
+  }
 
   // Fast path — reuse a still-valid access token: no refresh, no rotation, no lock. This is what
   // makes concurrent `inplan` processes safe (they never touch the single-use refresh token).
@@ -257,17 +288,26 @@ export async function authedSession(skewS = ACCESS_SKEW_S): Promise<AuthedSessio
   // path. Load again inside the lock in case a concurrent process just refreshed.
   const locked = await withAuthLock<AuthedSession | null>(async ({ stillMine }) => {
     const auth = loadAuth();
-    if (!auth) return null;
+    if (!auth) {
+      onFailure?.("inconclusive");
+      return null;
+    }
     const fresh = await reuseCached(auth, skewS); // a peer may have refreshed while we waited for the lock
     if (fresh) return fresh;
 
     // Fence the single-use rotation: if we were paused past staleMs and reclaimed, bail rather than
     // refresh alongside the new owner (that double-rotate revokes the token → logs the session out).
     // The caller re-checks the cache on non-acquisition, so returning null here is safely retryable.
-    if (!stillMine()) return null;
+    if (!stillMine()) {
+      onFailure?.("inconclusive"); // lost the lock — we never asked the server anything
+      return null;
+    }
     const db = newClient(auth);
     const { data, error } = await db.auth.refreshSession({ refresh_token: auth.refreshToken });
-    if (error || !data.session) return null;
+    if (error || !data.session) {
+      onFailure?.(error ? refreshFailureKind(error) : "inconclusive");
+      return null;
+    }
 
     // A refresh response with no rotated token is anomalous, and the old fallback (`|| auth.refreshToken`)
     // hid it in the most damaging way: rotation had almost certainly happened server-side, so we'd
@@ -276,6 +316,7 @@ export async function authedSession(skewS = ACCESS_SKEW_S): Promise<AuthedSessio
     // so a server that genuinely doesn't rotate stays usable on the next attempt.
     if (!data.session.refresh_token) {
       process.stderr.write("inplan: refresh returned no new refresh token; keeping the stored one and retrying rather than persisting a possibly-spent token\n");
+      onFailure?.("inconclusive"); // we chose not to trust the response — the credential itself was never refused
       return null;
     }
 
@@ -298,7 +339,9 @@ export async function authedSession(skewS = ACCESS_SKEW_S): Promise<AuthedSessio
   // transient contention returns a usable session rather than a spurious null. Only a genuinely
   // expired/absent session yields null here — the one case where callers SHOULD say "run inplan
   // login". This keeps a long `wait` from aborting (and misreporting "logged out") on lock churn.
-  return reuseCached(loadAuth() ?? cached, 0);
+  const contended = await reuseCached(loadAuth() ?? cached, 0);
+  if (!contended) onFailure?.("inconclusive"); // never acquired the lock ⇒ no verdict on the credential
+  return contended;
 }
 
 /** The signed-in user (id + email + display name), or null when not logged in / session invalid. */

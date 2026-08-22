@@ -125,6 +125,83 @@ describe("authedSession", () => {
   });
 });
 
+// authedSession returns a bare null for every kind of failure, which is all its usual callers need
+// ("can I act as this user?"). Login's credential priming is the exception: it decides whether to
+// DELETE the credential, and that is only defensible when the server actually refused it. These
+// cases pin which failures count as a verdict and which are merely an absence of one.
+describe("authedSession failure reasons", () => {
+  /** Run authedSession and collect whatever reason it reported. */
+  const reasonOf = async (skewS?: number): Promise<Array<"rejected" | "inconclusive">> => {
+    const seen: Array<"rejected" | "inconclusive"> = [];
+    await authedSession(skewS, (r) => seen.push(r));
+    return seen;
+  };
+
+  it("a 400 from GoTrue is a verdict on the credential ⇒ rejected", async () => {
+    seed();
+    // What a spent handoff token actually looks like: HTTP 400 refresh_token_already_used.
+    refreshResult = { data: { session: null }, error: { message: "Invalid Refresh Token: Already Used", status: 400 } };
+    expect(await reasonOf()).toEqual(["rejected"]);
+  });
+
+  it("401/403 are the same class of refusal ⇒ rejected", async () => {
+    for (const status of [401, 403]) {
+      seed();
+      refreshResult = { data: { session: null }, error: { message: "nope", status } };
+      expect(await reasonOf()).toEqual(["rejected"]);
+    }
+  });
+
+  it("a 5xx never looked at the credential ⇒ inconclusive", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { message: "bad gateway", status: 502 } };
+    expect(await reasonOf()).toEqual(["inconclusive"]);
+  });
+
+  it("a transport failure (supabase-js reports status 0) ⇒ inconclusive", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { message: "fetch failed", status: 0 } };
+    expect(await reasonOf()).toEqual(["inconclusive"]);
+  });
+
+  it("an error with no status at all ⇒ inconclusive (unrecognised means unproven)", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { message: "something went wrong" } };
+    expect(await reasonOf()).toEqual(["inconclusive"]);
+  });
+
+  it("429 is 'try later', NOT a refusal ⇒ inconclusive", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { message: "rate limited", status: 429 } };
+    expect(await reasonOf()).toEqual(["inconclusive"]);
+  });
+
+  it("a response with no rotated token ⇒ inconclusive (we declined it; nobody refused us)", async () => {
+    // The stderr line on this path says it is KEEPING the stored token — so the reason must not be
+    // one that makes a caller delete it a moment later.
+    seed();
+    refreshResult = { data: { session: session({ refresh_token: undefined }) }, error: null };
+    expect(await reasonOf()).toEqual(["inconclusive"]);
+  });
+
+  it("an empty session with no error ⇒ inconclusive", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: null };
+    expect(await reasonOf()).toEqual(["inconclusive"]);
+  });
+
+  it("no credentials at all ⇒ inconclusive (there was nothing to refuse)", async () => {
+    expect(await reasonOf()).toEqual(["inconclusive"]);
+  });
+
+  it("stays silent on success, including the cached fast path", async () => {
+    saveAuth({ url: "https://x.supabase.co", anonKey: "anon", refreshToken: "rt", accessToken: "cached-jwt", expiresAt: Math.floor(Date.now() / 1000) + 3600 });
+    expect(await reasonOf()).toEqual([]); // fast path
+    refreshResult = { data: { session: session() }, error: null };
+    expect(await reasonOf(10 * 365 * 24 * 3600)).toEqual([]); // forced refresh, succeeded
+  });
+});
+
 describe("currentUser", () => {
   it("maps the session to {id,email}, or null when logged out", async () => {
     expect(await currentUser()).toBeNull();

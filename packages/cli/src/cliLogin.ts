@@ -49,8 +49,9 @@ export function loginApiBase(): string {
 
 export interface RendezvousDeps {
   fetchImpl?: typeof fetch;
-  /** Launch the system browser at `url`. Overridable in tests. Default: OS opener. */
-  open?: (url: string) => void;
+  /** Launch the system browser at `url`, reporting a failed launch through the callback.
+   *  Overridable in tests. Default: OS opener ({@link openInBrowser}). */
+  open?: (url: string, onLaunchFailure?: () => void) => void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -67,9 +68,15 @@ export interface RendezvousLoginOptions extends RendezvousDeps {
   onNudge?: () => void;
   /** Bail out with {@link BrowserDidNotOpenError} when the page hasn't acked `opened` within this
    *  window. Lets a caller *try* launching a browser and fall back to the print-the-URL flow only
-   *  when the launch demonstrably failed — the ack is what makes that observable, since the
-   *  spawn itself is fire-and-forget. Unset (the default) waits the full `timeoutMs`. */
+   *  when the launch demonstrably failed. This is the BACKSTOP, not the primary signal: a timeout
+   *  cannot distinguish "no browser" from "a browser that is still starting", so keep it generous
+   *  and let `launchFailed` catch the common case. Unset (the default) waits the full `timeoutMs`. */
   openAckMs?: number;
+  /** Polled each iteration: has the browser launch already been observed to FAIL (the opener was
+   *  missing, or exited non-zero)? That is a definite answer rather than a timeout's guess, so it
+   *  ends the wait immediately with {@link BrowserDidNotOpenError} — no need to sit out `openAckMs`
+   *  when we already know no browser is coming. */
+  launchFailed?: () => boolean;
 }
 
 /** A login this process started (or a previous one left behind): everything a later invocation
@@ -297,6 +304,13 @@ export async function pollLoginSession(pending: PendingLogin, opts: RendezvousLo
       nudged = true;
       opts.onNudge?.();
     }
+    // The opener itself reported failure (missing binary, non-zero exit). That is knowledge, not a
+    // guess, so stop now rather than waiting out `openAckMs` — and check it BEFORE the deadline so
+    // the definite reason wins. `sawOpened` still overrides: if the page acked, a grumpy exit code
+    // from the launcher is irrelevant, the browser plainly got there.
+    if (!sawOpened && opts.launchFailed?.()) {
+      throw new BrowserDidNotOpenError("the browser could not be launched");
+    }
     // Give up EARLY (session untouched) when the caller only wanted to know whether the browser
     // came up: no `opened` ack inside the window means the launch failed, and the caller has a
     // better fallback than waiting out the full timeout.
@@ -373,19 +387,39 @@ export async function rendezvousLogin(opts: RendezvousLoginOptions = {}): Promis
   return pollLoginSession(pending, opts);
 }
 
-/** Best-effort: open `url` in the OS browser. Errors are swallowed — the URL is also
- *  printed so the user can open it by hand (and the 30 s no-`opened` nudge re-prompts). */
-export function openInBrowser(url: string): void {
+/**
+ * Best-effort: open `url` in the OS browser. Errors never propagate — the URL is also printed so
+ * the user can open it by hand (and the 30 s no-`opened` nudge re-prompts).
+ *
+ * `onLaunchFailure` turns the launch from fire-and-forget into something OBSERVABLE. The opener
+ * tells us plainly when it could not do its job: a missing `xdg-open` on a headless box (the main
+ * real "no browser" case) arrives as an async 'error' event, and macOS `open` / `xdg-open` exit
+ * NON-ZERO when they cannot handle the URL. Discarding those signals is what forced the caller to
+ * infer a failed launch from the *absence* of the page's ack — which can only ever be a timeout,
+ * and therefore can only ever call a slow browser a broken one. Fires at most once.
+ */
+export function openInBrowser(url: string, onLaunchFailure?: () => void): void {
   const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
   const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  let reported = false;
+  const failed = (): void => {
+    if (reported) return;
+    reported = true;
+    onLaunchFailure?.();
+  };
   try {
     const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
-    // A missing opener (headless/CI) surfaces as an async 'error' event, not a sync throw —
-    // swallow it so it can't become an unhandled error and crash before the printed-URL fallback.
-    child.on("error", () => {});
+    // A missing opener (headless/CI) surfaces as an async 'error' event, not a sync throw — handle
+    // it so it can't become an unhandled error and crash before the printed-URL fallback.
+    child.on("error", failed);
+    // The opener is a launcher, not the browser: it exits within milliseconds and its code says
+    // whether it handed the URL off. Non-zero ⇒ it did not, so there is no point waiting for an ack.
+    child.on("exit", (code) => {
+      if (code !== 0) failed();
+    });
     child.unref();
   } catch {
-    /* opener missing (headless/CI) — the printed URL is the fallback */
+    failed(); // opener missing (headless/CI) — the printed URL is the fallback
   }
 }
 
@@ -411,10 +445,17 @@ async function unsealHandoff(privateKeyPkcs8: string, sealed: { epk: string; iv:
     anon?: string;
     refresh?: string;
     email?: string;
-    /** OPTIONAL, and the reason this half exists: a refresh token is single-use, so a handoff that
-     *  carries one alone is only good for exactly one rotation — and if the page's own client
-     *  rotates first, for none at all. When the page also seals its live ACCESS token, the CLI can
-     *  work off that until it expires and never has to spend the refresh token to get started.
+    /** OPTIONAL. A refresh token is single-use, so a handoff carrying one alone is good for exactly
+     *  one rotation — and if the page's own client rotates first, for none at all. Sealing the live
+     *  ACCESS token alongside it gives the CLI a credential nobody rotates.
+     *
+     *  It does NOT let login skip the first refresh: `primeSessionOrFail` spends that rotation on
+     *  purpose, because a refresh token that turns out to be spent has to fail loudly at sign-in
+     *  rather than an hour later, mid-`wait`, with no way to recover. What the pair buys is that
+     *  the priming refresh can be *declined* without failing the login — `authedSession` falls back
+     *  to any unexpired cached token when it cannot get the refresh lock (a concurrent `wait`), so
+     *  a handoff with an access token signs in through contention that would otherwise stall.
+     *
      *  Absent on older pages, so both fields stay optional and the flow degrades to refresh-only. */
     access?: string;
     /** Epoch SECONDS (Supabase's `session.expires_at`), matching AuthFile.expiresAt. */

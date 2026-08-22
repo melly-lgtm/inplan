@@ -28,7 +28,7 @@ import {
 } from "@inplan/core/node";
 import { agentAuthorFor } from "./agentAuthor";
 import { gitProvenance } from "./provenance";
-import { authedSession, authPath, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, type AuthFile } from "./cliAuth";
+import { authedSession, authPath, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, type AuthFile, type SessionFailure } from "./cliAuth";
 import { BrowserDidNotOpenError, LoginSessionExpiredError, clearPendingLogin, createLoginSession, loadPendingLogin, openInBrowser, pollLoginSession, rendezvousLogin, type PendingLogin } from "./cliLogin";
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
 import { checkForUpdate, selfUpdate, UPDATE_PKG, warnIfOutdated } from "./update";
@@ -769,14 +769,23 @@ async function doLogin(args: string[]): Promise<void> {
     // Try the browser FIRST when this environment plausibly has an opener. Detection of a coding
     // agent decides where to fall BACK to, not whether to attempt a launch at all: plenty of agent
     // shells (this one included) can open a browser, and doing so saves the human two round-trips
-    // of copy-pasting a URL. The page's `opened` ack is what makes the attempt verifiable, so a
-    // failed launch costs only OPEN_ACK_MS before the printed-URL path takes over.
+    // of copy-pasting a URL. Two signals make the attempt verifiable: the opener reporting its own
+    // failure (definite, caught in one poll) and the page's `opened` ack (the backstop, OPEN_ACK_MS).
     if (canAttemptBrowserLaunch()) {
       let minted: PendingLogin | undefined;
       try {
         minted = await createLoginSession();
-        openInBrowser(minted.url);
-        const auth = await pollLoginSession(minted, { openAckMs: OPEN_ACK_MS, onNudge: printLoginNudge });
+        // Watch the launch, don't just fire it: the opener's own error/exit code is a definite "no
+        // browser here", so the poll below can bail on that instead of inferring it from silence.
+        let launchFailed = false;
+        openInBrowser(minted.url, () => {
+          launchFailed = true;
+        });
+        const auth = await pollLoginSession(minted, {
+          openAckMs: OPEN_ACK_MS,
+          launchFailed: () => launchFailed,
+          onNudge: printLoginNudge,
+        });
         saveAuth(auth);
         await primeSessionOrFail();
         await persistCloudIdentity();
@@ -828,9 +837,14 @@ async function doLogin(args: string[]): Promise<void> {
 }
 
 /** How long to wait for the page's `opened` ack before deciding the browser never launched.
- *  Short on purpose: it is pure latency on the path where there is no browser, and the printed-URL
- *  fallback is right behind it. */
-const OPEN_ACK_MS = 6_000;
+ *
+ *  Generous on purpose, and it used to be 6s — about three polls. A cold Chrome/Safari start plus
+ *  the page's own load routinely exceeds that, so the short window's most likely victim was a
+ *  machine where the browser DID open: it would report failure on the success path, which is the
+ *  very class of misleading status this command exists to stop doing. The window is only a backstop
+ *  now — `openInBrowser` reports a failed launch directly (missing opener, non-zero exit), which is
+ *  the case that actually needed to be fast, and it is caught in one poll rather than by timeout. */
+const OPEN_ACK_MS = 20_000;
 
 /** May we *attempt* to launch a browser? Distinct from {@link canInteractiveLogin}, which asks
  *  whether we may BLOCK on one: an attempt is cheap and self-verifying (the page acks `opened`),
@@ -850,24 +864,51 @@ function canAttemptBrowserLaunch(): boolean {
  * unrelated command. Spend the rotation here instead: on success it also caches the access token,
  * so subsequent commands take the fast path and never touch the single-use token.
  */
-async function primeSessionOrFail(): Promise<void> {
+export async function primeSessionOrFail(retryDelayMs = 750): Promise<void> {
   // Force the REFRESH path, don't just ask for "a session". When the handoff carries an unexpired
   // access token, authedSession's fast path would hand one back without ever redeeming the refresh
   // token — so a spent refresh token would sail through login and only surface an hour later, when
   // a long `wait` tries to renew and dies. A skew wider than any token's lifetime makes reuseCached
   // decline the cached token, so the refresh runs here, once, and its rotation is persisted.
   const FORCE_REFRESH_SKEW_S = 10 * 365 * 24 * 3600;
-  // One retry: authedSession also returns null when it loses the refresh lock to a concurrent
-  // process (a live `wait`), which is contention, not a bad credential.
-  if (await authedSession(FORCE_REFRESH_SKEW_S)) return;
-  await new Promise((r) => setTimeout(r, 750));
-  if (await authedSession(FORCE_REFRESH_SKEW_S)) return;
-  clearAuth();
+  // WHY the reason matters: authedSession collapses every failure to null — a spent token, a
+  // dropped connection, a 5xx, and losing the refresh lock to a live `wait` all look identical.
+  // Deleting the credential is only defensible for the first; on the others we would destroy a
+  // working session AND tell the user something false about why.
+  const attempt = async (): Promise<"ok" | SessionFailure> => {
+    let reason: SessionFailure = "inconclusive";
+    const session = await authedSession(FORCE_REFRESH_SKEW_S, (r) => {
+      reason = r;
+    });
+    return session ? "ok" : reason;
+  };
+  let outcome = await attempt();
+  if (outcome === "ok") return;
+  // Retry ONLY when the first attempt was inconclusive (lock contention from a concurrent `wait`,
+  // a transport blip). Re-presenting a token the server has already refused buys nothing, and
+  // GoTrue treats a second use of a spent token as reuse — which can revoke the whole family.
+  if (outcome !== "rejected") {
+    await new Promise((r) => setTimeout(r, retryDelayMs));
+    outcome = await attempt();
+    if (outcome === "ok") return;
+  }
+  if (outcome === "rejected") {
+    clearAuth();
+    process.stderr.write(
+      "inplan login: signed in, but the server rejected the credential the browser handed over —\n" +
+        "  its refresh token had already been spent, so it could never have been used.\n" +
+        "  Sign in again. If this repeats, the browser session is rotating the token before the CLI\n" +
+        "  can claim it, and the sign-in page needs to hand over an unused token (or an access token).\n",
+    );
+    process.exit(1);
+  }
+  // Inconclusive: KEEP the credential — it may well be fine, and a network blip must not force the
+  // whole browser handoff again. Still exit non-zero: this command's whole point is to stop
+  // claiming a success it has not verified.
   process.stderr.write(
-    "inplan login: signed in, but the server rejected the credential the browser handed over —\n" +
-      "  its refresh token had already been spent, so it could never have been used.\n" +
-      "  Sign in again. If this repeats, the browser session is rotating the token before the CLI\n" +
-      "  can claim it, and the sign-in page needs to hand over an unused token (or an access token).\n",
+    "inplan login: signed in, but the credential could not be verified — the check did not get a\n" +
+      "  answer from the server (network, an outage, or another `inplan` holding the refresh lock).\n" +
+      "  The credential is KEPT, not discarded: run the command again, or `inplan whoami` to check.\n",
   );
   process.exit(1);
 }

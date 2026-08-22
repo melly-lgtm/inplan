@@ -245,6 +245,41 @@ describe("pollLoginSession", () => {
     expect(auth.refreshToken).toBe(payload.refresh);
   });
 
+  it("launchFailed: a reported launch failure ends the wait AT ONCE, without sitting out openAckMs", async () => {
+    // The opener's own error/exit code is knowledge, not a guess. Waiting out the ack window on top
+    // of it is pure latency — and the window has to be generous (a cold browser is slow), so the
+    // two must not be serialised.
+    const c = clock();
+    const { fetchImpl: createFetch } = fakeServer([]);
+    const pending = await createLoginSession({ ...OPTS, fetchImpl: createFetch, now: c.now });
+    const { fetchImpl, seen } = fakeServer(Array.from({ length: 200 }, () => () => ({ status: "pending" })));
+    await expect(
+      pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep, openAckMs: 20_000, launchFailed: () => true }),
+    ).rejects.toThrow(BrowserDidNotOpenError);
+    expect(seen).toEqual([]); // gave up before even polling…
+    expect(c.now()).toBe(0); // …and without burning a single sleep of the 20s window
+    expect(await loadPendingLogin(c.now())).toEqual(pending); // the URL stays claimable for the human
+  });
+
+  it("launchFailed: an `opened` ack outranks a grumpy exit code from the launcher", async () => {
+    // Some openers hand the URL off successfully and still exit non-zero. Once the page has acked,
+    // the browser is demonstrably there and the launcher's opinion is irrelevant.
+    const c = clock();
+    const { fetchImpl: createFetch } = fakeServer([]);
+    const pending = await createLoginSession({ ...OPTS, fetchImpl: createFetch, now: c.now });
+    const pub = pubOf(pending.url);
+    let launchFailed = false;
+    const { fetchImpl } = fakeServer([
+      () => {
+        launchFailed = true; // the opener exits non-zero right after the page reports itself open
+        return { status: "opened" };
+      },
+      async () => ({ status: "completed", ...(await sealLikeThePage(pub, payload)) }),
+    ]);
+    const auth = await pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep, openAckMs: 20_000, launchFailed: () => launchFailed });
+    expect(auth.refreshToken).toBe(payload.refresh);
+  });
+
   it("openAckMs unset (default) waits out the full timeout rather than bailing early", async () => {
     const c = clock();
     const { fetchImpl: createFetch } = fakeServer([]);
