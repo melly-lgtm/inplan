@@ -16,8 +16,13 @@ const setSession = vi.fn(async ({ access_token, refresh_token }: { access_token:
   error: null,
 }));
 
+// getUser is the ONE authenticated round-trip the non-destructive check makes: setSession is a local
+// decode, so only this can tell us the server still accepts the token.
+let getUserResult: { data: { user: unknown }; error: unknown } = { data: { user: { id: "user-1" } }, error: null };
+const getUser = vi.fn(async (_jwt?: string) => getUserResult);
+
 vi.mock("@supabase/supabase-js", () => ({
-  createClient: vi.fn(() => ({ auth: { refreshSession, setSession } })),
+  createClient: vi.fn(() => ({ auth: { refreshSession, setSession, getUser } })),
 }));
 vi.mock("@inplan/backend-supabase", () => ({
   // A minimal channel: getCursor/readSince are stubbed so a delegating call has something to hit.
@@ -30,15 +35,17 @@ vi.mock("@inplan/backend-supabase", () => ({
   SupabaseDocumentStore: class { constructor(public db: unknown, public docId: string) {} },
 }));
 
-import { authedSession, currentUser, liveRemoteBackend, remoteBackend, saveAuth, authPath, withAuthLock } from "../src/cliAuth";
+import { authedSession, currentUser, liveRemoteBackend, remoteBackend, saveAuth, authPath, verifyCachedAccessToken, withAuthLock } from "../src/cliAuth";
 
 let home: string;
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "inplan-auth-"));
   process.env.INPLAN_HOME = home;
   refreshResult = { data: { session: null }, error: null }; // reset so tests don't inherit a prior one's value
+  getUserResult = { data: { user: { id: "user-1" } }, error: null };
   refreshSession.mockClear();
   setSession.mockClear();
+  getUser.mockClear();
 });
 afterEach(() => {
   delete process.env.INPLAN_HOME;
@@ -93,6 +100,24 @@ describe("authedSession", () => {
     expect(readFileSync(authPath(), "utf8")).toBe(before); // …and no rewrite of auth.json
   });
 
+  it("a skew wider than the token's life forces a refresh, so login can prove the refresh token works", async () => {
+    // What `primeSessionOrFail` relies on: with a valid cached access token the fast path would
+    // return a session without ever redeeming the refresh token, so a token the sign-in page had
+    // already spent would pass login and only fail an hour later, mid-`wait`.
+    saveAuth({
+      url: "https://x.supabase.co",
+      anonKey: "anon",
+      refreshToken: "rt",
+      email: "e@x.io",
+      accessToken: "cached-jwt",
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
+    });
+    refreshResult = { data: { session: session() }, error: null };
+    const s = await authedSession(10 * 365 * 24 * 3600);
+    expect(refreshSession).toHaveBeenCalled(); // the cached token was declined ⇒ refresh ran
+    expect(s?.session.access_token).toBe("jwt-123"); // and its result is what we got back
+  });
+
   it("falls through to refresh when the cached access token is expired", async () => {
     saveAuth({
       url: "https://x.supabase.co",
@@ -104,6 +129,174 @@ describe("authedSession", () => {
     refreshResult = { data: { session: session() }, error: null };
     await authedSession();
     expect(refreshSession).toHaveBeenCalled();
+  });
+});
+
+// authedSession returns a bare null for every kind of failure, which is all its usual callers need
+// ("can I act as this user?"). Login's credential priming is the exception: it decides whether to
+// DELETE the credential, and that is only defensible when the server actually refused it. These
+// cases pin which failures count as a verdict and which are merely an absence of one.
+describe("authedSession failure reasons", () => {
+  /** Run authedSession and collect whatever reason it reported. */
+  const reasonOf = async (skewS?: number): Promise<Array<"rejected" | "inconclusive">> => {
+    const seen: Array<"rejected" | "inconclusive"> = [];
+    await authedSession(skewS, (r) => seen.push(r));
+    return seen;
+  };
+
+  it("a 400 from GoTrue is a verdict on the credential ⇒ rejected", async () => {
+    seed();
+    // What a spent handoff token actually looks like: HTTP 400 refresh_token_already_used.
+    refreshResult = { data: { session: null }, error: { message: "Invalid Refresh Token: Already Used", status: 400 } };
+    expect(await reasonOf()).toEqual(["rejected"]);
+  });
+
+  it("401/403 are the same class of refusal ⇒ rejected", async () => {
+    for (const status of [401, 403]) {
+      seed();
+      refreshResult = { data: { session: null }, error: { message: "nope", status } };
+      expect(await reasonOf()).toEqual(["rejected"]);
+    }
+  });
+
+  it("a 5xx never looked at the credential ⇒ inconclusive", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { message: "bad gateway", status: 502 } };
+    expect(await reasonOf()).toEqual(["inconclusive"]);
+  });
+
+  it("a transport failure (supabase-js reports status 0) ⇒ inconclusive", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { message: "fetch failed", status: 0 } };
+    expect(await reasonOf()).toEqual(["inconclusive"]);
+  });
+
+  it("an error with no status at all ⇒ inconclusive (unrecognised means unproven)", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { message: "something went wrong" } };
+    expect(await reasonOf()).toEqual(["inconclusive"]);
+  });
+
+  it("429 is 'try later', NOT a refusal ⇒ inconclusive", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { message: "rate limited", status: 429 } };
+    expect(await reasonOf()).toEqual(["inconclusive"]);
+  });
+
+  it("a response with no rotated token ⇒ inconclusive (we declined it; nobody refused us)", async () => {
+    // The stderr line on this path says it is KEEPING the stored token — so the reason must not be
+    // one that makes a caller delete it a moment later.
+    seed();
+    refreshResult = { data: { session: session({ refresh_token: undefined }) }, error: null };
+    expect(await reasonOf()).toEqual(["inconclusive"]);
+  });
+
+  it("an empty session with no error ⇒ inconclusive", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: null };
+    expect(await reasonOf()).toEqual(["inconclusive"]);
+  });
+
+  it("no credentials at all ⇒ inconclusive (there was nothing to refuse)", async () => {
+    expect(await reasonOf()).toEqual(["inconclusive"]);
+  });
+
+  it("stays silent on success, including the cached fast path", async () => {
+    saveAuth({ url: "https://x.supabase.co", anonKey: "anon", refreshToken: "rt", accessToken: "cached-jwt", expiresAt: Math.floor(Date.now() / 1000) + 3600 });
+    expect(await reasonOf()).toEqual([]); // fast path
+    refreshResult = { data: { session: session() }, error: null };
+    expect(await reasonOf(10 * 365 * 24 * 3600)).toEqual([]); // forced refresh, succeeded
+  });
+});
+
+// A `rejected` verdict spans 400/401/403 — a spent refresh token, but equally a bad anon key or a
+// revoked user. The CAUSE is what lets login explain itself without asserting more than it knows,
+// so it must be reported only when GoTrue actually named it.
+describe("authedSession rejection causes", () => {
+  const gradeOf = async (): Promise<Array<[string, string | undefined]>> => {
+    const seen: Array<[string, string | undefined]> = [];
+    await authedSession(undefined, (reason, cause) => seen.push([reason, cause]));
+    return seen;
+  };
+
+  it("names the spent-token case from GoTrue's structured code", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { code: "refresh_token_already_used", message: "whatever", status: 400 } };
+    expect(await gradeOf()).toEqual([["rejected", "refresh-token-spent"]]);
+  });
+
+  it("also names it from the message alone, for deployments predating `error_code`", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { message: "Invalid Refresh Token: Already Used", status: 400 } };
+    expect(await gradeOf()).toEqual([["rejected", "refresh-token-spent"]]);
+  });
+
+  it("does NOT name it for other refusals — a 401 from a bad anon key is not a spent token", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { message: "Invalid API key", status: 401 } };
+    expect(await gradeOf()).toEqual([["rejected", "unspecified"]]);
+  });
+
+  it("does NOT name it for a generic 400 either", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { code: "invalid_grant", message: "Invalid Refresh Token", status: 400 } };
+    expect(await gradeOf()).toEqual([["rejected", "unspecified"]]);
+  });
+
+  it("reports no cause worth acting on when the failure was merely unanswered", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { message: "fetch failed", status: 0 } };
+    expect(await gradeOf()).toEqual([["inconclusive", "unspecified"]]);
+  });
+});
+
+// The sign-in page seals its live access token so the CLI has a credential nobody rotates. Proving
+// that credential must therefore NOT spend the single-use refresh token — otherwise the CLI re-runs
+// the exact race the sealed token exists to avoid, and the page's half of the fix buys nothing.
+describe("verifyCachedAccessToken", () => {
+  const live = () => Math.floor(Date.now() / 1000) + 3600;
+  const withToken = (expiresAt = live()) =>
+    saveAuth({ url: "https://x.supabase.co", anonKey: "anon", refreshToken: "rt", accessToken: "cached-jwt", expiresAt });
+
+  it("confirms a live token against the server WITHOUT refreshing — the whole point", async () => {
+    withToken();
+    const before = readFileSync(authPath(), "utf8");
+    expect(await verifyCachedAccessToken()).toBe("ok");
+    expect(getUser).toHaveBeenCalledWith("cached-jwt"); // a real round-trip, not a local decode
+    expect(refreshSession).not.toHaveBeenCalled(); // …and the single-use token is still unspent
+    expect(readFileSync(authPath(), "utf8")).toBe(before); // no rotation ⇒ nothing rewritten
+  });
+
+  it("a 401 on the identity check is a refusal ⇒ rejected", async () => {
+    withToken();
+    getUserResult = { data: { user: null }, error: { message: "invalid JWT", status: 401 } };
+    expect(await verifyCachedAccessToken()).toBe("rejected");
+    expect(refreshSession).not.toHaveBeenCalled(); // still no rotation, even on the failure path
+  });
+
+  it("a 5xx or a dropped connection ⇒ inconclusive, never a refusal", async () => {
+    withToken();
+    getUserResult = { data: { user: null }, error: { message: "bad gateway", status: 502 } };
+    expect(await verifyCachedAccessToken()).toBe("inconclusive");
+    getUserResult = { data: { user: null }, error: { message: "fetch failed", status: 0 } };
+    expect(await verifyCachedAccessToken()).toBe("inconclusive");
+  });
+
+  it("no user and no error ⇒ inconclusive (nothing was actually established)", async () => {
+    withToken();
+    getUserResult = { data: { user: null }, error: null };
+    expect(await verifyCachedAccessToken()).toBe("inconclusive");
+  });
+
+  it("reports `absent` when there is no token worth checking", async () => {
+    expect(await verifyCachedAccessToken()).toBe("absent"); // logged out entirely
+    seed(); // credentials, but the handoff sealed no access token (today's page)
+    expect(await verifyCachedAccessToken()).toBe("absent");
+    withToken(Math.floor(Date.now() / 1000) - 10); // expired
+    expect(await verifyCachedAccessToken()).toBe("absent");
+    withToken(Math.floor(Date.now() / 1000) + 30); // inside ACCESS_SKEW_S: the next command would refresh it anyway
+    expect(await verifyCachedAccessToken()).toBe("absent");
+    expect(getUser).not.toHaveBeenCalled(); // nothing to check ⇒ no round-trip at all
   });
 });
 
