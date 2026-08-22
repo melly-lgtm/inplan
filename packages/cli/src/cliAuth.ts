@@ -263,16 +263,38 @@ export type SessionFailure = "rejected" | "inconclusive";
  *  server never looked), and not supabase-js's status-0 transport errors. */
 const REJECTING_STATUSES = new Set([400, 401, 403]);
 
+/**
+ * WHICH refusal, when the server was specific enough to say — so a caller can explain itself
+ * without asserting more than it knows. `rejected` spans 400/401/403, which covers a spent refresh
+ * token but equally a bad anon key or a revoked user; only `refresh-token-spent` licenses the
+ * "already spent" wording.
+ */
+export type RejectionCause = "refresh-token-spent" | "unspecified";
+
+/** Does this error say, in GoTrue's own words, that the refresh token was already used? Checks the
+ *  structured code AND the message, because `error_code` is a newer addition and older deployments
+ *  only carry "Invalid Refresh Token: Already Used". */
+function isSpentRefreshToken(error: unknown): boolean {
+  const e = (error ?? {}) as { code?: unknown; message?: unknown };
+  if (e.code === "refresh_token_already_used") return true;
+  return typeof e.message === "string" && /already used/i.test(e.message);
+}
+
 /** Classify a failed auth call — a refresh OR an access-token identity check — so a caller can tell
  *  "your credential is dead" from "I couldn't reach the server". Anything unrecognised is
  *  inconclusive: the safe direction, since the only action gated on `rejected` is deleting the
  *  user's credential. */
-function authFailureKind(error: unknown): SessionFailure {
+function authFailureKind(error: unknown): { reason: SessionFailure; cause: RejectionCause } {
   const status = (error as { status?: unknown } | null | undefined)?.status;
-  return typeof status === "number" && REJECTING_STATUSES.has(status) ? "rejected" : "inconclusive";
+  const rejected = typeof status === "number" && REJECTING_STATUSES.has(status);
+  if (!rejected) return { reason: "inconclusive", cause: "unspecified" };
+  return { reason: "rejected", cause: isSpentRefreshToken(error) ? "refresh-token-spent" : "unspecified" };
 }
 
-export async function authedSession(skewS = ACCESS_SKEW_S, onFailure?: (reason: SessionFailure) => void): Promise<AuthedSession | null> {
+export async function authedSession(
+  skewS = ACCESS_SKEW_S,
+  onFailure?: (reason: SessionFailure, cause?: RejectionCause) => void,
+): Promise<AuthedSession | null> {
   const cached = loadAuth();
   if (!cached) {
     onFailure?.("inconclusive"); // no credentials at all: nothing was rejected, there was nothing to ask with
@@ -306,7 +328,8 @@ export async function authedSession(skewS = ACCESS_SKEW_S, onFailure?: (reason: 
     const db = newClient(auth);
     const { data, error } = await db.auth.refreshSession({ refresh_token: auth.refreshToken });
     if (error || !data.session) {
-      onFailure?.(error ? authFailureKind(error) : "inconclusive");
+      const graded = error ? authFailureKind(error) : { reason: "inconclusive" as const, cause: "unspecified" as const };
+      onFailure?.(graded.reason, graded.cause);
       return null;
     }
 
@@ -381,7 +404,7 @@ export async function verifyCachedAccessToken(): Promise<CachedSessionCheck> {
   if (!bound) return "absent";
   const { data, error } = await bound.db.auth.getUser(auth.accessToken);
   if (!error && data?.user) return "ok";
-  return error ? authFailureKind(error) : "inconclusive";
+  return error ? authFailureKind(error).reason : "inconclusive";
 }
 
 /** The signed-in user (id + email + display name), or null when not logged in / session invalid. */

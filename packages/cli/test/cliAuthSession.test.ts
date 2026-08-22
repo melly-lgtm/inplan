@@ -209,6 +209,47 @@ describe("authedSession failure reasons", () => {
   });
 });
 
+// A `rejected` verdict spans 400/401/403 — a spent refresh token, but equally a bad anon key or a
+// revoked user. The CAUSE is what lets login explain itself without asserting more than it knows,
+// so it must be reported only when GoTrue actually named it.
+describe("authedSession rejection causes", () => {
+  const gradeOf = async (): Promise<Array<[string, string | undefined]>> => {
+    const seen: Array<[string, string | undefined]> = [];
+    await authedSession(undefined, (reason, cause) => seen.push([reason, cause]));
+    return seen;
+  };
+
+  it("names the spent-token case from GoTrue's structured code", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { code: "refresh_token_already_used", message: "whatever", status: 400 } };
+    expect(await gradeOf()).toEqual([["rejected", "refresh-token-spent"]]);
+  });
+
+  it("also names it from the message alone, for deployments predating `error_code`", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { message: "Invalid Refresh Token: Already Used", status: 400 } };
+    expect(await gradeOf()).toEqual([["rejected", "refresh-token-spent"]]);
+  });
+
+  it("does NOT name it for other refusals — a 401 from a bad anon key is not a spent token", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { message: "Invalid API key", status: 401 } };
+    expect(await gradeOf()).toEqual([["rejected", "unspecified"]]);
+  });
+
+  it("does NOT name it for a generic 400 either", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { code: "invalid_grant", message: "Invalid Refresh Token", status: 400 } };
+    expect(await gradeOf()).toEqual([["rejected", "unspecified"]]);
+  });
+
+  it("reports no cause worth acting on when the failure was merely unanswered", async () => {
+    seed();
+    refreshResult = { data: { session: null }, error: { message: "fetch failed", status: 0 } };
+    expect(await gradeOf()).toEqual([["inconclusive", "unspecified"]]);
+  });
+});
+
 // The sign-in page seals its live access token so the CLI has a credential nobody rotates. Proving
 // that credential must therefore NOT spend the single-use refresh token — otherwise the CLI re-runs
 // the exact race the sealed token exists to avoid, and the page's half of the fix buys nothing.

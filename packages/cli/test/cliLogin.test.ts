@@ -302,6 +302,43 @@ describe("pollLoginSession", () => {
     expect(auth.refreshToken).toBe(payload.refresh);
   });
 
+  it("launchSignal: a launch failure AFTER the page acked must not poison every later poll", async () => {
+    // Regression. An AbortSignal stays aborted forever, so composing an already-fired launchSignal
+    // into every request makes AbortSignal.any born-aborted from then on: each poll dies before it
+    // leaves, launchDead() rightly declines to throw (the page acked), and the loop sleeps/retries
+    // into the same instant abort until the foreground deadline — turning a login that was about to
+    // complete into "login timed out". The trigger is real: a slow or delegating opener that
+    // eventually exits non-zero, at any point inside a three-minute poll window.
+    const c = clock();
+    const { fetchImpl: createFetch } = fakeServer([]);
+    const pending = await createLoginSession({ ...OPTS, fetchImpl: createFetch, now: c.now });
+    const pub = pubOf(pending.url);
+    const launch = new AbortController();
+    let polls = 0;
+    let sentBeforeAbort = 0;
+    let sentAfterAbort = 0;
+    let rejectedAtFetch = 0;
+    // A signal-RESPECTING fetch, unlike the plain fake server: that is what makes the bug visible.
+    const fetchImpl = (async (_url: string, init?: { signal?: AbortSignal }) => {
+      if (init?.signal?.aborted) {
+        rejectedAtFetch += 1;
+        throw new Error("aborted before the request left");
+      }
+      if (launch.signal.aborted) sentAfterAbort += 1;
+      else sentBeforeAbort += 1;
+      polls += 1;
+      if (polls === 1) {
+        launch.abort(); // the opener finally exits non-zero, moments after the page reported itself open
+        return res(200, { status: "opened" });
+      }
+      return res(200, { status: "completed", ...(await sealLikeThePage(pub, payload)) });
+    }) as unknown as typeof fetch;
+    const auth = await pollLoginSession(pending, { fetchImpl, now: c.now, sleep: c.sleep, openAckMs: 20_000, launchSignal: launch.signal });
+    expect(auth.refreshToken).toBe(payload.refresh); // the login COMPLETES instead of timing out
+    expect(rejectedAtFetch).toBe(0); // no request was ever killed before it went out
+    expect(sentAfterAbort).toBeGreaterThan(0); // polls keep leaving after the launcher's verdict
+  });
+
   it("openAckMs unset (default) waits out the full timeout rather than bailing early", async () => {
     const c = clock();
     const { fetchImpl: createFetch } = fakeServer([]);

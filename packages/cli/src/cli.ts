@@ -28,7 +28,7 @@ import {
 } from "@inplan/core/node";
 import { agentAuthorFor } from "./agentAuthor";
 import { gitProvenance } from "./provenance";
-import { authedSession, authPath, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, verifyCachedAccessToken, type AuthFile, type SessionFailure } from "./cliAuth";
+import { authedSession, authPath, clearAuth, currentUser, liveRemoteBackend, loadAuth, remoteBackend, saveAuth, verifyCachedAccessToken, type AuthFile } from "./cliAuth";
 import { BrowserDidNotOpenError, LoginSessionExpiredError, clearPendingLogin, createLoginSession, loadPendingLogin, openInBrowser, pollLoginSession, rendezvousLogin, type PendingLogin } from "./cliLogin";
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
 import { checkForUpdate, selfUpdate, UPDATE_PKG, warnIfOutdated } from "./update";
@@ -778,7 +778,14 @@ async function doLogin(args: string[]): Promise<void> {
         // Watch the launch, don't just fire it: the opener's own error/exit code is a definite "no
         // browser here", so the poll below can bail on that instead of inferring it from silence.
         const launch = new AbortController();
-        openInBrowser(minted.url, () => launch.abort());
+        // Abort the wait only on a CERTAIN failure — no opener process at all. An opener that ran and
+        // exited non-zero is a hint, not a verdict (some sandboxed configs return non-zero having
+        // launched anyway), and because the opener exits in milliseconds while the ack takes seconds
+        // it would always win that race: acting on it would turn a working browser into an immediate
+        // "did not open". Let the ack window arbitrate that case instead — that is what it is for.
+        openInBrowser(minted.url, (kind) => {
+          if (kind === "no-opener") launch.abort();
+        });
         const auth = await pollLoginSession(minted, {
           openAckMs: OPEN_ACK_MS,
           launchSignal: launch.signal,
@@ -919,13 +926,16 @@ export async function primeSessionOrFail(retryDelayMs = 750): Promise<void> {
   // Route 2 — no usable access token, so spend the rotation. A skew wider than any token's lifetime
   // makes reuseCached decline the cache, so the refresh actually runs.
   const FORCE_REFRESH_SKEW_S = 10 * 365 * 24 * 3600;
-  const forceRefresh = async (): Promise<"ok" | SessionFailure> => {
+  // The cause rides in the RESULT rather than a closure variable the compiler cannot see written:
+  // narrowing would otherwise pin it to its initial value and reject the comparisons below.
+  const forceRefresh = async (): Promise<"ok" | "inconclusive" | "rejected-spent" | "rejected-other"> => {
     const before = loadAuth()?.refreshToken;
-    let reason: SessionFailure = "inconclusive";
-    const session = await authedSession(FORCE_REFRESH_SKEW_S, (r) => {
-      reason = r;
+    let refusal: "inconclusive" | "rejected-spent" | "rejected-other" = "inconclusive";
+    const session = await authedSession(FORCE_REFRESH_SKEW_S, (reason, cause) => {
+      refusal =
+        reason === "inconclusive" ? "inconclusive" : cause === "refresh-token-spent" ? "rejected-spent" : "rejected-other";
     });
-    if (!session) return reason;
+    if (!session) return refusal;
     // A session is NOT proof the refresh happened. When authedSession cannot get the refresh lock it
     // falls back to any not-yet-expired cached token (skew 0) — deliberately, so a long `wait`
     // survives lock churn — and that fallback would let a handoff with a spent refresh token report
@@ -935,7 +945,14 @@ export async function primeSessionOrFail(retryDelayMs = 750): Promise<void> {
   };
   const refreshed = await withOneRetry(forceRefresh);
   if (refreshed === "ok") return;
-  if (refreshed === "rejected") refused("its refresh token had already been spent, so it could never have been used.");
+  // Name the spent-token case ONLY when GoTrue actually named it. `rejected` covers 400/401/403,
+  // which also includes a bad anon key or a revoked user — printing "its refresh token had already
+  // been spent" for those is a confident falsehood, the same mistake one level down as reporting a
+  // network blip as a refusal.
+  if (refreshed === "rejected-spent") refused("its refresh token had already been spent, so it could never have been used.");
+  if (refreshed === "rejected-other") {
+    refused("the server refused it — the token may be invalid or revoked, or this deployment's anon key may no longer match.");
+  }
   unproven();
 }
 

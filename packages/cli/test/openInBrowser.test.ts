@@ -43,14 +43,20 @@ describe("openInBrowser", () => {
     const onLaunchFailure = vi.fn();
     openInBrowser("https://web.test/cli-auth", onLaunchFailure);
     child.emit("error", Object.assign(new Error("spawn xdg-open ENOENT"), { code: "ENOENT" }));
+    // CERTAIN: no opener process exists, so no browser is coming and the caller may bail at once.
     expect(onLaunchFailure).toHaveBeenCalledOnce();
+    expect(onLaunchFailure).toHaveBeenCalledWith("no-opener");
   });
 
-  it("reports an opener that could not handle the URL (non-zero exit)", () => {
+  it("reports a non-zero exit as SUSPICION, not a verdict — some configs exit non-zero having launched", () => {
     const onLaunchFailure = vi.fn();
     openInBrowser("https://web.test/cli-auth", onLaunchFailure);
     child.emit("exit", 1);
+    // The distinction is the whole point: `opener-declined` must not license an immediate
+    // "the browser did not open", because the opener exits in milliseconds and would always beat
+    // the page's ack — so acting on it would call a working browser broken.
     expect(onLaunchFailure).toHaveBeenCalledOnce();
+    expect(onLaunchFailure).toHaveBeenCalledWith("opener-declined");
   });
 
   it("reports a synchronous spawn throw too (no opener binary at all)", () => {
@@ -60,6 +66,7 @@ describe("openInBrowser", () => {
     const onLaunchFailure = vi.fn();
     openInBrowser("https://web.test/cli-auth", onLaunchFailure);
     expect(onLaunchFailure).toHaveBeenCalledOnce();
+    expect(onLaunchFailure).toHaveBeenCalledWith("no-opener"); // nothing spawned at all
   });
 
   it("reports at most ONCE, however many ways the same launch fails", () => {
@@ -69,7 +76,9 @@ describe("openInBrowser", () => {
     openInBrowser("https://web.test/cli-auth", onLaunchFailure);
     child.emit("error", new Error("ENOENT"));
     child.emit("exit", null);
+    // …and the FIRST, most certain report is the one that stands.
     expect(onLaunchFailure).toHaveBeenCalledOnce();
+    expect(onLaunchFailure).toHaveBeenCalledWith("no-opener");
   });
 
   it("survives being called with no callback at all (the pre-existing best-effort contract)", () => {

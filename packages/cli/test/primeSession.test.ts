@@ -13,11 +13,11 @@
 // credential is dead — delete it), and unanswered (a blip or a held refresh lock — KEEP it).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AuthedSession, CachedSessionCheck, SessionFailure } from "../src/cliAuth";
+import type { AuthedSession, CachedSessionCheck, RejectionCause, SessionFailure } from "../src/cliAuth";
 
 // vi.mock's factory is hoisted above the file body, so the stubs it installs have to be hoisted too.
 const { authedSession, verifyCachedAccessToken, clearAuth, loadAuth } = vi.hoisted(() => ({
-  authedSession: vi.fn<(skewS?: number, onFailure?: (r: SessionFailure) => void) => Promise<AuthedSession | null>>(),
+  authedSession: vi.fn<(skewS?: number, onFailure?: (r: SessionFailure, c?: RejectionCause) => void) => Promise<AuthedSession | null>>(),
   verifyCachedAccessToken: vi.fn<() => Promise<CachedSessionCheck>>(),
   clearAuth: vi.fn(),
   loadAuth: vi.fn<() => { refreshToken: string } | null>(),
@@ -61,11 +61,13 @@ afterEach(() => {
 
 /** A stand-in for a usable session — primeSessionOrFail only checks truthiness. */
 const ok = { db: {}, session: {} } as unknown as AuthedSession;
-/** One failed authedSession attempt reporting `reason`, the way the real one does. */
-const fails = (reason: SessionFailure) => async (_skew?: number, onFailure?: (r: SessionFailure) => void) => {
-  onFailure?.(reason);
-  return null;
-};
+/** One failed authedSession attempt reporting `reason` (and cause), the way the real one does. */
+const fails =
+  (reason: SessionFailure, cause: RejectionCause = "unspecified") =>
+  async (_skew?: number, onFailure?: (r: SessionFailure, c?: RejectionCause) => void) => {
+    onFailure?.(reason, cause);
+    return null;
+  };
 /** The refresh token rotating is what proves the refresh really happened. */
 const rotates = () => {
   let n = 0;
@@ -130,15 +132,30 @@ describe("primeSessionOrFail — route 2: no usable access token, so spend the r
     expect(exits).toEqual([]);
   });
 
-  it("deletes the credential and names the cause when the server REFUSES the refresh token", async () => {
+  it("names the spent-token case only when GoTrue named it", async () => {
     neverRotates();
-    authedSession.mockImplementation(fails("rejected"));
+    authedSession.mockImplementation(fails("rejected", "refresh-token-spent"));
     await expect(primeSessionOrFail(0)).rejects.toThrow("exit:1");
     expect(clearAuth).toHaveBeenCalledOnce();
     expect(stderr).toMatch(/refresh token had already been spent/);
-    // No second attempt: a verdict does not change, and re-presenting a spent token is exactly the
-    // reuse GoTrue punishes by revoking the whole token family.
+    // No second attempt, for one sufficient reason: a definitive refusal does not become an
+    // acceptance 750ms later. (Not for fear of tripping GoTrue's reuse detection — if the page spent
+    // the token minutes ago, our FIRST presentation is already outside the reuse interval and is the
+    // one that trips it. Skipping the retry protects nothing; it is simply pointless work.)
     expect(authedSession).toHaveBeenCalledOnce();
+  });
+
+  it("does NOT claim a spent token for a refusal GoTrue did not explain (e.g. a bad anon key)", async () => {
+    // `rejected` spans 400/401/403. Printing "its refresh token had already been spent" for a 401
+    // from a stale anon key is a confident falsehood — the same mistake as reporting a network blip
+    // as a refusal, one level down.
+    neverRotates();
+    authedSession.mockImplementation(fails("rejected", "unspecified"));
+    await expect(primeSessionOrFail(0)).rejects.toThrow("exit:1");
+    expect(clearAuth).toHaveBeenCalledOnce(); // still a refusal ⇒ still deleted
+    expect(stderr).toMatch(/the server refused it/);
+    expect(stderr).toMatch(/anon key/);
+    expect(stderr).not.toMatch(/already been spent/); // …but the cause is not invented
   });
 
   it("KEEPS the credential when the refresh never got an answer", async () => {
@@ -176,7 +193,7 @@ describe("primeSessionOrFail — route 2: no usable access token, so spend the r
 
   it("stops retrying the moment an inconclusive first attempt turns into a refusal", async () => {
     neverRotates();
-    authedSession.mockImplementationOnce(fails("inconclusive")).mockImplementation(fails("rejected"));
+    authedSession.mockImplementationOnce(fails("inconclusive")).mockImplementation(fails("rejected", "refresh-token-spent"));
     await expect(primeSessionOrFail(0)).rejects.toThrow("exit:1");
     expect(authedSession).toHaveBeenCalledTimes(2); // the retry ran, and its verdict is the one that counts
     expect(clearAuth).toHaveBeenCalledOnce();
