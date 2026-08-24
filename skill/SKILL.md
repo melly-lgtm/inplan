@@ -309,13 +309,17 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
        inplan wait <name>.plan.md
 
    `your_turn` and `activity` are **not** stop conditions — you always loop back
-   and keep waiting. The **only** thing that ends the loop is `status: closed`.
+   and keep waiting. Two things end the loop: `status: closed`, or a handoff that
+   also carries `editorGone: true` (the human handed the turn back and then left —
+   finish that turn's work, then stop; see `crashed_or_killed` above for why a
+   further `wait` would block instead of reporting the closure).
 
 6. When you believe the plan is ready, signal it (the human still decides):
 
        inplan signal <name>.plan.md --done
 
-   Then wait again. Stop only on `status: closed`.
+   Then wait again, and stop on the same two conditions as step 5: `status: closed`,
+   or a handoff carrying `editorGone: true`.
 
 ## Keeping the human informed
 
