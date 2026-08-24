@@ -396,13 +396,18 @@ function logWaitExit(p: DocPaths, reason: string): void {
  *      outranks an unlogged disappearance: the human accepting a proposal and then closing the tab
  *      produced both at once, and letting the departure win reported `closed / crashed_or_killed`
  *      while the same payload carried `revision_accepted_all` + `comment_resolved` (#110). The
- *      agent acts on the handoff; the next wait reports the closure with nothing left to lose.
+ *      agent acts on the handoff — and `editorGone` comes back with it, because the departure must
+ *      not simply be dropped: a fresh `wait` starts with `sawEditorAlive` false, so an editor that
+ *      is ALREADY gone never flips it and that wait would block rather than report the closure.
+ *      Outranking the departure is right; forgetting it would strand the next turn.
  *   3. An unlogged disappearance — presence went away with no close logged, and stayed away long
  *      enough to be believed (see PRESENCE_GONE_GRACE_MS). `crashed_or_killed` claims only that:
  *      the editor vanished without saying goodbye. */
-export function resolveWaitStatus(input: { closeReason: string | null; editorGone: boolean; hasActionable: boolean; locksEditor: boolean }): { status: string; reason?: string } {
+export function resolveWaitStatus(input: { closeReason: string | null; editorGone: boolean; hasActionable: boolean; locksEditor: boolean }): { status: string; reason?: string; editorGone?: true } {
   if (input.closeReason !== null) return { status: "closed", reason: input.closeReason };
   if (input.editorGone && !input.hasActionable) return { status: "closed", reason: "crashed_or_killed" };
+  // A handoff won, but the editor really is gone — carry that fact out with the status.
+  if (input.editorGone) return { status: input.locksEditor ? "your_turn" : "activity", editorGone: true };
   // A locking mode means the human's editor is locked waiting for the agent (your_turn);
   // a non-locking (live) mode means they keep editing (activity).
   return { status: input.locksEditor ? "your_turn" : "activity" };
@@ -669,7 +674,7 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
     //   activity  — Instant mode: human is editing LIVE and is NOT blocked.
     //   closed    — the session ended; stop. `reason` says how: completed / window_closed
     //               / crashed_or_killed.
-    const { status, reason } = resolveWaitStatus({
+    const { status, reason, editorGone } = resolveWaitStatus({
       closeReason: closeEntry ? ((closeEntry.payload as { reason?: string } | undefined)?.reason ?? "completed") : null,
       editorGone: result.editorGone === true,
       hasActionable: result.entries.some(isActionable),
@@ -687,6 +692,12 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
       // when --model was passed), so presence + authorship stay consistent.
       agentAuthor: agentAuthorFor(model),
       ...(reason ? { reason } : {}),
+      // The human handed the turn back and THEN left. Surfaced because the handoff status
+      // deliberately outranks the departure, and dropping the departure entirely would strand the
+      // agent: a fresh `wait` starts with `sawEditorAlive` false, so an editor that is already gone
+      // never flips it and that wait would block instead of reporting the closure. Act on the
+      // handoff, then stop — do not wait again.
+      ...(editorGone ? { editorGone: true } : {}),
       // The landing signal for a parked Review-mode edit (#88): pending_review means the push
       // REACHED the store and awaits the human — the canonical is unchanged by design. Absent
       // when the turn applied directly (or made no body change).

@@ -26,12 +26,20 @@ describe("resolveWaitStatus", () => {
   // The #110 regression. The human accepted a proposal and resolved a comment, then closed the tab:
   // `revision_accepted_all` + `comment_resolved` in `entries`, and presence gone. Reporting the
   // departure told the agent the session had crashed and threw the completed handoff away.
+  // ...and the departure is carried OUT with the handoff rather than dropped. A fresh `wait` starts
+  // with `sawEditorAlive` false, so an editor that is already gone never flips it and that wait
+  // would block instead of reporting the closure — outranking the departure is right, forgetting it
+  // would strand the next turn.
   it("a handoff OUTRANKS an unlogged disappearance — the completed turn is still reported", () => {
-    expect(resolveWaitStatus({ closeReason: null, editorGone: true, hasActionable: true, locksEditor: true })).toEqual({ status: "your_turn" });
+    expect(resolveWaitStatus({ closeReason: null, editorGone: true, hasActionable: true, locksEditor: true })).toEqual({ status: "your_turn", editorGone: true });
   });
 
   it("...and in a live (non-locking) mode that handoff reports activity, not your_turn", () => {
-    expect(resolveWaitStatus({ closeReason: null, editorGone: true, hasActionable: true, locksEditor: false })).toEqual({ status: "activity" });
+    expect(resolveWaitStatus({ closeReason: null, editorGone: true, hasActionable: true, locksEditor: false })).toEqual({ status: "activity", editorGone: true });
+  });
+
+  it("an ordinary handoff carries no editorGone flag at all (nothing to warn about)", () => {
+    expect(resolveWaitStatus({ closeReason: null, editorGone: false, hasActionable: true, locksEditor: true })).not.toHaveProperty("editorGone");
   });
 
   it("no close, no departure: the ordinary turn handoff", () => {

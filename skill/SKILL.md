@@ -271,7 +271,10 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
        Only reported once the absence has persisted (a heartbeat that merely stalled — a
        backgrounded tab, a network blip — is not a departure), and never in place of work you
        were waiting for: if the human handed the turn back and *then* left, you get that
-       handoff (`your_turn` / `activity`) and learn about the closure on the next `wait`.
+       handoff (`your_turn` / `activity`) with **`editorGone: true`** alongside it. Treat that
+       flag as the closure: do the work the handoff describes, then **stop**. Do not call `wait`
+       again — the editor is already gone, so the next wait has nothing to see it leave and will
+       block rather than report it.
    - `superseded` — a newer `wait` took over this document (only one waiter runs at
      a time). This one stepped down; **do nothing** — the live waiter is in charge.
    - `navigated` — the human followed an in-window link to a **different document**;

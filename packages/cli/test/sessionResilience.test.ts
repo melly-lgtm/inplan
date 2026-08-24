@@ -362,15 +362,38 @@ describe("presence: unknown is not absent", () => {
   });
 
   it("a presence:false run BROKEN by a live reading resets the grace", async () => {
-    // alive, false, false, then alive again — the tab came back. The earlier absence must not carry
-    // over and end the wait once the grace elapses; only an UNBROKEN absence counts.
+    // alive, false, false, alive (the tab came back), then false again. Only an UNBROKEN absence
+    // counts, so the clock must restart at the LAST break — not carry the first run's start.
+    //
+    // Driven by the injectable clock rather than wall time, because the window that distinguishes
+    // "reset" from "not reset" is one grace wide and a real-time version would be a race. The
+    // presence reads advance the clock themselves, so the sequence and the timeline stay in step:
+    //
+    //   call 1  t=0    alive          -> sawEditorAlive
+    //   call 2  t=100  false          -> goneSince = 100
+    //   call 3  t=200  alive          -> goneSince = null   <-- the line under test
+    //   call 4  t=300  false          -> goneSince = 300
+    //   call 5+ t=400  false          -> 400-300 = 100 < grace(150): still waiting
+    //
+    // Asserted as WHEN the wait concludes, not by racing wall time: the fake clock advances 100ms
+    // per presence read, so the two behaviors separate by call count and nothing is timing-dependent.
+    //
+    //   call 1  t=100  alive   -> sawEditorAlive
+    //   call 2  t=200  false   -> goneSince = 200
+    //   call 3  t=300  alive   -> goneSince = null   <-- the line under test
+    //   call 4  t=400  false   -> goneSince = 400
+    //   call 7  t=700  false   -> 700-400 = 300 >= grace(250): editorGone, on call 7
+    //
+    // Without the reset, goneSince stays 200 and call 5 (t=500, 500-200 = 300) already concludes —
+    // so the stale timestamp shows up as concluding two reads EARLY, which is the assertion below.
     let calls = 0;
+    const clock = () => calls * 100;
     const ch = channelWithPresence(async () => {
       calls++;
-      return calls === 1 || calls > 3;
+      return calls === 1 || calls === 3; // alive, false, alive, then false for the rest
     });
-    await stillWaitingAfter(80, (signal) =>
-      waitForActions({ channel: ch, cursor: 0, pollMs: 1, watchEditor: true, presenceGoneGraceMs: 20, signal }),
-    );
+    const r = await waitForActions({ channel: ch, cursor: 0, pollMs: 1, watchEditor: true, presenceGoneGraceMs: 250, now: clock });
+    expect(r.editorGone).toBe(true); // a genuinely unbroken absence still ends the wait
+    expect(calls).toBe(7); // ...but only after the SECOND run's grace, not the first's
   });
 });

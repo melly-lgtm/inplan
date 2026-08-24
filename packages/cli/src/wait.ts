@@ -349,8 +349,9 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
             // disappearance is strictly weaker evidence than a logged one, so it should not be
             // the one branch that concludes instantly. A genuinely dead editor still ends the
             // wait — just after the absence holds, not on the first sample.
-            goneSince ??= Date.now();
-            if (Date.now() - goneSince >= presenceGoneGraceMs) {
+            const at = now(); // injectable clock, sampled once — same shape as the failure-run budget above
+            goneSince ??= at;
+            if (at - goneSince >= presenceGoneGraceMs) {
               finish({ entries, cursor, editorGone: true });
               return;
             }
