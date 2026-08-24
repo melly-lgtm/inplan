@@ -90,6 +90,10 @@ export interface WaitOptions {
   pollTimeoutMs?: number;
   /** Watch editor presence and resolve (editorGone) if a once-alive editor dies. Default true. */
   watchEditor?: boolean;
+  /** How long presence must stay `false` before the editor counts as gone. Default
+   *  PRESENCE_GONE_GRACE_MS — a single false reading is a throttled heartbeat as often as it is a
+   *  dead editor, so the absence has to persist. Tests set this to 0 for the old instant behavior. */
+  presenceGoneGraceMs?: number;
   /** This waiter's single-waiter token; if a newer waiter supersedes it, step down. */
   token?: string;
   /** Abort the wait (e.g. on shutdown). */
@@ -119,6 +123,13 @@ export function wakePredicate(wake: "turn-end" | "any-action"): (e: LogEntry) =>
  *  editor down (which logs the close) and is typically back within seconds; ending the agent's
  *  wait on that signal alone strands the returning human with nobody attached. */
 export const REOPEN_GRACE_MS = 3 * 60_000;
+
+/** How long presence must read `false` before an UNLOGGED disappearance is believed. The signal is
+ *  a browser-timer heartbeat against a short TTL, and browsers throttle timers in hidden tabs to a
+ *  minute or more — so "no heartbeat" routinely means "the human switched tabs", not "the editor
+ *  died". Sized to outlast that throttling, and well under REOPEN_GRACE_MS above: a *logged* close
+ *  is stronger evidence than a missing heartbeat, yet it is the one that already waits 3 minutes. */
+export const PRESENCE_GONE_GRACE_MS = 90_000;
 
 /**
  * After a `window_closed` session-close: watch for the human coming BACK within `graceMs` —
@@ -242,6 +253,7 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
   const pollMs = opts.pollMs ?? 200;
   const isActionable = opts.isActionable ?? defaultActionable;
   const watchEditor = opts.watchEditor ?? true;
+  const presenceGoneGraceMs = opts.presenceGoneGraceMs ?? PRESENCE_GONE_GRACE_MS;
   const errorGraceMs = opts.errorGraceMs ?? DEFAULT_ERROR_GRACE_MS;
   const pollTimeoutMs = opts.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS;
   const now = opts.now ?? Date.now;
@@ -251,6 +263,7 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
     let deadline: number | null = null;
     let lastCount = -1;
     let sawEditorAlive = false;
+    let goneSince: number | null = null; // start of the current unbroken presence:false run
     let busy = false;
     let done = false;
     let failingSince: number | null = null; // when the current unbroken failure run started
@@ -319,10 +332,29 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
           } catch {
             /* presence unknown — keep waiting */
           }
-          if (alive === true) sawEditorAlive = true;
-          else if (alive === false && sawEditorAlive) {
-            finish({ entries, cursor, editorGone: true });
-            return;
+          if (alive === true) {
+            sawEditorAlive = true;
+            goneSince = null; // back with us — any pending "gone" run is void
+          } else if (alive === false && sawEditorAlive) {
+            // A single `false` is NOT proof the editor is gone, and treating it as proof is what
+            // reported a normal turn as `crashed_or_killed` (#110). The heartbeat behind
+            // presence() is a browser `setInterval` (cloud web app, HEARTBEAT_MS 7s) read against
+            // a 15s TTL — so it survives exactly one missed beat. Browsers throttle timers in
+            // HIDDEN tabs to a minute or more, so a human who merely switches tabs (the normal
+            // thing to do right after handing the turn back) stalls the heartbeat past the TTL
+            // while sitting right there. Same for a network blip or a slow write.
+            //
+            // So require the absence to PERSIST before believing it. This mirrors the grace the
+            // logged-close path already gets (awaitReopen / REOPEN_GRACE_MS): an unlogged
+            // disappearance is strictly weaker evidence than a logged one, so it should not be
+            // the one branch that concludes instantly. A genuinely dead editor still ends the
+            // wait — just after the absence holds, not on the first sample.
+            const at = now(); // injectable clock, sampled once — same shape as the failure-run budget above
+            goneSince ??= at;
+            if (at - goneSince >= presenceGoneGraceMs) {
+              finish({ entries, cursor, editorGone: true });
+              return;
+            }
           }
         }
 

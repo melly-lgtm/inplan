@@ -43,7 +43,9 @@ describe("waitForActions", () => {
     await new Promise((r) => setTimeout(r, 10)); // let it start
     appendLog(logPath, { actor: "agent", type: LogEventType.EditorPid, payload: { pid: child.pid } });
 
-    const result = await waitForActions({ channel, cursor: 0, debounceMs: 40, pollMs: 10, watchEditor: true });
+    // graceMs 0: this case is about a dead editor being DETECTED, not about how long the absence
+    // must persist first (that grace is covered in sessionResilience.test.ts).
+    const result = await waitForActions({ channel, cursor: 0, debounceMs: 40, pollMs: 10, watchEditor: true, presenceGoneGraceMs: 0 });
     expect(result.editorGone).toBe(true);
   });
 

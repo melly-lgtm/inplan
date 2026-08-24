@@ -268,6 +268,13 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
        building what the document specifies (it's no longer a planning doc — act on it).
      - `window_closed` — they just closed the editor; **stop** and take no further action.
      - `crashed_or_killed` — the editor vanished with no close log; surface this to the human.
+       Only reported once the absence has persisted (a heartbeat that merely stalled — a
+       backgrounded tab, a network blip — is not a departure), and never in place of work you
+       were waiting for: if the human handed the turn back and *then* left, you get that
+       handoff (`your_turn` / `activity`) with **`editorGone: true`** alongside it. Treat that
+       flag as the closure: do the work the handoff describes, then **stop**. Do not call `wait`
+       again — the editor is already gone, so the next wait has nothing to see it leave and will
+       block rather than report it.
    - `superseded` — a newer `wait` took over this document (only one waiter runs at
      a time). This one stepped down; **do nothing** — the live waiter is in charge.
    - `navigated` — the human followed an in-window link to a **different document**;
@@ -302,13 +309,17 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
        inplan wait <name>.plan.md
 
    `your_turn` and `activity` are **not** stop conditions — you always loop back
-   and keep waiting. The **only** thing that ends the loop is `status: closed`.
+   and keep waiting. Two things end the loop: `status: closed`, or a handoff that
+   also carries `editorGone: true` (the human handed the turn back and then left —
+   finish that turn's work, then stop; see `crashed_or_killed` above for why a
+   further `wait` would block instead of reporting the closure).
 
 6. When you believe the plan is ready, signal it (the human still decides):
 
        inplan signal <name>.plan.md --done
 
-   Then wait again. Stop only on `status: closed`.
+   Then wait again, and stop on the same two conditions as step 5: `status: closed`,
+   or a handoff carrying `editorGone: true`.
 
 ## Keeping the human informed
 
