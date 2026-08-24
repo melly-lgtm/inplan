@@ -343,7 +343,34 @@ describe("presence: unknown is not absent", () => {
   it("STILL reports editorGone when presence deterministically answers false", async () => {
     let calls = 0;
     const ch = channelWithPresence(async () => ++calls === 1); // true once, then a real false
-    const r = await waitForActions({ channel: ch, cursor: 0, pollMs: 1, watchEditor: true });
+    // graceMs 0 keeps this case about the SIGNAL, not the timing: a real `false` must still end the
+    // wait. The grace that defers that conclusion is covered by the two cases below.
+    const r = await waitForActions({ channel: ch, cursor: 0, pollMs: 1, watchEditor: true, presenceGoneGraceMs: 0 });
     expect(r.editorGone).toBe(true); // the real signal must survive the fix
+  });
+
+  // #110: presence going false is a throttled heartbeat as often as a dead editor. The heartbeat is
+  // a browser setInterval (7s) read against a 15s TTL, and browsers throttle timers in hidden tabs
+  // to a minute or more — so a human who switches tabs right after handing the turn back looked
+  // exactly like a crash, and the wait returned `closed / crashed_or_killed` while they sat there.
+  it("does NOT report editorGone while a presence:false run is still inside the grace", async () => {
+    let calls = 0;
+    const ch = channelWithPresence(async () => ++calls === 1); // alive once, then false forever
+    await stillWaitingAfter(80, (signal) =>
+      waitForActions({ channel: ch, cursor: 0, pollMs: 1, watchEditor: true, presenceGoneGraceMs: 10_000, signal }),
+    );
+  });
+
+  it("a presence:false run BROKEN by a live reading resets the grace", async () => {
+    // alive, false, false, then alive again — the tab came back. The earlier absence must not carry
+    // over and end the wait once the grace elapses; only an UNBROKEN absence counts.
+    let calls = 0;
+    const ch = channelWithPresence(async () => {
+      calls++;
+      return calls === 1 || calls > 3;
+    });
+    await stillWaitingAfter(80, (signal) =>
+      waitForActions({ channel: ch, cursor: 0, pollMs: 1, watchEditor: true, presenceGoneGraceMs: 20, signal }),
+    );
   });
 });
