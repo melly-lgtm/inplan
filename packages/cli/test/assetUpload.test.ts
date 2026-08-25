@@ -35,12 +35,13 @@ vi.mock("../src/cliAuth", () => ({
   authedSession: vi.fn(async () => (sessionPresent ? { db: fakeDb(), session: { user: { id: "user-1" } } } : null)),
 }));
 
-import { doAssetUpload } from "../src/cli";
+import { doAssetUpload, doAssetUploadForDoc, main } from "../src/cli";
 
 let home: string;
 let file: string;
 let bytesFile: string;
 let out: string[];
+let stderr: string[];
 let exitCode: number | null;
 
 beforeEach(() => {
@@ -51,12 +52,16 @@ beforeEach(() => {
   bytesFile = join(home, "bytes.bin");
   writeFileSync(bytesFile, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
   out = [];
+  stderr = [];
   exitCode = null;
   vi.spyOn(process.stdout, "write").mockImplementation((s: string | Uint8Array) => {
     out.push(String(s));
     return true;
   });
-  vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  vi.spyOn(process.stderr, "write").mockImplementation((s: string | Uint8Array) => {
+    stderr.push(String(s));
+    return true;
+  });
   vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
     exitCode = code ?? 0;
     throw new Error(`exit:${code}`); // halt the flow like the real process.exit
@@ -75,10 +80,11 @@ afterEach(() => {
 const lastJson = () => JSON.parse(out.join("").trim().split("\n").pop()!);
 
 describe("inplan asset-upload → doc-images bucket", () => {
-  it("rejects a doc that isn't cloud-connected", async () => {
+  it("rejects a doc that isn't cloud-connected, and points at the --remote form", async () => {
     await expect(doAssetUpload(file, ["--bytes-file", bytesFile])).rejects.toThrow(/exit:1/);
     expect(exitCode).toBe(1);
     expect(upload).not.toHaveBeenCalled();
+    expect(stderr.join("")).toContain("--remote");
   });
 
   it("rejects a missing --bytes-file", async () => {
@@ -139,5 +145,65 @@ describe("inplan asset-upload → doc-images bucket", () => {
     await expect(doAssetUpload(file, ["--bytes-file", bytesFile])).rejects.toThrow(/exit:1/);
     expect(exitCode).toBe(1);
     expect(upload).not.toHaveBeenCalled();
+  });
+});
+
+// A doc attached by id alone (`inplan wait --remote <id>` — how an agent connects to a cloud plan
+// it never had on disk) writes a sidecar with no status file, so the file-based entry point can't
+// resolve it. Before this route existed, `asset-upload --remote` wasn't a recognized cloud command
+// at all: it fell through to the generic remote handler and ran a sync instead of an upload, and
+// agents worked around it by writing image *filenames* into the body as placeholders.
+describe("inplan asset-upload --remote <docId>", () => {
+  it("uploads without any local file or status sidecar", async () => {
+    await doAssetUploadForDoc("doc-remote", ["--bytes-file", bytesFile, "--ext", "jpg"]);
+    expect(upload).toHaveBeenCalledTimes(1);
+    const [path, , opts] = upload.mock.calls[0]!;
+    expect(path).toMatch(/^org-1\/doc-remote\/image-\d{14}-[0-9a-f]{8}\.jpg$/);
+    expect(opts).toEqual({ contentType: "image/jpeg" });
+    expect(lastJson()).toEqual({ status: "uploaded", relPath: `https://cdn.test/doc-images/${path}` });
+  });
+
+  it("stops on a doc id this session can't resolve to an org", async () => {
+    // The org lookup is the ownership check — an id the caller can't read yields no org, so a
+    // guessed doc id can't be used to write into someone else's bucket prefix.
+    orgLookup = { data: null, error: null };
+    await expect(doAssetUploadForDoc("someone-elses-doc", ["--bytes-file", bytesFile])).rejects.toThrow(/exit:1/);
+    expect(exitCode).toBe(1);
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it("requires --bytes-file", async () => {
+    await expect(doAssetUploadForDoc("doc-remote", [])).rejects.toThrow(/exit:64/);
+    expect(exitCode).toBe(64);
+    expect(stderr.join("")).toContain("--remote DOC_ID");
+  });
+
+  it("exits when not logged in", async () => {
+    sessionPresent = false;
+    await expect(doAssetUploadForDoc("doc-remote", ["--bytes-file", bytesFile])).rejects.toThrow(/exit:1/);
+    expect(exitCode).toBe(1);
+    expect(upload).not.toHaveBeenCalled();
+  });
+});
+
+// The unit tests above call the upload body directly; this one goes through argv dispatch, which
+// is where the bug actually lived — `asset-upload` reached neither the file branch (no sidecar to
+// read) nor a cloud route, and fell through to the generic remote handler, which syncs rather than
+// uploads. Asserting a real upload here is what pins the routing.
+describe("argv dispatch: asset-upload --remote", () => {
+  const argv = process.argv;
+  afterEach(() => {
+    process.argv = argv;
+  });
+
+  it("routes to storage instead of the collab/sync path", async () => {
+    process.argv = ["node", "inplan", "asset-upload", "--remote", "doc-remote", "--bytes-file", bytesFile, "--ext", "png"];
+    await main();
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(upload.mock.calls[0]![0]).toMatch(/^org-1\/doc-remote\/image-/);
+    // A fall-through to the sync path prints live-collab guidance and never uploads, so the
+    // uploaded envelope is the discriminator between the two routes.
+    expect(lastJson()).toMatchObject({ status: "uploaded" });
+    expect(stderr.join("")).not.toContain("live-collab");
   });
 });
