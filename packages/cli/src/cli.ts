@@ -2765,7 +2765,9 @@ function routeFor(file: string, cmd: string, args: string[]): Route {
   return { kind: "reconcile", docId };
 }
 
-async function main(): Promise<void> {
+/** Exported for the dispatch tests — `isProgramEntry()` guards the real invocation, so importing
+ *  this module never runs it. */
+export async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const cmd = argv[0];
 

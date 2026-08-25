@@ -35,7 +35,7 @@ vi.mock("../src/cliAuth", () => ({
   authedSession: vi.fn(async () => (sessionPresent ? { db: fakeDb(), session: { user: { id: "user-1" } } } : null)),
 }));
 
-import { doAssetUpload, doAssetUploadForDoc } from "../src/cli";
+import { doAssetUpload, doAssetUploadForDoc, main } from "../src/cli";
 
 let home: string;
 let file: string;
@@ -183,5 +183,27 @@ describe("inplan asset-upload --remote <docId>", () => {
     await expect(doAssetUploadForDoc("doc-remote", ["--bytes-file", bytesFile])).rejects.toThrow(/exit:1/);
     expect(exitCode).toBe(1);
     expect(upload).not.toHaveBeenCalled();
+  });
+});
+
+// The unit tests above call the upload body directly; this one goes through argv dispatch, which
+// is where the bug actually lived — `asset-upload` reached neither the file branch (no sidecar to
+// read) nor a cloud route, and fell through to the generic remote handler, which syncs rather than
+// uploads. Asserting a real upload here is what pins the routing.
+describe("argv dispatch: asset-upload --remote", () => {
+  const argv = process.argv;
+  afterEach(() => {
+    process.argv = argv;
+  });
+
+  it("routes to storage instead of the collab/sync path", async () => {
+    process.argv = ["node", "inplan", "asset-upload", "--remote", "doc-remote", "--bytes-file", bytesFile, "--ext", "png"];
+    await main();
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(upload.mock.calls[0]![0]).toMatch(/^org-1\/doc-remote\/image-/);
+    // A fall-through to the sync path prints live-collab guidance and never uploads, so the
+    // uploaded envelope is the discriminator between the two routes.
+    expect(lastJson()).toMatchObject({ status: "uploaded" });
+    expect(stderr.join("")).not.toContain("live-collab");
   });
 });
