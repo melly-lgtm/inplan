@@ -2564,11 +2564,24 @@ export async function doAssetUploadForDoc(cloudDocId: string, args: string[]): P
   }
   const requestedExt = (getFlag(args, "ext") ?? "png").toLowerCase();
   const bytes = readFileSync(bytesFile);
+  // uploadAssetBytes falls back to png for an unrecognized extension, so hash under the extension
+  // it will ACTUALLY store — otherwise a `.bmp` paste registers under 'bmp' and never matches the
+  // 'png' object it produced, and every repeat paste uploads again.
+  const storedExt = Object.prototype.hasOwnProperty.call(ASSET_MIME_BY_EXT, requestedExt) ? requestedExt : "png";
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  // Pasting the same screenshot twice is the common case this catches — the editor hands us bytes,
+  // not a path, so there's nothing else that could recognize it as a repeat.
+  const known = await assetPathByContent(s.db, cloudDocId, sha256, storedExt);
+  if (known) {
+    output({ status: "uploaded", relPath: s.db.storage.from(ASSET_BUCKET).getPublicUrl(known).data.publicUrl, reused: true });
+    return;
+  }
   const uploaded = await uploadAssetBytes(s.db, orgId, cloudDocId, bytes, requestedExt);
   if (!uploaded) {
     process.stderr.write("inplan asset-upload: upload failed\n");
     process.exit(1);
   }
+  await rememberAsset(s.db, cloudDocId, sha256, storedExt, uploaded.path);
   output({ status: "uploaded", relPath: uploaded.url });
 }
 
@@ -2632,6 +2645,43 @@ function inRange(ranges: Array<[number, number]>, index: number): boolean {
   return ranges.some(([start, end]) => index >= start && index < end);
 }
 
+/** The doc-images content registry (`doc_assets`): which bytes this document already holds, and
+ *  under which object. Object names are random by design — the bucket is public, so a
+ *  content-derived name would let anyone with a candidate file probe whether it's in a given
+ *  doc — so "do you already have these bytes?" can't be asked of storage itself. It's asked here.
+ *
+ *  Both helpers FAIL OPEN. A cloud that predates the table, a denied select, any error at all:
+ *  the caller uploads, exactly as it did before this existed. Reusing an object is an
+ *  optimization; uploading a second copy is only waste. Treating a lookup failure as fatal would
+ *  trade a duplicate object for a failed promote, which is much worse. */
+async function assetPathByContent(db: SupabaseClient, docId: string, sha256: string, ext: string): Promise<string | null> {
+  try {
+    const { data, error } = await db
+      .from("doc_assets")
+      .select("object_path")
+      .eq("doc_id", docId)
+      .eq("sha256", sha256)
+      .eq("ext", ext)
+      .maybeSingle();
+    if (error) return null;
+    const path = (data as { object_path?: string } | null)?.object_path;
+    return typeof path === "string" && path.length > 0 ? path : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Record an upload so a later sync can reuse it. Best-effort for the same reason: a doc whose
+ *  registry write failed still has a correct body pointing at a real object — it just won't get
+ *  the reuse next time. Never let this failure surface as a promote failure. */
+async function rememberAsset(db: SupabaseClient, docId: string, sha256: string, ext: string, objectPath: string): Promise<void> {
+  try {
+    await db.from("doc_assets").insert({ doc_id: docId, sha256, ext, object_path: objectPath });
+  } catch {
+    // best-effort — swallow
+  }
+}
+
 /**
  * Scan `body` for local relative image links, upload each referenced file (resolved against
  * `docDir`) to the cloud `doc-images` bucket, and rewrite the links to the resulting public URLs.
@@ -2654,6 +2704,13 @@ async function migrateLocalImages(
   // happens to name the exact same path as a real, migrated image elsewhere in the doc.
   const migrations = new Map<number, { dest: string; url: string }>();
   const uploadedByDest = new Map<string, { path: string; url: string }>(); // dest → upload, so a repeated real ref reuses one
+  // content hash → upload. `uploadedByDest` only catches the SAME spelling twice; two different
+  // links to byte-identical files (a screenshot copied into two folders, or the same asset
+  // referenced by both a relative and a `./`-prefixed path) would each upload their own object,
+  // leaving the bucket holding duplicate bytes under unrelated random names with no way to tell
+  // afterwards that they're the same image. Keying the second cache on the bytes collapses those
+  // to one upload and one URL.
+  const uploadedByHash = new Map<string, { path: string; url: string }>();
   const uploadedPaths: string[] = []; // every bucket object actually created — the caller cleans these up on a failed body commit
   // A doc body isn't trusted-solely-authored input (cloned repos, collaborators, agents write
   // it), so a crafted `../../.ssh/id_ed25519`-style link must not let this read a file outside
@@ -2699,9 +2756,34 @@ async function migrateLocalImages(
     } catch {
       continue;
     }
+    // Extension is part of the key, not just the bytes: the same bytes served as `.png` and as
+    // `.jpg` need their own objects, because the stored Content-Type comes from the extension and
+    // reusing one object would hand back a URL that serves the wrong type for the other link.
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const contentKey = `${ext}:${sha256}`;
+    const byHash = uploadedByHash.get(contentKey);
+    if (byHash) {
+      uploadedByDest.set(dest, byHash); // so a third ref to this same dest short-circuits earlier
+      migrations.set(m.index, { dest, url: byHash.url });
+      continue;
+    }
+    // Already uploaded by an earlier sync of this same doc (a demote → edit → promote cycle):
+    // reuse that object instead of publishing a second copy of identical bytes under a new name.
+    // NOT added to uploadedPaths — this run didn't create it, and the failed-commit cleanup must
+    // never delete an object that earlier, still-referenced bodies resolve through.
+    const known = await assetPathByContent(db, docId, sha256, ext);
+    if (known) {
+      const reused = { path: known, url: db.storage.from(ASSET_BUCKET).getPublicUrl(known).data.publicUrl };
+      uploadedByDest.set(dest, reused);
+      uploadedByHash.set(contentKey, reused);
+      migrations.set(m.index, { dest, url: reused.url });
+      continue;
+    }
     const uploaded = await uploadAssetBytes(db, orgId, docId, bytes, ext);
     if (!uploaded) continue;
+    await rememberAsset(db, docId, sha256, ext, uploaded.path);
     uploadedByDest.set(dest, uploaded);
+    uploadedByHash.set(contentKey, uploaded);
     uploadedPaths.push(uploaded.path);
     migrations.set(m.index, { dest, url: uploaded.url });
   }

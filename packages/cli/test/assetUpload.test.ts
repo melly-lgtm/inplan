@@ -8,10 +8,11 @@
 // a hard storage failure, and the unknown-extension → png fallback — all over a mocked authed
 // session, no network.
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { docPaths, writeStatus } from "@inplan/core/node";
 
 let uploadResult: { error: { status: number; message: string } | null } = { error: null };
@@ -20,13 +21,41 @@ let sessionPresent = true;
 const upload = vi.fn(async (_path: string, _bytes: unknown, _opts: unknown) => uploadResult);
 const getPublicUrl = vi.fn((path: string) => ({ data: { publicUrl: `https://cdn.test/doc-images/${path}` } }));
 
+// The `doc_assets` content registry (sha256+ext → object_path) that lets a repeat paste of the
+// same bytes reuse the object already in the bucket. `assetRegistryError` stands in for a cloud
+// without the table, which must fail open to a normal upload.
+let assetRegistry: Map<string, string>;
+let assetRegistryError: { message: string } | null = null;
+let assetInserts: Array<Record<string, unknown>>;
+
+function docAssetsQuery() {
+  const seen: Record<string, unknown> = {};
+  const q: Record<string, unknown> = {};
+  q.select = () => q;
+  q.eq = (column: string, value: unknown) => {
+    seen[column] = value;
+    return q;
+  };
+  q.maybeSingle = () => {
+    if (assetRegistryError) return Promise.resolve({ data: null, error: assetRegistryError });
+    const hit = assetRegistry.get(`${seen.sha256}|${seen.ext}`);
+    return Promise.resolve({ data: hit ? { object_path: hit } : null, error: null });
+  };
+  q.insert = (row: Record<string, unknown>) => {
+    assetInserts.push(row);
+    assetRegistry.set(`${row.sha256}|${row.ext}`, String(row.object_path));
+    return Promise.resolve({ data: null, error: null });
+  };
+  return q;
+}
+
 function fakeDb() {
   const q: Record<string, unknown> = {};
   q.select = () => q;
   q.eq = () => q;
   q.maybeSingle = () => Promise.resolve(orgLookup);
   return {
-    from: () => q,
+    from: (table: string) => (table === "doc_assets" ? docAssetsQuery() : q),
     storage: { from: () => ({ upload, getPublicUrl }) },
   };
 }
@@ -53,6 +82,9 @@ beforeEach(() => {
   writeFileSync(bytesFile, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
   out = [];
   stderr = [];
+  assetRegistry = new Map();
+  assetRegistryError = null;
+  assetInserts = [];
   exitCode = null;
   vi.spyOn(process.stdout, "write").mockImplementation((s: string | Uint8Array) => {
     out.push(String(s));
@@ -205,5 +237,57 @@ describe("argv dispatch: asset-upload --remote", () => {
     // uploaded envelope is the discriminator between the two routes.
     expect(lastJson()).toMatchObject({ status: "uploaded" });
     expect(stderr.join("")).not.toContain("live-collab");
+  });
+});
+
+// The editor hands over raw bytes, not a path, so nothing else in the pipeline can recognise that
+// a paste is a repeat of one already in the doc. Without the registry, pasting the same screenshot
+// twice publishes two objects with identical content under unrelated random names.
+describe("asset-upload content reuse", () => {
+  it("reuses the registered object on a repeat paste of identical bytes", async () => {
+    const bytes = readFileSync(bytesFile);
+    const sha = createHash("sha256").update(bytes).digest("hex");
+    assetRegistry.set(`${sha}|png`, "org-1/doc-9/image-20260101000000-deadbeef.png");
+
+    await doAssetUploadForDoc("doc-9", ["--bytes-file", bytesFile, "--ext", "png"]);
+
+    expect(upload).not.toHaveBeenCalled();
+    expect(lastJson()).toEqual({
+      status: "uploaded",
+      relPath: "https://cdn.test/doc-images/org-1/doc-9/image-20260101000000-deadbeef.png",
+      reused: true,
+    });
+  });
+
+  it("registers a fresh upload, so the next identical paste reuses it", async () => {
+    await doAssetUploadForDoc("doc-9", ["--bytes-file", bytesFile, "--ext", "png"]);
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(assetInserts).toEqual([
+      expect.objectContaining({ doc_id: "doc-9", ext: "png", object_path: upload.mock.calls[0]![0] }),
+    ]);
+
+    await doAssetUploadForDoc("doc-9", ["--bytes-file", bytesFile, "--ext", "png"]);
+    expect(upload).toHaveBeenCalledTimes(1); // still one — the second paste reused
+    expect(lastJson()).toMatchObject({ reused: true });
+  });
+
+  it("keys on the extension actually stored, so an unrecognized one still reuses", async () => {
+    // uploadAssetBytes rewrites an unknown extension to png. Registering under the REQUESTED
+    // extension would never match the object it produced, so every repeat paste of a .bmp would
+    // upload again — the exact duplication this is meant to prevent.
+    await doAssetUploadForDoc("doc-9", ["--bytes-file", bytesFile, "--ext", "bmp"]);
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(assetInserts[0]).toMatchObject({ ext: "png" });
+
+    await doAssetUploadForDoc("doc-9", ["--bytes-file", bytesFile, "--ext", "bmp"]);
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(lastJson()).toMatchObject({ reused: true });
+  });
+
+  it("uploads normally when the registry is unavailable", async () => {
+    assetRegistryError = { message: 'relation "doc_assets" does not exist' };
+    await doAssetUploadForDoc("doc-9", ["--bytes-file", bytesFile, "--ext", "png"]);
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(lastJson()).toMatchObject({ status: "uploaded" });
   });
 });
