@@ -2535,16 +2535,15 @@ async function cleanupOrphanedUploads(db: SupabaseClient, paths: string[]): Prom
  * (Collaborate on Cloud), so a locally pasted image never needs a later migration. `--bytes-file`
  * points at a temp file the caller (Electron main) wrote the raw bytes to; this command only
  * reads it — the caller owns its lifecycle (creation + cleanup).
+ *
+ * Takes an already-resolved cloud doc id so both entry points share one body: a promoted local
+ * file (`asset-upload <file>`, id from the status sidecar) and a doc attached by id alone
+ * (`asset-upload --remote <id>`), which has no sidecar to read a location from.
  */
-export async function doAssetUpload(file: string, args: string[]): Promise<void> {
-  const status = readStatus(docPaths(file).statusPath);
-  if (status.location !== "cloud" || !status.cloudDocId) {
-    process.stderr.write("inplan asset-upload: document is not in the cloud\n");
-    process.exit(1);
-  }
+export async function doAssetUploadForDoc(cloudDocId: string, args: string[]): Promise<void> {
   const bytesFile = getFlag(args, "bytes-file");
   if (!bytesFile) {
-    process.stderr.write("inplan asset-upload: usage: inplan asset-upload <file> --bytes-file <path> [--ext <ext>]\n");
+    process.stderr.write("inplan asset-upload: usage: inplan asset-upload <file|--remote DOC_ID> --bytes-file <path> [--ext <ext>]\n");
     process.exit(64);
   }
   const s = await authedSession();
@@ -2555,7 +2554,9 @@ export async function doAssetUpload(file: string, args: string[]): Promise<void>
   // The bucket's insert policy checks the path's org segment against `documents.org_id` itself
   // (20260804000000_doc_images_bucket.sql), so this lookup doubles as the ownership check — an
   // upload for a doc this session can't write to fails the RLS check with the wrong org anyway.
-  const { data: doc, error: docErr } = await s.db.from("documents").select("org_id").eq("id", status.cloudDocId).maybeSingle();
+  // That holds for the `--remote` entry point too: an id the session can't read resolves to no
+  // org and stops here, so passing an arbitrary doc id grants nothing.
+  const { data: doc, error: docErr } = await s.db.from("documents").select("org_id").eq("id", cloudDocId).maybeSingle();
   const orgId = (doc as { org_id?: string } | null)?.org_id;
   if (docErr || !orgId) {
     process.stderr.write(`inplan asset-upload: ${docErr?.message ?? "could not resolve the document's organization"}\n`);
@@ -2563,12 +2564,23 @@ export async function doAssetUpload(file: string, args: string[]): Promise<void>
   }
   const requestedExt = (getFlag(args, "ext") ?? "png").toLowerCase();
   const bytes = readFileSync(bytesFile);
-  const uploaded = await uploadAssetBytes(s.db, orgId, status.cloudDocId, bytes, requestedExt);
+  const uploaded = await uploadAssetBytes(s.db, orgId, cloudDocId, bytes, requestedExt);
   if (!uploaded) {
     process.stderr.write("inplan asset-upload: upload failed\n");
     process.exit(1);
   }
   output({ status: "uploaded", relPath: uploaded.url });
+}
+
+/** `asset-upload <file>` — a local file promoted to the cloud, whose doc id lives in its status
+ *  sidecar. A doc attached by id alone goes through `doAssetUploadForDoc` instead. */
+export async function doAssetUpload(file: string, args: string[]): Promise<void> {
+  const status = readStatus(docPaths(file).statusPath);
+  if (status.location !== "cloud" || !status.cloudDocId) {
+    process.stderr.write("inplan asset-upload: document is not in the cloud — for a doc you attached by id, use `inplan asset-upload --remote <docId>`\n");
+    process.exit(1);
+  }
+  await doAssetUploadForDoc(status.cloudDocId, args);
 }
 
 /** A Markdown image reference: `![alt](<dest>)` (the angle-bracket form the editor writes for
@@ -2825,7 +2837,7 @@ async function main(): Promise<void> {
         "       inplan upload  <file> [--org <slug>] [--repo <name>] [--path <p>] [--evict-lru]   (Collaborate on Cloud)\n" +
         "       inplan promote <file> --cloud-doc <docId> [--locator org/repo/path]\n" +
         "       inplan demote  <file> [--from-store]   (bring a cloud doc back to disk; --from-store accepts the server copy when the hub is unreadable)\n" +
-        "       inplan asset-upload <file> --bytes-file <path> [--ext <ext>]   (cloud doc: paste/pick an image straight to storage)\n" +
+        "       inplan asset-upload <file|--remote DOC_ID> --bytes-file <path> [--ext <ext>]   (cloud doc: paste/pick an image straight to storage)\n" +
         "       inplan login   (opens the browser to sign in; or --url <url> --anon <key> --refresh <token> for scripts)\n" +
         "       inplan whoami | logout\n",
     );
@@ -2844,6 +2856,12 @@ async function main(): Promise<void> {
   const remoteDocId = getFlag(args, "remote");
   if (remoteDocId) {
     rejectCommentOnCloud(cmd, false);
+    // Storage-only: no collab session to open, so this never enters `runRemote` (which has no
+    // asset-upload case and would fall through to a sync).
+    if (cmd === "asset-upload") {
+      await doAssetUploadForDoc(remoteDocId, args);
+      return;
+    }
     // `open` and `wait` are the same over the cloud backend — a cloud doc has no local
     // editor to launch, which is the only thing `open` adds locally. So `open --remote`
     // is deprecated: warn and behave exactly as `wait --remote`.

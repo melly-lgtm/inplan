@@ -196,6 +196,28 @@ anchored comment is an inline Markdown link whose href is the comment id:
   mechanism itself and is fine — this is about the surrounding prose.) The body should read as
   a complete document with every comment stripped out.
 
+### Images
+
+A plan can carry images, but **the bytes have to reach the document's own storage first** —
+a filename, a local path, or a `scratchpad/` reference renders as a broken image for the
+human, who has no access to your filesystem. Upload, then reference what the upload prints:
+
+    $ inplan asset-upload --remote <docId> --bytes-file ./shot.png --ext png
+    {"status":"uploaded","relPath":"https://…/doc-images/<org>/<doc>/image-….png"}
+
+then put that `relPath` in a normal Markdown image: `![what it shows](<relPath>)`. Use
+`inplan asset-upload <file> …` for a local plan promoted to the cloud (its doc id comes from
+the status sidecar), and the `--remote <docId>` form for a doc you attached to by id. Both
+upload as **you** — the signed-in session is the authorization, so there is no key to find
+and nothing to configure beyond `inplan login`.
+
+For a purely local plan, images live next to the file in `<docname>.assets/` and a relative
+link resolves; nothing needs uploading.
+
+Write the image reference in the same edit that adds the surrounding prose. Do not leave a
+placeholder for the human to fill in later — attaching images is not a human-only step, and a
+body full of bare filenames is the failure this section exists to prevent.
+
 ## Turn-taking & control — read this first
 
 This is **turn-based**. The turn belongs to exactly one party at a time:
