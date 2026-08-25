@@ -11,6 +11,7 @@
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { docPaths, hashBody, readStatus } from "@inplan/core/node";
 
@@ -47,6 +48,34 @@ const update = vi.fn((_patch: Record<string, unknown>) => {
   return chain;
 });
 
+// The `doc_assets` content registry: sha256+ext → object_path, for the doc being promoted.
+// `assetRegistryError` simulates a cloud that predates the table (or a denied select), which the
+// production code must treat as "unknown" and upload through, never as a failure.
+let assetRegistry: Map<string, string>;
+let assetRegistryError: { message: string } | null = null;
+let assetInserts: Array<Record<string, unknown>>;
+
+function docAssetsQuery() {
+  const seen: Record<string, unknown> = {};
+  const q: Record<string, unknown> = {};
+  q.select = () => q;
+  q.eq = (column: string, value: unknown) => {
+    seen[column] = value;
+    return q;
+  };
+  q.maybeSingle = () => {
+    if (assetRegistryError) return Promise.resolve({ data: null, error: assetRegistryError });
+    const hit = assetRegistry.get(`${seen.sha256}|${seen.ext}`);
+    return Promise.resolve({ data: hit ? { object_path: hit } : null, error: null });
+  };
+  q.insert = (row: Record<string, unknown>) => {
+    assetInserts.push(row);
+    assetRegistry.set(`${row.sha256}|${row.ext}`, String(row.object_path));
+    return Promise.resolve({ data: null, error: null });
+  };
+  return q;
+}
+
 function fakeDb() {
   const membershipsQ: Record<string, unknown> = {};
   membershipsQ.select = () => membershipsQ;
@@ -59,7 +88,7 @@ function fakeDb() {
   documentsQ.update = update;
 
   return {
-    from: (table: string) => (table === "memberships" ? membershipsQ : documentsQ),
+    from: (table: string) => (table === "memberships" ? membershipsQ : table === "doc_assets" ? docAssetsQuery() : documentsQ),
     rpc,
     storage: { from: () => ({ upload, getPublicUrl, remove }) },
   };
@@ -100,6 +129,9 @@ let exitCode: number | null;
 let errOut: string[];
 
 beforeEach(() => {
+  assetRegistry = new Map();
+  assetRegistryError = null;
+  assetInserts = [];
   home = mkdtempSync(join(tmpdir(), "inplan-upload-migrate-"));
   process.env.INPLAN_SIDECAR_DIR = join(home, "sidecars");
   file = join(home, "PLAN.md");
@@ -157,6 +189,139 @@ describe("inplan upload → local image migration", () => {
     expect(readFileSync(file, "utf8")).not.toContain("PLAN.assets");
 
     expect(update).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining(url) }));
+    expect(lastJson()).toMatchObject({ status: "uploaded", cloudDocId: "doc-new" });
+  });
+
+  it("uploads once for two different paths holding byte-identical images", async () => {
+    // The object name is timestamp + random, so nothing about it is derived from the bytes: two
+    // uploads of the same screenshot become two unrelated objects that no later pass can tell
+    // apart. Collapsing them here is the only point at which the duplication is still visible.
+    mkdirSync(join(home, "a"), { recursive: true });
+    mkdirSync(join(home, "b"), { recursive: true });
+    const bytes = Buffer.from([9, 9, 9, 9]);
+    writeFileSync(join(home, "a", "shot.png"), bytes);
+    writeFileSync(join(home, "b", "shot.png"), bytes);
+    writeFileSync(file, "# My Plan\n\n![one](<a/shot.png>)\n\n![two](<b/shot.png>)\n");
+
+    await doUpload(file, []);
+
+    expect(upload).toHaveBeenCalledTimes(1);
+    const url = `https://cdn.test/doc-images/${upload.mock.calls[0]![0]}`;
+    const written = readFileSync(file, "utf8");
+    // Both links resolve to the one uploaded object, and each keeps its own alt text.
+    expect(written).toContain(`![one](${url})`);
+    expect(written).toContain(`![two](${url})`);
+    expect(written).not.toContain("a/shot.png");
+    expect(written).not.toContain("b/shot.png");
+  });
+
+  it("uploads separately for two paths whose bytes differ", async () => {
+    mkdirSync(join(home, "a"), { recursive: true });
+    mkdirSync(join(home, "b"), { recursive: true });
+    writeFileSync(join(home, "a", "shot.png"), Buffer.from([1, 1, 1]));
+    writeFileSync(join(home, "b", "shot.png"), Buffer.from([2, 2, 2]));
+    writeFileSync(file, "# My Plan\n\n![](<a/shot.png>)\n\n![](<b/shot.png>)\n");
+
+    await doUpload(file, []);
+
+    expect(upload).toHaveBeenCalledTimes(2);
+    expect(upload.mock.calls[0]![0]).not.toBe(upload.mock.calls[1]![0]);
+  });
+
+  it("uploads separately for identical bytes under different extensions", async () => {
+    // The stored Content-Type is derived from the extension, so one object can't back both links
+    // — reusing it would serve image/png bytes as image/jpeg (or vice versa) for the other ref.
+    const bytes = Buffer.from([7, 7, 7]);
+    writeFileSync(join(home, "same.png"), bytes);
+    writeFileSync(join(home, "same.jpg"), bytes);
+    writeFileSync(file, "# My Plan\n\n![](<same.png>)\n\n![](<same.jpg>)\n");
+
+    await doUpload(file, []);
+
+    expect(upload).toHaveBeenCalledTimes(2);
+    const types = upload.mock.calls.map((c) => (c[2] as { contentType: string }).contentType).sort();
+    expect(types).toEqual(["image/jpeg", "image/png"]);
+  });
+
+  it("counts a deduplicated object once for orphan cleanup", async () => {
+    // uploadedPaths feeds cleanupOrphanedUploads on a failed body commit. A dedup that pushed the
+    // same path twice would ask storage to remove it twice — harmless here, but it would also
+    // mean the count reported for a successful promote overstated what was actually created.
+    mkdirSync(join(home, "a"), { recursive: true });
+    mkdirSync(join(home, "b"), { recursive: true });
+    const bytes = Buffer.from([4, 4, 4]);
+    writeFileSync(join(home, "a", "s.png"), bytes);
+    writeFileSync(join(home, "b", "s.png"), bytes);
+    writeFileSync(file, "# My Plan\n\n![](<a/s.png>)\n\n![](<b/s.png>)\n");
+    updateMatches = false; // lose the CAS race so the cleanup path runs
+
+    await doUpload(file, []);
+
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove.mock.calls[0]![0]).toHaveLength(1);
+  });
+
+  it("reuses a registered object instead of re-uploading identical bytes", async () => {
+    // The demote → edit → promote cycle. Object names carry no content, so without the registry
+    // "unchanged" is inexpressible and every re-promote publishes a fresh copy and orphans the
+    // previous one.
+    const bytes = Buffer.from([5, 5, 5, 5]);
+    const sha = createHash("sha256").update(bytes).digest("hex");
+    assetRegistry.set(`${sha}|png`, "org-1/doc-new/image-20260101000000-deadbeef.png");
+    writeFileSync(join(home, "shot.png"), bytes);
+    writeFileSync(file, "# My Plan\n\n![](<shot.png>)\n");
+
+    await doUpload(file, []);
+
+    expect(upload).not.toHaveBeenCalled();
+    expect(readFileSync(file, "utf8")).toContain("https://cdn.test/doc-images/org-1/doc-new/image-20260101000000-deadbeef.png");
+    expect(assetInserts).toHaveLength(0); // already known — nothing new to record
+  });
+
+  it("never deletes a reused object when the body commit fails", async () => {
+    // The safety invariant. A reused object was created by an EARLIER sync, and older
+    // doc_versions bodies still resolve through its URL — so the failed-commit cleanup, which
+    // exists to remove what THIS run stranded, must not touch it.
+    const bytes = Buffer.from([6, 6, 6, 6]);
+    const sha = createHash("sha256").update(bytes).digest("hex");
+    assetRegistry.set(`${sha}|png`, "org-1/doc-new/image-20260101000000-cafebabe.png");
+    writeFileSync(join(home, "shot.png"), bytes);
+    writeFileSync(file, "# My Plan\n\n![](<shot.png>)\n");
+    updateMatches = false; // lose the CAS race → cleanup path runs
+
+    await doUpload(file, []);
+
+    expect(upload).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("records each upload in the registry, keyed by content and stored extension", async () => {
+    writeFileSync(join(home, "a.png"), Buffer.from([1, 2]));
+    writeFileSync(join(home, "b.jpg"), Buffer.from([3, 4]));
+    writeFileSync(file, "# My Plan\n\n![](<a.png>)\n\n![](<b.jpg>)\n");
+
+    await doUpload(file, []);
+
+    expect(upload).toHaveBeenCalledTimes(2);
+    expect(assetInserts).toHaveLength(2);
+    expect(assetInserts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ doc_id: "doc-new", sha256: createHash("sha256").update(Buffer.from([1, 2])).digest("hex"), ext: "png" }),
+        expect.objectContaining({ doc_id: "doc-new", sha256: createHash("sha256").update(Buffer.from([3, 4])).digest("hex"), ext: "jpg" }),
+      ]),
+    );
+  });
+
+  it("uploads normally when the registry is unavailable (older cloud, or denied select)", async () => {
+    // Fail open: a missing table must cost a duplicate object, never the promote.
+    assetRegistryError = { message: 'relation "doc_assets" does not exist' };
+    writeFileSync(join(home, "shot.png"), Buffer.from([8, 8]));
+    writeFileSync(file, "# My Plan\n\n![](<shot.png>)\n");
+
+    await doUpload(file, []);
+
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(readFileSync(file, "utf8")).toContain("https://cdn.test/doc-images/org-1/doc-new/image-");
     expect(lastJson()).toMatchObject({ status: "uploaded", cloudDocId: "doc-new" });
   });
 
