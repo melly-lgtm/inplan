@@ -13,6 +13,9 @@ describe("unwrapAnchors", () => {
     expect(unwrapAnchors("[x](#cmt-AbC123)", new Set(["cmt-abc123"]))).toBe("x"); // upper in body
     expect(unwrapAnchors("[y](#cmt-def456)", new Set(["CMT-DEF456"]))).toBe("y"); // upper in the set
   });
+  it("unwraps bracketed link text too, so no dangling link is left behind", () => {
+    expect(unwrapAnchors("[A [x]](#cmt-aaa111) [B](#cmt-bbb222)", new Set(["cmt-aaa111"]))).toBe("A [x] [B](#cmt-bbb222)");
+  });
 });
 
 describe("stripAnchors", () => {
@@ -37,6 +40,22 @@ describe("stripAnchors", () => {
   });
   it("an empty link text unwraps to nothing, so a caller's fallback can take over", () => {
     expect(stripAnchors("[](#cmt-abc123)")).toBe("");
+  });
+
+  // The anchor wraps a VERBATIM span of the body, so the link text can itself contain brackets:
+  // anchoring a comment to `# Release [v2]` yields `# [Release [v2]](#cmt-id)`. Such an anchor was
+  // detectable (ANCHOR_LINK_RE needs only the `](#cmt-id)` tail) but not unwrappable, so it counted
+  // toward integrity while being silently skipped here.
+  it("unwraps link text containing brackets", () => {
+    expect(stripAnchors("[Release [v2]](#cmt-abc123)")).toBe("Release [v2]");
+    expect(stripAnchors("[a [b] c](#cmt-xyz789)")).toBe("a [b] c");
+  });
+  it("keeps adjacent anchors separate rather than swallowing the text between them", () => {
+    expect(stripAnchors("[a](#cmt-aaa111) and [b](#cmt-bbb222)")).toBe("a and b");
+  });
+  it("leaves nesting deeper than one level unmatched rather than mangling it", () => {
+    const deep = "[deep [a [b] c] d](#cmt-ddd444)";
+    expect(stripAnchors(deep)).toBe(deep);
   });
 });
 

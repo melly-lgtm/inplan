@@ -52,8 +52,18 @@ export function anchorLinkCounts(body: string): Map<string, number> {
   return counts;
 }
 
-/** Matches a full anchored span — `[text](#cmt-id)` — capturing the link text + the id. */
-const ANCHORED_SPAN_RE = /\[([^\]]*)\]\(#(cmt-[0-9a-z]+)\)/gi;
+/** Matches a full anchored span — `[text](#cmt-id)` — capturing the link text + the id.
+ *
+ *  The link text allows ONE level of nested brackets, because the anchor is written by wrapping a
+ *  verbatim span of the body (`[${span}](#${id})`, see the CLI's placeSpanLink) and that span may
+ *  itself contain brackets — anchoring a comment to the heading `# Release [v2]` yields
+ *  `# [Release [v2]](#cmt-id)`. A plain `[^\]]*` stops at the inner `]` and matches nothing, which
+ *  left such an anchor DETECTABLE (ANCHOR_LINK_RE above only needs the `](#cmt-id)` tail) but not
+ *  unwrappable — so it counted toward integrity while {@link unwrapAnchors} silently skipped it.
+ *  Deeper nesting still falls through unmatched; matching arbitrary depth needs a parser, and one
+ *  level covers spans people actually anchor. The alternation can't run past a `]` except through
+ *  the bracketed branch, so adjacent anchors still match separately rather than as one span. */
+const ANCHORED_SPAN_RE = /\[((?:[^[\]]|\[[^[\]]*\])*)\]\(#(cmt-[0-9a-z]+)\)/gi;
 
 /** Unwrap the anchor links for `ids` — `[text](#cmt-id)` → `text` — leaving every other anchor intact.
  *  Used to hide a removed comment's span from a projection (e.g. {@link docForAgent} excludes a memo's

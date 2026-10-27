@@ -37,6 +37,11 @@ describe("firstHeading", () => {
     expect(firstHeading("# [A](#cmt-aaa111) and [B](#cmt-bbb222)")).toBe("A and B");
   });
 
+  // The anchor wraps the heading verbatim, so a title with brackets in it produces nested brackets.
+  it("ignores an anchor whose title text contains brackets", () => {
+    expect(firstHeading("# [Release [v2]](#cmt-ab12cd)\n\nbody")).toBe("Release [v2]");
+  });
+
   it("keeps an ordinary Markdown link — only inplan's own `#cmt-` anchors are stripped", () => {
     expect(firstHeading("# Read [the docs](https://example.com)")).toBe("Read [the docs](https://example.com)");
   });
