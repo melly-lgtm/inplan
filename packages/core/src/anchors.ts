@@ -63,3 +63,15 @@ export function unwrapAnchors(body: string, ids: Set<string>): string {
   const lower = new Set([...ids].map((id) => id.toLowerCase())); // normalize the input too — matching is case-insensitive
   return body.replace(ANCHORED_SPAN_RE, (full, text: string, id: string) => (lower.has(id.toLowerCase()) ? text : full));
 }
+
+/** Unwrap EVERY comment anchor — `[text](#cmt-id)` → `text` — regardless of id.
+ *
+ *  For rendering a span of the body as PLAIN TEXT, where the anchor is noise rather than content.
+ *  The canonical case is a document title: a title is derived from the `# ` heading, and anchoring
+ *  a comment to that heading rewrites it in place to `# [Title](#cmt-id)`. That link is inplan's
+ *  own machinery, not something the author typed, so a title taken verbatim would show the raw
+ *  Markdown to everyone looking at a document list. Unlike {@link unwrapAnchors}, this needs no id
+ *  set — the caller wants text, and every anchor is equally unwanted. */
+export function stripAnchors(text: string): string {
+  return text.replace(ANCHORED_SPAN_RE, (_full, inner: string) => inner);
+}

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, it, expect } from "vitest";
-import { docForAgent, unwrapAnchors, serializeCanonical, parse, type ParsedDocument } from "../src";
+import { docForAgent, unwrapAnchors, stripAnchors, serializeCanonical, parse, type ParsedDocument } from "../src";
 
 describe("unwrapAnchors", () => {
   it("unwraps only the listed ids; leaves other anchors + non-matching text intact", () => {
@@ -12,6 +12,31 @@ describe("unwrapAnchors", () => {
   it("matches ids case-insensitively in BOTH the body and the id set", () => {
     expect(unwrapAnchors("[x](#cmt-AbC123)", new Set(["cmt-abc123"]))).toBe("x"); // upper in body
     expect(unwrapAnchors("[y](#cmt-def456)", new Set(["CMT-DEF456"]))).toBe("y"); // upper in the set
+  });
+});
+
+describe("stripAnchors", () => {
+  // The reported case: anchoring a comment to the `# ` heading rewrites it in place, and the title
+  // derived from it then carried the raw Markdown into every document list.
+  it("unwraps a heading that is entirely one anchor", () => {
+    expect(stripAnchors("[Auto multilingual mobile keyboard](#cmt-wp1927)")).toBe("Auto multilingual mobile keyboard");
+  });
+  it("unwraps EVERY anchor, needing no id set (unlike unwrapAnchors)", () => {
+    expect(stripAnchors("See [here](#cmt-aaa111) and [there](#cmt-bbb222).")).toBe("See here and there.");
+  });
+  it("matches ids case-insensitively", () => {
+    expect(stripAnchors("[x](#cmt-AbC123)")).toBe("x");
+  });
+  it("leaves ordinary Markdown links alone — only `#cmt-` hrefs are inplan's machinery", () => {
+    const text = "Read [the docs](https://example.com) and [#cmt-notalink](#section).";
+    expect(stripAnchors(text)).toBe(text);
+  });
+  it("leaves text with no anchors untouched", () => {
+    expect(stripAnchors("Plain title")).toBe("Plain title");
+    expect(stripAnchors("")).toBe("");
+  });
+  it("an empty link text unwraps to nothing, so a caller's fallback can take over", () => {
+    expect(stripAnchors("[](#cmt-abc123)")).toBe("");
   });
 });
 
