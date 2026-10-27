@@ -16,6 +16,12 @@ describe("unwrapAnchors", () => {
   it("unwraps bracketed link text too, so no dangling link is left behind", () => {
     expect(unwrapAnchors("[A [x]](#cmt-aaa111) [B](#cmt-bbb222)", new Set(["cmt-aaa111"]))).toBe("A [x] [B](#cmt-bbb222)");
   });
+  it("unwraps only the listed id when anchors are nested, keeping the other's link", () => {
+    expect(unwrapAnchors("[Use [PG](#cmt-aaa111) now](#cmt-bbb222)", new Set(["cmt-aaa111"]))).toBe("[Use PG now](#cmt-bbb222)");
+  });
+  it("skips an anchor inside code, so a documentation example survives removal of its id", () => {
+    expect(unwrapAnchors("Guide `[x](#cmt-aaa111)`", new Set(["cmt-aaa111"]))).toBe("Guide `[x](#cmt-aaa111)`");
+  });
 });
 
 describe("stripAnchors", () => {
@@ -53,9 +59,33 @@ describe("stripAnchors", () => {
   it("keeps adjacent anchors separate rather than swallowing the text between them", () => {
     expect(stripAnchors("[a](#cmt-aaa111) and [b](#cmt-bbb222)")).toBe("a and b");
   });
-  it("leaves nesting deeper than one level unmatched rather than mangling it", () => {
-    const deep = "[deep [a [b] c] d](#cmt-ddd444)";
-    expect(stripAnchors(deep)).toBe(deep);
+  it("handles brackets nested to any depth", () => {
+    expect(stripAnchors("[deep [a [b] c] d](#cmt-ddd444)")).toBe("deep [a [b] c] d");
+  });
+  // Placing a comment over an already-anchored span nests one anchor inside another's text, so a
+  // single pass would unwrap the outer and leave the inner's raw Markdown behind.
+  it("unwraps an anchor nested inside another anchor's text", () => {
+    expect(stripAnchors("[Use [Postgres](#cmt-aaa111) for storage](#cmt-bbb222)")).toBe("Use Postgres for storage");
+  });
+  // Detection already ignores anchors in code (see extractAnchorIdList) because they're
+  // documentation examples. Unwrapping has to agree, or it would corrupt the example.
+  it("leaves `#cmt-` links inside inline code alone, matching what detection counts", () => {
+    expect(stripAnchors("Guide `[anchor](#cmt-abc123)`")).toBe("Guide `[anchor](#cmt-abc123)`");
+    expect(stripAnchors("Guide `[x](#cmt-aaa111)` and [real](#cmt-bbb222)")).toBe("Guide `[x](#cmt-aaa111)` and real");
+  });
+  it("leaves anchors inside a fenced block alone", () => {
+    expect(stripAnchors("```\n[x](#cmt-aaa111)\n```\n\n[real](#cmt-bbb222)")).toBe("```\n[x](#cmt-aaa111)\n```\n\nreal");
+  });
+  // The `](#cmt-id)` tail is inside a code span while the opening `[` is outside it. Only the
+  // check at the closing bracket catches this — the backward scan skips code and would happily
+  // pair the tail with that outside `[`, splicing the text and leaving a stray backtick.
+  it("leaves an anchor alone when only its TAIL is inside code", () => {
+    const text = "[foo`](#cmt-abc123)`";
+    expect(stripAnchors(text)).toBe(text);
+  });
+  it("leaves an unbalanced tail alone rather than guessing where the link starts", () => {
+    const text = "no open bracket here](#cmt-abc123)";
+    expect(stripAnchors(text)).toBe(text);
   });
 });
 
