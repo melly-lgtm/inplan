@@ -24,6 +24,7 @@ import {
   readLog,
   readStatus,
   settingsFromEntries,
+  stripAnchors,
   writeStatus,
 } from "@inplan/core/node";
 import { agentAuthorFor } from "./agentAuthor";
@@ -1738,9 +1739,16 @@ async function doDemote(file: string, args: string[]): Promise<void> {
   output({ status: "demoted", location: "local", path: dest, source: choice.use });
 }
 
-/** First Markdown H1 in the body, for a cloud doc's title (falls back to the filename). */
-function firstHeading(body: string): string | null {
-  return body.match(/^#\s+(.+?)\s*$/m)?.[1]?.trim() || null;
+/** First Markdown H1 in the body, for a cloud doc's title (falls back to the filename).
+ *
+ *  Comment anchors are unwrapped: anchoring a comment to the title rewrites the heading in place to
+ *  `# [Title](#cmt-id)`, and storing that verbatim shows the raw Markdown wherever the title is
+ *  printed as text (a document list, a tab). The anchor is inplan's own machinery, not part of the
+ *  name the author gave the plan. An anchor whose link text is empty leaves nothing behind, so the
+ *  caller's filename fallback still applies. */
+export function firstHeading(body: string): string | null {
+  const heading = body.match(/^#\s+(.+?)\s*$/m)?.[1];
+  return heading ? stripAnchors(heading).trim() || null : null;
 }
 
 /** Print the signed-in identity (the desktop app reads this for its profile menu). */

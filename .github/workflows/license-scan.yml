@@ -80,9 +80,16 @@ jobs:
         # sees zero versions for that package and fails the whole resolve with a misleading
         # `ResolutionImpossible` — even though the dependency graph is fine. Retry a few times
         # so a momentary CDN blip doesn't redden the build (a clean retry hits a healthy edge).
+        #
+        # `pluggy<1.7` is NOT incidental. scancode's plugin layer (plugincode 32.0.0, last released
+        # 2023) registers its hookspecs in a way pluggy 1.7.0 rejects, so `scancode` dies on import
+        # with `ValueError: did not find any 'pre_scan' hooks` before scanning a single file. pluggy
+        # is a TRANSITIVE dep, so pinning scancode itself doesn't hold it back: 1.7.0 shipped
+        # 2026-10-15 and reddened every run from then on with nothing in this repo having changed.
+        # Drop the pin once plugincode ships a pluggy-1.7-compatible release.
         run: |
           for attempt in 1 2 3; do
-            if pip install --upgrade "scancode-toolkit==32.*"; then exit 0; fi
+            if pip install --upgrade "scancode-toolkit==32.*" "pluggy<1.7"; then exit 0; fi
             if [ "$attempt" -lt 3 ]; then
               echo "::warning::pip install failed (attempt ${attempt}/3) — likely a transient PyPI index error; retrying in 20s"
               sleep 20
