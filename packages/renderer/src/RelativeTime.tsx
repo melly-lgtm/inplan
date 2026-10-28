@@ -23,9 +23,16 @@ export function RelativeTime({ iso, className }: { iso: string; className?: stri
 
   const d = dayjs(iso);
   if (!d.isValid()) return <span className={className}>{iso}</span>;
+  // A timestamp is whatever its writer put there, so it can claim the future — an agent that
+  // hand-stamps a date instead of reading a clock produces exactly that. Rendering "in 2 hours"
+  // for a comment already on screen reads as a glitch and makes a thread look out of sequence, so
+  // a future claim is shown as the present. The tooltip still carries the stored value verbatim,
+  // so nothing is hidden from someone who looks.
+  const now = dayjs();
+  const shown = d.isAfter(now) ? now : d;
   return (
     <time className={className} dateTime={iso} title={d.format("MMM D, YYYY, h:mm:ss A")}>
-      {d.fromNow()}
+      {shown.fromNow()}
     </time>
   );
 }
