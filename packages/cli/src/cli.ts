@@ -23,7 +23,9 @@ import {
   readGlobalSettings,
   readLog,
   readStatus,
+  serialize,
   settingsFromEntries,
+  stampImpossibleDates,
   stripAnchors,
   writeStatus,
 } from "@inplan/core/node";
@@ -294,6 +296,20 @@ function spawnApp(file: string): number | null {
   return null;
 }
 
+/** Apply {@link stampImpossibleDates} to a serialized document, preserving it byte-for-byte when
+ *  nothing needed repair (so an untouched file never looks like an edit). Reports on stderr: a
+ *  silent rewrite of someone's timestamp would be worse than the bug it fixes. */
+function stampAgentDates(text: string): string {
+  const doc = parse(text);
+  const { comments, repaired } = stampImpossibleDates(doc.comments);
+  if (repaired.length === 0) return text;
+  process.stderr.write(
+    `inplan: ${repaired.length} comment date(s) were absent or in the future and have been stamped from this machine's clock (${repaired.join(", ")}) — ` +
+      "a date in the future sorts a reply after the replies that answered it.\n",
+  );
+  return serialize({ ...doc, comments });
+}
+
 /** The doc's current collaboration mode from the protocol history. The CLI is mode-agnostic: it
  *  reads the gate policy (wake/lock) the editor recorded into the latest mode_changed, never a
  *  specific mode by name. Defaults to the turn-taking policy (the open-core built-in). */
@@ -422,7 +438,13 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
   // getCursor() returns 0 when unset, so `|| maxSeqFrom` means begin at the latest seq.
   const cursor = explicitCursor ?? ((await channel.getCursor()) || maxSeqFrom(history));
 
-  const current = await store.loadDoc();
+  // Repair comment dates that cannot be true BEFORE anything reads this text. `date` is whatever
+  // the author wrote, and agents hand-write it on cloud docs because `inplan comment` refuses them
+  // — round-hour guesses in the future are the result. orderComments sorts by (date, id) at every
+  // projection, so one fabricated future date strands that reply at the end of its thread forever,
+  // after the replies that answered it. Stamping here means the stored value is already sane; the
+  // repair cannot live in orderComments, which has to stay byte-identical across peers.
+  const current = stampAgentDates(await store.loadDoc());
 
   // The gate's canonical base: the plugin's projection when an entitled plugin is active (the editor
   // published a session for this doc — the plugin owns it, so we apply through it, never writing the

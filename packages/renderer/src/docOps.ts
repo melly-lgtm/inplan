@@ -452,8 +452,24 @@ export interface Thread {
   replies: Comment[];
 }
 
-/** Group comments into threads: each top-level (span/doc) comment with its descendant replies in date order. */
-export function buildThreads(comments: Comment[]): Thread[] {
+/** Group comments into threads: each top-level (span/doc) comment with its descendant replies in
+ *  date order — with one correction. `date` is supplied by whoever wrote the comment, so it is a
+ *  CLAIM, not an observation, and a wrong one reorders a conversation permanently. A real case:
+ *  an agent hand-stamped round-hour times ("2026-10-28T02:00:00Z") instead of reading a clock, and
+ *  its answer sorted AFTER the human reply that had already chosen one of the options it offered.
+ *
+ *  So a date in the future is clamped to now for ORDERING only (the stored value is untouched, and
+ *  the UI still shows it). A comment cannot have been written after the moment you are reading it,
+ *  so treating "later than now" as "now" is strictly closer to the truth than believing it. Ties
+ *  then fall back to the comments array's own order, which for a CRDT is the merged causal order. */
+export function buildThreads(comments: Comment[], now: number = Date.now()): Thread[] {
+  const order = new Map<string, number>(comments.map((c, i) => [c.id, i]));
+  /** Sortable key: a future claim is worth no more than "now". NaN (absent/garbled) sorts as now
+   *  too, so a malformed date can't fling a reply to either end of the thread. */
+  const at = (c: Comment): number => {
+    const t = Date.parse(c.date);
+    return Number.isNaN(t) ? now : Math.min(t, now);
+  };
   const byParent = new Map<string, Comment[]>();
   for (const c of comments) {
     if (c.parentId) {
@@ -470,7 +486,7 @@ export function buildThreads(comments: Comment[]): Thread[] {
       out.push(c);
       stack.push(...(byParent.get(c.id) ?? []));
     }
-    return out.sort((a, b) => a.date.localeCompare(b.date));
+    return out.sort((a, b) => at(a) - at(b) || (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
   };
   return comments.filter((c) => c.parentId === undefined).map((root) => ({ root, replies: collect(root.id) }));
 }
