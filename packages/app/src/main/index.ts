@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import type { Acceptance, Cadence, SaveOptions, Settings } from "@inplan/renderer";
-import { isOnboarded, markOnboarded, parse, readStatus, serialize, type Comment } from "@inplan/core/node";
+import { isOnboarded, markOnboarded, parse, readStatus, serialize, widenConnectAttemptBudget, type Comment } from "@inplan/core/node";
 import { Session } from "./session";
 import { createI18nController } from "./i18nController";
 import { track, type TelemetryProps } from "./telemetry";
@@ -17,6 +17,11 @@ import { registerPluginScheme, handlePluginScheme, pluginInfo, startDesktopPlugi
 import { startCloudSignIn, type CloudSignIn } from "./cloudAuth";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// The main process fetches the same single-region hub the CLI does (plugin entitlement + bundle),
+// so it needs the same widened per-address connect budget — Node's 250 ms default fails outright
+// on a machine whose IPv6 default route is black-holed. See @inplan/core's happyEyeballs.
+widenConnectAttemptBudget();
 
 // Privileged scheme for runtime plugins — must register before app 'ready'. No-op effect unless an
 // entitled, verified plugin bundle is later loaded (startDesktopPlugin).

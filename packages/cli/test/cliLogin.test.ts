@@ -107,6 +107,62 @@ describe("createLoginSession", () => {
     expect(existsSync(pendingLoginPath())).toBe(false);
   });
 
+  it("names the host and the real cause when the hub is unreachable", async () => {
+    // The regression: Node's fetch collapses every transport failure into "fetch failed", which
+    // sent a user hunting for a collab outage while the hub served 200s and their own IPv6 route
+    // was the problem. This is the ONE error shown before any URL is printed — it must self-explain.
+    const fetchImpl = (async () => {
+      throw Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error(""), { code: "ETIMEDOUT" }) });
+    }) as unknown as typeof fetch;
+    await expect(createLoginSession({ ...OPTS, fetchImpl })).rejects.toThrow("could not reach hub.test (ETIMEDOUT)");
+    expect(existsSync(pendingLoginPath())).toBe(false);
+  });
+
+  it("reports EVERY attempt in the AggregateError Happy Eyeballs produces", async () => {
+    // Racing two address families reports one code per attempt, one level below `cause`. It is the
+    // PAIR that names the bug — a black-holed IPv6 route plus an IPv4 attempt out of budget — so
+    // neither code may be dropped, in whichever order the attempts landed.
+    const race = (...codes: string[]) =>
+      (async () => {
+        throw Object.assign(new TypeError("fetch failed"), {
+          cause: new AggregateError(
+            codes.map((code) => Object.assign(new Error(""), { code })),
+            "",
+          ),
+        });
+      }) as unknown as typeof fetch;
+    await expect(createLoginSession({ ...OPTS, fetchImpl: race("ETIMEDOUT", "ENETUNREACH") })).rejects.toThrow(
+      "could not reach hub.test (ETIMEDOUT, ENETUNREACH)",
+    );
+    await expect(createLoginSession({ ...OPTS, fetchImpl: race("ENETUNREACH", "ETIMEDOUT") })).rejects.toThrow(
+      "could not reach hub.test (ENETUNREACH, ETIMEDOUT)",
+    );
+  });
+
+  it("survives a rejection that isn't an object at all", async () => {
+    // A promise can reject with anything. Reading `.name` off null would crash the ONE error path
+    // the user sees, turning a diagnosable failure into an unhandled TypeError.
+    const fetchImpl = (async () => {
+      throw null; // eslint-disable-line no-throw-literal
+    }) as unknown as typeof fetch;
+    await expect(createLoginSession({ ...OPTS, fetchImpl })).rejects.toThrow("could not reach hub.test (unknown error)");
+  });
+
+  it("names our own request cap rather than echoing a DOMException", async () => {
+    // AbortSignal.timeout rejects with a name but no code — the walk finds nothing to report.
+    const fetchImpl = (async () => {
+      throw Object.assign(new Error("This operation was aborted"), { name: "TimeoutError" });
+    }) as unknown as typeof fetch;
+    await expect(createLoginSession({ ...OPTS, fetchImpl })).rejects.toThrow("could not reach hub.test (no response within 15s)");
+  });
+
+  it("falls back to the message when nothing in the chain carries a code", async () => {
+    const fetchImpl = (async () => {
+      throw new TypeError("some opaque failure");
+    }) as unknown as typeof fetch;
+    await expect(createLoginSession({ ...OPTS, fetchImpl })).rejects.toThrow("could not reach hub.test (some opaque failure)");
+  });
+
   it("creates a never-existed base dir owner-only (0o700) rather than ENOENT on the lock", async () => {
     // First-ever run: the base dir doesn't exist. The sidecar lock must not ENOENT, and the dir —
     // which will hold the refresh token — must be created owner-only.
