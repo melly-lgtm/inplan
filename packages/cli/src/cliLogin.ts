@@ -48,31 +48,33 @@ export function loginApiBase(): string {
 }
 
 /**
- * The real reason a `fetch` failed, or null if there isn't a named one.
+ * Every distinct transport code behind a failed `fetch`, comma-joined, or null if none is named.
  *
  * Node reports EVERY transport failure as the same opaque "fetch failed" and buries the actual
  * code (ETIMEDOUT, ENOTFOUND, ECONNREFUSED, a TLS error) in `cause` — one level deeper still when
  * Happy Eyeballs raced two addresses and hands back an AggregateError. A user who sees only
  * "fetch failed" cannot tell a dead hub from their own broken IPv6 route; one went looking for a
- * collab outage that never happened. Walk the chain and name the first code we find.
+ * collab outage that never happened.
+ *
+ * ALL of them, not just the first: a two-family race reports one code per attempt, and it is the
+ * PAIR that identifies the failure — "ENETUNREACH, ETIMEDOUT" says the IPv6 route is black-holed
+ * AND the IPv4 attempt ran out of budget, which is the whole diagnosis. Either code alone reads
+ * like an ordinary unreachable host.
  */
 export function transportReason(e: unknown): string | null {
   const seen = new Set<unknown>(); // `cause` chains can loop — never spin on one
-  const walk = (err: unknown): string | null => {
-    if (!err || typeof err !== "object" || seen.has(err)) return null;
+  const codes: string[] = [];
+  const walk = (err: unknown): void => {
+    if (!err || typeof err !== "object" || seen.has(err)) return;
     seen.add(err);
     const code = (err as { code?: unknown }).code;
-    if (typeof code === "string" && code) return code;
+    if (typeof code === "string" && code && !codes.includes(code)) codes.push(code);
     const nested = (err as { errors?: unknown }).errors; // AggregateError: one attempt per family
-    if (Array.isArray(nested)) {
-      for (const inner of nested) {
-        const found = walk(inner);
-        if (found) return found;
-      }
-    }
-    return walk((err as { cause?: unknown }).cause);
+    if (Array.isArray(nested)) for (const inner of nested) walk(inner);
+    walk((err as { cause?: unknown }).cause);
   };
-  return walk(e);
+  walk(e);
+  return codes.length > 0 ? codes.join(", ") : null;
 }
 
 /** "could not reach inplan-collab.fly.dev (ETIMEDOUT)" — the host we actually dialled plus the
@@ -84,12 +86,16 @@ function unreachable(apiBase: string, e: unknown): Error {
   } catch {
     /* a non-URL base (a test double, a malformed override) — name it as given */
   }
+  // `e` is whatever the promise rejected with — a value, not necessarily an object, so every
+  // property read below has to survive `null`/`undefined` (a reject(null) must not crash the one
+  // error path the user actually sees).
+  const named = typeof e === "object" && e !== null ? (e as { name?: unknown }).name : undefined;
   const reason =
     transportReason(e) ??
     // Our own REQUEST_TIMEOUT_MS cap: AbortSignal.timeout rejects with a DOMException that carries
     // a `name` but no `code`, so the walk above finds nothing to report.
-    ((e as { name?: unknown }).name === "TimeoutError" ? `no response within ${REQUEST_TIMEOUT_MS / 1000}s` : null) ??
-    (e instanceof Error ? e.message : String(e));
+    (named === "TimeoutError" ? `no response within ${REQUEST_TIMEOUT_MS / 1000}s` : null) ??
+    (e instanceof Error && e.message ? e.message : e == null ? "unknown error" : String(e));
   return new Error(`could not reach ${host} (${reason})`);
 }
 

@@ -118,17 +118,34 @@ describe("createLoginSession", () => {
     expect(existsSync(pendingLoginPath())).toBe(false);
   });
 
-  it("digs the cause out of the AggregateError Happy Eyeballs produces", async () => {
-    // Racing two address families reports BOTH attempts, one level below `cause` — the shape the
-    // widened connect budget (core's happyEyeballs) exists to stop producing in the first place.
+  it("reports EVERY attempt in the AggregateError Happy Eyeballs produces", async () => {
+    // Racing two address families reports one code per attempt, one level below `cause`. It is the
+    // PAIR that names the bug — a black-holed IPv6 route plus an IPv4 attempt out of budget — so
+    // neither code may be dropped, in whichever order the attempts landed.
+    const race = (...codes: string[]) =>
+      (async () => {
+        throw Object.assign(new TypeError("fetch failed"), {
+          cause: new AggregateError(
+            codes.map((code) => Object.assign(new Error(""), { code })),
+            "",
+          ),
+        });
+      }) as unknown as typeof fetch;
+    await expect(createLoginSession({ ...OPTS, fetchImpl: race("ETIMEDOUT", "ENETUNREACH") })).rejects.toThrow(
+      "could not reach hub.test (ETIMEDOUT, ENETUNREACH)",
+    );
+    await expect(createLoginSession({ ...OPTS, fetchImpl: race("ENETUNREACH", "ETIMEDOUT") })).rejects.toThrow(
+      "could not reach hub.test (ENETUNREACH, ETIMEDOUT)",
+    );
+  });
+
+  it("survives a rejection that isn't an object at all", async () => {
+    // A promise can reject with anything. Reading `.name` off null would crash the ONE error path
+    // the user sees, turning a diagnosable failure into an unhandled TypeError.
     const fetchImpl = (async () => {
-      const attempts = new AggregateError(
-        [Object.assign(new Error(""), { code: "ETIMEDOUT" }), Object.assign(new Error(""), { code: "ENETUNREACH" })],
-        "",
-      );
-      throw Object.assign(new TypeError("fetch failed"), { cause: attempts });
+      throw null; // eslint-disable-line no-throw-literal
     }) as unknown as typeof fetch;
-    await expect(createLoginSession({ ...OPTS, fetchImpl })).rejects.toThrow("could not reach hub.test (ETIMEDOUT)");
+    await expect(createLoginSession({ ...OPTS, fetchImpl })).rejects.toThrow("could not reach hub.test (unknown error)");
   });
 
   it("names our own request cap rather than echoing a DOMException", async () => {
