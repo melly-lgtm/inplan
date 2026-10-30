@@ -25,6 +25,7 @@ import {
   readStatus,
   settingsFromEntries,
   stripAnchors,
+  widenConnectAttemptBudget,
   writeStatus,
 } from "@inplan/core/node";
 import { agentAuthorFor } from "./agentAuthor";
@@ -2858,6 +2859,10 @@ function routeFor(file: string, cmd: string, args: string[]): Route {
 /** Exported for the dispatch tests — `isProgramEntry()` guards the real invocation, so importing
  *  this module never runs it. */
 export async function main(): Promise<void> {
+  // Before ANY hub call: Node's 250 ms per-address connect budget turns a slow-but-healthy IPv4
+  // path into ETIMEDOUT whenever the machine's IPv6 route is black-holed (a VPN owning ::/0).
+  // That surfaced as an unexplainable `inplan login: fetch failed` against a healthy hub.
+  widenConnectAttemptBudget();
   const argv = process.argv.slice(2);
   const cmd = argv[0];
 

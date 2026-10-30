@@ -47,6 +47,52 @@ export function loginApiBase(): string {
   return hubHttpBase();
 }
 
+/**
+ * The real reason a `fetch` failed, or null if there isn't a named one.
+ *
+ * Node reports EVERY transport failure as the same opaque "fetch failed" and buries the actual
+ * code (ETIMEDOUT, ENOTFOUND, ECONNREFUSED, a TLS error) in `cause` — one level deeper still when
+ * Happy Eyeballs raced two addresses and hands back an AggregateError. A user who sees only
+ * "fetch failed" cannot tell a dead hub from their own broken IPv6 route; one went looking for a
+ * collab outage that never happened. Walk the chain and name the first code we find.
+ */
+export function transportReason(e: unknown): string | null {
+  const seen = new Set<unknown>(); // `cause` chains can loop — never spin on one
+  const walk = (err: unknown): string | null => {
+    if (!err || typeof err !== "object" || seen.has(err)) return null;
+    seen.add(err);
+    const code = (err as { code?: unknown }).code;
+    if (typeof code === "string" && code) return code;
+    const nested = (err as { errors?: unknown }).errors; // AggregateError: one attempt per family
+    if (Array.isArray(nested)) {
+      for (const inner of nested) {
+        const found = walk(inner);
+        if (found) return found;
+      }
+    }
+    return walk((err as { cause?: unknown }).cause);
+  };
+  return walk(e);
+}
+
+/** "could not reach inplan-collab.fly.dev (ETIMEDOUT)" — the host we actually dialled plus the
+ *  reason, so the message distinguishes a down hub from an unreachable one on sight. */
+function unreachable(apiBase: string, e: unknown): Error {
+  let host = apiBase;
+  try {
+    host = new URL(apiBase).host;
+  } catch {
+    /* a non-URL base (a test double, a malformed override) — name it as given */
+  }
+  const reason =
+    transportReason(e) ??
+    // Our own REQUEST_TIMEOUT_MS cap: AbortSignal.timeout rejects with a DOMException that carries
+    // a `name` but no `code`, so the walk above finds nothing to report.
+    ((e as { name?: unknown }).name === "TimeoutError" ? `no response within ${REQUEST_TIMEOUT_MS / 1000}s` : null) ??
+    (e instanceof Error ? e.message : String(e));
+  return new Error(`could not reach ${host} (${reason})`);
+}
+
 export interface RendezvousDeps {
   fetchImpl?: typeof fetch;
   /** Launch the system browser at `url`, reporting a failed launch (and how certain it is) through
@@ -229,7 +275,14 @@ export async function createLoginSession(opts: RendezvousLoginOptions = {}): Pro
   const pub = Buffer.from(await subtle.exportKey("spki", keys.publicKey)).toString("base64");
   const priv = Buffer.from(await subtle.exportKey("pkcs8", keys.privateKey)).toString("base64");
 
-  const res = await fetchImpl(`${apiBase}/api/v1/cli-login`, { method: "POST", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  let res: Awaited<ReturnType<typeof fetchImpl>>;
+  try {
+    res = await fetchImpl(`${apiBase}/api/v1/cli-login`, { method: "POST", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  } catch (e) {
+    // Transport, not protocol: we never reached the hub at all. This is the ONE failure the user
+    // sees before any URL is printed, so it has to say which host and why by itself.
+    throw unreachable(apiBase, e);
+  }
   if (!res.ok) throw new Error(`could not start a sign-in session (HTTP ${res.status})`);
   const { sessionId, pollToken, expiresInSec } = (await res.json()) as { sessionId: string; pollToken: string; expiresInSec: number };
   if (typeof sessionId !== "string" || !sessionId || typeof pollToken !== "string" || !pollToken) {

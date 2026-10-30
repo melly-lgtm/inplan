@@ -13,3 +13,4 @@ export * from "./onboarding";
 export * from "./status";
 export * from "./pluginLoader";
 export * from "./pluginFetch";
+export * from "./happyEyeballs";

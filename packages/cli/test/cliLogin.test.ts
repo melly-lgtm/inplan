@@ -107,6 +107,45 @@ describe("createLoginSession", () => {
     expect(existsSync(pendingLoginPath())).toBe(false);
   });
 
+  it("names the host and the real cause when the hub is unreachable", async () => {
+    // The regression: Node's fetch collapses every transport failure into "fetch failed", which
+    // sent a user hunting for a collab outage while the hub served 200s and their own IPv6 route
+    // was the problem. This is the ONE error shown before any URL is printed — it must self-explain.
+    const fetchImpl = (async () => {
+      throw Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error(""), { code: "ETIMEDOUT" }) });
+    }) as unknown as typeof fetch;
+    await expect(createLoginSession({ ...OPTS, fetchImpl })).rejects.toThrow("could not reach hub.test (ETIMEDOUT)");
+    expect(existsSync(pendingLoginPath())).toBe(false);
+  });
+
+  it("digs the cause out of the AggregateError Happy Eyeballs produces", async () => {
+    // Racing two address families reports BOTH attempts, one level below `cause` — the shape the
+    // widened connect budget (core's happyEyeballs) exists to stop producing in the first place.
+    const fetchImpl = (async () => {
+      const attempts = new AggregateError(
+        [Object.assign(new Error(""), { code: "ETIMEDOUT" }), Object.assign(new Error(""), { code: "ENETUNREACH" })],
+        "",
+      );
+      throw Object.assign(new TypeError("fetch failed"), { cause: attempts });
+    }) as unknown as typeof fetch;
+    await expect(createLoginSession({ ...OPTS, fetchImpl })).rejects.toThrow("could not reach hub.test (ETIMEDOUT)");
+  });
+
+  it("names our own request cap rather than echoing a DOMException", async () => {
+    // AbortSignal.timeout rejects with a name but no code — the walk finds nothing to report.
+    const fetchImpl = (async () => {
+      throw Object.assign(new Error("This operation was aborted"), { name: "TimeoutError" });
+    }) as unknown as typeof fetch;
+    await expect(createLoginSession({ ...OPTS, fetchImpl })).rejects.toThrow("could not reach hub.test (no response within 15s)");
+  });
+
+  it("falls back to the message when nothing in the chain carries a code", async () => {
+    const fetchImpl = (async () => {
+      throw new TypeError("some opaque failure");
+    }) as unknown as typeof fetch;
+    await expect(createLoginSession({ ...OPTS, fetchImpl })).rejects.toThrow("could not reach hub.test (some opaque failure)");
+  });
+
   it("creates a never-existed base dir owner-only (0o700) rather than ENOENT on the lock", async () => {
     // First-ever run: the base dir doesn't exist. The sidecar lock must not ENOENT, and the dir —
     // which will hold the refresh token — must be created owner-only.
