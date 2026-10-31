@@ -2859,10 +2859,6 @@ function routeFor(file: string, cmd: string, args: string[]): Route {
 /** Exported for the dispatch tests — `isProgramEntry()` guards the real invocation, so importing
  *  this module never runs it. */
 export async function main(): Promise<void> {
-  // Before ANY hub call: Node's 250 ms per-address connect budget turns a slow-but-healthy IPv4
-  // path into ETIMEDOUT whenever the machine's IPv6 route is black-holed (a VPN owning ::/0).
-  // That surfaced as an unexplainable `inplan login: fetch failed` against a healthy hub.
-  widenConnectAttemptBudget();
   const argv = process.argv.slice(2);
   const cmd = argv[0];
 
@@ -3159,6 +3155,12 @@ function isProgramEntry(): boolean {
   }
 }
 if (isProgramEntry()) {
+  // Before ANY hub call, and only for a REAL invocation: Node's 250 ms per-address connect budget
+  // turns a slow-but-healthy IPv4 path into ETIMEDOUT whenever the machine's IPv6 route is
+  // black-holed (a VPN owning ::/0) — an unexplainable `inplan login: fetch failed` against a
+  // healthy hub. Out here rather than in main(), which the dispatch tests import and call: a test
+  // run must not mutate this process's socket defaults as a side effect.
+  widenConnectAttemptBudget();
   // Backstop: stdout is the agent's JSON channel, so NOTHING may reach it as a raw Node stack trace.
   // An unhandled rejection anywhere (a stray promise in a poll loop, a listener callback) otherwise
   // kills the process under Node's default `--unhandled-rejections=throw`, leaving the agent with an

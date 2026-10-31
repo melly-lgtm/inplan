@@ -29,7 +29,13 @@ export function compareVersions(a: string, b: string): number {
 
 /** How long the registry gets to answer. Callers await this before doing real work (`wait --remote`
  *  checks staleness before attaching), so an unbounded `fetch` on a stalled connection would hang the
- *  command rather than degrade to "no answer". */
+ *  command rather than degrade to "no answer".
+ *
+ *  This is a TOTAL budget — DNS, connect, TLS and the request all come out of it — so it is spent
+ *  partly by core's CONNECT_ATTEMPT_TIMEOUT_MS: registry.npmjs.org publishes AAAA records, and on a
+ *  machine whose IPv6 route is black-holed the connect alone costs that budget plus a round trip
+ *  before the working family is even tried. Raising either constant spends the other; the guard in
+ *  test/update.test.ts pins the proportion. */
 export const REGISTRY_TIMEOUT_MS = 3000;
 
 /** The latest published version of `pkg`, or null if the registry can't be reached in time. */

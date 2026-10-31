@@ -20,12 +20,29 @@
 // the second family, just later — and the extra wait is only ever paid on a network where the
 // first family is already dead. The status quo turns a slow-but-healthy path into a hard failure,
 // which is strictly worse than making a dead path take a moment longer to admit it.
+//
+// That wait is NOT free, and the budget is a trade, not a "bigger is safer" dial. Node advances to
+// the next address on the TIMER, not on the error: an attempt that fails instantly still costs the
+// full budget before the next family starts. So when the resolver happens to list the DEAD family
+// first — the same broken-IPv6 machine, just the other DNS order — every connection pays
+// `budget + connect`. Measured against the hub with the order forced:
+//
+//     budget  250 ms → connected in  502 ms
+//     budget  750 ms → connected in  977 ms
+//     budget 2000 ms → connected in 2263 ms
+//
+// which is why this is 1000 and not the 2000 it shipped as: 2 s of connect ate most of
+// update.ts's 3 s REGISTRY_TIMEOUT_MS, so the staleness check degraded to "no answer" on exactly
+// the machines this exists to fix. Keep the two budgets in proportion (see the guard in
+// packages/cli/test/update.test.ts) — raising this one silently spends the other.
 
 import net from "node:net";
 
-/** Long enough to cover a trans-Pacific connect to a single-region host with headroom, short
- *  enough that a genuinely dead first family is given up on while the user is still watching. */
-export const CONNECT_ATTEMPT_TIMEOUT_MS = 2000;
+/** ~2.5x the worst connect measured to the hub from Seoul (215-405 ms), so a healthy
+ *  trans-Pacific path is never abandoned mid-handshake — and small enough that the reverse case,
+ *  a dead family listed first, costs ~1.25 s rather than the ~2.26 s that squeezed the registry
+ *  budget. See the cost table above before changing it. */
+export const CONNECT_ATTEMPT_TIMEOUT_MS = 1000;
 
 /**
  * Raise this process's per-address connect budget to `ms`, and report the budget now in force.

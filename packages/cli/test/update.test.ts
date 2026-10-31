@@ -1,7 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, it } from "vitest";
-import { checkForUpdate, compareVersions } from "../src/update";
+import { CONNECT_ATTEMPT_TIMEOUT_MS } from "@inplan/core/node";
+import { checkForUpdate, compareVersions, REGISTRY_TIMEOUT_MS } from "../src/update";
+
+describe("registry budget vs the per-address connect budget", () => {
+  // These two constants live in different packages and neither import the other, which is how a
+  // 2 s connect budget came to eat most of a 3 s registry budget: on a machine whose IPv6 route is
+  // black-holed, Node spends the FULL connect budget on the dead family before trying the working
+  // one, so the registry call lost ~2.26 s of its 3 s to the connect alone and degraded to "no
+  // answer" — on exactly the machines the connect budget exists to fix. Pin the proportion so
+  // raising one silently spending the other fails here instead of in the field.
+  it("leaves the registry call most of its budget after a worst-case dual-family connect", () => {
+    // Worst case = the dead family times out, THEN the working one connects (~a round trip).
+    const worstCaseConnect = CONNECT_ATTEMPT_TIMEOUT_MS + 500;
+    expect(REGISTRY_TIMEOUT_MS - worstCaseConnect).toBeGreaterThanOrEqual(1000); // room for TLS + the request
+  });
+});
 
 describe("compareVersions", () => {
   it("orders numerically, not lexically", () => {
