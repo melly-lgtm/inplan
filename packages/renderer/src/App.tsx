@@ -379,6 +379,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const tryAddCommentRef = useRef<() => void>(() => {}); // latest ⌘/Ctrl+/ handler (the keydown effect calls via this)
   const commentRangeRef = useRef<Range | null>(null); // the selection range being commented on (kept highlighted while composing)
   const docPathRef = useRef<string>(""); // current doc's locator path, for resolving relative links
+  const docLinkRef = useRef<string>(""); // shareable address for this doc (host-supplied, else the path)
   const railRef = useRef<HTMLElement>(null);
   const editorRef = useRef<SourceEditorHandle>(null);
   // A load()/onNavigated-supplied deep-link comment id, focused once the destination doc + rail
@@ -456,9 +457,11 @@ export function App(props: EditorProps = {}): JSX.Element {
     const loadGen = docGenRef.current; // navigation before load resolves must win over the older result
     hostApi()
       .load()
-      .then(({ content, path, readOnly: ro, focusCommentId }) => {
+      .then(({ content, path, readOnly: ro, focusCommentId, shareLink }) => {
         if (docGenRef.current !== loadGen) return; // a navigation already installed a newer document
         docPathRef.current = path;
+        // Host-supplied address if there is one, else the path — which on desktop IS the file.
+        docLinkRef.current = shareLink ?? path;
         setReadOnly(!!ro);
         setPendingFocusCommentId(focusCommentId ?? null);
         const parsed = parse(content);
@@ -2395,6 +2398,7 @@ export function App(props: EditorProps = {}): JSX.Element {
                   onResolve={(r) => apply(setResolved(docRef.current, o.thread.root.id, r), { type: "comment_resolved", payload: { id: o.thread.root.id, resolved: r } })}
                   onEdit={(id, text) => apply(editCommentText(docRef.current, id, text), { type: "comment_modified", payload: { id } })}
                   onDelete={(id) => apply(deleteComment(docRef.current, id), { type: "comment_deleted", payload: { id } })}
+                  docLink={() => docLinkRef.current}
                 />
               </Fragment>
             ))}
@@ -3121,6 +3125,9 @@ function ThreadCard(props: {
   onResolve: (resolved: boolean) => void;
   onEdit: (id: string, text: string) => void;
   onDelete: (id: string) => void;
+  /** Read at click time, not render time: the link lives in a ref that navigation mutates, so a
+   *  captured value could belong to the document the reader just left. */
+  docLink: () => string;
 }): JSX.Element {
   const { thread, body, disabled, orphaned } = props;
   const t = useT();
@@ -3193,6 +3200,19 @@ function ThreadCard(props: {
               </button>
               {menuOpenId === c.id && (
                 <div className="ap-cmenu-pop" onClick={(e) => e.stopPropagation()}>
+                  {props.docLink() !== "" && (
+                    <button
+                      onClick={() => {
+                        // Optional-chained like the other clipboard writes here: the Clipboard API
+                        // is absent in some embeddings, and a menu item that throws is worse than
+                        // one that quietly does nothing.
+                        void navigator.clipboard?.writeText?.(props.docLink());
+                        setMenuOpenId(null);
+                      }}
+                    >
+                      {t("thread.copyDocLink")}
+                    </button>
+                  )}
                   <button
                     onClick={() => {
                       setEditingId(c.id);

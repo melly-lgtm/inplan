@@ -64,12 +64,12 @@ export interface MemorySession {
   isClosed(): boolean;
 }
 
-export function createMemoryApi(opts: { content: string; settings?: Settings; backButton?: boolean; readOnly?: boolean }): MemorySession {
+export function createMemoryApi(opts: { content: string; settings?: Settings; backButton?: boolean; readOnly?: boolean; path?: string; shareLink?: string }): MemorySession {
   const store = new MemoryDocumentStore(opts.content);
   const channel = new MemoryControlChannel();
   // Current doc identity — navigate() updates these so a later load() (e.g. on remount) reflects
   // the navigated destination, not the original, staying consistent with the onNavigated payload.
-  let currentPath = "memory://doc";
+  let currentPath = opts.path ?? "memory://doc";
   let currentReadOnly = opts.readOnly === true;
   let settings: Settings = opts.settings ?? { autoResolve: true };
   let closed = false;
@@ -94,7 +94,7 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
   const api: Api = {
     async load(): Promise<DocPayload> {
       if ((await store.getCanonical()) === null) await store.setCanonical(opts.content);
-      return { path: currentPath, content: await store.loadDoc(), ...(currentReadOnly ? { readOnly: true } : {}) };
+      return { path: currentPath, content: await store.loadDoc(), ...(currentReadOnly ? { readOnly: true } : {}), ...(opts.shareLink ? { shareLink: opts.shareLink } : {}) };
     },
     async save(content: string, options: SaveOptions): Promise<void> {
       if (options.kind === "backup") {

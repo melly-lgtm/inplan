@@ -292,6 +292,7 @@ export const EN: Catalog = {
   "thread.cancel": "Cancel",
   "thread.save": "Save",
   "thread.more": "More",
+  "thread.copyDocLink": "Copy link to document",
   "thread.modify": "Modify",
   "thread.delete": "Delete",
 };

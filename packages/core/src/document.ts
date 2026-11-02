@@ -135,6 +135,40 @@ export function orderComments(comments: Comment[]): Comment[] {
   return out;
 }
 
+/** Maximum clock skew tolerated before a comment's `date` is treated as fabricated rather than
+ *  merely early. Generous: a wrong clock on a collaborator's laptop should not rewrite their
+ *  timestamps, while the round-hour guesses an agent produces when it invents a date sit hours out. */
+export const DATE_SKEW_TOLERANCE_MS = 5 * 60_000;
+
+/**
+ * Replace comment dates that cannot be true with the real clock.
+ *
+ * `date` is written by whoever authored the comment, so it is a CLAIM. Agents are told never to
+ * invent it (SKILL.md) — but `inplan comment`, the command that stamps it from the clock, refuses
+ * cloud docs, so on exactly those documents the only way to add a comment is to hand-write the
+ * JSON and guess. Round-hour guesses in the future are the result, and they are not cosmetic:
+ * {@link orderComments} sorts by `(date, id)` and runs at every projection, so a fabricated future
+ * date parks that reply at the end of its thread permanently — after replies that answered it.
+ *
+ * Repair happens HERE, at the write boundary, and deliberately not inside `orderComments`: that
+ * function must be byte-deterministic across peers, and `now` is not. Stamping once, before the
+ * value is stored, leaves every peer agreeing on a concrete date afterwards.
+ *
+ * Only impossible dates are touched — absent, unparseable, or beyond {@link DATE_SKEW_TOLERANCE_MS}
+ * in the future. A comment cannot have been written after the moment it is being saved.
+ */
+export function stampImpossibleDates(comments: Comment[], now: number = Date.now()): { comments: Comment[]; repaired: string[] } {
+  const iso = new Date(now).toISOString();
+  const repaired: string[] = [];
+  const out = comments.map((c) => {
+    const t = Date.parse(c.date);
+    if (!Number.isNaN(t) && t <= now + DATE_SKEW_TOLERANCE_MS) return c;
+    repaired.push(c.id);
+    return { ...c, date: iso };
+  });
+  return { comments: repaired.length ? out : comments, repaired };
+}
+
 /** Canonical field order for a serialized comment. A round-trip through a shared map loses
  *  the original key order, so the canonical projection must re-impose one or the JSON bytes
  *  differ between peers. Matches the Comment interface declaration order. */

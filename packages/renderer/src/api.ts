@@ -72,6 +72,12 @@ export interface DocPayload {
   readOnly?: boolean;
   /** Focus this comment on load (a digest email's deep link). Absent = no auto-focus. */
   focusCommentId?: string;
+  /** A shareable address for this document, for the comment menu's "copy link". Only the host
+   *  knows what that is — a cloud host serves it over https, a desktop host has a file on disk —
+   *  so open-core must not guess (hardcoding a cloud origin here would be wrong for every other
+   *  host). Absent ⇒ the renderer falls back to {@link DocPayload.path}, which is already the
+   *  file path on desktop, so a local document needs no host change to get a useful link. */
+  shareLink?: string;
 }
 
 export interface SaveOptions {
