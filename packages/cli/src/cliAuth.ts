@@ -386,10 +386,13 @@ export type CachedSessionCheck = "ok" | "absent" | SessionFailure;
  * What this can and cannot prove, precisely:
  *  - it proves the session authenticates now, so `login` is not reporting an unusable credential;
  *  - it does NOT prove the refresh token is still live, because the only way to test that is to
- *    spend it. A long `wait` can therefore still meet a dead refresh token at expiry. That residual
- *    is inherent to handing the CLI a COPY of the browser's session, and the durable fix is for the
- *    CLI to receive a session of its own (minted server-side at the rendezvous /complete step)
- *    rather than a copy — tracked as follow-up, deliberately not built here.
+ *    spend it. A long `wait` can therefore still meet a dead refresh token at expiry. That
+ *    residual belonged to credentials that were a COPY of the browser's session — the page sealed
+ *    its own refresh token into the handoff, so the two of them spent one rotation chain in
+ *    turns. Since inplan-cloud #263 (deployed 2026-11-04; see `mint_cli_session`) the page
+ *    mints the CLI a session of its OWN family at the rendezvous, and the residual applies only
+ *    to credentials issued by pages older than that deploy: re-running `inplan login` retires
+ *    them.
  *
  * Returns `absent` when there is no cached token the normal fast path would use, which is the
  * signal for the caller to fall back to proving the credential the expensive way.
