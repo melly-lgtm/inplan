@@ -908,10 +908,10 @@ function canAttemptBrowserLaunch(): boolean {
  *
  * Be clear about the limit of route 1: it proves the session authenticates NOW. It deliberately
  * does NOT prove the refresh token is still live, because the only way to test that is to spend it.
- * So a long `wait` can still meet a dead refresh token when the access token expires. That residual
- * is inherent to handing the CLI a COPY of the browser's session; the durable fix is for the CLI to
- * get a session of its OWN, minted server-side at the rendezvous /complete step. Tracked as
- * follow-up — deliberately not built here.
+ * So a long `wait` can still meet a dead refresh token when the access token expires. That
+ * residual was inherent to credentials that copied the browser's session; the page now mints the
+ * CLI its own family at the rendezvous (inplan-cloud #263, `mint_cli_session`), so it applies
+ * only to credentials from pages older than that deploy — and a re-login retires those.
  */
 export async function primeSessionOrFail(retryDelayMs = 750): Promise<void> {
   // A verdict is only worth acting on when we know which kind it is. authedSession collapses every
