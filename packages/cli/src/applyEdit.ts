@@ -114,13 +114,31 @@ export async function applyGatedEdit(
  * text to lose. (The same blank base is why the quarantine revert has to be skipped — see
  * revertWouldWipe — so this is that hazard removed at its source rather than patched downstream.)
  *
+ * "Nothing to overwrite" has to mean the whole document, not just its body. A blank body can still
+ * carry document-level comments — the human opens the empty doc and writes what they want covered —
+ * and `detectLostComments` reports only orphaned SPAN comments, so a fill that dropped those doc
+ * comments would land them into oblivion with neither a review nor a confirm gate. An empty base is
+ * therefore an empty BODY and no comments; anything else parks as it always did. An unparseable
+ * base isn't provably empty, so it parks too.
+ *
  * Everything else follows the recorded acceptance: in review mode a body change against a
- * non-blank canonical parks; a comment-only change never does.
+ * non-empty canonical parks; a comment-only change never does.
  */
 export function shouldQuarantine(acceptance: "auto" | "review", canonicalText: string, current: string): boolean {
   if (acceptance !== "review") return false;
-  if (isBlank(canonicalText)) return false; // the document's first content — no human text to protect
+  if (emptyDocument(canonicalText)) return false; // the document's first content — nothing to protect
   return body(canonicalText) !== body(current);
+}
+
+/** Is there no document here at all — empty body AND no comments? Unparseable ⇒ false: a base we
+ *  can't read is not one we can claim is empty. */
+function emptyDocument(text: string): boolean {
+  try {
+    const doc = parse(text);
+    return doc.body.trim() === "" && doc.comments.length === 0;
+  } catch {
+    return false;
+  }
 }
 
 /** A document's body, or its raw text when the comment block won't parse (same fallback as isBlank). */

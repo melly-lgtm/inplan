@@ -590,7 +590,16 @@ export async function waitCycle(
   // So keep gating while we wait: when the working copy changes, run the SAME pipeline the turn
   // ran, which logs `document_edited` (landed) or `agent_revision_proposed` (parked) and so reaches
   // the editor exactly as a turn-boundary edit does.
-  let lastGated = current; // the text the pipeline has already seen
+  // Two states count as "already gated", and a read matching EITHER is not a new agent edit:
+  //  • gatedText — the text the pipeline last evaluated;
+  //  • gatedDisk — what that decision was expected to leave on disk. A park reverts the working
+  //    copy to the base, which is the gate's own write, not an edit; and when that revert fails
+  //    (applyGatedEdit swallows it, by design) the file still holds gatedText, which is also
+  //    already gated — so neither outcome re-parks the same text on a loop.
+  // Neither is ever adopted from a post-apply re-read: that would silently swallow a write another
+  // process slipped in after the decision, leaving text no one evaluated skipped for the whole wait.
+  let gatedText = current;
+  let gatedDisk = applied.proposed && !usePlugin ? canonicalText : current;
   let settling: string | null = null; // a changed read awaiting a second, identical one
   let liveWarned = false;
   const liveFill = async (): Promise<void> => {
@@ -600,7 +609,7 @@ export async function waitCycle(
     } catch {
       return; // mid-write or transiently unreadable — the next tick re-reads
     }
-    if (text === lastGated) {
+    if (text === gatedText || text === gatedDisk) {
       settling = null;
       return;
     }
@@ -631,24 +640,34 @@ export async function waitCycle(
             : "inplan: your edit breaks the comment grammar, so it was NOT applied — fix the document; the next wait reports the errors.\n",
         );
       }
-      lastGated = text; // a further edit (the fix) is a fresh change and gets evaluated again
+      gatedText = text; // a further edit (the fix) is a fresh change and gets evaluated again
+      gatedDisk = text; // nothing was written, so this IS the disk state
       return;
     }
     liveWarned = false;
+    // Last check before we write: a newer waiter may have claimed the doc since the settle. It owns
+    // this edit now, and a stale waiter that parked a proposal (or reverted the working copy) after
+    // stepping down would be mutating a document it no longer speaks for. Lock unreadable ⇒ assume
+    // it is still ours — the wait's own poll steps down on the next tick either way.
+    try {
+      if (await channel.isSuperseded(lockToken)) return;
+    } catch {
+      /* unknown — proceed, exactly as the wait's own supersede probe does */
+    }
     const liveApplied = await applyGatedEdit(store, channel, liveEv, {
       current: text,
       canonicalText: base,
       quarantine: shouldQuarantine(acceptanceFrom(await backend.history()), base, text),
       gate: viaPlugin ? gate : null,
     });
-    proposalOut = reportApplied(liveApplied, text);
-    // Re-read rather than assume `text`: a park reverts the working copy to canonical, and that
-    // write must not look like a new agent edit on the next tick.
-    try {
-      lastGated = await store.loadDoc();
-    } catch {
-      lastGated = text;
-    }
+    // Only a decision that DID something may replace the landing signal (#88). A no-op poll — the
+    // human saving the text we already hold, say — must not blank out a proposal parked earlier in
+    // this very wait, which is the one thing the agent reads to know its edit is safe. A live edit
+    // that LANDS does replace it: applyGatedEdit withdraws the agent's own pending proposal on that
+    // path, so reporting it as still pending would be the same false signal in the other direction.
+    if (liveEv.changed || liveEv.removedIds.length > 0) proposalOut = reportApplied(liveApplied, text);
+    gatedText = text;
+    gatedDisk = liveApplied.proposed && !viaPlugin ? base : text;
   };
 
   let waitCursor = cursor;

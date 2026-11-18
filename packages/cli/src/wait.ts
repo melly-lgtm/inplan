@@ -281,6 +281,10 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
     const reads = inFlightGate();
     const locks = inFlightGate();
     const presences = inFlightGate();
+    // The in-flight onPoll run, if any. Independent of `tick`'s `busy`: the two do unrelated work,
+    // and serialising them would make a stalled channel read also stop the file watch (and vice
+    // versa). `finish` settles with it — see there.
+    let pendingPoll: Promise<void> | null = null;
 
     const cleanup = () => {
       clearInterval(timer);
@@ -290,7 +294,12 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
       if (done) return;
       done = true;
       cleanup();
-      resolve(r);
+      // An onPoll hook may be mid-flight, and `waitCycle`'s hook MUTATES the document (it can park
+      // a proposal and revert the working copy). Resolving out from under it would let the caller
+      // print a terminal status that omits that park — and let a superseded waiter keep writing
+      // after it stepped down. Settle with the hook, not before it; `done` already stops new runs.
+      if (pendingPoll) void pendingPoll.then(() => resolve(r), () => resolve(r));
+      else resolve(r);
     };
     const onAbort = () => {
       if (done) return;
@@ -396,27 +405,25 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
       }
     };
 
-    // Independent of `tick`'s `busy`: the two do unrelated work, and serialising them would make a
-    // stalled channel read also stop the file watch (and vice versa).
-    let polling = false;
-    const onPoll = async () => {
-      if (polling || done || !opts.onPoll) return;
-      polling = true;
-      try {
-        await opts.onPoll();
-      } catch {
-        /* the hook reports its own failures; a wait must never die of one */
-      } finally {
-        polling = false;
-      }
+    const onPoll = () => {
+      if (pendingPoll || done || !opts.onPoll) return;
+      pendingPoll = (async () => {
+        try {
+          await opts.onPoll!();
+        } catch {
+          /* the hook reports its own failures; a wait must never die of one */
+        } finally {
+          pendingPoll = null;
+        }
+      })();
     };
 
     const timer = setInterval(() => {
       void tick();
-      void onPoll();
+      onPoll();
     }, pollMs);
     opts.signal?.addEventListener("abort", onAbort);
     void tick();
-    void onPoll();
+    onPoll();
   });
 }

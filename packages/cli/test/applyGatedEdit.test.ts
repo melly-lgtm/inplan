@@ -171,8 +171,15 @@ describe("shouldQuarantine — park for the human, or land", () => {
     expect(shouldQuarantine("review", "", "# The plan\n\nBody.\n")).toBe(false);
   });
 
-  it("judges the BODY, not the raw text: a canonical that is only comments is still empty", () => {
-    expect(shouldQuarantine("review", withComments(""), "# The plan\n")).toBe(false);
+  it("a blank body that carries a document-level comment is NOT an empty document: it parks", () => {
+    // The human opens the empty doc and writes what they want covered. detectLostComments only
+    // reports orphaned SPAN comments, so a fill that drops a doc-level comment passes the confirm
+    // gate untouched — landing it would delete the human's words with no review and no prompt.
+    expect(shouldQuarantine("review", withComments(""), "# The plan\n\nBody.\n")).toBe(true);
+  });
+
+  it("an unparseable base is not provably empty, so it parks", () => {
+    expect(shouldQuarantine("review", "<!--inplan\nnot json\n-->\n", "# The plan\n\nBody.\n")).toBe(true);
   });
 
   it("parks a body change once the document has content", () => {
