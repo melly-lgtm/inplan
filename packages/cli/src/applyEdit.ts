@@ -104,11 +104,49 @@ export async function applyGatedEdit(
 }
 
 /**
+ * Must a Review-mode agent edit be PARKED for the human, or may it land directly?
+ *
+ * Review mode exists so the agent can never overwrite the human's document unseen — so it keys on
+ * there being a document to overwrite. The first content of a brand-new doc is the one case where
+ * there isn't: `open` seeds an EMPTY canonical, and the agent fills it in. Parking that fill leaves
+ * the human staring at the empty document the editor was launched on, with the whole plan behind a
+ * review of nothing-vs-everything; nothing is lost by landing it, because the base holds no human
+ * text to lose. (The same blank base is why the quarantine revert has to be skipped — see
+ * revertWouldWipe — so this is that hazard removed at its source rather than patched downstream.)
+ *
+ * Everything else follows the recorded acceptance: in review mode a body change against a
+ * non-blank canonical parks; a comment-only change never does.
+ */
+export function shouldQuarantine(acceptance: "auto" | "review", canonicalText: string, current: string): boolean {
+  if (acceptance !== "review") return false;
+  if (isBlank(canonicalText)) return false; // the document's first content — no human text to protect
+  return body(canonicalText) !== body(current);
+}
+
+/** A document's body, or its raw text when the comment block won't parse (same fallback as isBlank). */
+function body(text: string): string {
+  try {
+    return parse(text).body;
+  } catch {
+    return text;
+  }
+}
+
+/** Is this document's body empty (an unparseable comment block ⇒ judge the raw text)? */
+function isBlank(text: string): boolean {
+  return body(text).trim() === "";
+}
+
+/**
  * Would reverting the working file to `canonicalText` replace real content with a blank body?
  * (#95) `open` on a fresh path seeds an EMPTY canonical, so on a brand-new doc whose first
  * content arrives from the agent, the quarantine revert used to materialize that empty canonical
  * over the only copy of the text — killing the session (SIGTERM) before the first human action
  * then left the working file at 0 bytes, with the content surviving only in the proposal sidecar.
+ * `shouldQuarantine` now keeps a blank base from parking in the first place, so this is the second
+ * line of defence rather than the first — it still guards every caller that decides `quarantine`
+ * for itself, and a wipe is not the failure to leave to one check.
+ *
  * When the revert would be a total wipe (blank canonical body over a non-blank working body),
  * skip it: the proposal is already parked and the working file keeps the text, exactly like the
  * failed-revert path below — the next turn re-parks the identical text as a no-op, and the
@@ -116,14 +154,7 @@ export async function applyGatedEdit(
  * than what it read; only a real human decision may.
  */
 function revertWouldWipe(canonicalText: string, current: string): boolean {
-  const blank = (text: string): boolean => {
-    try {
-      return parse(text).body.trim() === "";
-    } catch {
-      return text.trim() === ""; // unparseable comment block — judge the raw text
-    }
-  };
-  return blank(canonicalText) && !blank(current);
+  return isBlank(canonicalText) && !isBlank(current);
 }
 
 /** An edit that lands directly moots the caller's own parked proposal, if any — retract it. */

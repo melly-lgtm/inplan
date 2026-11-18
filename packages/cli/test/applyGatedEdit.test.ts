@@ -2,7 +2,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { MemoryControlChannel, MemoryDocumentStore, LogEventType } from "@inplan/core";
-import { applyGatedEdit } from "../src/applyEdit";
+import { applyGatedEdit, shouldQuarantine } from "../src/applyEdit";
 import type { AgentEditEvaluation } from "../src/gate";
 import type { PluginGate } from "../src/pluginGate";
 import { proposedContent } from "./helpers";
@@ -159,5 +159,32 @@ describe("applyGatedEdit — plugin path (a plugin gate is connected)", () => {
     expect(await store.loadDoc()).toBe("agent body"); // NOT reverted to canon
     expect(gate.applyRevision).not.toHaveBeenCalled();
     expect(await types(channel)).toEqual([LogEventType.AgentRevisionProposed]);
+  });
+});
+
+describe("shouldQuarantine — park for the human, or land", () => {
+  const withComments = (body: string): string => `${body}\n\n<!--inplan\n[{"id":"cmt-aaa111","author":"a","date":"2026-01-01T00:00:00Z","resolved":false,"text":"q"}]\n-->\n`;
+
+  it("lands the first content of a brand-new doc: an empty base has no human text to protect", () => {
+    // `open` seeds an EMPTY canonical and the agent fills the doc in. Parking that fill leaves the
+    // human looking at the empty document the editor was launched on.
+    expect(shouldQuarantine("review", "", "# The plan\n\nBody.\n")).toBe(false);
+  });
+
+  it("judges the BODY, not the raw text: a canonical that is only comments is still empty", () => {
+    expect(shouldQuarantine("review", withComments(""), "# The plan\n")).toBe(false);
+  });
+
+  it("parks a body change once the document has content", () => {
+    expect(shouldQuarantine("review", "# The plan\n\nBody one.\n", "# The plan\n\nBody two.\n")).toBe(true);
+  });
+
+  it("never parks a comment-only change", () => {
+    expect(shouldQuarantine("review", "# The plan\n", withComments("# The plan"))).toBe(false);
+  });
+
+  it("never parks in auto mode, including the first fill", () => {
+    expect(shouldQuarantine("auto", "# The plan\n\nBody one.\n", "# The plan\n\nBody two.\n")).toBe(false);
+    expect(shouldQuarantine("auto", "", "# The plan\n")).toBe(false);
   });
 });

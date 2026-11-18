@@ -98,6 +98,16 @@ export interface WaitOptions {
   token?: string;
   /** Abort the wait (e.g. on shutdown). */
   signal?: AbortSignal;
+  /** Called once per poll tick while the wait is blocked, for work that has nothing to do with the
+   *  control channel — `waitCycle` uses it to notice the agent writing the plan file DURING the
+   *  wait (the open-then-fill flow) and push that edit through the gate, so the human's editor
+   *  shows it instead of the document the editor was launched on.
+   *
+   *  Runs on its OWN in-flight guard, never awaited by `tick`: a slow or wedged hook must not stall
+   *  the channel poll the wait's own liveness budgets are measured against, and a rejection must
+   *  not surface as an unhandled rejection (the agent's channel is one line of JSON, not a stack
+   *  trace), so it is swallowed here — the hook owns its own error reporting. */
+  onPoll?: () => Promise<void> | void;
 }
 
 const defaultActionable = (e: LogEntry): boolean => e.actor === "user";
@@ -386,8 +396,27 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
       }
     };
 
-    const timer = setInterval(() => void tick(), pollMs);
+    // Independent of `tick`'s `busy`: the two do unrelated work, and serialising them would make a
+    // stalled channel read also stop the file watch (and vice versa).
+    let polling = false;
+    const onPoll = async () => {
+      if (polling || done || !opts.onPoll) return;
+      polling = true;
+      try {
+        await opts.onPoll();
+      } catch {
+        /* the hook reports its own failures; a wait must never die of one */
+      } finally {
+        polling = false;
+      }
+    };
+
+    const timer = setInterval(() => {
+      void tick();
+      void onPoll();
+    }, pollMs);
     opts.signal?.addEventListener("abort", onAbort);
     void tick();
+    void onPoll();
   });
 }
