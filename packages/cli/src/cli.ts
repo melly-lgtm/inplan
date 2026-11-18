@@ -649,6 +649,13 @@ export async function waitCycle(
     // this edit now, and a stale waiter that parked a proposal (or reverted the working copy) after
     // stepping down would be mutating a document it no longer speaks for. Lock unreadable ⇒ assume
     // it is still ours — the wait's own poll steps down on the next tick either way.
+    //
+    // NOT atomic with the write, and it cannot be here: the wait-lock lives on the ControlChannel
+    // and the park takes the DocumentStore's own row lock, so a claim can still land in between.
+    // What makes the residual window safe is that the park is idempotent BY CONTENT — identical
+    // pending content re-parks the same row rather than minting a successor — so a stale writer
+    // produces the very proposal the new waiter would derive from the same working copy, and the
+    // revert is the one that park implies. Convergent, not conflicting (pinned in liveFill.test.ts).
     try {
       if (await channel.isSuperseded(lockToken)) return;
     } catch {

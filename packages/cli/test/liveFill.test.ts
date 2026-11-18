@@ -205,6 +205,48 @@ describe("live fill — the agent's edits during a blocked wait", () => {
       h.restore();
     }
   });
+
+  it("a supersession that lands mid-write leaves the state the new waiter would reach anyway", async () => {
+    // The ownership check cannot be atomic with the write: `createProposal` takes the proposal-row
+    // lock separately from the wait-lock, so a newer waiter can claim the doc while the park is
+    // blocked on that row lock. What saves it is that the park is IDEMPOTENT by content — identical
+    // pending content re-parks the SAME row rather than minting a successor — so the stale writer's
+    // park is the very proposal the new waiter would create from the same working copy, and the
+    // revert is the one that park implies. This pins that: the outcome is convergent, not a
+    // conflicting second document state.
+    const h = harness(DRAFT);
+    await h.store.setCanonical(DRAFT);
+    let atTheRowLock: (() => void) | null = null;
+    const entered = new Promise<void>((r) => (atTheRowLock = r));
+    let release: (() => void) | null = null;
+    const held = new Promise<void>((r) => (release = r));
+    const createProposal = h.store.createProposal.bind(h.store);
+    vi.spyOn(h.store, "createProposal").mockImplementation(async (input) => {
+      atTheRowLock!(); // inside the gate, past every ownership check
+      await held; // …and the doc changes hands right here
+      return createProposal(input);
+    });
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, null, { liveFill: true });
+      await waitUntil(async () => (await count(h.channel, LogEventType.AgentRevised)) >= 1);
+      await h.store.saveDoc(REVISED);
+      await entered;
+
+      await h.channel.claimLock("a-newer-waiter");
+      release!();
+      await run;
+
+      // One proposal, holding the agent's text, with the working copy at the base it was parked
+      // against — exactly what a waiter attaching now would derive from this document.
+      expect(await proposedContent(h.store)).toBe(REVISED);
+      expect(await count(h.channel, LogEventType.AgentRevisionProposed)).toBe(1);
+      expect(await h.store.loadDoc()).toBe(DRAFT);
+      const again = await h.store.createProposal({ content: REVISED, baseHash: "", baseContent: DRAFT });
+      expect(again.id).toBe((await h.store.myPendingProposal())!.id); // the same park, not a successor
+    } finally {
+      h.restore();
+    }
+  });
 });
 
 describe("waitForActions — the onPoll hook's lifetime", () => {
