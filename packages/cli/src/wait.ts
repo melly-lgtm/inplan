@@ -13,6 +13,12 @@ export const DEFAULT_ERROR_GRACE_MS = 5 * 60_000;
  *  means "unknown", which must not end a wait, but must not freeze it either. */
 export const DEFAULT_POLL_TIMEOUT_MS = 30_000;
 
+/** How long `finish` will hold the result waiting for an in-flight `onPoll` to settle. The hook's
+ *  work belongs in the status it is settling with, so waiting is right — but only for as long as a
+ *  healthy hook can plausibly take. Unbounded, a wedged hook would make the wait resolve NEVER:
+ *  no status, no exit code, the exact failure the grace budgets exist to rule out. */
+export const DEFAULT_HOOK_SETTLE_MS = 10_000;
+
 /** Tracks whether a previously timed-out request is STILL running.
  *
  *  `withTimeout` abandons the caller's view of a request; it cannot cancel the request itself,
@@ -108,6 +114,8 @@ export interface WaitOptions {
    *  not surface as an unhandled rejection (the agent's channel is one line of JSON, not a stack
    *  trace), so it is swallowed here — the hook owns its own error reporting. */
   onPoll?: () => Promise<void> | void;
+  /** How long `finish` waits for an in-flight `onPoll`. Default {@link DEFAULT_HOOK_SETTLE_MS}. */
+  hookSettleMs?: number;
 }
 
 const defaultActionable = (e: LogEntry): boolean => e.actor === "user";
@@ -294,12 +302,21 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
       if (done) return;
       done = true;
       cleanup();
-      // An onPoll hook may be mid-flight, and `waitCycle`'s hook MUTATES the document (it can park
-      // a proposal and revert the working copy). Resolving out from under it would let the caller
-      // print a terminal status that omits that park — and let a superseded waiter keep writing
-      // after it stepped down. Settle with the hook, not before it; `done` already stops new runs.
-      if (pendingPoll) void pendingPoll.then(() => resolve(r), () => resolve(r));
-      else resolve(r);
+      // An onPoll hook may be mid-flight, and `waitCycle`'s hook MUTATES the document (it advances
+      // the canonical and logs the edit). Resolving out from under it would let the caller print a
+      // terminal status that omits what the hook then did — and let a superseded waiter keep
+      // writing after it stepped down. Settle with the hook, not before it; `done` already stops
+      // new runs. BOUNDED: a hook that never settles must not take the wait's status down with it,
+      // so the result goes out either way once the budget is spent.
+      if (pendingPoll) {
+        let settleTimer: ReturnType<typeof setTimeout> | undefined;
+        const out = () => {
+          if (settleTimer) clearTimeout(settleTimer);
+          resolve(r);
+        };
+        settleTimer = setTimeout(out, opts.hookSettleMs ?? DEFAULT_HOOK_SETTLE_MS);
+        void pendingPoll.then(out, out);
+      } else resolve(r);
     };
     const onAbort = () => {
       if (done) return;

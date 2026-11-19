@@ -439,12 +439,16 @@ export async function waitCycle(
   // published a session for this doc — the plugin owns it, so we apply through it, never writing the
   // .md). A plugin read failure (editor closed / unreachable) falls back to the file model. Without
   // a plugin it's the persisted canonical (seeded from the file on first run).
-  const resolveCanonical = async (text: string): Promise<{ canonicalText: string; usePlugin: boolean }> => {
+  const resolveCanonical = async (text: string): Promise<{ canonicalText: string; usePlugin: boolean; gateFailed?: true }> => {
     if (gate) {
       try {
         return { canonicalText: await gate.readCanonical(), usePlugin: true };
       } catch {
-        return { canonicalText: (await store.getCanonical()) ?? text, usePlugin: false };
+        // `?? text` makes the agent's OWN text the base when nothing was ever persisted locally
+        // (the plugin path never seeds a local canonical) — "no change", which is the right answer
+        // for a turn that must emit a status regardless, and the wrong one for a live fill that can
+        // simply try again. gateFailed lets the live path tell those two apart.
+        return { canonicalText: (await store.getCanonical()) ?? text, usePlugin: false, gateFailed: true };
       }
     }
     const persisted = await store.getCanonical();
@@ -587,21 +591,39 @@ export async function waitCycle(
   // logged, and the human sits in front of the empty document the editor was launched on while the
   // agent waits for a human action that has no reason to come.
   //
-  // So keep gating while we wait: when the working copy changes, run the SAME pipeline the turn
-  // ran, which logs `document_edited` (landed) or `agent_revision_proposed` (parked) and so reaches
-  // the editor exactly as a turn-boundary edit does.
+  // So keep gating while we wait — but only as far as LANDING an edit. A park is a write of its
+  // own: it reverts the working copy to the base. At a turn boundary that is safe, because the
+  // agent has stopped editing and will re-read before it writes again. Mid-turn it is not: the
+  // agent is still working, and its tools read-modify-write the file (`inplan comment` is a
+  // readFileSync/writeFileSync pair), so it would compose its next write from a file we reverted
+  // under it — losing its own body revision, and then LANDING that comment-only write, which
+  // withdraws the parked proposal. The revision would exist nowhere: not on disk, not as a
+  // proposal, never seen by the human.
+  //
+  // So an edit that would be quarantined is DEFERRED, not parked: it stays in the working copy
+  // exactly as the agent wrote it, and the next `wait` — by which time the turn has ended and the
+  // agent has stopped — parks it the way it always did. Nothing regresses relative to not having
+  // this watcher at all; what we add is the edits that can land, which is every first fill of an
+  // empty document and every comment the agent writes while the human is reading.
+  //
   // Two states count as "already gated", and a read matching EITHER is not a new agent edit:
-  //  • gatedText — the text the pipeline last evaluated;
-  //  • gatedDisk — what that decision was expected to leave on disk. A park reverts the working
-  //    copy to the base, which is the gate's own write, not an edit; and when that revert fails
-  //    (applyGatedEdit swallows it, by design) the file still holds gatedText, which is also
-  //    already gated — so neither outcome re-parks the same text on a loop.
+  //  • gatedText — the text the pipeline last evaluated (landed, deferred or declined);
+  //  • gatedDisk — what that decision was expected to leave on disk. The TURN's park reverts the
+  //    working copy to the base, which is the gate's own write, not an edit; and when that revert
+  //    fails (applyGatedEdit swallows it, by design) the file still holds gatedText, which is also
+  //    already gated — so neither outcome is re-gated on a loop.
   // Neither is ever adopted from a post-apply re-read: that would silently swallow a write another
   // process slipped in after the decision, leaving text no one evaluated skipped for the whole wait.
   let gatedText = current;
   let gatedDisk = applied.proposed && !usePlugin ? canonicalText : current;
   let settling: string | null = null; // a changed read awaiting a second, identical one
   let liveWarned = false;
+  /** Mark `text` as gated and move on. `disk` is what the decision left on disk (the same text
+   *  whenever we wrote nothing). */
+  const markGated = (text: string, disk = text): void => {
+    gatedText = text;
+    gatedDisk = disk;
+  };
   const liveFill = async (): Promise<void> => {
     let text: string;
     try {
@@ -613,8 +635,8 @@ export async function waitCycle(
       settling = null;
       return;
     }
-    // Never gate a half-written file: a write we catch between truncate and flush would be parked
-    // (or landed) as a truncated document. Two identical reads a poll apart means it settled.
+    // Never gate a half-written file: a write we catch between truncate and flush would be landed
+    // as a truncated document. Two identical reads a poll apart means it settled.
     if (settling !== text) {
       settling = text;
       return;
@@ -622,60 +644,79 @@ export async function waitCycle(
     settling = null;
     // Read the base only AFTER the settle, never from the same instant as the file read. The
     // editor's own save writes the file and then the canonical, and sampling between those two
-    // writes would read the HUMAN's save as an agent edit — and park their text as a proposal.
-    // A poll's worth of delay puts that microsecond window firmly in the past.
-    const { canonicalText: base, usePlugin: viaPlugin } = await resolveCanonical(text);
-    const liveEv = evaluateAgentEdit(base, text, confirmed);
+    // writes would read the HUMAN's save as an agent edit. A poll's worth of delay puts that
+    // microsecond window firmly in the past.
+    const { canonicalText: base, usePlugin: viaPlugin, gateFailed } = await resolveCanonical(text);
+    // The plugin's projection IS the base on that path, so a hub blip leaves us with no base to
+    // judge against. A turn has to emit a status and takes the local fallback; a live fill can just
+    // try again — and must NOT mark the text gated, or a momentary outage would hide the agent's
+    // edit for the rest of the wait, long after the hub came back.
+    if (gateFailed) return;
+    let liveEv: ReturnType<typeof evaluateAgentEdit>;
+    try {
+      liveEv = evaluateAgentEdit(base, text, confirmed);
+    } catch (e) {
+      // `parse` THROWS on a comment block that isn't valid JSON (an unterminated block, a half-
+      // written array), so a malformed document never reaches the integrity branch below. Without
+      // this, onPoll's catch swallowed it and the agent got no signal at all for the whole wait.
+      declined(`inplan: your edit's comment block could not be parsed, so it was NOT applied (${(e as Error).message}) — fix the document; the next wait reports it.\n`, text);
+      return;
+    }
     // An edit needing the AGENT's decision — unconfirmed comment deletions, a broken comment block —
     // is reported as a status with a non-zero exit, and this wait is holding the human's turn: it
     // cannot report one without ending their turn for them. Leave the file untouched; the agent's
-    // next `wait` evaluates the same text and reports it properly. Said once, so a file the agent
-    // leaves broken doesn't spam the log every tick.
+    // next `wait` evaluates the same text and reports it properly.
     if (liveEv.unconfirmed.length > 0 || !liveEv.integrityOk) {
-      if (!liveWarned) {
-        liveWarned = true;
-        process.stderr.write(
-          liveEv.unconfirmed.length > 0
-            ? "inplan: your edit removes anchored comment(s), so it was NOT applied while the human's turn is open — re-run wait with --confirmed-comment-deletion=<ids>.\n"
-            : "inplan: your edit breaks the comment grammar, so it was NOT applied — fix the document; the next wait reports the errors.\n",
-        );
-      }
-      gatedText = text; // a further edit (the fix) is a fresh change and gets evaluated again
-      gatedDisk = text; // nothing was written, so this IS the disk state
+      declined(
+        liveEv.unconfirmed.length > 0
+          ? "inplan: your edit removes anchored comment(s), so it was NOT applied while the human's turn is open — re-run wait with --confirmed-comment-deletion=<ids>.\n"
+          : "inplan: your edit breaks the comment grammar, so it was NOT applied — fix the document; the next wait reports the errors.\n",
+        text,
+      );
+      return;
+    }
+    // A body change that review mode would park: defer it to the turn boundary (see above). The
+    // working copy keeps the agent's text — this path writes NOTHING — so the agent's next edit
+    // builds on its own work, and the next `wait` parks the result for the human.
+    if (shouldQuarantine(acceptanceFrom(await backend.history()), base, text)) {
+      declined("inplan: your body revision is held for review and will be proposed to the human at the end of this turn — it stays in the working copy until then, not a sync failure.\n", text);
       return;
     }
     liveWarned = false;
-    // Last check before we write: a newer waiter may have claimed the doc since the settle. It owns
-    // this edit now, and a stale waiter that parked a proposal (or reverted the working copy) after
-    // stepping down would be mutating a document it no longer speaks for. Lock unreadable ⇒ assume
-    // it is still ours — the wait's own poll steps down on the next tick either way.
+    // Last check before we write: a newer waiter may have claimed the doc since the settle, and a
+    // stale waiter that advanced the canonical after stepping down would be writing to a document
+    // it no longer speaks for. Lock unreadable ⇒ assume it is still ours — the wait's own poll
+    // steps down on the next tick either way.
     //
     // NOT atomic with the write, and it cannot be here: the wait-lock lives on the ControlChannel
-    // and the park takes the DocumentStore's own row lock, so a claim can still land in between.
-    // What makes the residual window safe is that the park is idempotent BY CONTENT — identical
-    // pending content re-parks the same row rather than minting a successor — so a stale writer
-    // produces the very proposal the new waiter would derive from the same working copy, and the
-    // revert is the one that park implies. Convergent, not conflicting (pinned in liveFill.test.ts).
+    // and the write goes through the DocumentStore, so a claim can still land in between. The
+    // residual window is convergent rather than conflicting: landing is idempotent (the same text
+    // over the same canonical), and it is the same decision the new waiter reaches from the same
+    // working copy.
     try {
       if (await channel.isSuperseded(lockToken)) return;
     } catch {
       /* unknown — proceed, exactly as the wait's own supersede probe does */
     }
-    const liveApplied = await applyGatedEdit(store, channel, liveEv, {
-      current: text,
-      canonicalText: base,
-      quarantine: shouldQuarantine(acceptanceFrom(await backend.history()), base, text),
-      gate: viaPlugin ? gate : null,
-    });
+    const liveApplied = await applyGatedEdit(store, channel, liveEv, { current: text, canonicalText: base, quarantine: false, gate: viaPlugin ? gate : null });
     // Only a decision that DID something may replace the landing signal (#88). A no-op poll — the
-    // human saving the text we already hold, say — must not blank out a proposal parked earlier in
-    // this very wait, which is the one thing the agent reads to know its edit is safe. A live edit
-    // that LANDS does replace it: applyGatedEdit withdraws the agent's own pending proposal on that
-    // path, so reporting it as still pending would be the same false signal in the other direction.
+    // human saving the text we already hold, say — must not blank out a proposal the TURN parked,
+    // which is the one thing the agent reads to know its edit is safe. A live edit that LANDS does
+    // replace it: applyGatedEdit withdraws the agent's own pending proposal on that path, so
+    // reporting it as still pending would be the same false signal in the other direction.
     if (liveEv.changed || liveEv.removedIds.length > 0) proposalOut = reportApplied(liveApplied, text);
-    gatedText = text;
-    gatedDisk = liveApplied.proposed && !viaPlugin ? base : text;
+    markGated(text);
   };
+  /** Say once why an edit was not applied, and mark it gated so the agent's NEXT write (the fix, or
+   *  the next revision) is evaluated afresh rather than re-reported every poll. Nothing was written,
+   *  so the working copy still holds `text`. */
+  function declined(message: string, text: string): void {
+    if (!liveWarned) {
+      liveWarned = true;
+      process.stderr.write(message);
+    }
+    markGated(text);
+  }
 
   let waitCursor = cursor;
   let historyForMode = history;

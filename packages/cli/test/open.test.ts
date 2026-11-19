@@ -116,24 +116,29 @@ describe("inplan open", () => {
     }
   }, 30_000);
 
-  it("a brand-new doc's first content lands; a later revision is still parked for review", async () => {
+  it("a brand-new doc's first content lands; a later revision waits for the turn boundary", async () => {
     // Review mode protects the human's document from being overwritten unseen — so the first
-    // content of an empty doc, which has no human text to protect, lands. Everything after it is
-    // a change to a document that now exists, and goes back to being parked.
+    // content of an empty doc, which has no human text to protect, lands. A revision to the
+    // document that now exists is held instead: parking it mid-turn would revert the working copy
+    // under an agent that is still editing, and its next read-modify-write would compose from the
+    // reverted file. It stays exactly where the agent wrote it until the turn ends.
     const file = join(home, "revise.plan.md");
     const first = "# Draft one\n\nBody one.\n";
     const second = "# Draft two\n\nBody two, rewritten.\n";
 
     const child = spawn(process.execPath, [CLI, "open", file], { env });
+    let stderr = "";
+    child.stderr.on("data", (d) => (stderr += String(d)));
     try {
       expect(await waitForSidecar("canonical.md", 10_000)).toBe(true);
       writeFileSync(file, first);
       expect(await waitFor(() => readFileSync(sidecarPath("canonical.md")!, "utf8") === first, 10_000)).toBe(true);
 
       writeFileSync(file, second);
-      expect(await waitFor(() => logText().includes('"agent_revision_proposed"'), 10_000)).toBe(true);
-      expect(readFileSync(sidecarPath("proposed.md")!, "utf8")).toBe(second); // parked for the human
-      expect(readFileSync(sidecarPath("canonical.md")!, "utf8")).toBe(first); // canonical unchanged until they accept
+      expect(await waitFor(() => /held for review/.test(stderr), 10_000)).toBe(true);
+      expect(readFileSync(file, "utf8")).toBe(second); // never reverted under the agent
+      expect(readFileSync(sidecarPath("canonical.md")!, "utf8")).toBe(first); // and not landed either
+      expect(logText()).not.toContain("agent_revision_proposed"); // the park waits for the turn boundary
     } finally {
       child.kill("SIGKILL");
     }

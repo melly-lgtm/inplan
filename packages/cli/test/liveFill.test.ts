@@ -17,8 +17,11 @@ import { waitForActions } from "../src/wait";
 import { proposedContent } from "./helpers";
 
 const EMPTY = "";
-const DRAFT = "# Plan\n\nThe body the human has to be able to see.\n";
-const REVISED = "# Plan\n\nA second pass over the body.\n";
+const DRAFT = "# Plan\n\nThe body the human has to be able to see.\n\n<!--inplan\n[]\n-->\n";
+const REVISED = "# Plan\n\nA second pass over the body.\n\n<!--inplan\n[]\n-->\n";
+const COMMENT_BLOCK = '<!--inplan\n[{"id":"cmt-aaa111","author":"a","date":"2026-01-01T00:00:00Z","resolved":false,"anchor":"doc","text":"q"}]\n-->';
+/** DRAFT with a document-level comment added — a comment-only change, which lands in review mode. */
+const COMMENTED = DRAFT.replace("<!--inplan\n[]\n-->", COMMENT_BLOCK);
 
 const DEBOUNCE_MS = 25;
 const POLL_MS = 2;
@@ -65,12 +68,14 @@ function harness(initialDoc: string) {
     logExit: () => {},
   };
   let out = "";
+  let err = "";
   const so = vi.spyOn(process.stdout, "write").mockImplementation((c: unknown) => ((out += String(c)), true));
-  const se = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  const se = vi.spyOn(process.stderr, "write").mockImplementation((c: unknown) => ((err += String(c)), true));
   return {
     channel,
     store,
     backend,
+    stderr: () => err,
     lastJson: () => JSON.parse(out.trim().split("\n").pop()!) as { status: string; proposal?: { state: string; id?: string }; entries: LogEntry[] },
     restore: () => {
       so.mockRestore();
@@ -144,7 +149,7 @@ describe("live fill — the agent's edits during a blocked wait", () => {
     // between the two: text no one evaluated would be treated as already gated and skipped for the
     // rest of the wait, surfacing only when the agent's next `wait` runs.
     const h = harness(EMPTY);
-    const CONCURRENT = "# Plan\n\nWritten by someone else, a moment later.\n";
+    const CONCURRENT = COMMENTED; // a comment-only change, so gating it is observable: it lands
     let raced = false;
     const setCanonical = h.store.setCanonical.bind(h.store);
     vi.spyOn(h.store, "setCanonical").mockImplementation(async (content: string) => {
@@ -159,7 +164,7 @@ describe("live fill — the agent's edits during a blocked wait", () => {
       await waitUntil(async () => (await count(h.channel, LogEventType.AgentRevised)) >= 1);
       await h.store.saveDoc(DRAFT);
 
-      await waitUntil(async () => (await proposedContent(h.store)) === CONCURRENT); // seen, not skipped
+      await waitUntil(async () => (await h.store.getCanonical()) === CONCURRENT); // seen, not skipped
       await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
       await run;
     } finally {
@@ -168,9 +173,10 @@ describe("live fill — the agent's edits during a blocked wait", () => {
   });
 
   it("stops writing once a newer waiter owns the doc", async () => {
-    // A stale waiter that parks a proposal — or reverts the working copy — after stepping down is
-    // mutating a document it no longer speaks for. The supersession lands in the window the race
-    // actually has: after the edit settled, before the gate writes anything.
+    // A stale waiter that advances the canonical after stepping down is writing to a document it
+    // no longer speaks for. The supersession lands in the window the race actually has: after the
+    // edit settled, before the gate writes anything. The edit is comment-only, so it is one the
+    // live path really would land.
     const h = harness(DRAFT);
     await h.store.setCanonical(DRAFT);
     let atTheGate: (() => void) | null = null;
@@ -183,66 +189,111 @@ describe("live fill — the agent's edits during a blocked wait", () => {
       if (!armed) return getCanonical();
       armed = false;
       atTheGate!(); // the fill has settled and is reading its base
-      await held; // …hold it there while the doc changes hands
+      await held; // …and the doc changes hands right here
       return getCanonical();
     });
     try {
       const run = waitCycle(h.backend, null, new Set(), undefined, null, { liveFill: true });
       await waitUntil(async () => (await count(h.channel, LogEventType.AgentRevised)) >= 1);
       armed = true;
-      await h.store.saveDoc(REVISED);
+      await h.store.saveDoc(COMMENTED);
       await entered;
 
       await h.channel.claimLock("a-newer-waiter"); // the doc is someone else's now
       release!();
       await run; // the wait steps down on its own supersede probe
 
-      expect(await proposedContent(h.store)).toBeNull(); // nothing parked by the waiter that left
-      expect(await count(h.channel, LogEventType.AgentRevisionProposed)).toBe(0);
-      expect(await h.store.loadDoc()).toBe(REVISED); // nor reverted out from under the new waiter
+      expect(await count(h.channel, LogEventType.DocumentEdited)).toBe(0); // nothing written by the waiter that left
+      expect(await h.store.getCanonical()).toBe(DRAFT);
       expect(h.lastJson().status).toBe("superseded");
     } finally {
       h.restore();
     }
   });
 
-  it("a supersession that lands mid-write leaves the state the new waiter would reach anyway", async () => {
-    // The ownership check cannot be atomic with the write: `createProposal` takes the proposal-row
-    // lock separately from the wait-lock, so a newer waiter can claim the doc while the park is
-    // blocked on that row lock. What saves it is that the park is IDEMPOTENT by content — identical
-    // pending content re-parks the SAME row rather than minting a successor — so the stale writer's
-    // park is the very proposal the new waiter would create from the same working copy, and the
-    // revert is the one that park implies. This pins that: the outcome is convergent, not a
-    // conflicting second document state.
+  it("defers a revision that review mode would park — it is never written out from under the agent", async () => {
+    // A park is a write: it reverts the working copy to the base. Mid-turn the agent is still
+    // editing, and its tools read-modify-write the file (`inplan comment` is a readFileSync /
+    // writeFileSync pair), so parking here hands it a reverted file to compose its next write
+    // from — and that comment-only write LANDS, withdrawing the park. The body revision then
+    // exists nowhere: not on disk, not as a proposal, never seen by the human.
     const h = harness(DRAFT);
     await h.store.setCanonical(DRAFT);
-    let atTheRowLock: (() => void) | null = null;
-    const entered = new Promise<void>((r) => (atTheRowLock = r));
-    let release: (() => void) | null = null;
-    const held = new Promise<void>((r) => (release = r));
-    const createProposal = h.store.createProposal.bind(h.store);
-    vi.spyOn(h.store, "createProposal").mockImplementation(async (input) => {
-      atTheRowLock!(); // inside the gate, past every ownership check
-      await held; // …and the doc changes hands right here
-      return createProposal(input);
-    });
     try {
       const run = waitCycle(h.backend, null, new Set(), undefined, null, { liveFill: true });
       await waitUntil(async () => (await count(h.channel, LogEventType.AgentRevised)) >= 1);
-      await h.store.saveDoc(REVISED);
-      await entered;
 
-      await h.channel.claimLock("a-newer-waiter");
-      release!();
+      await h.store.saveDoc(REVISED); // the agent revises the body mid-turn
+      await sleep(POLL_MS * 20);
+      expect(await h.store.loadDoc()).toBe(REVISED); // left exactly where the agent put it
+      expect(await proposedContent(h.store)).toBeNull(); // nothing parked mid-turn
+      expect(await h.store.getCanonical()).toBe(DRAFT); // …and nothing landed either
+
+      // The agent keeps working from its own text, as it would with any read-modify-write tool.
+      const next = (await h.store.loadDoc()).replace("<!--inplan\n[]\n-->", COMMENT_BLOCK);
+      await h.store.saveDoc(next);
+      await sleep(POLL_MS * 20);
+      expect(await h.store.loadDoc()).toContain("A second pass"); // the revision survived
+      expect(await h.store.loadDoc()).toContain("cmt-aaa111");
+
+      await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
       await run;
+      // The deferral is the agent's to hear about, so it is never silent.
+      expect(h.stderr()).toMatch(/held for review/);
+    } finally {
+      h.restore();
+    }
+  });
 
-      // One proposal, holding the agent's text, with the working copy at the base it was parked
-      // against — exactly what a waiter attaching now would derive from this document.
-      expect(await proposedContent(h.store)).toBe(REVISED);
-      expect(await count(h.channel, LogEventType.AgentRevisionProposed)).toBe(1);
-      expect(await h.store.loadDoc()).toBe(DRAFT);
-      const again = await h.store.createProposal({ content: REVISED, baseHash: "", baseContent: DRAFT });
-      expect(again.id).toBe((await h.store.myPendingProposal())!.id); // the same park, not a successor
+  it("reports a comment block that will not parse instead of swallowing it", async () => {
+    // `parse` THROWS on a malformed block, so a broken document never reaches the integrity check.
+    // Unhandled, onPoll's catch ate it and the agent got no signal at all for the whole wait.
+    const h = harness(EMPTY);
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, null, { liveFill: true });
+      await waitUntil(async () => (await count(h.channel, LogEventType.AgentRevised)) >= 1);
+      await h.store.saveDoc("# Plan\n\nHalf-written.\n\n<!--inplan\n[{ broken json\n-->\n");
+      await waitUntil(() => /could not be parsed/.test(h.stderr()));
+      expect(await h.store.getCanonical()).toBe(EMPTY); // nothing gated from an unreadable document
+
+      // …and the agent's FIX is evaluated afresh rather than written off with the broken version.
+      await h.store.saveDoc(DRAFT);
+      await waitUntil(async () => (await h.store.getCanonical()) === DRAFT);
+      await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
+      await run;
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("retries a fill the plugin hub could not judge, instead of marking it gated", async () => {
+    // On the plugin path the hub's projection IS the base, so a blip leaves nothing to judge
+    // against. Falling back to "the agent's own text" reads as no change — and marking it gated
+    // would hide the edit for the rest of the wait, long after the hub came back.
+    const h = harness(EMPTY);
+    let down = true;
+    const gate = {
+      readCanonical: vi.fn(async () => {
+        if (down) throw new Error("hub unreachable");
+        return EMPTY;
+      }),
+      applyRevision: vi.fn(async (md: string) => {
+        await h.store.setCanonical(md);
+      }),
+    };
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, gate, { liveFill: true });
+      await waitUntil(async () => (await count(h.channel, LogEventType.AgentRevised)) >= 1);
+      await h.store.saveDoc(DRAFT);
+      await sleep(POLL_MS * 20);
+      expect(gate.applyRevision).not.toHaveBeenCalled(); // nothing judged while the hub was down
+
+      down = false; // the hub comes back — the same text must still be gated
+      await waitUntil(() => gate.applyRevision.mock.calls.length > 0);
+      expect(gate.applyRevision).toHaveBeenCalledWith(DRAFT);
+
+      await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
+      await run;
     } finally {
       h.restore();
     }
@@ -267,5 +318,28 @@ describe("waitForActions — the onPoll hook's lifetime", () => {
     await channel.append({ actor: "user", type: LogEventType.TurnEnded });
     await wait;
     expect(hookDone).toBe(true);
+  });
+
+  it("but does not hang on one that never settles — the status still goes out", async () => {
+    // Waiting for the hook is right; waiting forever is the failure the grace budgets exist to
+    // rule out. A wedged hook would otherwise leave the agent with no status and no exit code.
+    const channel = new MemoryControlChannel();
+    let started = false;
+    const wait = waitForActions({
+      channel,
+      cursor: 0,
+      debounceMs: 1,
+      pollMs: 1,
+      watchEditor: false,
+      hookSettleMs: 30,
+      onPoll: () =>
+        new Promise<void>(() => {
+          started = true; // …and never resolves
+        }),
+    });
+    await waitUntil(() => started);
+    await channel.append({ actor: "user", type: LogEventType.TurnEnded });
+    const result = await wait;
+    expect(result.entries.some((e) => e.type === LogEventType.TurnEnded)).toBe(true);
   });
 });
