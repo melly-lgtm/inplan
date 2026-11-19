@@ -626,6 +626,16 @@ export function App(props: EditorProps = {}): JSX.Element {
         // So neither: the incoming version comes in as a REVIEW against what is on screen, and the
         // human decides, hunk by hunk. Nothing is merged behind their back and nothing is lost.
         if (dirtyRef.current) {
+          // …unless a ROW-BACKED review is already on screen. Replacing it with a local one would
+          // take away the review the human is working through — hunk selections and all — and the
+          // row behind it stays pending but invisible until a reload or the next park. One review
+          // at a time: keep theirs, keep the buffer, and say what happened. The landed version is
+          // the canonical on disk, so it is readable the moment they are done here.
+          const openReview = proposalRef.current;
+          if (openReview && !openReview.local) {
+            setStatus(t("msg.agentUpdatedDuringReview"));
+            return;
+          }
           showIncoming(content);
           return;
         }

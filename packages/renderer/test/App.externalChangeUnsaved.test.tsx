@@ -94,6 +94,27 @@ describe("an agent edit landing on an unsaved buffer", () => {
     expect(settle).not.toHaveBeenCalled();
   });
 
+  it("does not take away a review the human is already working through", async () => {
+    // A row-backed review on screen is the human's work in progress — hunk selections included —
+    // and the row behind it would stay pending but invisible until a reload. One review at a time.
+    await mount();
+    await act(async () => {
+      agent.proposeRevision("# Plan\n\nThe agent's PARKED revision.\n\n<!--inplan v1\n[]\n-->\n");
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("Agent proposed changes"));
+    await act(async () => {
+      emitEdit?.(MINE); // …and the human starts typing while it is open
+    });
+
+    await act(async () => {
+      agent.externalChange(AGENT); // something else lands
+    });
+
+    expect(document.body.textContent).toContain("The agent's PARKED revision."); // still the row review
+    expect(document.body.textContent).not.toContain("The agent's landed revision."); // not replaced by a local one
+    expect(document.body.textContent).toContain("unsaved"); // …and their typing is still unsaved work, not discarded
+  });
+
   it("takes the agent's edit outright when the buffer is clean — the normal case is unchanged", async () => {
     await mount();
     await act(async () => {
