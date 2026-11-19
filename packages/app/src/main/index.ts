@@ -758,7 +758,14 @@ function registerIpc(): void {
   ipcMain.handle("i18n:get", () => i18n.getSnapshot());
   ipcMain.handle("i18n:set-locale", (_e, code: string) => i18n.setLocale(code));
   // Plugin connection info for the renderer ({session, rendererUrl} | null). Null ⇒ no plugin.
-  ipcMain.handle("plugin:info", () => pluginInfo());
+  // Answering this IS telling the renderer what to activate against, so it is recorded here, at
+  // the moment of the answer: a refresh that sent the signal earlier may have seen a different
+  // plugin state than the one this request is finally served with.
+  ipcMain.handle("plugin:info", () => {
+    const info = pluginInfo();
+    nav.rendererActivated(info !== null);
+    return info;
+  });
 }
 
 void app.whenReady().then(async () => {

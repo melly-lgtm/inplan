@@ -28,7 +28,8 @@ export interface PluginActivatorDeps {
   /** The verified plugin's info for the CURRENT document, or null when there is none (not
    *  entitled, unverified, failed to start for this doc). */
   getInfo: () => Promise<{ session: string; rendererUrl: string } | null>;
-  /** Import the verified renderer entry. Called at most once; `activate` is re-callable per doc. */
+  /** Import the verified renderer entry. One import per URL is shared by every activation (the
+   *  module's `activate` is what is re-callable per document); a failed import is retried. */
   importModule: (url: string) => Promise<PluginRendererModule>;
   /** The file-backed api the host exposes — the fallback, and the base the plugin's capabilities
    *  are merged onto. Undefined only if the host never exposed one. */
@@ -48,14 +49,20 @@ export interface PluginActivator {
 }
 
 export function createPluginActivator(deps: PluginActivatorDeps): PluginActivator {
-  /** The import, started at most once and shared by every call — overlapping activations must not
+  /** The import of each entry URL, started at most once and shared by every call — overlapping activations must not
    *  each start their own. A failed import is forgotten so a later activation can try again. */
-  let importing: Promise<PluginRendererModule> | null = null;
-  const importOnce = (url: string): Promise<PluginRendererModule> =>
-    (importing ??= deps.importModule(url).catch((err: unknown) => {
-      importing = null;
-      throw err;
-    }));
+  const importing = new Map<string, Promise<PluginRendererModule>>();
+  const importOnce = (url: string): Promise<PluginRendererModule> => {
+    let p = importing.get(url);
+    if (!p) {
+      p = deps.importModule(url).catch((err: unknown) => {
+        importing.delete(url);
+        throw err;
+      });
+      importing.set(url, p);
+    }
+    return p;
+  };
   let current: PluginExt | null = null;
   /** Bumped by every `activate()`. A call that finds it moved while it was awaiting has been
    *  overtaken, and must touch nothing: the newer call owns the outcome. */

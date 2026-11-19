@@ -32,9 +32,10 @@ export interface CaughtUpOptions {
 /**
  * Resolve once a binding's body is the one that landed — the moment to read it.
  *
- * `read` returns the binding's document, or null when it cannot be read right now (a legacy
- * binding caught mid-edit, or a caller not ready to adopt anything yet). Resolves true as soon as
- * a read's body hashes to `bodyHash`; false as soon as `abandoned()` says the caller has moved on
+ * `readBody` returns the binding's body, or null when it cannot be read right now (a legacy
+ * binding caught mid-edit). Only the body: this runs on every poll, and building the whole
+ * document each time to hash one field of it is wasted work. Resolves true as soon as a read
+ * hashes to `bodyHash`; false as soon as `abandoned()` says the caller has moved on
  * (a newer event, a re-bind, another document).
  *
  * It resolves a SIGNAL, never the document it looked at. Hashing awaits, and a keystroke landing
@@ -48,7 +49,7 @@ export interface CaughtUpOptions {
  * from before the turn.
  */
 export async function whenCaughtUp(
-  read: () => { body: string } | null,
+  readBody: () => string | null,
   bodyHash: string,
   abandoned: () => boolean,
   opts: CaughtUpOptions = {},
@@ -56,9 +57,9 @@ export async function whenCaughtUp(
   const { intervalMs = 100, retries = 20, hash = sha256Hex, sleep = (ms) => new Promise<void>((r) => setTimeout(r, ms)) } = opts;
   for (let attempt = 0; ; attempt++) {
     if (abandoned()) return false;
-    const doc = read();
-    if (doc) {
-      const h = await hash(doc.body);
+    const body = readBody();
+    if (body !== null) {
+      const h = await hash(body);
       if (abandoned()) return false;
       if (h === null || h === bodyHash) return true; // null: nothing to check with — as if unstamped
     }

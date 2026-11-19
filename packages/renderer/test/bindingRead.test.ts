@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest";
 import { sha256Hex, whenCaughtUp } from "../src/bindingRead";
 
-const doc = (body: string) => ({ body });
+const doc = (body: string): string => body;
 const noSleep = { sleep: async () => {}, retries: 5 };
 const LANDED = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"; // sha-256 of "abc"
 
@@ -30,7 +30,7 @@ describe("knowing when a binding holds what landed", () => {
   });
 
   it("waits past an unreadable binding too", async () => {
-    const seen: Array<{ body: string } | null> = [null, null, doc("abc"), doc("never read")];
+    const seen: Array<string | null> = [null, null, doc("abc"), doc("never read")];
     expect(await whenCaughtUp(() => seen.shift()!, LANDED, () => false, noSleep)).toBe(true);
     expect(seen).toHaveLength(1);
   });

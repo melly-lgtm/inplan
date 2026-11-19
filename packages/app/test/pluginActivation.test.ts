@@ -180,6 +180,25 @@ describe("the plugin's renderer entry is imported once", () => {
 
     expect(imports).toBe(2);
   });
+
+  it("a different entry URL is a different module", async () => {
+    const urls: string[] = [];
+    let info = { session: "s", rendererUrl: "entry-1" };
+    let installed: Api | null = null;
+    const activator = createPluginActivator({
+      getInfo: async () => info,
+      importModule: async (url) => (urls.push(url), { activate: () => ext(`from ${url}`) }),
+      baseApi: () => BASE,
+      install: (api) => (installed = api),
+    });
+
+    await activator.activate();
+    info = { session: "s", rendererUrl: "entry-2" };
+    await activator.activate();
+
+    expect(urls).toEqual(["entry-1", "entry-2"]);
+    expect((installed as Api | null)?.binding?.getText()).toBe("from entry-2");
+  });
 });
 
 describe("what the renderer was last told", () => {
@@ -228,6 +247,16 @@ describe("plugin refreshes run one at a time", () => {
     await q.run(async () => void ran.push("next"));
     expect(ran).toEqual(["next"]);
     expect(errors.map(String)).toEqual(["Error: plugin failed to stop"]);
+  });
+
+  it("…nor does a reporter that itself throws", async () => {
+    const q = createSerialQueue(() => {
+      throw new Error("the logger is gone");
+    });
+    const ran: string[] = [];
+    await q.run(async () => Promise.reject(new Error("plugin failed to stop")));
+    await q.run(async () => void ran.push("next"));
+    expect(ran).toEqual(["next"]);
   });
 });
 

@@ -462,12 +462,25 @@ export function App(props: EditorProps = {}): JSX.Element {
     const commentStore = hostApi().commentStore ?? null;
 
     const loadGen = docGenRef.current; // navigation before load resolves must win over the older result
-    let loadSettled = false; // until it is, there is no document here for an agent's edit to replace
+    // Until this mount's load settles there is no document here for an agent's edit to replace —
+    // and load installs the copy it was handed when it resolves, over anything adopted before it.
+    let loadSettled = false;
+    let markLoadSettled = (): void => {};
+    const whenLoadSettled = new Promise<void>((r) => (markLoadSettled = r));
+    const settleLoad = (): void => {
+      loadSettled = true;
+      markLoadSettled();
+    };
     hostApi()
       .load()
       .then(({ content, path, readOnly: ro, focusCommentId }) => {
-        loadSettled = true;
-        if (docGenRef.current !== loadGen) return; // a navigation already installed a newer document
+        if (docGenRef.current !== loadGen) {
+          // A navigation already installed a newer document — which IS a loaded document, so the
+          // editor must not be left on its loading screen waiting for this one.
+          setLoaded(true);
+          settleLoad();
+          return;
+        }
         docPathRef.current = path;
         setReadOnly(!!ro);
         setPendingFocusCommentId(focusCommentId ?? null);
@@ -481,6 +494,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         docRef.current = d;
         savedRef.current = serialize(d);
         setLoaded(true);
+        settleLoad();
         // Durable re-show: if a proposal was parked (e.g. the app was closed
         // mid-review), surface it again rather than silently accepting it. Generation-guarded:
         // a slow read must not surface against a document navigated to since.
@@ -493,8 +507,8 @@ export function App(props: EditorProps = {}): JSX.Element {
           });
       })
       .catch(() => {
-        loadSettled = true;
         setLoaded(true);
+        settleLoad();
       });
 
     // Auto-accept (and review-mode comment-only changes) arrive as a file rewrite.
@@ -508,6 +522,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       // the destination's own (empty on first visit). Per-doc still holds — an undo can never pull
       // another doc's content — but the history now survives navigation instead of being dropped.
       if (docPathRef.current) historyByDoc.current.set(docPathRef.current, { undo: history.current, redo: future.current });
+      cancelBindingRead(); // a wait for an edit to the document being left must not adopt into this one
       docPathRef.current = path;
       setReadOnly(!!ro); // the destination doc may have its own read-only state
       // The @-mention roster is cached per-doc-open — the doc we're navigating to may belong to
@@ -626,44 +641,53 @@ export function App(props: EditorProps = {}): JSX.Element {
         // Unified: the binding holds the bare body and the store owns comments. Legacy collab: the
         // binding holds the whole serialized document — unreadable while its comment block is
         // mid-edit, and then nothing was read, so nothing is adopted or announced.
-        //
-        // Not readable before this mount's own load has settled, either: load installs the document
-        // it was handed (from the file) when it resolves, and would replace whatever was adopted
-        // ahead of it with exactly the copy this handler exists to avoid.
         const read = (): ParsedDocument | null => {
-          if (!loadSettled) return null;
           try {
             return commentStore ? { body: binding.getText(), comments: commentStore.list() } : parse(binding.getText());
           } catch {
             return null;
           }
         };
-        // (The hash is of the body alone. A comment-only edit therefore matches at once — which is
-        // right for this shape, where the store delivers comments and its observer keeps them
-        // current. A whole-document binding would adopt its comment block unchecked; no host
-        // pairs that shape with a plugin-carried edit.)
-        if (bodyHash === undefined) {
-          // Nothing says what landed (an older CLI), so there is nothing to wait for.
+        const adoptNow = (): void => {
           const now = read();
           if (now) adoptExternal(now, false);
-          return;
-        }
-        // The event and the plugin's own delivery are not ordered: wait until the binding holds
-        // the body that landed, rather than adopting whatever it holds this instant (bindingRead.ts).
-        //
-        // Abandoned by a newer event or unmount (cancelled), a re-bind, or another document on
-        // screen. Deliberately NOT by the document generation: this mount's own load bumps it when
-        // it resolves, and an event that arrived just before would then never be adopted at all.
-        const forPath = docPathRef.current;
+        };
+        // Abandoned by a newer event, a navigation or unmount (cancelled), a re-bind, or another
+        // document on screen. The document is the one the EVENT names, when it names one: before
+        // load there is no path of our own to compare against, and load may yet install another.
+        // Deliberately NOT by the document generation: this mount's own load bumps it when it
+        // resolves, and an event that arrived just before would then never be adopted at all.
+        const forPath = path ?? docPathRef.current;
         let cancelled = false;
         cancelBindingRead = () => (cancelled = true);
-        const abandoned = (): boolean => cancelled || hostApi().binding !== binding || (forPath !== "" && docPathRef.current !== forPath);
-        void whenCaughtUp(read, bodyHash, abandoned).then((ready) => {
-          // Read NOW, not what the wait looked at: its hashing awaits, and a keystroke that landed
-          // in the binding meanwhile must be in what is adopted.
-          const now = ready ? read() : null;
-          if (now) adoptExternal(now, false);
-        });
+        const abandoned = (): boolean => cancelled || hostApi().binding !== binding || (forPath !== "" && docPathRef.current !== "" && docPathRef.current !== forPath);
+        const start = (): void => {
+          if (abandoned()) return;
+          if (bodyHash === undefined) return adoptNow(); // the host did not say what landed: nothing to wait for
+          // The event and the plugin's own delivery are not ordered: wait until the binding holds
+          // the body that landed, rather than adopting whatever it holds this instant
+          // (bindingRead.ts). The hash is of the body alone, so a comment-only edit matches at
+          // once — right for the unified shape, where the store delivers comments and its observer
+          // keeps them current. A whole-document binding would adopt its comment block unchecked;
+          // no host pairs that shape with a plugin-carried edit.
+          const readBody = (): string | null => {
+            try {
+              return commentStore ? binding.getText() : parse(binding.getText()).body;
+            } catch {
+              return null;
+            }
+          };
+          void whenCaughtUp(readBody, bodyHash, abandoned).then((ready) => {
+            // Read NOW, not what the wait looked at: its hashing awaits, and a keystroke that
+            // landed in the binding meanwhile must be in what is adopted.
+            if (ready) adoptNow();
+          });
+        };
+        // Nothing starts before this mount's load has settled — not the wait (its budget is for
+        // the plugin's delivery, and a slow load would spend it), and not an immediate read
+        // (load would replace what it adopted with the file's copy).
+        if (loadSettled) start();
+        else void whenLoadSettled.then(start);
       }),
       // Review-mode body changes arrive parked, as a proposal to accept/reject.
       hostApi().onProposal(({ content, id, baseContent, pending, path }) => {

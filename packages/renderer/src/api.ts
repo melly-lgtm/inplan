@@ -290,7 +290,11 @@ export interface Api {
   setSettings(settings: Settings): Promise<void>;
   /** Leaving the document: the host shows/handles the quit-confirmation flow. */
   exit?: ExitController;
-  /** The agent rewrote the document on disk. */
+  /** The agent rewrote the document on disk.
+   *
+   *  `payload.path` must be the path `load()` / `onNavigated` gave for the document the change
+   *  belongs to, character for character: the editor ignores a change stamped with any other
+   *  path, as one meant for a document it has left. */
   onExternalChange(cb: (payload: DocPayload) => void): () => void;
   /** The agent signalled it thinks the plan is ready. */
   onAgentDone(cb: () => void): () => void;

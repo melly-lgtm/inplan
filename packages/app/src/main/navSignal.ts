@@ -53,7 +53,9 @@ export function createSerialQueue(onError: (err: unknown) => void = () => {}): {
   let tail: Promise<void> = Promise.resolve();
   return {
     run: (job) => {
-      tail = tail.then(job).catch(onError);
+      // The second catch is for a reporter that itself throws: a rejected tail would skip every
+      // job queued after it.
+      tail = tail.then(job).catch(onError).catch(() => {});
       return tail;
     },
   };
