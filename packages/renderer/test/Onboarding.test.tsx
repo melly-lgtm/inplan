@@ -51,6 +51,34 @@ describe("Onboarding", () => {
     }
   });
 
+  it("never swallows a dialog's buttons — a tour must not be able to trap the user", () => {
+    // The live report: a first visit to a shared document raised BOTH the tour and the host app's
+    // consent banner. Accept and Decline did nothing but blink the coach card, because the guard
+    // swallowed them — and the banner can only be dismissed by answering it. A dialog is blocking
+    // UI that somebody is waiting on; redirecting attention away from one is a deadlock, not a
+    // nudge. The tour knows nothing about this element beyond its role, which is the point.
+    const banner = document.createElement("div");
+    banner.setAttribute("role", "dialog");
+    banner.innerHTML = '<button type="button">Accept</button><button type="button">Decline</button>';
+    const onAccept = vi.fn();
+    const onDecline = vi.fn();
+    banner.querySelectorAll("button")[0]!.addEventListener("click", onAccept);
+    banner.querySelectorAll("button")[1]!.addEventListener("click", onDecline);
+    document.body.appendChild(banner);
+    try {
+      render(<Onboarding signals={NONE} onFinish={() => {}} />);
+
+      fireEvent.click(banner.querySelectorAll("button")[1]!);
+      expect(onDecline).toHaveBeenCalled();
+      fireEvent.click(banner.querySelectorAll("button")[0]!);
+      expect(onAccept).toHaveBeenCalled();
+      // …and the card does not pulse, because answering a dialog is not a distraction.
+      expect(document.querySelector(".ap-coach-card")!.classList.contains("ap-coach-blink")).toBe(false);
+    } finally {
+      banner.remove();
+    }
+  });
+
   it("Skip finishes from any step", () => {
     const onFinish = vi.fn();
     render(<Onboarding signals={NONE} onFinish={onFinish} />);

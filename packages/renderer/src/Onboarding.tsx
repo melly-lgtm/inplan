@@ -78,8 +78,15 @@ export function Onboarding({
   // the step's spotlighted control (or a surface that legitimately follows from it — the
   // context menu, the composer, the profile menu) and the coach card itself: swallow it
   // and blink the card to redirect attention here.
+  //
+  // A DIALOG is never a distraction. It is blocking UI that is asking the user something, and
+  // whoever raised it is waiting for an answer — so swallowing its buttons does not redirect
+  // attention, it deadlocks: the dialog can't be dismissed, the tour can't be satisfied, and the
+  // only feedback is the card blinking. That includes dialogs this tour knows nothing about, such
+  // as a consent banner the host app puts over the editor on a first visit — which is exactly when
+  // the tour is running too.
   useEffect(() => {
-    const ALLOW = ".ap-coach-card, .ap-ctxmenu, .ap-composer, .ap-profile";
+    const ALLOW = ".ap-coach-card, .ap-ctxmenu, .ap-composer, .ap-profile, [role='dialog']";
     const guard = (e: MouseEvent) => {
       const node = e.target as Element | null;
       if (!node || typeof node.closest !== "function") return;
