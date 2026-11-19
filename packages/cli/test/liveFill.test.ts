@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LogEventType, MemoryControlChannel, MemoryDocumentStore, type LogEntry } from "@inplan/core/node";
 import { waitCycle, type WaitBackend } from "../src/cli";
-import { waitForActions } from "../src/wait";
+import { onceAtATime, waitForActions } from "../src/wait";
 import { proposedContent } from "./helpers";
 
 const EMPTY = "";
@@ -273,6 +273,29 @@ describe("live fill — the agent's edits during a blocked wait", () => {
     }
   });
 
+  it("a comment the agent adds after the TURN parked its revision does not destroy it", async () => {
+    // The agent edited, then called wait: the turn parks the revision and reverts the working copy.
+    // The agent keeps working from that reverted file — and a comment-only write LANDS. Retracting
+    // the parked revision there left it nowhere: not on disk, not pending, never decided.
+    const h = harness(REVISED);
+    await h.store.setCanonical(DRAFT);
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, null, { liveFill: true });
+      await waitUntil(async () => (await proposedContent(h.store)) === REVISED); // the turn parked it
+      await waitUntil(async () => (await h.store.loadDoc()) === DRAFT); // …and reverted the file
+
+      await h.store.saveDoc(COMMENTED); // `inplan comment` on the reverted file
+      await waitUntil(async () => (await h.store.getCanonical()) === COMMENTED); // the comment lands
+
+      expect(await proposedContent(h.store)).toBe(REVISED); // the revision is still the human's to decide
+      await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
+      await run;
+      expect(h.lastJson().proposal?.state).toBe("pending_review"); // …and the agent is still told so
+    } finally {
+      h.restore();
+    }
+  });
+
   it("says why an edit was declined once per REASON, not once per wait", async () => {
     // A single "have we spoken yet" latch kept the first reason and swallowed every later one: an
     // agent told its revision was safely held then corrupted the comment block and heard nothing —
@@ -355,6 +378,42 @@ describe("live fill — the agent's edits during a blocked wait", () => {
     } finally {
       h.restore();
     }
+  });
+});
+
+describe("waitForActions — batching the human's actions", () => {
+  it("does not let the agent's own writes hold a finished turn open", async () => {
+    // The debounce batches a burst of HUMAN actions. Keyed on the whole batch, any other append
+    // restarted it — and live fill's own `document_edited` entries arrive in the same read, so an
+    // agent writing more often than the debounce could keep `your_turn` from ever being reported.
+    const channel = new MemoryControlChannel();
+    await channel.append({ actor: "user", type: LogEventType.TurnEnded });
+    const chatter = setInterval(() => void channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: 1 } }), 10);
+    try {
+      const started = Date.now();
+      await waitForActions({ channel, cursor: 0, debounceMs: 100, pollMs: 2, watchEditor: false });
+      expect(Date.now() - started).toBeLessThan(600); // ~one debounce, not one per agent write
+    } finally {
+      clearInterval(chatter);
+    }
+  });
+});
+
+describe("onceAtATime", () => {
+  it("drops a call made while one is in flight, instead of running two", async () => {
+    // waitForActions' own guard is per CALL, and waitCycle reuses one hook across every call its
+    // wait loop makes — so a hook still running when the settle budget expires would be joined by
+    // a fresh one, two runs sharing one closure's state.
+    let running = 0;
+    let peak = 0;
+    const fn = onceAtATime(async () => {
+      running += 1;
+      peak = Math.max(peak, running);
+      await sleep(20);
+      running -= 1;
+    });
+    await Promise.all([fn(), fn(), fn()]);
+    expect(peak).toBe(1);
   });
 });
 

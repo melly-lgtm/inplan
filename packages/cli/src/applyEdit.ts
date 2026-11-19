@@ -27,8 +27,9 @@ export async function applyGatedEdit(
   channel: ControlChannel,
   ev: AgentEditEvaluation,
   ctx: { current: string; canonicalText: string; quarantine: boolean; gate: PluginGate | null },
-): Promise<{ proposed: boolean; proposalId?: string; parkFailed?: boolean; eventLogged?: boolean }> {
+): Promise<{ proposed: boolean; proposalId?: string; parkFailed?: boolean; eventLogged?: boolean; withdrew?: boolean }> {
   const { current, canonicalText, quarantine, gate } = ctx;
+  let withdrew = false;
   if (ev.removedIds.length > 0) {
     // Confirmed deletions: drop the orphaned comment objects. On the plugin path push the result
     // into the plugin's doc (it owns the .md); otherwise write the file + canonical.
@@ -36,7 +37,7 @@ export async function applyGatedEdit(
     else {
       await store.saveDoc(ev.acceptedText);
       await store.setCanonical(ev.acceptedText);
-      await withdrawOwnPending(store);
+      withdrew = await withdrawOwnPending(store, canonicalText, ev.acceptedText);
     }
     await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { removed: ev.removedIds } });
   } else if (ev.changed && quarantine) {
@@ -96,11 +97,11 @@ export async function applyGatedEdit(
     if (gate) await gate.applyRevision(current);
     else {
       await store.setCanonical(current);
-      await withdrawOwnPending(store);
+      withdrew = await withdrawOwnPending(store, canonicalText, current);
     }
     await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: utf8Bytes(current) } });
   }
-  return { proposed: false };
+  return { proposed: false, ...(withdrew ? { withdrew } : {}) };
 }
 
 /**
@@ -175,8 +176,32 @@ function revertWouldWipe(canonicalText: string, current: string): boolean {
   return isBlank(canonicalText) && !isBlank(current);
 }
 
-/** An edit that lands directly moots the caller's own parked proposal, if any — retract it. */
-async function withdrawOwnPending(store: DocumentStore): Promise<void> {
+/**
+ * An edit that lands directly moots the caller's own parked proposal — but only a BODY edit does.
+ *
+ * A park reverts the working copy to the base, and the agent's next write is composed from that
+ * reverted file, so a comment the agent adds mid-turn lands with the parked revision's body absent
+ * from it. Retracting the proposal on that write deleted the revision outright: gone from the
+ * working copy (the park reverted it), gone from the pending set (this withdrew it), and never
+ * decided by the human. The landing text and the proposal were about different things — one added a
+ * comment, the other rewrote the body — and only one of them was kept.
+ *
+ * So retract only when the landing edit actually replaces the body the proposal was proposing
+ * against. A comment-only landing leaves the proposal standing; it goes slightly stale (it predates
+ * the new comment), which is a state the reviewer already handles — accepting a proposal merges the
+ * live comments rather than overwriting them with the proposal's snapshot.
+ *
+ * Returns whether a proposal was retracted, so the caller can keep its landing signal honest.
+ */
+async function withdrawOwnPending(store: DocumentStore, canonicalText: string, landed: string): Promise<boolean> {
+  if (!bodyChanged(canonicalText, landed)) return false;
   const mine = await store.myPendingProposal();
-  if (mine) await store.withdrawProposal(mine.id);
+  if (!mine) return false;
+  await store.withdrawProposal(mine.id);
+  return true;
+}
+
+/** Did this edit change the body, as opposed to only the comments riding with it? */
+function bodyChanged(before: string, after: string): boolean {
+  return body(before) !== body(after);
 }

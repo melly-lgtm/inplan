@@ -162,6 +162,39 @@ describe("applyGatedEdit — plugin path (a plugin gate is connected)", () => {
   });
 });
 
+describe("a landing edit and someone else's parked revision", () => {
+  const WITH_COMMENT = 'canon\n\n<!--inplan\n[{"id":"cmt-aaa111","author":"a","date":"2026-01-01T00:00:00Z","resolved":false,"anchor":"doc","text":"q"}]\n-->\n';
+
+  it("a comment-only landing leaves a parked body revision standing", async () => {
+    // The park reverted the working copy, so the agent's next write — a comment added mid-turn —
+    // is composed WITHOUT the parked revision's body. Retracting the proposal on that write
+    // deleted the revision outright: reverted off disk, withdrawn from the pending set, never
+    // decided by the human.
+    const store = new MemoryDocumentStore(WITH_COMMENT);
+    await store.setCanonical("canon");
+    const { id } = await store.createProposal({ content: "the agent's rewritten body", baseHash: "h", baseContent: "canon" });
+    const channel = new MemoryControlChannel();
+
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: WITH_COMMENT, canonicalText: "canon", quarantine: false, gate: null });
+
+    expect(applied.withdrew).toBeUndefined();
+    expect((await store.myPendingProposal())?.id).toBe(id); // still the human's to decide
+    expect(await store.getCanonical()).toBe(WITH_COMMENT); // …and the comment still landed
+  });
+
+  it("a body landing does retract it, and says so", async () => {
+    const store = new MemoryDocumentStore("a newer body");
+    await store.setCanonical("canon");
+    await store.createProposal({ content: "an older proposed body", baseHash: "h", baseContent: "canon" });
+    const channel = new MemoryControlChannel();
+
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "a newer body", canonicalText: "canon", quarantine: false, gate: null });
+
+    expect(applied.withdrew).toBe(true);
+    expect(await store.myPendingProposal()).toBeNull();
+  });
+});
+
 describe("shouldQuarantine — park for the human, or land", () => {
   const withComments = (body: string): string => `${body}\n\n<!--inplan\n[{"id":"cmt-aaa111","author":"a","date":"2026-01-01T00:00:00Z","resolved":false,"text":"q"}]\n-->\n`;
 

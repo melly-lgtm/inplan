@@ -59,6 +59,28 @@ async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   }
 }
 
+/**
+ * Wrap an async function so it never runs concurrently with itself: a call made while one is in
+ * flight is dropped, not queued.
+ *
+ * The in-flight guard inside `waitForActions` is per CALL, and `waitCycle` reuses one hook across
+ * every call its wait loop makes. So a hook still running when `finish` gives up on it (the settle
+ * budget) would be joined by a fresh one the moment the loop started the next `waitForActions` —
+ * two runs sharing one closure's state, free to gate and apply the same text twice.
+ */
+export function onceAtATime<A extends unknown[]>(fn: (...args: A) => Promise<void>): (...args: A) => Promise<void> {
+  let busy = false;
+  return async (...args: A): Promise<void> => {
+    if (busy) return;
+    busy = true;
+    try {
+      await fn(...args);
+    } finally {
+      busy = false;
+    }
+  };
+}
+
 export interface WaitResult {
   /** Set when the wait gave up after repeated poll failures (expired session, network gone).
    *  A wait must END on this, never die — the agent's channel is JSON, not a stack trace. */
@@ -322,6 +344,8 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
       if (done) return;
       done = true;
       cleanup();
+      // Deliberately does NOT settle with `pendingPoll` the way `finish` does: an abort is a
+      // shutdown, and the caller is not going to report a status the hook's work could belong to.
       reject(new Error("wait aborted"));
     };
 
@@ -394,10 +418,16 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
           }
         }
 
-        if (entries.some(isActionable)) {
-          if (entries.length !== lastCount) {
+        // Count ACTIONABLE entries only. The debounce exists to batch a burst of the human's
+        // actions; keying it on the whole batch let any other append restart it — and the agent's
+        // own live-fill writes land in this same read, so an agent that logged an edit more often
+        // than debounceMs could hold the human's finished turn open indefinitely, waiting out a
+        // quiet window its own writes kept breaking.
+        const actionable = entries.reduce((n, e) => (isActionable(e) ? n + 1 : n), 0);
+        if (actionable > 0) {
+          if (actionable !== lastCount) {
             // New activity since last check — (re)start the debounce window.
-            lastCount = entries.length;
+            lastCount = actionable;
             deadline = Date.now() + debounceMs;
           } else if (deadline !== null && Date.now() >= deadline) {
             finish({ entries, cursor });

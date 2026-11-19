@@ -43,7 +43,7 @@ import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenc
 import { demoteSource, shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
 import { RemoteDocState, isDecidedProposalCorpse, utf8Bytes } from "./remoteDocState";
 import { announcePresence, presenceTokenResolver } from "./presence";
-import { awaitReopen, wakePredicate, waitForActions } from "./wait";
+import { awaitReopen, onceAtATime, wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
 import { toolActivityText } from "./relayActivity";
 import { ensureDocFile } from "./ensureDoc";
@@ -627,7 +627,7 @@ export async function waitCycle(
     gatedText = text;
     gatedDisk = disk;
   };
-  const liveFill = async (): Promise<void> => {
+  const liveFill = onceAtATime(async (): Promise<void> => {
     let text: string;
     try {
       text = await store.loadDoc();
@@ -705,14 +705,14 @@ export async function waitCycle(
       /* unknown — proceed, exactly as the wait's own supersede probe does */
     }
     const liveApplied = await applyGatedEdit(store, channel, liveEv, { current: text, canonicalText: base, quarantine: false, gate: viaPlugin ? gate : null });
-    // Only a decision that DID something may replace the landing signal (#88). A no-op poll — the
-    // human saving the text we already hold, say — must not blank out a proposal the TURN parked,
-    // which is the one thing the agent reads to know its edit is safe. A live edit that LANDS does
-    // replace it: applyGatedEdit withdraws the agent's own pending proposal on that path, so
-    // reporting it as still pending would be the same false signal in the other direction.
-    if (liveEv.changed || liveEv.removedIds.length > 0) proposalOut = reportApplied(liveApplied, text);
+    // The landing signal (#88) belongs to the proposal the TURN parked, and a live fill never parks
+    // one of its own — so the ONLY thing that may change it here is a retraction. applyGatedEdit
+    // reports that explicitly rather than us inferring it from "something landed": a comment-only
+    // landing now leaves the parked revision standing, and clearing the signal for it would tell
+    // the agent its work was gone while the human still has it in review.
+    if (liveApplied.withdrew) proposalOut = {};
     markGated(text);
-  };
+  });
   /** Say why an edit was not applied — once per REASON, so a repeated decline is quiet but a new
    *  one is never swallowed — and mark it gated so the agent's next write (the fix, or the next
    *  revision) is evaluated afresh rather than re-reported every poll. Nothing was written, so the
