@@ -542,10 +542,23 @@ export function App(props: EditorProps = {}): JSX.Element {
       hostApi().onExternalChange(({ content, pluginOwned }) => {
         // A plugin owns the document this was read from, and we are bound to that plugin: it is
         // already delivering the change through the binding, and the file it came from is one the
-        // plugin overwrites with its own projection on its own schedule — so pushing it into the
-        // binding below would write possibly-stale text over the shared document and undo the turn
-        // that just landed. Without a binding this is the only copy we have, so it is used.
-        if (pluginOwned && hostApi().binding?.setText) return;
+        // plugin overwrites with its own projection on its own schedule — so adopting it would
+        // write possibly-stale text over the shared document and undo the turn that just landed.
+        // Without a binding this is the only copy we have, so it is used.
+        //
+        // Not adopting is not the same as ignoring. Two things still have to happen here, and a
+        // bare `return` skipped both: the agent is no longer thinking, and an OPEN review's base
+        // has to be rebased — its frozen base would otherwise make Apply publish a body computed
+        // before this change, wiping it for every collaborator. Only the adoption is skipped.
+        if (pluginOwned && hostApi().binding?.setText) {
+          setAgentThinking(false);
+          const openReview = proposalRef.current;
+          if (openReview?.raw !== undefined && openReview.base !== undefined) {
+            showProposal(openReview.raw, openReview.id, openReview.base, queueCountRef.current, reviewOpenRef.current);
+          }
+          setStatus(t("msg.agentUpdated"));
+          return;
+        }
         const prevDoc = docRef.current;
         const parsed = parse(content);
         // Store-backed (plugin): comments are owned by the external store, not the rewritten

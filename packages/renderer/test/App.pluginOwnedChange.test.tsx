@@ -65,6 +65,23 @@ describe("an external change from a plugin-owned file", () => {
     await waitFor(() => expect(document.body.textContent).toContain("Read from the file the plugin owns."));
   });
 
+  it("still clears 'thinking' and rebases an open review, rather than going silent", async () => {
+    // Not adopting is not ignoring. A review open over the pre-change base would otherwise have
+    // Apply publish a body computed before this change, wiping it for every collaborator — and a
+    // bare return would also leave the agent-thinking indicator up forever.
+    const setText = vi.fn();
+    (window as unknown as { api: { binding: unknown } }).api.binding = { setText };
+    await mount();
+    const agent = (window as unknown as { api: { getProposal?: unknown } }).api;
+    void agent;
+
+    act(() => emit!({ path: "p.md", content: INCOMING, pluginOwned: true }));
+
+    // The status says the agent acted, which is how the human learns anything happened at all.
+    await waitFor(() => expect(document.body.textContent).toContain("agent updated the document"));
+    expect(setText).not.toHaveBeenCalled();
+  });
+
   it("is used when no plugin owns it, bound or not", async () => {
     const setText = vi.fn();
     (window as unknown as { api: { binding: unknown } }).api.binding = { setText };

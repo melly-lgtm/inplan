@@ -424,7 +424,7 @@ export async function waitCycle(
   confirmed: Set<string>,
   model?: string,
   gate: PluginGate | null = null,
-  opts: { liveFill?: boolean } = {},
+  opts: { liveFill?: boolean; pluginOwnsFile?: boolean } = {},
 ): Promise<WaitOutcome> {
   const { channel, store } = backend;
   const history = await backend.history();
@@ -458,6 +458,8 @@ export async function waitCycle(
   };
   const { canonicalText, usePlugin } = await resolveCanonical(current);
 
+  const ORPHANED_WRITE =
+    "inplan: a plugin owns this document and its gate was unavailable, so your edit went to the working file — the plugin may overwrite that file, and the human's editor will not adopt it. Re-run once the plugin is reachable.\n";
   const ev = evaluateAgentEdit(canonicalText, current, confirmed);
   if (ev.unconfirmed.length > 0) {
     output({
@@ -496,9 +498,16 @@ export async function waitCycle(
   };
   const quarantine = (await suspectEmptyBase(usePlugin, canonicalText)) || shouldQuarantine(acceptanceFrom(history), canonicalText, current);
   // `usePlugin ? gate : null` — only route through the plugin when its read succeeded.
-  // `gate: usePlugin ? gate : null` routes the write; `pluginOwns: gate !== null` describes the
-  // DOCUMENT. A failed hub read nulls the first and not the second — the plugin still owns the file.
-  const applied = await applyGatedEdit(store, channel, ev, { current, canonicalText, quarantine, gate: usePlugin ? gate : null, pluginOwns: gate !== null });
+  // `gate: …` routes the write; `pluginOwns` describes the DOCUMENT, and the two are independent.
+  // Ownership is whether the editor published a plugin session for this doc — NOT whether this
+  // process managed to load a gate, which fails soft for reasons that say nothing about ownership
+  // (logged out, the entitlement probe unreachable, a verify failure). An entitled editor can be
+  // bound to its plugin while this CLI has no gate at all, and the file is still the plugin's.
+  const applied = await applyGatedEdit(store, channel, ev, { current, canonicalText, quarantine, gate: usePlugin ? gate : null, pluginOwns: opts.pluginOwnsFile === true });
+  // A write to a file somebody else owns: it lands, but the plugin overwrites that file with its
+  // own projection on its own schedule, so this edit may simply vanish — and the editor, bound to
+  // the plugin, will not adopt it. Say so; silence here reads as a clean turn.
+  if (opts.pluginOwnsFile === true && !usePlugin && ev.changed) process.stderr.write(ORPHANED_WRITE);
   // A parked proposal must be unmistakable in the moment (#88): the canonical is unchanged BY
   // DESIGN, and an agent that reads silence as loss may destroy its own work. Say so on stderr
   // now, and carry the fact in the wait output below (the durable record is the gate path's job).
@@ -768,7 +777,7 @@ export async function waitCycle(
       // `onlyIfUnmoved`: this decision was made against a snapshot while the human may be saving,
       // so the write re-checks the document first and skips if it moved. The turn path never asks
       // for it — there the human has handed the turn over and is not writing.
-      liveApplied = await applyGatedEdit(store, channel, liveEv, { current: text, canonicalText: base, quarantine: false, gate: viaPlugin ? gate : null, onlyIfUnmoved: true, pluginOwns: gate !== null });
+      liveApplied = await applyGatedEdit(store, channel, liveEv, { current: text, canonicalText: base, quarantine: false, gate: viaPlugin ? gate : null, onlyIfUnmoved: true, pluginOwns: opts.pluginOwnsFile === true });
     } catch (e) {
       // The hook's rejection is DISCARDED by the poll that calls it — by design, so a hook can
       // never kill a wait — which means anything thrown here is silence unless we say it. The
@@ -784,6 +793,9 @@ export async function waitCycle(
     applyFailures = 0;
     retryNotBefore = 0;
     if (liveApplied.stale) return; // the document moved under us; the next poll settles on what is there now
+    // Same hazard as the turn path: a write to a file the plugin owns, made without its gate, can
+    // be overwritten by the plugin's own projection and will not be adopted by the editor.
+    if (opts.pluginOwnsFile === true && !viaPlugin) sayOnce(ORPHANED_WRITE);
     if (liveApplied.eventLogged === false) process.stderr.write(UNANNOUNCED);
     // The landing signal (#88) belongs to the proposal the TURN parked, and a live fill never parks
     // one of its own — so the ONLY thing that may change it here is a retraction. applyGatedEdit
@@ -3397,7 +3409,10 @@ export async function main(): Promise<void> {
   // document in — those writes have to keep reaching the editor (see waitCycle's live-fill block).
   // Not the remote path: there the working copy's lifecycle belongs to runRemote's hydrate/re-sync,
   // and the agent edits between runs rather than during one.
-  await waitCycle(fsBackend(file), explicitCursor, confirmed, model, gate, { liveFill: true });
+  // `pluginOwnsFile` is the SESSION, not the gate: the editor publishes one when its plugin takes
+  // the document, and that is what makes the working file the plugin's — whether or not this
+  // process could load a gate of its own.
+  await waitCycle(fsBackend(file), explicitCursor, confirmed, model, gate, { liveFill: true, pluginOwnsFile: pluginSession !== undefined });
 }
 
 // Run the CLI only when this module IS the invoked program — i.e. `node dist/cli.js …` or the

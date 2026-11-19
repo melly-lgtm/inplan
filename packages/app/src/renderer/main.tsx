@@ -57,13 +57,19 @@ async function activatePlugin(): Promise<void> {
       /* best-effort teardown of the previous doc's binding */
     }
     currentExt = pluginMod.activate(info.session);
+    // A failed activation must REPLACE the installed api, not leave the previous document's one
+    // in place: its binding belongs to a document we have navigated away from, and anything that
+    // asks "am I bound?" would get yes and act on a binding that writes to the wrong doc.
+    if (!currentExt) setHostApi({ ...w.api });
     if (currentExt) {
       setHostApi({ ...w.api, binding: currentExt.binding, commentStore: currentExt.commentStore, extraModes: currentExt.extraModes, sidePanels: currentExt.sidePanels });
     }
   } catch (err) {
-    // A plugin wiring failure must never block the editor — fall back to the file-backed api.
+    // A plugin wiring failure must never block the editor — fall back to the file-backed api, and
+    // install it, so no stale binding from a previous document survives the failure.
     console.error("[inplan] plugin unavailable; using the file-backed editor", err);
     currentExt = null;
+    if (w.api) setHostApi({ ...w.api });
   }
 }
 

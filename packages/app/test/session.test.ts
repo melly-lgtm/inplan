@@ -10,7 +10,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FsDocumentStore, hashBody, LogEventType, readStatus, writeStatus, type LogEntry } from "@inplan/core/node";
+import { FsDocumentStore, hashBody, LogEventType, type LogEntry } from "@inplan/core/node";
 import { Session } from "../src/main/session";
 
 let dir: string;
