@@ -61,7 +61,8 @@ export interface TrackedGate {
  *    recording `readFailed`;
  *  - `applyRevision()` on failure persists the edit to the local store (preserve-and-retry) and does
  *    NOT re-throw — so the turn still completes and emits a status instead of crashing to
- *    `main().catch`/exit 1 — recording `writeFailed`.
+ *    `main().catch`/exit 1 — recording `writeFailed`, and resolving `"local"` so the caller does
+ *    not record the edit as having reached the shared document.
  * The caller uses the flags to skip the end-of-turn re-sync and, per {@link pendingRequiresReplay},
  * mark the working copy `.pending` only when a local revision actually needs replaying (a write).
  */
@@ -92,6 +93,7 @@ export function trackGateDegradations(
           onWriteError?.(String(e));
           await localStore.setCanonical(md);
           await localStore.saveDoc(md);
+          return "local";
         }
       },
     },

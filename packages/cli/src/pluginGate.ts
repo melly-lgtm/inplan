@@ -35,8 +35,13 @@ const defaultCacheDir = (): string => join(process.env.INPLAN_HOME || join(homed
 export interface PluginGate {
   /** The plugin's live projection — the gate's canonical base (instead of reading the `.md`). */
   readCanonical(): Promise<string>;
-  /** Push the accepted markdown into the plugin's document (the plugin owns the `.md`). */
-  applyRevision(markdown: string): Promise<void>;
+  /** Push the accepted markdown into the plugin's document (the plugin owns the `.md`).
+   *
+   *  Resolves `"local"` only from a WRAPPER that caught a failed push and landed the text in the
+   *  local files instead (see `trackGateDegradations`) — so a caller recording where an edit went
+   *  can tell "in the shared document" from "kept locally because the hub was unreachable". A
+   *  plugin's own gate resolves nothing. */
+  applyRevision(markdown: string): Promise<void | "local">;
 }
 
 /** The shape of the verified plugin CLI entry: `gate(session)` returns the gate the wait loop uses. */

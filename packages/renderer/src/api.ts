@@ -72,6 +72,11 @@ export interface DocPayload {
   readOnly?: boolean;
   /** Focus this comment on load (a digest email's deep link). Absent = no auto-focus. */
   focusCommentId?: string;
+  /** External change only: the edit this announces went out through a runtime plugin, so it lives
+   *  in the plugin's shared document rather than in `content`. A renderer holding that plugin's
+   *  binding reads the binding instead; one without a binding has only `content`. Absent on hosts
+   *  with no such distinction. */
+  viaPlugin?: boolean;
 }
 
 export interface SaveOptions {
@@ -282,7 +287,11 @@ export interface Api {
   setSettings(settings: Settings): Promise<void>;
   /** Leaving the document: the host shows/handles the quit-confirmation flow. */
   exit?: ExitController;
-  /** The agent rewrote the document on disk. */
+  /** The agent rewrote the document on disk.
+   *
+   *  `payload.path` must be the path `load()` / `onNavigated` gave for the document the change
+   *  belongs to, character for character: the editor ignores a change stamped with any other
+   *  path, as one meant for a document it has left. */
   onExternalChange(cb: (payload: DocPayload) => void): () => void;
   /** The agent signalled it thinks the plan is ready. */
   onAgentDone(cb: () => void): () => void;

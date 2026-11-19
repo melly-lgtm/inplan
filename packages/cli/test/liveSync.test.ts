@@ -74,7 +74,7 @@ describe("trackGateDegradations", () => {
       store,
       (m) => { logged = m; },
     );
-    await expect(t.gate.applyRevision("EDIT")).resolves.toBeUndefined(); // swallowed ⇒ the turn still completes
+    await expect(t.gate.applyRevision("EDIT")).resolves.toBe("local"); // swallowed ⇒ the turn still completes, and says where the edit went
     expect(t.writeFailed()).toBe(true);
     expect(t.readFailed()).toBe(false);
     expect(calls.setCanonical).toEqual(["EDIT"]); // preserve-and-retry: the edit is kept locally…
@@ -87,7 +87,7 @@ describe("trackGateDegradations", () => {
     const applied: string[] = [];
     const t = trackGateDegradations({ readCanonical: async () => "CANON", applyRevision: async (md) => void applied.push(md) }, store);
     expect(await t.gate.readCanonical()).toBe("CANON");
-    await t.gate.applyRevision("X");
+    expect(await t.gate.applyRevision("X")).toBeUndefined(); // it reached the plugin
     expect(applied).toEqual(["X"]);
     expect(t.readFailed()).toBe(false);
     expect(t.writeFailed()).toBe(false);

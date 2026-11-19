@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { MemoryControlChannel, MemoryDocumentStore, LogEventType } from "@inplan/core";
 import { applyGatedEdit, shouldQuarantine } from "../src/applyEdit";
+import { trackGateDegradations } from "../src/liveSync";
 import type { AgentEditEvaluation } from "../src/gate";
 import type { PluginGate } from "../src/pluginGate";
 import { proposedContent } from "./helpers";
@@ -159,6 +160,53 @@ describe("applyGatedEdit — plugin path (a plugin gate is connected)", () => {
     expect(await store.loadDoc()).toBe("agent body"); // NOT reverted to canon
     expect(gate.applyRevision).not.toHaveBeenCalled();
     expect(await types(channel)).toEqual([LogEventType.AgentRevisionProposed]);
+  });
+});
+
+describe("which carrier an edit went out on", () => {
+  const payloadOf = async (ch: MemoryControlChannel) => (await ch.readSince(0)).entries[0]!.payload as { via?: string };
+
+  it("stamps BOTH carriers — unstamped has to stay distinguishable as 'a CLI that predates this'", async () => {
+    // The one fact about an edit only this process knows, and knows exactly. The editor uses it to
+    // decide where to READ the edit from — the shared document, or the canonical the gate
+    // advanced — because the working file is not a safe answer once a plugin is alive.
+    const viaGate = new MemoryControlChannel();
+    const gate = fakeGate();
+    await applyGatedEdit(new MemoryDocumentStore("body"), viaGate, ev({ changed: true }), { current: "body", canonicalText: "canon", quarantine: false, gate });
+    const viaFile = new MemoryControlChannel();
+    const store = new MemoryDocumentStore("body");
+    await applyGatedEdit(store, viaFile, ev({ changed: true }), { current: "body", canonicalText: "canon", quarantine: false, gate: null });
+
+    expect((await payloadOf(viaGate)).via).toBe("plugin");
+    expect(gate.applyRevision).toHaveBeenCalledWith("body"); // the stamp is true: it did go through the plugin
+    expect((await payloadOf(viaFile)).via).toBe("file");
+    expect(await store.getCanonical()).toBe("body"); // …and a file-stamped edit IS in the canonical, where the editor will look
+  });
+
+  it("stamps a confirmed deletion the same way", async () => {
+    const channel = new MemoryControlChannel();
+    await applyGatedEdit(new MemoryDocumentStore("body"), channel, ev({ changed: true, removedIds: ["cmt-aaa111"], acceptedText: "accepted" }), { current: "body", canonicalText: "canon", quarantine: false, gate: fakeGate() });
+    expect((await payloadOf(channel)).via).toBe("plugin");
+
+    const fileBacked = new MemoryControlChannel();
+    await applyGatedEdit(new MemoryDocumentStore("body"), fileBacked, ev({ changed: true, removedIds: ["cmt-aaa111"], acceptedText: "accepted" }), { current: "body", canonicalText: "canon", quarantine: false, gate: null });
+    expect((await payloadOf(fileBacked)).via).toBe("file");
+  });
+
+  it("a push the hub refused is FILE-backed, whatever gate was loaded", async () => {
+    // The remote path wraps its gate so a failed push lands in the local files instead of crashing
+    // the turn. A gate was loaded, but the edit is not in the shared document — it is in the
+    // canonical — and a reader told "plugin" would look for it where it is not.
+    for (const edit of [ev({ changed: true }), ev({ changed: true, removedIds: ["cmt-aaa111"], acceptedText: "body" })]) {
+      const store = new MemoryDocumentStore("body");
+      const channel = new MemoryControlChannel();
+      const { gate } = trackGateDegradations({ readCanonical: async () => "canon", applyRevision: async () => Promise.reject(new Error("hub down")) }, store);
+
+      await applyGatedEdit(store, channel, edit, { current: "body", canonicalText: "canon", quarantine: false, gate });
+
+      expect((await payloadOf(channel)).via).toBe("file");
+      expect(await store.getCanonical()).toBe("body"); // and it is where a file-backed reader looks
+    }
   });
 });
 

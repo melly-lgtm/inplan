@@ -52,13 +52,14 @@ export async function applyGatedEdit(
   if (ev.removedIds.length > 0) {
     // Confirmed deletions: drop the orphaned comment objects. On the plugin path push the result
     // into the plugin's doc (it owns the .md); otherwise write the file + canonical.
-    if (gate) await gate.applyRevision(ev.acceptedText);
+    let viaPlugin = false;
+    if (gate) viaPlugin = (await gate.applyRevision(ev.acceptedText)) !== "local";
     else {
       await store.saveDoc(ev.acceptedText);
       await store.setCanonical(ev.acceptedText);
       withdrew = await withdrawOwnPending(store, canonicalText, ev.acceptedText);
     }
-    if (!(await logEdit(channel, { removed: ev.removedIds }))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
+    if (!(await logEdit(channel, { removed: ev.removedIds }, viaPlugin))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
   } else if (ev.changed && quarantine) {
     // Quarantine: park the proposal for the human to accept/reject in the editor. The proposal
     // sidecar is file-based either way; on the file path also revert the working file to canonical
@@ -114,12 +115,13 @@ export async function applyGatedEdit(
     // Auto-accept (auto mode, or review mode with comment-only changes): advance the base. On the
     // plugin path that means pushing into the plugin's doc; otherwise advance the persisted canonical.
     if (await moved()) return { proposed: false, stale: true };
-    if (gate) await gate.applyRevision(current);
+    let viaPlugin = false;
+    if (gate) viaPlugin = (await gate.applyRevision(current)) !== "local";
     else {
       await store.setCanonical(current);
       withdrew = await withdrawOwnPending(store, canonicalText, current);
     }
-    if (!(await logEdit(channel, { bytes: utf8Bytes(current) }))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
+    if (!(await logEdit(channel, { bytes: utf8Bytes(current) }, viaPlugin))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
   }
   return { proposed: false, ...(withdrew ? { withdrew } : {}) };
 }
@@ -211,7 +213,29 @@ function revertWouldWipe(canonicalText: string, current: string): boolean {
  * anyone. The park path has reported this as `eventLogged: false` since #88; a landing deserves the
  * same, because the consequence is the same: the human's editor won't show it until it reloads.
  */
-async function logEdit(channel: ControlChannel, payload: Record<string, unknown>): Promise<boolean> {
+async function logEdit(channel: ControlChannel, payload: Record<string, unknown>, viaPlugin: boolean): Promise<boolean> {
+  // `via` records which of the two carriers this edit went out on — the one fact about it that
+  // only this process knows, and knows exactly. Through the plugin, the text is in the shared
+  // document and nowhere this process wrote; file-backed, it is in the canonical sidecar, which
+  // this process advanced a moment ago. The editor needs that to know where to read the edit
+  // FROM: the working file is not a safe answer in either case once a plugin is alive, because
+  // the plugin overwrites it with its own projection on its own schedule.
+  //
+  // BOTH carriers are stamped, never just one. An editor must be able to tell "file-backed" from
+  // "written by a CLI that predates the stamp": an older CLI still attached across an editor
+  // upgrade applies through the plugin and says nothing, and reading the canonical for it would
+  // hand back a sidecar the plugin path never advances. Unstamped therefore means "unknown", and
+  // the editor treats unknown exactly as it always did.
+  //
+  // Deliberately NOT a claim about who owns the document or whether an editor is bound. Earlier
+  // attempts stamped those and were wrong each time: this process reads the plugin session once,
+  // moments after spawning the editor and before the editor has published one, and its gate fails
+  // soft for reasons unrelated to ownership. What it did is all it can vouch for.
+  //
+  // `viaPlugin` is therefore "the push into the plugin succeeded", not "a gate was loaded": a
+  // wrapped gate that caught a failed push lands the text in the local files instead, and that
+  // edit is file-backed in every way that matters to a reader.
+  payload = { ...payload, via: viaPlugin ? "plugin" : "file" };
   try {
     await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload });
     return true;

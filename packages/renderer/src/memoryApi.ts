@@ -177,7 +177,7 @@ export function createMemoryApi(opts: { content: string; settings?: Settings; ba
       void store.saveDoc(content);
       void store.setCanonical(content);
       void channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: content.length } });
-      for (const cb of external) cb({ path: "memory://doc", content });
+      for (const cb of external) cb({ path: currentPath, content });
     },
     proposeRevision(content: string) {
       return (async () => {

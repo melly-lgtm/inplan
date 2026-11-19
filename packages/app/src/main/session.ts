@@ -279,11 +279,40 @@ export class Session {
         console.warn("inplan: could not read the pending proposal for review dispatch:", e);
       });
     }
-    // An accepted agent edit: the working file holds the agent's revision (the gate
-    // set canonical to it). Load it — this replaces the old raw working-file watch.
-    if (entries.some((e) => e.actor === "agent" && e.type === LogEventType.DocumentEdited) && existsSync(this.paths.file)) {
+    // An accepted agent edit: hand the editor its text. WHICH text depends on how it went out, and
+    // the event says (`via`), because the working file stops being a safe answer once a plugin is
+    // alive — the plugin overwrites it with its own projection on its own schedule, so a read can
+    // return pre-revision text that the editor would then push into its binding, over the
+    // revision that just landed.
+    //
+    //  • `via: "file"`: the gate advanced the CANONICAL sidecar to exactly the text it accepted,
+    //    and nothing but the gate and the editor's own save write that file. Read it. With no
+    //    plugin it equals the working file anyway; with one, it is the copy the plugin cannot
+    //    have overwritten — which matters on the commonest path of all: the first `open` reads
+    //    the plugin session before the editor has published one, so its whole wait is
+    //    file-backed while the editor is already bound.
+    //  • `via: "plugin"`: the edit is in the shared document and in no file this process can
+    //    vouch for. An editor bound to the plugin reads its binding; only one that never bound
+    //    (the plugin's browser entry can fail to load) needs the working file, as the last copy
+    //    it has — so the file rides along, flagged, and the renderer decides.
+    //  • no `via`: a CLI that predates the stamp, so the carrier is UNKNOWN — and it may well have
+    //    been the plugin, whose path never advances the canonical. Do exactly what was always
+    //    done: read the working file, unflagged. Guessing "file-backed" here would push a stale
+    //    sidecar into the shared document across an ordinary upgrade.
+    //
+    // The LAST agent edit decides, not the first: the control channel coalesces a burst of appends
+    // into one batch, the carrier is chosen per edit, and only the newest one describes where the
+    // document is now. The cursor has already advanced — nothing replays these entries.
+    let applied: LogEntry | undefined;
+    for (let i = entries.length - 1; i >= 0 && !applied; i--) {
+      if (entries[i]!.actor === "agent" && entries[i]!.type === LogEventType.DocumentEdited) applied = entries[i];
+    }
+    if (applied && existsSync(this.paths.file)) {
+      const via = (applied.payload as { via?: unknown } | undefined)?.via;
+      const viaPlugin = via === "plugin";
+      const source = via === "file" && existsSync(this.paths.canonicalPath) ? this.paths.canonicalPath : this.paths.file;
       try {
-        handlers.onExternalChange(readFileSync(this.paths.file, "utf8"));
+        handlers.onExternalChange(readFileSync(source, "utf8"), { viaPlugin });
       } catch {
         /* file mid-write — the next event will resync */
       }
@@ -297,7 +326,7 @@ export class Session {
 
 /** The editor-facing callbacks the desktop shell relays to the renderer over IPC. */
 export interface WatchHandlers {
-  onExternalChange: (content: string) => void;
+  onExternalChange: (content: string, opts: { viaPlugin: boolean }) => void;
   onAgentDone: () => void;
   onAgentActive: () => void;
   onProposal: (content: string, id?: string, baseContent?: string, pending?: number, path?: string) => void;

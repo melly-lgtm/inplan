@@ -11,6 +11,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import type { Acceptance, Cadence, SaveOptions, Settings } from "@inplan/renderer";
 import { isOnboarded, markOnboarded, parse, readStatus, serialize, widenConnectAttemptBudget, type Comment } from "@inplan/core/node";
 import { Session } from "./session";
+import { createNavTracker, createSerialQueue } from "./navSignal";
 import { createI18nController } from "./i18nController";
 import { track, type TelemetryProps } from "./telemetry";
 import { registerPluginScheme, handlePluginScheme, pluginInfo, startDesktopPlugin, stopDesktopPlugin } from "./desktopPlugin";
@@ -63,6 +64,9 @@ function resolveTargetFile(): string | null {
   return existsSync(abs) ? abs : null;
 }
 
+/** Whether the renderer may be holding a plugin activation (see navSignal.ts). */
+const nav = createNavTracker();
+const pluginRefreshes = createSerialQueue((err) => console.error("[inplan] refreshing the plugin after a navigation failed", err));
 let session: Session | null = null;
 let win: BrowserWindow | null = null;
 let stopWatching: (() => void) | null = null;
@@ -328,7 +332,7 @@ function watchSession(): (() => void) | null {
   if (!session) return null;
   const s = session;
   return s.watch({
-    onExternalChange: (content) => win?.webContents.send("doc:external-change", { path: s.paths.file, content }),
+    onExternalChange: (content, opts) => win?.webContents.send("doc:external-change", { path: s.paths.file, content, ...opts }),
     onAgentDone: () => win?.webContents.send("agent:done"),
     onAgentActive: () => win?.webContents.send("agent:active"),
     onProposal: (content, id, baseContent, pending, path) => win?.webContents.send("doc:proposal", { content, ...(id ? { id } : {}), ...(baseContent !== undefined ? { baseContent } : {}), ...(pending !== undefined ? { pending } : {}), ...(path !== undefined ? { path } : {}) }),
@@ -372,7 +376,11 @@ function navigateTo(file: string): boolean {
   session.logEditorPid(process.pid);
   stopWatching = watchSession();
   setDocTitle(file);
-  void refreshPluginAndView(file);
+  // One at a time, in order. Two refreshes interleaving their stop/start left the plugin running
+  // for whichever document's start resolved LAST — not the one on screen — and the renderer was
+  // then told to bind this document's editor to that one's shared document.
+  const forSession = session;
+  void pluginRefreshes.run(() => refreshPluginAndView(file, forSession));
   return true;
 }
 
@@ -380,16 +388,23 @@ function navigateTo(file: string): boolean {
  *  plugin binds its CodeMirror at editor init, so the renderer re-activates the plugin (against the
  *  new hub) and re-mounts just the editor — far cheaper than a full `webContents.reload()`. With no
  *  plugin, take the light file-backed path (send the new doc to the existing renderer). */
-async function refreshPluginAndView(file: string): Promise<void> {
-  // Capture the session this refresh serves: load() awaits the proposal lookup, and a later
-  // navigation can replace `session` in that window — a stale refresh must never send the OLD
-  // document as `doc:navigated` for the new one.
-  const forSession = session;
+async function refreshPluginAndView(file: string, forSession: Session): Promise<void> {
+  // `forSession` is the session this refresh serves, captured when the navigation happened: a
+  // later navigation can replace `session` while this one waits its turn or awaits below, and a
+  // stale refresh must never start a plugin for, or send, a document that is no longer on screen.
+  if (session !== forSession) return; // superseded before it began — the newer refresh does the work
   await stopDesktopPlugin();
+  if (session !== forSession) return; // superseded during the stop — do not start a plugin for a document already left
   await startDesktopPlugin(file, pluginToken);
-  if (!win || !session || session !== forSession) return;
-  if (pluginInfo()) win.webContents.send("plugin:reactivate"); // renderer re-binds + re-mounts the editor
-  else {
+  if (!win || !session || session !== forSession) return; // overtaken: nothing sent, so the renderer holds what it held
+  // The renderer re-runs activation + re-mounts the editor — also when it is still bound to a
+  // PREVIOUS doc's plugin and this one has none, so the old binding is dropped (see navSignal.ts;
+  // `nav` tracks what the renderer was last told, which survives an overtaken refresh).
+  const hasPlugin = pluginInfo() !== null;
+  if (nav.signalFor(hasPlugin) === "reactivate") {
+    win.webContents.send("plugin:reactivate");
+    nav.rendererActivated(hasPlugin);
+  } else {
     const payload = await session.load();
     if (!win || session !== forSession) return; // replaced while loading — the newer refresh owns the send
     win.webContents.send("doc:navigated", payload);
@@ -743,7 +758,14 @@ function registerIpc(): void {
   ipcMain.handle("i18n:get", () => i18n.getSnapshot());
   ipcMain.handle("i18n:set-locale", (_e, code: string) => i18n.setLocale(code));
   // Plugin connection info for the renderer ({session, rendererUrl} | null). Null ⇒ no plugin.
-  ipcMain.handle("plugin:info", () => pluginInfo());
+  // Answering this IS telling the renderer what to activate against, so it is recorded here, at
+  // the moment of the answer: a refresh that sent the signal earlier may have seen a different
+  // plugin state than the one this request is finally served with.
+  ipcMain.handle("plugin:info", () => {
+    const info = pluginInfo();
+    nav.rendererActivated(info !== null);
+    return info;
+  });
 }
 
 void app.whenReady().then(async () => {
@@ -760,6 +782,7 @@ void app.whenReady().then(async () => {
     navHistory.push(target);
     navIdx = 0;
     await startDesktopPlugin(target, pluginToken); // entitlement-gated; fail-soft to no-plugin
+    nav.rendererActivated(pluginInfo() !== null); // the renderer's bootstrap activates against exactly this
     track("app_opened", session.getSettings().telemetry === true); // opt-in only
   }
   registerIpc();
