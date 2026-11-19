@@ -389,10 +389,12 @@ export type CachedSessionCheck = "ok" | "absent" | SessionFailure;
  *    spend it. A long `wait` can therefore still meet a dead refresh token at expiry. That
  *    residual belonged to credentials that were a COPY of the browser's session — the page sealed
  *    its own refresh token into the handoff, so the two of them spent one rotation chain in
- *    turns. Since inplan-cloud #263 (deployed 2026-11-04; see `mint_cli_session`) the page
- *    mints the CLI a session of its OWN family at the rendezvous, and the residual applies only
- *    to credentials issued by pages older than that deploy: re-running `inplan login` retires
- *    them.
+ *    turns. Since 2026-11-04 the login page mints the CLI a session of its OWN family at the
+ *    rendezvous, server-side, so the residual applies only to credentials issued by pages older
+ *    than that date: re-running `inplan login` retires them. (The date is the handle for deciding
+ *    when the older-page COMPATIBILITY — the optional `access`/`expiresAt` fields — can go. Route 2
+ *    of primeSessionOrFail itself stays regardless: a current page's handoff lands there whenever
+ *    its access token has less than ACCESS_SKEW_S left, which `reuseCached` declines to reuse.)
  *
  * Returns `absent` when there is no cached token the normal fast path would use, which is the
  * signal for the caller to fall back to proving the credential the expensive way.
