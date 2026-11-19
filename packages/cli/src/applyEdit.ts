@@ -151,6 +151,12 @@ function body(text: string): string {
   }
 }
 
+/** Is this document's body empty? Exported for the callers that must decide whether an empty base
+ *  is one they can vouch for. */
+export function emptyBody(text: string): boolean {
+  return isBlank(text);
+}
+
 /** Is this document's body empty (an unparseable comment block ⇒ judge the raw text)? */
 function isBlank(text: string): boolean {
   return body(text).trim() === "";
@@ -204,22 +210,22 @@ async function logEdit(channel: ControlChannel, payload: Record<string, unknown>
  * decided by the human. The landing text and the proposal were about different things — one added a
  * comment, the other rewrote the body — and only one of them was kept.
  *
- * So retract only when the landing edit actually replaces the body the proposal was proposing
- * against. A comment-only landing leaves the proposal standing; it goes slightly stale (it predates
- * the new comment), which is a state the reviewer already handles — accepting a proposal merges the
- * live comments rather than overwriting them with the proposal's snapshot.
+ * So retract only when the landing edit IS that proposal's body — when what landed is the thing the
+ * proposal was proposing, and keeping it pending would ask the human to decide something already
+ * decided. "The body changed at all" is not that test and quietly fails the same way: `inplan
+ * comment --span` writes its anchor link INTO the body, so under auto acceptance a span comment
+ * would count as a body edit and retract a revision it has nothing to do with.
+ *
+ * Anything else leaves the proposal standing. It may go slightly stale (it predates a comment, say),
+ * which is a state the reviewer already handles — accepting a proposal merges the live comments
+ * rather than overwriting them with the proposal's snapshot.
  *
  * Returns whether a proposal was retracted, so the caller can keep its landing signal honest.
  */
-async function withdrawOwnPending(store: DocumentStore, canonicalText: string, landed: string): Promise<boolean> {
-  if (!bodyChanged(canonicalText, landed)) return false;
+async function withdrawOwnPending(store: DocumentStore, _canonicalText: string, landed: string): Promise<boolean> {
   const mine = await store.myPendingProposal();
   if (!mine) return false;
+  if (body(landed) !== body(mine.content)) return false; // a different body: the proposal still stands
   await store.withdrawProposal(mine.id);
   return true;
-}
-
-/** Did this edit change the body, as opposed to only the comments riding with it? */
-function bodyChanged(before: string, after: string): boolean {
-  return body(before) !== body(after);
 }

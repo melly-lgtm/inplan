@@ -341,6 +341,30 @@ describe("live fill — the agent's edits during a blocked wait", () => {
     }
   });
 
+  it("does not re-gate the TURN's own write after a confirmed comment deletion", async () => {
+    // Same rule as the live path's, one layer earlier: when the turn lands confirmed deletions it
+    // writes the ACCEPTED text — the orphaned comment objects dropped — not what the agent wrote.
+    // Recording the agent's text as the disk state sends the first poll off to settle and
+    // re-evaluate the gate's own write.
+    const h = harness(SPAN_ORPHANED); // the agent's edit is already on disk when the wait starts
+    await h.store.setCanonical(SPAN_DOC);
+    await h.channel.append({ actor: "user", type: LogEventType.SettingsChanged, payload: { acceptance: "auto" } });
+    try {
+      const run = waitCycle(h.backend, null, new Set(["cmt-q1"]), undefined, null, { liveFill: true });
+      await waitUntil(async () => (await count(h.channel, LogEventType.DocumentEdited)) >= 1);
+      expect(await h.store.loadDoc()).not.toBe(SPAN_ORPHANED); // the gate rewrote the file
+
+      const basesRead = vi.spyOn(h.store, "getCanonical");
+      await sleep(POLL_MS * 20);
+      expect(basesRead).not.toHaveBeenCalled(); // …and that rewrite is not an agent edit
+
+      await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
+      await run;
+    } finally {
+      h.restore();
+    }
+  });
+
   it("does not re-gate its own write after a confirmed comment deletion", async () => {
     // A confirmed deletion writes the ACCEPTED text — the orphaned comment objects dropped — not
     // what the agent wrote. Recording the agent's text as the disk state sent the next poll off to
@@ -480,6 +504,30 @@ describe("live fill — the agent's edits during a blocked wait", () => {
       expect(await h.store.loadDoc()).toBe(SPAN_ORPHANED); // untouched
       expect(await h.store.getCanonical()).toBe(SPAN_DOC); // nothing landed
       expect(await count(h.channel, LogEventType.DocumentEdited)).toBe(0);
+
+      await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
+      await run;
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("holds a fill when the hub reads empty but we remember the document having content", async () => {
+    // An empty base waives review — there is nothing of the human's to overwrite. On the plugin
+    // path that base is an opaque hub read, and a document whose shared state has not loaded yet
+    // reads empty too. Taking the waiver there would push a body revision into a document that was
+    // never empty. It takes evidence, though, not suspicion: only a LOCAL memory of content makes
+    // an empty hub read suspect.
+    const h = harness(EMPTY);
+    await h.store.setCanonical(DRAFT); // we remember this document having a body
+    const gate = { readCanonical: vi.fn(async () => EMPTY), applyRevision: vi.fn(async () => {}) };
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, gate, { liveFill: true });
+      await waitUntil(async () => (await count(h.channel, LogEventType.AgentRevised)) >= 1);
+
+      await h.store.saveDoc(REVISED);
+      await waitUntil(() => /held for review/.test(h.stderr()));
+      expect(gate.applyRevision).not.toHaveBeenCalled(); // not pushed into the shared document
 
       await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
       await run;

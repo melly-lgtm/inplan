@@ -182,17 +182,37 @@ describe("a landing edit and someone else's parked revision", () => {
     expect(await store.getCanonical()).toBe(WITH_COMMENT); // …and the comment still landed
   });
 
-  it("a body landing does retract it, and says so", async () => {
-    const store = new MemoryDocumentStore("a newer body");
+  it("retracts it only when what landed IS that proposal's body", async () => {
+    // Retracting is destructive — the proposal is the only copy of a revision the park reverted off
+    // disk — so it takes the proposal's OWN body landing, which makes accepting it a no-op.
+    const store = new MemoryDocumentStore("the proposed body");
     await store.setCanonical("canon");
-    await store.createProposal({ content: "an older proposed body", baseHash: "h", baseContent: "canon" });
+    await store.createProposal({ content: "the proposed body", baseHash: "h", baseContent: "canon" });
     const channel = new MemoryControlChannel();
 
-    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "a newer body", canonicalText: "canon", quarantine: false, gate: null });
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "the proposed body", canonicalText: "canon", quarantine: false, gate: null });
 
     expect(applied.withdrew).toBe(true);
     expect(await store.myPendingProposal()).toBeNull();
   });
+
+  it("leaves a proposal alone when a DIFFERENT body lands", async () => {
+    // "The body changed at all" was the old test, and it fails quietly in the case that matters:
+    // `inplan comment --span` writes its anchor link INTO the body, so under auto acceptance a span
+    // comment counts as a body edit — and would retract a revision it has nothing to do with,
+    // which the park had already reverted off disk. The proposal stands; the reviewer rebases a
+    // stale one against the current canonical, so leaving it is safe where retracting is not.
+    const store = new MemoryDocumentStore("canon with [an anchor](#cmt-aaa111)");
+    await store.setCanonical("canon");
+    const { id } = await store.createProposal({ content: "an entirely different revision", baseHash: "h", baseContent: "canon" });
+    const channel = new MemoryControlChannel();
+
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "canon with [an anchor](#cmt-aaa111)", canonicalText: "canon", quarantine: false, gate: null });
+
+    expect(applied.withdrew).toBeUndefined();
+    expect((await store.myPendingProposal())?.id).toBe(id); // still the human's to decide
+  });
+
 });
 
 describe("shouldQuarantine — park for the human, or land", () => {

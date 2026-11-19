@@ -210,25 +210,6 @@ interface ReviewState {
 /** The part of a review the undo/redo timeline steps through (the doc isn't mutated until Apply). */
 type ReviewSnapshot = Pick<ReviewState, "accepted" | "edits">;
 
-/**
- * Replay an incoming external document onto a buffer the human has not saved yet.
- *
- * Both sides changed `base` (the last persisted text): `incoming` is already on disk, `unsaved` is
- * only in the buffer. merge3 hands contested regions to its third argument, so the human's text
- * goes there — losing a keystroke is unrecoverable, while the incoming side can always be read back
- * from the document. Comments union with the human's winning, and a span comment whose anchor the
- * merge dropped degrades to a doc comment rather than leaving a dangling link (same rule the
- * post-settle rebase uses).
- */
-function rebaseOntoUnsaved(base: ParsedDocument, incoming: ParsedDocument, unsaved: ParsedDocument): ParsedDocument {
-  const body = merge3(base.body, incoming.body, unsaved.body);
-  const mine = new Set(unsaved.comments.map((c) => c.id));
-  const comments = [...unsaved.comments, ...incoming.comments.filter((c) => !mine.has(c.id))].map((c) =>
-    !c.parentId && c.anchor !== "doc" && !body.includes(`](#${c.id})`) ? { ...c, anchor: "doc" as const } : c,
-  );
-  return { body, comments };
-}
-
 /** Before any proposal — also the shape a stale review reads as, via `pristineReview`. */
 const NO_REVIEW: ReviewState = { key: null, accepted: [], edits: {}, editingHunk: null, cursor: -1 };
 
@@ -556,21 +537,11 @@ export function App(props: EditorProps = {}): JSX.Element {
         const parsed = parse(content);
         // Store-backed (plugin): comments are owned by the external store, not the rewritten
         // body — keep them from the store so an agent/body refresh can't blank/stale the rail.
-        const incoming = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
-        // The human may be mid-sentence. `savedRef` is what was last persisted, so a buffer that
-        // differs from it IS the unsaved state — and replacing it wholesale deletes those
-        // keystrokes, which exist in no other copy, while the incoming text is already on disk.
-        // Rebase instead, exactly as the post-settle path below does: both sides diverged from
-        // what was last saved, and contested regions go to the HUMAN (merge3 hands them to
-        // `theirs`) because theirs is the only side that isn't persisted yet.
-        const unsaved = savedRef.current !== "" && serialize(prevDoc) !== savedRef.current;
-        const next = unsaved ? rebaseOntoUnsaved(parse(savedRef.current), incoming, prevDoc) : incoming;
+        const next = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
         setAgentThinking(false);
         setDoc(next);
-        // What is PERSISTED is the incoming text; the merged buffer stays unsaved until the human
-        // saves it, so the dirty dot and the close prompt keep protecting their edit.
-        savedRef.current = serialize(incoming);
-        setDirty(unsaved);
+        savedRef.current = serialize(next);
+        setDirty(false);
         // Collab: the binding owns the SOURCE pane (the controlled value is ignored once a binding is
         // present), so an external/agent body change must also be pushed to the binding — otherwise it
         // updates only the preview and the source stays stale (and a server edit that didn't broadcast,

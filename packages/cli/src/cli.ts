@@ -35,7 +35,7 @@ import { BrowserDidNotOpenError, LoginSessionExpiredError, clearPendingLogin, cr
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
 import { checkForUpdate, selfUpdate, UPDATE_PKG, warnIfOutdated } from "./update";
 import { runningEditorPid } from "./editorProcess";
-import { applyGatedEdit, shouldQuarantine } from "./applyEdit";
+import { applyGatedEdit, emptyBody, shouldQuarantine } from "./applyEdit";
 import { evaluateAgentEdit } from "./gate";
 import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
@@ -479,7 +479,22 @@ export async function waitCycle(
   // accepts/rejects in the editor (which then writes canonical). This makes the
   // file the source of truth WITHOUT auto-applying — killing the app before a
   // decision leaves the proposal pending, never silently accepted.
-  const quarantine = shouldQuarantine(acceptanceFrom(history), canonicalText, current);
+  // An EMPTY base is the one thing that waives review — there is nothing of the human's to
+  // overwrite. On the plugin path that base is whatever an opaque hub read returned, and a document
+  // whose shared state has not loaded yet reads empty too, so the waiver could push a body revision
+  // into a document that was never empty.
+  //
+  // But refusing the waiver on every empty hub read would cost plugin users the thing this whole
+  // change is for — the first fill of a genuinely new document landing where the human can see it.
+  // So it takes EVIDENCE, not suspicion: only when we locally remember the document having content
+  // is an empty hub read treated as a doc that hasn't loaded. No local memory, or a local memory
+  // that is also empty, and the empty base is taken at its word.
+  const suspectEmptyBase = async (viaPlugin: boolean, base: string): Promise<boolean> => {
+    if (!viaPlugin || !emptyBody(base)) return false;
+    const remembered = await store.getCanonical().catch(() => null);
+    return remembered !== null && !emptyBody(remembered);
+  };
+  const quarantine = (await suspectEmptyBase(usePlugin, canonicalText)) || shouldQuarantine(acceptanceFrom(history), canonicalText, current);
   // `usePlugin ? gate : null` — only route through the plugin when its read succeeded.
   const applied = await applyGatedEdit(store, channel, ev, { current, canonicalText, quarantine, gate: usePlugin ? gate : null });
   // A parked proposal must be unmistakable in the moment (#88): the canonical is unchanged BY
@@ -620,7 +635,12 @@ export async function waitCycle(
   // Neither is ever adopted from a post-apply re-read: that would silently swallow a write another
   // process slipped in after the decision, leaving text no one evaluated skipped for the whole wait.
   let gatedText = current;
-  let gatedDisk = applied.proposed && !usePlugin ? canonicalText : current;
+  // What the TURN left on disk: canonical if it parked and reverted; the ACCEPTED text if it landed
+  // confirmed comment deletions (applyGatedEdit writes `ev.acceptedText`, the orphaned comment
+  // objects dropped — not what the agent wrote); else what the agent wrote. Getting this wrong only
+  // costs a wasted pipeline pass over the gate's own write, but it is the same mistake the live
+  // path's own markGated exists to avoid.
+  let gatedDisk = applied.proposed && !usePlugin ? canonicalText : ev.removedIds.length > 0 && !usePlugin ? ev.acceptedText : current;
   let settling: string | null = null; // a changed read awaiting a second, identical one
   // The last decline said, not a bare "have we spoken yet": a boolean latch kept the FIRST reason
   // and swallowed every later one, so an agent told its revision was safely held then corrupted the
@@ -692,7 +712,7 @@ export async function waitCycle(
     // A body change that review mode would park: defer it to the turn boundary (see above). The
     // working copy keeps the agent's text — this path writes NOTHING — so the agent's next edit
     // builds on its own work, and the next `wait` parks the result for the human.
-    if (shouldQuarantine(acceptanceFrom(await backend.history()), base, text)) {
+    if ((await suspectEmptyBase(viaPlugin, base)) || shouldQuarantine(acceptanceFrom(await backend.history()), base, text)) {
       declined(
         "inplan: your body revision is held for review, so it was NOT applied — it stays in the working copy exactly as you wrote it, and the NEXT `wait` you run (after this turn ends) proposes it to the human. Not a sync failure.\n",
         text,
