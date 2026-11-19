@@ -563,7 +563,12 @@ export function App(props: EditorProps = {}): JSX.Element {
             // the binding holds the whole serialized document.
             next = commentStore ? { body: binding.getText(), comments: commentStore.list() } : parse(binding.getText());
           } catch {
-            next = prevDoc; // a legacy document caught mid-edit — keep what we show until it parses
+            // A legacy document caught mid-edit: nothing was read, so nothing is adopted. Falling
+            // through with the old document would still reset the saved baseline, clear dirty,
+            // rebuild an open review (dropping its hunk selections) and announce an update that
+            // was never seen.
+            setAgentThinking(false);
+            return;
           }
         } else {
           const parsed = parse(content);

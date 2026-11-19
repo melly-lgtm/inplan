@@ -8,7 +8,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Api } from "@inplan/renderer";
 import { createPluginActivator, type PluginExt } from "../src/renderer/pluginActivation";
-import { navigationSignal } from "../src/main/navSignal";
+import { createNavTracker, navigationSignal } from "../src/main/navSignal";
 
 const BASE = { load: async () => ({ path: "p", content: "" }) } as unknown as Api;
 const ext = (name: string): PluginExt & { dispose: ReturnType<typeof vi.fn> } => ({
@@ -51,7 +51,6 @@ describe("plugin activation across documents", () => {
     const h = harness([{ info: INFO, ext: a }]);
     await h.next();
     expect(h.installed()?.binding?.getText()).toBe("doc A");
-    expect(h.activator.active).toBe(true);
   });
 
   it("drops the previous document's binding when the next document has NO plugin info", async () => {
@@ -63,7 +62,6 @@ describe("plugin activation across documents", () => {
     await h.next();
     expect(h.installed()?.binding).toBeUndefined(); // the file-backed api, INSTALLED
     expect(a.dispose).toHaveBeenCalledTimes(1); // and the old activation torn down
-    expect(h.activator.active).toBe(false);
   });
 
   it("drops it when the plugin declines the next document", async () => {
@@ -94,6 +92,80 @@ describe("plugin activation across documents", () => {
     expect(h.installed()?.binding?.getText()).toBe("doc B");
     expect(a.dispose).toHaveBeenCalledTimes(1);
     expect(b.dispose).not.toHaveBeenCalled();
+  });
+});
+
+describe("plugin activation — ordering", () => {
+  /** An activator whose getInfo can be held open, to stand inside the await. */
+  function gated() {
+    let installed: Api | null = null;
+    const waiters: Array<(v: typeof INFO | null) => void> = [];
+    const exts: PluginExt[] = [];
+    const activator = createPluginActivator({
+      getInfo: () => new Promise((res) => waiters.push(res)),
+      importModule: async () => ({ activate: () => exts.shift() ?? null }),
+      baseApi: () => BASE,
+      install: (api) => (installed = api),
+    });
+    return { activator, exts, waiters, installed: () => installed };
+  }
+  const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+
+  it("keeps the previous binding alive and installed until its replacement is ready", async () => {
+    // The editor is mounted on the previous binding and keeps using it while the next document's
+    // plugin info is fetched. Tearing it down before that await left the mounted editor holding a
+    // disposed binding for as long as the await took.
+    const a = ext("doc A");
+    const b = ext("doc B");
+    const g = gated();
+    g.exts.push(a, b);
+    const first = g.activator.activate();
+    g.waiters.shift()!(INFO);
+    await first;
+
+    const second = g.activator.activate(); // …now awaiting getInfo for doc B
+    await tick();
+    expect(a.dispose).not.toHaveBeenCalled();
+    expect(g.installed()?.binding?.getText()).toBe("doc A");
+
+    g.waiters.shift()!(INFO);
+    await second;
+    expect(a.dispose).toHaveBeenCalledTimes(1);
+    expect(g.installed()?.binding?.getText()).toBe("doc B");
+  });
+
+  it("an overtaken activation touches nothing — overlapping calls cannot leak one", async () => {
+    // Two re-activation signals overlap. Without a generation check the first to resume installs
+    // an activation that the second then replaces WITHOUT disposing, leaving a ghost peer
+    // connected for the rest of the session.
+    const a = ext("first call's");
+    const b = ext("second call's");
+    const g = gated();
+    g.exts.push(a, b);
+    const first = g.activator.activate();
+    const second = g.activator.activate();
+    g.waiters.shift()!(INFO); // the FIRST call's info resolves…
+    g.waiters.shift()!(INFO);
+    await Promise.all([first, second]);
+
+    // …but it was overtaken, so exactly one activation exists: the one the newer call made.
+    expect(g.exts).toHaveLength(1); // only one activate() was ever invoked
+    expect(g.installed()?.binding?.getText()).toBe("first call's"); // (the first ext handed out, to the surviving call)
+    expect(a.dispose).not.toHaveBeenCalled();
+  });
+});
+
+describe("what the renderer was last told", () => {
+  it("survives an overtaken refresh: A (plugin) → B → C with no plugin still re-activates", () => {
+    // Main's own plugin state is the wrong thing to ask: a navigation stops the running plugin
+    // before starting the next, so a second navigation mid-refresh reads "no plugin" while the
+    // renderer is still bound to A — and the first refresh, overtaken, sends nothing at all.
+    const nav = createNavTracker();
+    nav.rendererActivated(true); // boot: the renderer bound to A's plugin
+    // refresh for B is overtaken: nothing sent, nothing recorded
+    expect(nav.signalFor(false)).toBe("reactivate"); // refresh for C, whose plugin failed to start
+    nav.rendererActivated(false);
+    expect(nav.signalFor(false)).toBe("navigated"); // and from there, plain navigation again
   });
 });
 

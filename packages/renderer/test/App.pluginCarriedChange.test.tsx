@@ -69,6 +69,20 @@ describe("where an agent's edit is read from", () => {
     expect(binding.setText).not.toHaveBeenCalled(); // …and above all nothing is written back into it
   });
 
+  it("an unreadable binding is not an edit: nothing is adopted, announced or rebuilt", async () => {
+    // A legacy binding caught mid-edit, its comment block not yet valid. Nothing was read, so
+    // carrying on would reset the saved baseline, clear dirty and announce an update nobody saw.
+    const binding = bind("# Plan\n\nHalf-typed.\n\n<!--inplan v1\n[{ broken\n-->\n");
+    await mount();
+
+    act(() => emit!({ path: "p.md", content: STALE_FILE, viaPlugin: true }));
+
+    expect(document.body.textContent).toContain("The original body."); // still showing what it had
+    expect(document.body.textContent).not.toContain("A stale projection"); // and it did not fall back to the file
+    expect(document.body.textContent).not.toContain("agent updated the document");
+    expect(binding.setText).not.toHaveBeenCalled();
+  });
+
   it("through the plugin + NOT bound: from the content — it is the only copy this editor has", async () => {
     await mount(); // the plugin's browser entry never loaded: no binding
 

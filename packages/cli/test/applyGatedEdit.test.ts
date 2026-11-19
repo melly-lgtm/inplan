@@ -165,7 +165,7 @@ describe("applyGatedEdit — plugin path (a plugin gate is connected)", () => {
 describe("which carrier an edit went out on", () => {
   const payloadOf = async (ch: MemoryControlChannel) => (await ch.readSince(0)).entries[0]!.payload as { via?: string };
 
-  it("stamps an edit applied through the plugin, and leaves a file-backed one unmarked", async () => {
+  it("stamps BOTH carriers — unstamped has to stay distinguishable as 'a CLI that predates this'", async () => {
     // The one fact about an edit only this process knows, and knows exactly. The editor uses it to
     // decide where to READ the edit from — the shared document, or the canonical the gate
     // advanced — because the working file is not a safe answer once a plugin is alive.
@@ -178,8 +178,8 @@ describe("which carrier an edit went out on", () => {
 
     expect((await payloadOf(viaGate)).via).toBe("plugin");
     expect(gate.applyRevision).toHaveBeenCalledWith("body"); // the stamp is true: it did go through the plugin
-    expect((await payloadOf(viaFile)).via).toBeUndefined();
-    expect(await store.getCanonical()).toBe("body"); // …and an unmarked edit IS in the canonical, where the editor will look
+    expect((await payloadOf(viaFile)).via).toBe("file");
+    expect(await store.getCanonical()).toBe("body"); // …and a file-stamped edit IS in the canonical, where the editor will look
   });
 
   it("stamps a confirmed deletion the same way", async () => {

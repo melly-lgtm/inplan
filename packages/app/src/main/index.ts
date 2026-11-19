@@ -11,7 +11,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import type { Acceptance, Cadence, SaveOptions, Settings } from "@inplan/renderer";
 import { isOnboarded, markOnboarded, parse, readStatus, serialize, widenConnectAttemptBudget, type Comment } from "@inplan/core/node";
 import { Session } from "./session";
-import { navigationSignal } from "./navSignal";
+import { createNavTracker } from "./navSignal";
 import { createI18nController } from "./i18nController";
 import { track, type TelemetryProps } from "./telemetry";
 import { registerPluginScheme, handlePluginScheme, pluginInfo, startDesktopPlugin, stopDesktopPlugin } from "./desktopPlugin";
@@ -64,6 +64,8 @@ function resolveTargetFile(): string | null {
   return existsSync(abs) ? abs : null;
 }
 
+/** Whether the renderer may be holding a plugin activation (see navSignal.ts). */
+const nav = createNavTracker();
 let session: Session | null = null;
 let win: BrowserWindow | null = null;
 let stopWatching: (() => void) | null = null;
@@ -386,14 +388,17 @@ async function refreshPluginAndView(file: string): Promise<void> {
   // navigation can replace `session` in that window — a stale refresh must never send the OLD
   // document as `doc:navigated` for the new one.
   const forSession = session;
-  const hadPlugin = pluginInfo() !== null; // before the stop: is the renderer holding a binding to drop?
   await stopDesktopPlugin();
   await startDesktopPlugin(file, pluginToken);
-  if (!win || !session || session !== forSession) return;
-  // renderer re-runs activation + re-mounts the editor — also when the plugin was active for the
-  // PREVIOUS doc and failed for this one, so the old binding is dropped (see navigationSignal).
-  if (navigationSignal(hadPlugin, pluginInfo() !== null) === "reactivate") win.webContents.send("plugin:reactivate");
-  else {
+  if (!win || !session || session !== forSession) return; // overtaken: nothing sent, so the renderer holds what it held
+  // The renderer re-runs activation + re-mounts the editor — also when it is still bound to a
+  // PREVIOUS doc's plugin and this one has none, so the old binding is dropped (see navSignal.ts;
+  // `nav` tracks what the renderer was last told, which survives an overtaken refresh).
+  const hasPlugin = pluginInfo() !== null;
+  if (nav.signalFor(hasPlugin) === "reactivate") {
+    win.webContents.send("plugin:reactivate");
+    nav.rendererActivated(hasPlugin);
+  } else {
     const payload = await session.load();
     if (!win || session !== forSession) return; // replaced while loading — the newer refresh owns the send
     win.webContents.send("doc:navigated", payload);
@@ -764,6 +769,7 @@ void app.whenReady().then(async () => {
     navHistory.push(target);
     navIdx = 0;
     await startDesktopPlugin(target, pluginToken); // entitlement-gated; fail-soft to no-plugin
+    nav.rendererActivated(pluginInfo() !== null); // the renderer's bootstrap activates against exactly this
     track("app_opened", session.getSettings().telemetry === true); // opt-in only
   }
   registerIpc();

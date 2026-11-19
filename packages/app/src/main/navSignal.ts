@@ -5,11 +5,37 @@
  *
  * `reactivate` makes it re-run plugin activation and re-mount the editor; `navigated` just hands
  * it the new document. The renderer must re-run activation whenever its installed capabilities
- * could be stale — which is not only when the NEW document has a plugin. If the previous document
- * had one and this one does not (the plugin failed to start for it), the renderer is still holding
- * the previous document's binding: sending only `navigated` loads the new document into an editor
- * whose every programmatic body write goes to the OLD document's shared state.
+ * could be stale — which is not only when the NEW document has a plugin. If the renderer is
+ * holding a previous document's binding and this document has none (the plugin failed to start
+ * for it), sending only `navigated` loads the new document into an editor whose every
+ * programmatic body write goes to the OLD document's shared state.
  */
-export function navigationSignal(hadPlugin: boolean, hasPlugin: boolean): "reactivate" | "navigated" {
-  return hadPlugin || hasPlugin ? "reactivate" : "navigated";
+export function navigationSignal(rendererHasPlugin: boolean, hasPlugin: boolean): "reactivate" | "navigated" {
+  return rendererHasPlugin || hasPlugin ? "reactivate" : "navigated";
+}
+
+/**
+ * Remembers whether the RENDERER may be holding a plugin activation — i.e. what it was last told
+ * to activate against — which is the fact `navigationSignal` needs.
+ *
+ * Main's own plugin state is the wrong thing to ask. A navigation stops the running plugin before
+ * it starts the next, so a second navigation arriving mid-refresh reads "no plugin" while the
+ * renderer is still bound to the first document; and the first refresh, overtaken, sends nothing.
+ * Only a signal that was actually SENT changes what the renderer holds.
+ */
+export interface NavTracker {
+  /** The signal to send for a document whose plugin state is `hasPlugin`. Pure: sending is the caller's. */
+  signalFor: (hasPlugin: boolean) => "reactivate" | "navigated";
+  /** Record that the renderer was (re)activated against a document with/without a plugin. */
+  rendererActivated: (hasPlugin: boolean) => void;
+}
+
+export function createNavTracker(): NavTracker {
+  let rendererHasPlugin = false;
+  return {
+    signalFor: (hasPlugin) => navigationSignal(rendererHasPlugin, hasPlugin),
+    rendererActivated: (hasPlugin) => {
+      rendererHasPlugin = hasPlugin;
+    },
+  };
 }

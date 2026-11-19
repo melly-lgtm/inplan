@@ -285,24 +285,32 @@ export class Session {
     // return pre-revision text that the editor would then push into its binding, over the
     // revision that just landed.
     //
-    //  • File-backed (no `via`): the gate advanced the CANONICAL sidecar to exactly the text it
-    //    accepted, and nothing but the gate and the editor's own save write that file. Read it.
-    //    With no plugin it equals the working file anyway; with one, it is the copy the plugin
-    //    cannot have overwritten — which matters on the commonest path of all: the first `open`
-    //    reads the plugin session before the editor has published one, so its whole wait is
+    //  • `via: "file"`: the gate advanced the CANONICAL sidecar to exactly the text it accepted,
+    //    and nothing but the gate and the editor's own save write that file. Read it. With no
+    //    plugin it equals the working file anyway; with one, it is the copy the plugin cannot
+    //    have overwritten — which matters on the commonest path of all: the first `open` reads
+    //    the plugin session before the editor has published one, so its whole wait is
     //    file-backed while the editor is already bound.
-    //  • Through the plugin: the edit is in the shared document and in no file this process can
+    //  • `via: "plugin"`: the edit is in the shared document and in no file this process can
     //    vouch for. An editor bound to the plugin reads its binding; only one that never bound
     //    (the plugin's browser entry can fail to load) needs the working file, as the last copy
     //    it has — so the file rides along, flagged, and the renderer decides.
+    //  • no `via`: a CLI that predates the stamp, so the carrier is UNKNOWN — and it may well have
+    //    been the plugin, whose path never advances the canonical. Do exactly what was always
+    //    done: read the working file, unflagged. Guessing "file-backed" here would push a stale
+    //    sidecar into the shared document across an ordinary upgrade.
     //
     // The LAST agent edit decides, not the first: the control channel coalesces a burst of appends
     // into one batch, the carrier is chosen per edit, and only the newest one describes where the
     // document is now. The cursor has already advanced — nothing replays these entries.
-    const applied = [...entries].reverse().find((e) => e.actor === "agent" && e.type === LogEventType.DocumentEdited);
+    let applied: LogEntry | undefined;
+    for (let i = entries.length - 1; i >= 0 && !applied; i--) {
+      if (entries[i]!.actor === "agent" && entries[i]!.type === LogEventType.DocumentEdited) applied = entries[i];
+    }
     if (applied && existsSync(this.paths.file)) {
-      const viaPlugin = (applied.payload as { via?: unknown } | undefined)?.via === "plugin";
-      const source = !viaPlugin && existsSync(this.paths.canonicalPath) ? this.paths.canonicalPath : this.paths.file;
+      const via = (applied.payload as { via?: unknown } | undefined)?.via;
+      const viaPlugin = via === "plugin";
+      const source = via === "file" && existsSync(this.paths.canonicalPath) ? this.paths.canonicalPath : this.paths.file;
       try {
         handlers.onExternalChange(readFileSync(source, "utf8"), { viaPlugin });
       } catch {

@@ -212,18 +212,24 @@ function revertWouldWipe(canonicalText: string, current: string): boolean {
  * same, because the consequence is the same: the human's editor won't show it until it reloads.
  */
 async function logEdit(channel: ControlChannel, payload: Record<string, unknown>, viaPlugin: boolean): Promise<boolean> {
-  // `via: "plugin"` records which of the two carriers this edit went out on — the one fact about
-  // it that only this process knows, and knows exactly. Through the plugin, the text is in the
-  // shared document and nowhere this process wrote; file-backed, it is in the canonical sidecar.
-  // The editor needs that to know where to read the edit FROM: the working file is not a safe
-  // answer in either case once a plugin is alive, because the plugin overwrites it with its own
-  // projection on its own schedule.
+  // `via` records which of the two carriers this edit went out on — the one fact about it that
+  // only this process knows, and knows exactly. Through the plugin, the text is in the shared
+  // document and nowhere this process wrote; file-backed, it is in the canonical sidecar, which
+  // this process advanced a moment ago. The editor needs that to know where to read the edit
+  // FROM: the working file is not a safe answer in either case once a plugin is alive, because
+  // the plugin overwrites it with its own projection on its own schedule.
+  //
+  // BOTH carriers are stamped, never just one. An editor must be able to tell "file-backed" from
+  // "written by a CLI that predates the stamp": an older CLI still attached across an editor
+  // upgrade applies through the plugin and says nothing, and reading the canonical for it would
+  // hand back a sidecar the plugin path never advances. Unstamped therefore means "unknown", and
+  // the editor treats unknown exactly as it always did.
   //
   // Deliberately NOT a claim about who owns the document or whether an editor is bound. Earlier
   // attempts stamped those and were wrong each time: this process reads the plugin session once,
   // moments after spawning the editor and before the editor has published one, and its gate fails
   // soft for reasons unrelated to ownership. What it did is all it can vouch for.
-  if (viaPlugin) payload = { ...payload, via: "plugin" };
+  payload = { ...payload, via: viaPlugin ? "plugin" : "file" };
   try {
     await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload });
     return true;

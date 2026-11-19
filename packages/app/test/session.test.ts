@@ -60,9 +60,22 @@ describe("Session.dispatchLog", () => {
       writeFileSync(session.paths.file, PROJECTED);
       const h = handlers();
 
-      session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20 })], h);
+      session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20, via: "file" })], h);
 
       expect(h.onExternalChange).toHaveBeenCalledWith(LANDED, { viaPlugin: false });
+    });
+
+    it("an UNSTAMPED edit reads the working file, exactly as it always did", () => {
+      // A CLI that predates the stamp, so the carrier is unknown — and it may have been the plugin,
+      // whose path never advances the canonical. An older `wait` still attached across an editor
+      // upgrade is the ordinary way to get here; reading the canonical for it would push a sidecar
+      // seeded at first load into the shared document.
+      writeFileSync(session.paths.canonicalPath, "# Plan\n\nA canonical nothing has advanced in a long time.\n");
+      const h = handlers();
+
+      session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20 })], h);
+
+      expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { viaPlugin: false });
     });
 
     it("an edit that went through the plugin sends the working file, flagged — the renderer decides", () => {
@@ -82,7 +95,7 @@ describe("Session.dispatchLog", () => {
       writeFileSync(session.paths.canonicalPath, LANDED);
       const h = handlers();
 
-      session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 1, via: "plugin" }), entry("agent", LogEventType.DocumentEdited, { bytes: 2 })], h);
+      session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 1, via: "plugin" }), entry("agent", LogEventType.DocumentEdited, { bytes: 2, via: "file" })], h);
 
       expect(h.onExternalChange).toHaveBeenCalledTimes(1);
       expect(h.onExternalChange).toHaveBeenCalledWith(LANDED, { viaPlugin: false });
@@ -92,7 +105,7 @@ describe("Session.dispatchLog", () => {
       writeFileSync(session.paths.canonicalPath, LANDED);
       const h = handlers();
 
-      session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 1 }), entry("agent", LogEventType.DocumentEdited, { bytes: 2, via: "plugin" })], h);
+      session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 1, via: "file" }), entry("agent", LogEventType.DocumentEdited, { bytes: 2, via: "plugin" })], h);
 
       expect(h.onExternalChange).toHaveBeenCalledTimes(1);
       expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { viaPlugin: true });

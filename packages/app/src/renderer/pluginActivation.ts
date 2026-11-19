@@ -43,13 +43,14 @@ export interface PluginActivator {
   activate: () => Promise<void>;
   /** Tear down the current activation (page unload). */
   dispose: () => void;
-  /** Whether a plugin activation is currently installed. */
-  readonly active: boolean;
 }
 
 export function createPluginActivator(deps: PluginActivatorDeps): PluginActivator {
   let mod: PluginRendererModule | null = null;
   let current: PluginExt | null = null;
+  /** Bumped by every `activate()`. A call that finds it moved while it was awaiting has been
+   *  overtaken, and must touch nothing: the newer call owns the outcome. */
+  let generation = 0;
 
   const disposeCurrent = (): void => {
     const ext = current;
@@ -60,43 +61,41 @@ export function createPluginActivator(deps: PluginActivatorDeps): PluginActivato
       /* best-effort teardown of the previous document's binding */
     }
   };
-  /** Fall back to the file-backed api — INSTALLING it, so whatever a previous document had
-   *  installed is replaced rather than merely forgotten. */
-  const installBase = (): void => {
+  /** Swap to the file-backed api: tear the old activation down and INSTALL the base, in one
+   *  synchronous step, so the previous document's capabilities are replaced rather than merely
+   *  forgotten — and never left disposed-but-installed. */
+  const fallBack = (): void => {
+    disposeCurrent();
     const base = deps.baseApi();
     if (base) deps.install({ ...base });
   };
 
   return {
-    get active() {
-      return current !== null;
-    },
     dispose: disposeCurrent,
     async activate(): Promise<void> {
-      // The previous document's activation ends here, whatever happens next. Disposing first (and
-      // on EVERY path, including the ones that find no plugin for the new document) is what keeps
-      // a stale binding from outliving its document.
-      disposeCurrent();
+      const mine = ++generation;
       try {
+        // Everything that awaits happens FIRST, with the previous activation still installed and
+        // still live: the editor is mounted on it and keeps using it (typing, a programmatic
+        // setText, a getText) until its replacement is ready. Tearing it down before these awaits
+        // left the mounted editor holding a disposed binding for as long as they took.
         const info = await deps.getInfo();
+        if (info && !mod) mod = await deps.importModule(info.rendererUrl);
+        if (mine !== generation) return; // overtaken while awaiting — the newer call decides
+
+        // From here to the end is synchronous: dispose → activate → install, with no gap in which
+        // two activations are alive or none is installed.
         const base = deps.baseApi();
-        if (!info || !base) {
-          installBase();
-          return;
-        }
-        if (!mod) mod = await deps.importModule(info.rendererUrl);
+        if (!info || !base || !mod) return fallBack();
+        disposeCurrent();
         const ext = mod.activate(info.session);
-        if (!ext) {
-          installBase();
-          return;
-        }
+        if (!ext) return fallBack();
         current = ext;
         deps.install({ ...base, binding: ext.binding, commentStore: ext.commentStore, extraModes: ext.extraModes, sidePanels: ext.sidePanels });
       } catch (err) {
         // A plugin wiring failure must never block the editor — fall back to the file-backed api.
         deps.onError?.(err);
-        disposeCurrent();
-        installBase();
+        if (mine === generation) fallBack();
       }
     },
   };
