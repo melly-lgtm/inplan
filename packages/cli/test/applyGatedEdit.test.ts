@@ -2,7 +2,6 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { MemoryControlChannel, MemoryDocumentStore, LogEventType } from "@inplan/core";
-import { hashBody, parse } from "@inplan/core/node";
 import { applyGatedEdit, shouldQuarantine } from "../src/applyEdit";
 import { trackGateDegradations } from "../src/liveSync";
 import type { AgentEditEvaluation } from "../src/gate";
@@ -165,7 +164,7 @@ describe("applyGatedEdit — plugin path (a plugin gate is connected)", () => {
 });
 
 describe("which carrier an edit went out on", () => {
-  const payloadOf = async (ch: MemoryControlChannel) => (await ch.readSince(0)).entries[0]!.payload as { via?: string; bodyHash?: string };
+  const payloadOf = async (ch: MemoryControlChannel) => (await ch.readSince(0)).entries[0]!.payload as { via?: string };
 
   it("stamps BOTH carriers — unstamped has to stay distinguishable as 'a CLI that predates this'", async () => {
     // The one fact about an edit only this process knows, and knows exactly. The editor uses it to
@@ -208,19 +207,6 @@ describe("which carrier an edit went out on", () => {
       expect((await payloadOf(channel)).via).toBe("file");
       expect(await store.getCanonical()).toBe("body"); // and it is where a file-backed reader looks
     }
-  });
-
-  it("says WHAT landed: the hash of the body alone, which is what the shared document holds", async () => {
-    // A reader pointed at the shared document has to be able to tell whether the revision is
-    // there yet. The shared document keeps comments apart from the body, so a hash of the whole
-    // text would never match anything it can read.
-    const text = "# Plan\n\nThe landed body.\n\n<!--inplan v1\n[]\n-->\n";
-    const channel = new MemoryControlChannel();
-    await applyGatedEdit(new MemoryDocumentStore(text), channel, ev({ changed: true }), { current: text, canonicalText: "canon", quarantine: false, gate: fakeGate() });
-
-    const { bodyHash } = await payloadOf(channel);
-    expect(bodyHash).toBe(hashBody(parse(text).body));
-    expect(bodyHash).not.toBe(hashBody(text));
   });
 });
 

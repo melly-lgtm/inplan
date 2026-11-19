@@ -10,7 +10,6 @@
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { forwardRef, useImperativeHandle } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { sha256Hex } from "../src/bindingRead";
 import { parse } from "@inplan/core";
 import { createMemoryCommentStore } from "../src/commentStore";
 import { createMemoryApi } from "../src/memoryApi";
@@ -26,8 +25,9 @@ const DOC = "# Plan\n\nThe original body.\n\n<!--inplan v1\n[]\n-->\n";
 const STALE_FILE = "# Plan\n\nA stale projection read from the working file.\n\n<!--inplan v1\n[]\n-->\n";
 const IN_BINDING = "# Plan\n\nThe revision, as the shared document holds it.\n\n<!--inplan v1\n[]\n-->\n";
 const LANDED = "# Plan\n\nThe text the gate landed, file-backed.\n\n<!--inplan v1\n[]\n-->\n";
+const NEXT = "# Next\n\nThe document navigated to.\n\n<!--inplan v1\n[]\n-->\n";
 const PATH = "memory://doc"; // the path the in-memory host loads the document under
-type Payload = { path: string; content: string; viaPlugin?: boolean; bodyHash?: string };
+type Payload = { path: string; content: string; viaPlugin?: boolean };
 let emit: ((p: Payload) => void) | null = null;
 let host: ReturnType<typeof createMemoryApi>;
 
@@ -64,9 +64,8 @@ describe("where an agent's edit is read from", () => {
   it("through the plugin + bound: from the binding — the file's content is never adopted or pushed", async () => {
     const binding = bind(IN_BINDING);
     await mount();
-    const landed = (await sha256Hex(parse(IN_BINDING).body))!;
 
-    act(() => emit!({ path: PATH, content: STALE_FILE, viaPlugin: true, bodyHash: landed })); // as the CLI stamps it: carrier and hash together
+    act(() => emit!({ path: PATH, content: STALE_FILE, viaPlugin: true }));
 
     // The preview shows what the shared document holds — also in this (default) layout, where no
     // source pane is mounted to observe the binding…
@@ -75,254 +74,19 @@ describe("where an agent's edit is read from", () => {
     expect(binding.setText).not.toHaveBeenCalled(); // …and above all nothing is written back into it
   });
 
-  it("does not adopt pre-revision text while the revision is still on its way", async () => {
-    // The event beat the plugin's own delivery: the binding still holds the text from before the
-    // turn. Adopting that makes it the base of the editor's next programmatic change, which is
-    // written back through the binding — over the revision, once it arrives.
-    let text = DOC;
-    const binding = bind(DOC);
-    binding.getText.mockImplementation(() => text);
-    await mount();
-    const landed = (await sha256Hex(parse(IN_BINDING).body))!;
-
-    act(() => emit!({ path: PATH, content: STALE_FILE, viaPlugin: true, bodyHash: landed }));
-    await new Promise((r) => setTimeout(r, 250)); // several polls go by…
-    expect(document.body.textContent).not.toContain("agent updated the document"); // …with nothing adopted or announced
-
-    text = IN_BINDING; // the plugin delivers
-    await waitFor(() => expect(document.body.textContent).toContain("as the shared document holds it"));
-    expect(binding.setText).not.toHaveBeenCalled();
-  });
-
-  it("adopts what the binding holds when the wait ends — not what the wait looked at", async () => {
-    // Checking the binding takes an await. A keystroke landing in it meanwhile has to be in what
-    // is adopted, or the editor's copy is behind the binding again, by exactly that keystroke.
-    const typedSince = IN_BINDING.replace("holds it.", "holds it. And a keystroke since.");
-    const binding = bind(IN_BINDING);
-    await mount();
-    const landed = (await sha256Hex(parse(IN_BINDING).body))!;
-    binding.getText.mockImplementationOnce(() => IN_BINDING).mockImplementation(() => typedSince); // the check sees the revision; the adoption, what came after
-
-    act(() => emit!({ path: PATH, content: STALE_FILE, viaPlugin: true, bodyHash: landed }));
-
-    await waitFor(() => expect(document.body.textContent).toContain("And a keystroke since."));
-  });
-
-  it("a newer edit supersedes a wait still running for an older one", async () => {
-    let text = DOC;
-    const binding = bind(DOC);
-    binding.getText.mockImplementation(() => text);
-    await mount();
-    const landed = (await sha256Hex(parse(IN_BINDING).body))!;
-
-    act(() => emit!({ path: PATH, content: STALE_FILE, viaPlugin: true, bodyHash: landed })); // …waiting
-    act(() => emit!({ path: PATH, content: LANDED })); // a file-backed edit lands meanwhile
-    await waitFor(() => expect(document.body.textContent).toContain("The text the gate landed"));
-
-    text = IN_BINDING; // what the older wait was waiting for turns up
-    await new Promise((r) => setTimeout(r, 300));
-    expect(document.body.textContent).toContain("The text the gate landed"); // the newer edit stands
-    expect(document.body.textContent).not.toContain("as the shared document holds it");
-  });
-
-  it("an edit announced while this editor is still loading is adopted once it has loaded", async () => {
-    // Every plugin re-activation re-mounts the editor, and an event can arrive before that
-    // mount's load resolves. Load then installs the document it was handed — from the file — so
-    // the edit has to be adopted AFTER it, and must not be dropped because load moved on.
-    bind(IN_BINDING);
-    const release = await mountHeld();
-    const landed = (await sha256Hex(parse(IN_BINDING).body))!;
-
-    act(() => emit!({ path: PATH, content: STALE_FILE, viaPlugin: true, bodyHash: landed }));
-    await new Promise((r) => setTimeout(r, 150));
-    release();
-
-    await waitFor(() => expect(document.body.textContent).toContain("as the shared document holds it"));
-  });
-
-  /** Mount with the host's load() held open, to stand inside it. */
-  async function mountHeld(): Promise<() => void> {
-    const api = (window as unknown as { api: { load: () => Promise<unknown> } }).api;
-    const realLoad = api.load.bind(api);
-    let release!: () => void;
-    const held = new Promise<void>((r) => (release = r));
-    api.load = async () => (await held, realLoad());
-    const { App } = await import("../src/App");
-    render(<App />);
-    await waitFor(() => expect(emit).toBeTruthy());
-    return release;
-  }
-
-  it("…also when the host did not say what landed: nothing is read ahead of the load", async () => {
-    // An immediate read here was adopted and then replaced by load, with the file's copy.
-    bind(IN_BINDING);
-    const release = await mountHeld();
-
-    act(() => emit!({ path: PATH, content: STALE_FILE, viaPlugin: true }));
-    await new Promise((r) => setTimeout(r, 50));
-    release();
-
-    await waitFor(() => expect(document.body.textContent).toContain("as the shared document holds it"));
-  });
-
-  it("a FILE-backed edit announced during load is held too — pushed and adopted after it, not before", async () => {
-    // Pushed into the binding ahead of load, it left the editor's own copy — which load then
-    // replaces from the file — behind the binding it had just written.
-    const binding = bind(DOC);
-    const release = await mountHeld();
-
-    act(() => emit!({ path: PATH, content: LANDED }));
-    await new Promise((r) => setTimeout(r, 50));
-    expect(binding.setText).not.toHaveBeenCalled(); // nothing goes into the shared document yet
-    release();
-
-    await waitFor(() => expect(document.body.textContent).toContain("The text the gate landed")); // load did not replace it
-    expect(binding.setText).toHaveBeenCalledTimes(1);
-  });
-
-  it("held edits run in the order they arrived", async () => {
-    const binding = bind(DOC);
-    const release = await mountHeld();
-    const second = LANDED.replace("file-backed.", "file-backed. Then a second one.");
-
-    act(() => emit!({ path: PATH, content: LANDED }));
-    act(() => emit!({ path: PATH, content: second }));
-    release();
-
-    await waitFor(() => expect(document.body.textContent).toContain("Then a second one."));
-    expect(binding.setText.mock.calls.map((c) => String(c[0]).includes("Then a second one."))).toEqual([false, true]);
-  });
-
-  it("a held edit for another document is dropped when a different one loads", async () => {
-    const binding = bind(DOC);
-    const release = await mountHeld();
-
-    act(() => emit!({ path: "/another/document.plan.md", content: LANDED }));
-    release();
-    await waitFor(() => expect(document.body.textContent).toContain("The original body."));
-
-    expect(binding.setText).not.toHaveBeenCalled();
-    expect(document.body.textContent).not.toContain("The text the gate landed");
-  });
-
-  it("a navigation installs a document too: what was held does not wait on a load that never comes back", async () => {
-    const binding = bind(DOC);
-    await mountHeld(); // …and never released
-    act(() => host.agent.navigate("# Next\n\nThe document navigated to.\n\n<!--inplan v1\n[]\n-->\n"));
-    await waitFor(() => expect(document.body.textContent).toContain("The document navigated to."));
-
-    act(() => emit!({ path: "memory://doc2", content: LANDED }));
-
-    await waitFor(() => expect(document.body.textContent).toContain("The text the gate landed"));
-    expect(binding.setText).toHaveBeenCalledTimes(1);
-  });
-
-  it("a load that fails still releases what was held", async () => {
-    const api = (window as unknown as { api: { load: () => Promise<unknown> } }).api;
-    api.load = async () => Promise.reject(new Error("the document could not be read"));
-    const binding = bind(DOC);
-    const { App } = await import("../src/App");
-    render(<App />);
-    await waitFor(() => expect(emit).toBeTruthy());
-
-    act(() => emit!({ path: PATH, content: LANDED }));
-
-    await waitFor(() => expect(document.body.textContent).toContain("The text the gate landed"));
-    expect(binding.setText).toHaveBeenCalledTimes(1);
-  });
-
-  it("a wait does not outlive its binding", async () => {
-    let text = DOC;
-    const first = bind(DOC);
-    first.getText.mockImplementation(() => text);
-    await mount();
-    const landed = (await sha256Hex(parse(IN_BINDING).body))!;
-
-    act(() => emit!({ path: PATH, content: STALE_FILE, viaPlugin: true, bodyHash: landed })); // …waiting on `first`
-    bind(DOC); // the editor is re-bound (another document's plugin took over)
-    text = IN_BINDING; // and the old binding then receives what the wait wanted
-    await new Promise((r) => setTimeout(r, 300));
-
-    expect(document.body.textContent).toContain("The original body.");
-    expect(document.body.textContent).not.toContain("agent updated the document");
-  });
-
-  it("an edit announced for one document is not adopted into another that loads instead", async () => {
-    // Before load this editor has no path of its own to compare against, so the EVENT's path is
-    // what the wait is for — and the document that then loads is a different one.
-    bind(IN_BINDING);
-    const release = await mountHeld();
-    const landed = (await sha256Hex(parse(IN_BINDING).body))!;
-
-    act(() => emit!({ path: "/another/document.plan.md", content: STALE_FILE, viaPlugin: true, bodyHash: landed }));
-    release();
-    await waitFor(() => expect(document.body.textContent).toContain("The original body."));
-    await new Promise((r) => setTimeout(r, 300));
-
-    expect(document.body.textContent).not.toContain("as the shared document holds it");
-  });
-
-  it("a navigation ends a wait for the document being left", async () => {
-    let text = DOC;
-    const binding = bind(DOC);
-    binding.getText.mockImplementation(() => text);
-    await mount();
-    const landed = (await sha256Hex(parse(IN_BINDING).body))!;
-
-    act(() => emit!({ path: PATH, content: STALE_FILE, viaPlugin: true, bodyHash: landed })); // …waiting
-    act(() => host.agent.navigate("# Next\n\nThe document navigated to.\n\n<!--inplan v1\n[]\n-->\n", PATH)); // away and back between two polls: same path, new document
-    await waitFor(() => expect(document.body.textContent).toContain("The document navigated to."));
-    text = IN_BINDING;
-    await new Promise((r) => setTimeout(r, 300));
-
-    expect(document.body.textContent).toContain("The document navigated to.");
-    expect(document.body.textContent).not.toContain("as the shared document holds it");
-  });
-
-  it("a load overtaken by a navigation does not leave the editor on its loading screen", async () => {
-    const release = await mountHeld();
-    act(() => host.agent.navigate("# Next\n\nThe document navigated to.\n\n<!--inplan v1\n[]\n-->\n"));
-    release();
-
-    await waitFor(() => expect(document.body.textContent).toContain("The document navigated to."));
-  });
-
   it("unified (bare-body binding + comment store): the body from the binding, comments from the store", async () => {
     // What a real plugin installs. The binding's text is the body alone — parsing it as a whole
     // document, or taking comments from it, is the legacy shape.
-    const body = parse(IN_BINDING).body;
-    const binding = bind(body);
+    const binding = bind(parse(IN_BINDING).body);
     const comment = { id: "cmt-aaa111", anchor: "doc" as const, author: "Agent <agent@example.com>", text: "From the store, not the text.", date: "2026-06-01T00:00:00Z", resolved: false };
     (window as unknown as { api: { commentStore: unknown } }).api.commentStore = createMemoryCommentStore([comment]);
     await mount();
-    const landed = (await sha256Hex(body))!;
 
-    act(() => emit!({ path: PATH, content: STALE_FILE, viaPlugin: true, bodyHash: landed }));
+    act(() => emit!({ path: PATH, content: STALE_FILE, viaPlugin: true }));
 
     await waitFor(() => expect(document.body.textContent).toContain("as the shared document holds it"));
     expect(document.body.textContent).toContain("From the store, not the text.");
     expect(binding.setText).not.toHaveBeenCalled();
-  });
-
-  it("an edit to ANOTHER document is not this editor's: nothing adopted, nothing pushed", async () => {
-    // Mid-navigation the host is already watching the next document while this editor still shows
-    // — and is still bound to — the previous one. Its file-backed edit would have been parsed and
-    // pushed through this binding into the wrong shared document.
-    const binding = bind(DOC);
-    await mount();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    act(() => emit!({ path: "/somewhere/else.plan.md", content: LANDED }));
-    act(() => emit!({ path: "/somewhere/else.plan.md", content: LANDED }));
-
-    expect(document.body.textContent).toContain("The original body.");
-    expect(document.body.textContent).not.toContain("The text the gate landed");
-    expect(binding.setText).not.toHaveBeenCalled();
-    // …and it says so, once: a host whose paths merely differ in spelling would otherwise have
-    // every agent edit vanish with nothing to go on.
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(String(warn.mock.calls[0]![0])).toContain("/somewhere/else.plan.md");
-    warn.mockRestore();
   });
 
   it("an unreadable binding is not an edit: nothing is adopted or announced", async () => {
@@ -362,21 +126,56 @@ describe("where an agent's edit is read from", () => {
   });
 });
 
-describe("the in-memory host", () => {
-  it("announces an external change under the document it is on, also after a navigation", async () => {
-    // The editor ignores an external change for another document. A host that kept announcing
-    // changes under its FIRST document's path would have every change after a navigation dropped.
-    document.body.innerHTML = '<div id="root"></div>';
-    const session = createMemoryApi({ content: DOC });
-    (window as unknown as { api: unknown }).api = session.api;
+describe("which document an external change belongs to", () => {
+  it("an edit to ANOTHER document is not this editor's: nothing adopted, nothing pushed", async () => {
+    // Mid-navigation the host is already watching the next document while this editor still shows
+    // — and is still bound to — the previous one. Its file-backed edit would have been parsed and
+    // pushed through this binding into the wrong shared document.
+    const binding = bind(DOC);
+    await mount();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    act(() => emit!({ path: "/somewhere/else.plan.md", content: LANDED }));
+    act(() => emit!({ path: "/somewhere/else.plan.md", content: LANDED }));
+
+    expect(document.body.textContent).toContain("The original body.");
+    expect(document.body.textContent).not.toContain("The text the gate landed");
+    expect(binding.setText).not.toHaveBeenCalled();
+    // …and it says so, once: a host whose paths merely differ in spelling would otherwise have
+    // every agent edit vanish with nothing to go on.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain("/somewhere/else.plan.md");
+    warn.mockRestore();
+  });
+
+  it("the in-memory host announces a change under the document it is on, also after a navigation", async () => {
+    // A host that kept announcing changes under its FIRST document's path would have every
+    // change after a navigation ignored as another document's.
+    const fresh = createMemoryApi({ content: DOC }); // its own subscriptions, not the stubbed one above
+    (window as unknown as { api: unknown }).api = fresh.api;
     const { App } = await import("../src/App");
     render(<App />);
     await waitFor(() => expect(document.body.textContent).toContain("The original body."));
 
-    act(() => session.agent.navigate("# Next\n\nThe document navigated to.\n\n<!--inplan v1\n[]\n-->\n"));
+    act(() => fresh.agent.navigate(NEXT));
     await waitFor(() => expect(document.body.textContent).toContain("The document navigated to."));
-    act(() => session.agent.externalChange(LANDED));
+    act(() => fresh.agent.externalChange(LANDED));
 
     await waitFor(() => expect(document.body.textContent).toContain("The text the gate landed"));
+  });
+
+  it("a navigation brings the loading screen down, whatever becomes of the first load", async () => {
+    // Re-activating a plugin re-mounts the editor, and a navigation can reach the new mount
+    // before its load answers. That load then returns without marking the editor loaded — or
+    // never returns — and nothing else did.
+    const api = (window as unknown as { api: { load: () => Promise<unknown> } }).api;
+    api.load = () => new Promise(() => {}); // never answers
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(emit).toBeTruthy());
+
+    act(() => host.agent.navigate(NEXT));
+
+    await waitFor(() => expect(document.body.textContent).toContain("The document navigated to."));
   });
 });

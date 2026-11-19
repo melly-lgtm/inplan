@@ -52,7 +52,6 @@ import { createMemoryApi } from "./memoryApi";
 import { useT } from "./i18n";
 import { applySegments, isChange, lineSegments, wordDiff, type DiffSegment, type WordPart } from "./textdiff";
 import { merge3 } from "./merge3";
-import { whenCaughtUp } from "./bindingRead";
 
 const USER_AUTHOR = "You";
 const EMPTY: ParsedDocument = { body: "", comments: [] };
@@ -462,36 +461,10 @@ export function App(props: EditorProps = {}): JSX.Element {
     const commentStore = hostApi().commentStore ?? null;
 
     const loadGen = docGenRef.current; // navigation before load resolves must win over the older result
-    // Until a document is installed here — by this mount's load, or by a navigation that got in
-    // ahead of it — there is nothing for an agent's edit to replace, and load installs the copy it
-    // was handed when it resolves, over anything adopted before it. So an external change that
-    // arrives earlier is held, and runs (in arrival order) once there is a document.
-    //
-    // The flag is not redundant with the promise: with a document already installed the change
-    // must be applied in the same tick it arrives, as it always was, not a microtask later.
-    let installed = false;
-    let markInstalled = (): void => {};
-    const whenInstalled = new Promise<void>((r) => (markInstalled = r));
-    const settleLoad = (): void => {
-      installed = true;
-      markInstalled();
-    };
-    const onceInstalled = (run: () => void): void => {
-      if (installed) run();
-      else void whenInstalled.then(() => !disposed && run());
-    };
-    let disposed = false;
-    let warnedForeignChange = false;
     hostApi()
       .load()
       .then(({ content, path, readOnly: ro, focusCommentId }) => {
-        if (docGenRef.current !== loadGen) {
-          // A navigation already installed a newer document — which IS a loaded document, so the
-          // editor must not be left on its loading screen waiting for this one.
-          setLoaded(true);
-          settleLoad();
-          return;
-        }
+        if (docGenRef.current !== loadGen) return; // a navigation already installed a newer document
         docPathRef.current = path;
         setReadOnly(!!ro);
         setPendingFocusCommentId(focusCommentId ?? null);
@@ -505,7 +478,6 @@ export function App(props: EditorProps = {}): JSX.Element {
         docRef.current = d;
         savedRef.current = serialize(d);
         setLoaded(true);
-        settleLoad();
         // Durable re-show: if a proposal was parked (e.g. the app was closed
         // mid-review), surface it again rather than silently accepting it. Generation-guarded:
         // a slow read must not surface against a document navigated to since.
@@ -517,10 +489,7 @@ export function App(props: EditorProps = {}): JSX.Element {
             /* best-effort — the proposal re-surfaces on the next park event or launch */
           });
       })
-      .catch(() => {
-        setLoaded(true);
-        settleLoad();
-      });
+      .catch(() => setLoaded(true));
 
     // Auto-accept (and review-mode comment-only changes) arrive as a file rewrite.
     // Navigation processing, extracted so the subscription can DEFER it: host-initiated
@@ -533,10 +502,11 @@ export function App(props: EditorProps = {}): JSX.Element {
       // the destination's own (empty on first visit). Per-doc still holds — an undo can never pull
       // another doc's content — but the history now survives navigation instead of being dropped.
       if (docPathRef.current) historyByDoc.current.set(docPathRef.current, { undo: history.current, redo: future.current });
-      cancelBindingRead(); // a wait for an edit to the document being left must not adopt into this one
       docPathRef.current = path;
-      settleLoad(); // a document is installed, whatever becomes of this mount's own load
-      setLoaded(true); // …so the loading screen comes down for it, without waiting on that load either
+      // A navigation installs a document, so the loading screen comes down for it. This mount's
+      // own load may have been overtaken by it (and then returns without doing so), or may never
+      // come back at all.
+      setLoaded(true);
       setReadOnly(!!ro); // the destination doc may have its own read-only state
       // The @-mention roster is cached per-doc-open — the doc we're navigating to may belong to
       // a different org, so the previous doc's cached roster must not leak into this one.
@@ -570,150 +540,97 @@ export function App(props: EditorProps = {}): JSX.Element {
     };
     processNavigatedRef.current = processNavigated;
 
-    // A plugin-carried edit may be waited for (see onExternalChange); a newer event, or leaving
-    // this effect, abandons the wait.
-    let cancelBindingRead = (): void => {};
-    /** Make `next` the document after an external (agent) change. `pushToBinding`: it was NOT read
-     *  from the binding, so a bound editor must also be handed it. */
-    const adoptExternal = (next: ParsedDocument, pushToBinding: boolean): void => {
-      const prevDoc = docRef.current;
-      setAgentThinking(false);
-      // The human may be mid-sentence. Replacing the buffer would delete those keystrokes, and
-      // they exist in no other copy — while the incoming text is already on disk and can be read
-      // back at any time. So when there are unsaved edits, keep them and say the document
-      // changed underneath; the agent's text is not lost, it is just not shown yet.
-      //
-      // Deliberately NOT merged here. The obvious three-way merge is wrong in this spot: the
-      // base is empty in the flow that matters most (the first fill of a new document), and an
-      // empty base makes every block a conflict, so one side's work disappears entirely.
-      // Reconciling the two properly — including what a save does afterwards — is #131.
-      if (dirtyRef.current) {
-        setStatus(t("msg.agentUpdatedUnsaved"));
-        return;
-      }
-      setDoc(next);
-      savedRef.current = serialize(next);
-      setDirty(false);
-      // Collab: the binding owns the SOURCE pane (the controlled value is ignored once a binding is
-      // present), so an external/agent body change must also be pushed to the binding — otherwise it
-      // updates only the preview and the source stays stale (and a server edit that didn't broadcast,
-      // e.g. a version-history restore, reverts on reload). Idempotent: a no-op when a provider
-      // broadcast already delivered the body (normal auto-accept turns). File-backed editors have no
-      // binding and keep using the controlled value. (Skipped when `next` was READ from the
-      // binding: there is nothing to push back, and nothing here came from the file.)
-      if (pushToBinding) syncExternalDoc(next, prevDoc.comments, prevDoc.body);
-      // Sync the ref for EVERY replacement (it normally follows on render): any pending
-      // proposal read resolving after this must build its review against the fresh text, or
-      // applying it could overwrite this very change.
-      docRef.current = next;
-      // A review OPEN over the old canonical is now built on sand: its frozen diff base would
-      // make Apply overwrite this very change. Rebase it — re-show the same proposal against
-      // the fresh document (the stored base drives the 3-way merge; hunk selections reset,
-      // which is honest: the ground they were chosen on moved).
-      const open = proposalRef.current;
-      if (open?.raw !== undefined && open.base !== undefined) {
-        // Only a base-carrying review can actually rebase. A legacy base-less proposal would
-        // gain nothing (no merge without a base) and lose everything — the new object identity
-        // resets the reviewer's in-progress hunk selections — so it is left untouched.
-        showProposal(open.raw, open.id, open.base, queueCountRef.current, reviewOpenRef.current);
-      }
-      setStatus(t("msg.agentUpdated"));
-    };
-
+    let warnedForeignChange = false;
     // Collect every host subscription's disposer so a remount (e.g. Replay tutorial)
     // can't stack ipcRenderer listeners and double-handle events.
     const subs: Array<(() => void) | void> = [
-      hostApi().onExternalChange(({ content, viaPlugin, bodyHash, path }) => {
+      hostApi().onExternalChange(({ content, viaPlugin, path }) => {
         // A late event from a document we've navigated away from must not land here: main swaps
         // its session (and starts watching the new document) before this editor has been handed
         // the new document or re-bound, so without this an edit to the NEXT document was adopted
         // into — and pushed through the binding of — the one still on screen.
-        //
-        // The document is the one the EVENT names, when it names one. Before a document is
-        // installed this editor has no path of its own to compare against, so the check is made
-        // again when the held change finally runs.
-        const forPath = path ?? docPathRef.current;
-        const foreign = (): boolean => forPath !== "" && docPathRef.current !== "" && docPathRef.current !== forPath;
-        if (foreign()) {
+        if (path !== undefined && docPathRef.current !== "" && path !== docPathRef.current) {
           // Dropped silently this is undiagnosable for a host whose paths merely differ in spelling
           // (a realpath, a trailing slash): the editor would just never update. Say so, once.
-          if (!warnedForeignChange) console.warn(`[inplan] ignored an external change for ${forPath}: this editor is on ${docPathRef.current}`);
+          if (!warnedForeignChange) console.warn(`[inplan] ignored an external change for ${path}: this editor is on ${docPathRef.current}`);
           warnedForeignChange = true;
           return;
         }
-        cancelBindingRead(); // a newer edit supersedes a read still waiting on an older one
+        const prevDoc = docRef.current;
         // Where is this edit? An edit that went out THROUGH the plugin is in the shared document,
         // and we are looking at that document through our binding — so when we hold one, the
         // binding is the copy to read, not `content`. The host read `content` from disk, and a
         // live plugin overwrites that file with its own projection on its own schedule: it can be
-        // pre-revision text, and adopting it would push that into the binding, over the revision
-        // that just landed. Reading the binding also refreshes the preview in layouts where no
-        // source pane is mounted to do it (nothing else observes the binding there).
+        // pre-revision text, and adopting it below would push that into the binding, over the
+        // revision that just landed. Reading the binding also refreshes the preview in layouts
+        // where no source pane is mounted to do it (nothing else observes the binding there).
         //
         // Every other case reads `content` exactly as before: no binding (it is the only copy we
         // have, even if the plugin delivered the edit elsewhere), or an edit that did NOT go
         // through the plugin (the host sends the text the gate landed, which then has to be
         // pushed into the binding to reach the shared document at all).
-        const parsed = parse(content); // now, so a malformed payload still fails where it always did
-        const adoptContent = (): void => {
+        const binding = (viaPlugin === true && hostApi().binding) || null; // null: read `content`
+        let next: ParsedDocument;
+        if (binding) {
+          try {
+            // Unified: the binding holds the bare body and the store owns comments. Legacy collab:
+            // the binding holds the whole serialized document.
+            next = commentStore ? { body: binding.getText(), comments: commentStore.list() } : parse(binding.getText());
+          } catch {
+            // A legacy document caught mid-edit: nothing was read, so nothing is adopted. Falling
+            // through with the old document would still reset the saved baseline, clear dirty,
+            // rebuild an open review (dropping its hunk selections) and announce an update that
+            // was never seen.
+            setAgentThinking(false);
+            return;
+          }
+        } else {
+          const parsed = parse(content);
           // Store-backed (plugin): comments are owned by the external store, not the rewritten
           // body — keep them from the store so an agent/body refresh can't blank/stale the rail.
-          adoptExternal(commentStore ? { ...parsed, comments: commentStore.list() } : parsed, true);
-        };
-        if (viaPlugin !== true) {
-          // Held like any other until a document is installed: pushed into the binding ahead of
-          // load, it left the editor's own copy — which load then replaces from the file —
-          // behind the binding it had just written.
-          onceInstalled(() => !foreign() && adoptContent());
+          next = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
+        }
+        setAgentThinking(false);
+        // The human may be mid-sentence. Replacing the buffer would delete those keystrokes, and
+        // they exist in no other copy — while the incoming text is already on disk and can be read
+        // back at any time. So when there are unsaved edits, keep them and say the document
+        // changed underneath; the agent's text is not lost, it is just not shown yet.
+        //
+        // Deliberately NOT merged here. The obvious three-way merge is wrong in this spot: the
+        // base is empty in the flow that matters most (the first fill of a new document), and an
+        // empty base makes every block a conflict, so one side's work disappears entirely.
+        // Reconciling the two properly — including what a save does afterwards — is #131.
+        if (dirtyRef.current) {
+          setStatus(t("msg.agentUpdatedUnsaved"));
           return;
         }
-        let cancelled = false;
-        cancelBindingRead = () => (cancelled = true);
-        onceInstalled(() => {
-          if (cancelled || foreign()) return;
-          const binding = hostApi().binding ?? null;
-          if (!binding) return adoptContent();
-          setAgentThinking(false);
-          // Unified: the binding holds the bare body and the store owns comments. Legacy collab:
-          // the binding holds the whole serialized document — unreadable while its comment block
-          // is mid-edit, and then nothing was read, so nothing is adopted or announced.
-          const adoptNow = (): void => {
-            let now: ParsedDocument;
-            try {
-              now = commentStore ? { body: binding.getText(), comments: commentStore.list() } : parse(binding.getText());
-            } catch {
-              return;
-            }
-            adoptExternal(now, false);
-          };
-          if (bodyHash === undefined) return adoptNow(); // the host did not say what landed: nothing to wait for
-          // The event and the plugin's own delivery are not ordered: wait until the binding holds
-          // the body that landed, rather than adopting whatever it holds this instant
-          // (bindingRead.ts). The wait begins HERE, with a document installed — its budget is for
-          // the plugin's delivery, and a slow load would otherwise spend it.
-          //
-          // Abandoned by a newer event, a navigation or unmount (cancelled), a re-bind, or another
-          // document on screen. Deliberately NOT by the document generation: this mount's own
-          // load bumps it when it resolves.
-          //
-          // The hash is of the body alone, so a comment-only edit matches at once — right for the
-          // unified shape, where the store delivers comments and its observer keeps them current.
-          // A whole-document binding would adopt its comment block unchecked; no host pairs that
-          // shape with a plugin-carried edit.
-          const abandoned = (): boolean => cancelled || hostApi().binding !== binding || foreign();
-          const readBody = (): string | null => {
-            try {
-              return commentStore ? binding.getText() : parse(binding.getText()).body;
-            } catch {
-              return null;
-            }
-          };
-          void whenCaughtUp(readBody, bodyHash, abandoned).then((ready) => {
-            // Read NOW, not what the wait looked at: its hashing awaits, and a keystroke that
-            // landed in the binding meanwhile must be in what is adopted.
-            if (ready) adoptNow();
-          });
-        });
+        setDoc(next);
+        savedRef.current = serialize(next);
+        setDirty(false);
+        // Collab: the binding owns the SOURCE pane (the controlled value is ignored once a binding is
+        // present), so an external/agent body change must also be pushed to the binding — otherwise it
+        // updates only the preview and the source stays stale (and a server edit that didn't broadcast,
+        // e.g. a version-history restore, reverts on reload). Idempotent: a no-op when a provider
+        // broadcast already delivered the body (normal auto-accept turns). File-backed editors have no
+        // binding and keep using the controlled value. (Skipped when `next` was READ from the
+        // binding: there is nothing to push back, and nothing here came from the file.)
+        if (!binding) syncExternalDoc(next, prevDoc.comments, prevDoc.body);
+        // Sync the ref for EVERY replacement (it normally follows on render): any pending
+        // proposal read resolving after this must build its review against the fresh text, or
+        // applying it could overwrite this very change.
+        docRef.current = next;
+        // A review OPEN over the old canonical is now built on sand: its frozen diff base would
+        // make Apply overwrite this very change. Rebase it — re-show the same proposal against
+        // the fresh document (the stored base drives the 3-way merge; hunk selections reset,
+        // which is honest: the ground they were chosen on moved).
+        const open = proposalRef.current;
+        if (open?.raw !== undefined && open.base !== undefined) {
+          // Only a base-carrying review can actually rebase. A legacy base-less proposal would
+          // gain nothing (no merge without a base) and lose everything — the new object identity
+          // resets the reviewer's in-progress hunk selections — so it is left untouched.
+          showProposal(open.raw, open.id, open.base, queueCountRef.current, reviewOpenRef.current);
+        }
+        setStatus(t("msg.agentUpdated"));
       }),
       // Review-mode body changes arrive parked, as a proposal to accept/reject.
       hostApi().onProposal(({ content, id, baseContent, pending, path }) => {
@@ -770,8 +687,6 @@ export function App(props: EditorProps = {}): JSX.Element {
     return () => {
       document.removeEventListener("selectionchange", onSel);
       for (const dispose of subs) dispose?.();
-      cancelBindingRead();
-      disposed = true;
     };
   }, []);
 

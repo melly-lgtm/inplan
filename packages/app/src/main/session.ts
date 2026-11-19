@@ -308,11 +308,11 @@ export class Session {
       if (entries[i]!.actor === "agent" && entries[i]!.type === LogEventType.DocumentEdited) applied = entries[i];
     }
     if (applied && existsSync(this.paths.file)) {
-      const { via, bodyHash } = (applied.payload ?? {}) as { via?: unknown; bodyHash?: unknown };
+      const via = (applied.payload as { via?: unknown } | undefined)?.via;
       const viaPlugin = via === "plugin";
       const source = via === "file" && existsSync(this.paths.canonicalPath) ? this.paths.canonicalPath : this.paths.file;
       try {
-        handlers.onExternalChange(readFileSync(source, "utf8"), { viaPlugin, ...(typeof bodyHash === "string" ? { bodyHash } : {}) });
+        handlers.onExternalChange(readFileSync(source, "utf8"), { viaPlugin });
       } catch {
         /* file mid-write — the next event will resync */
       }
@@ -326,9 +326,7 @@ export class Session {
 
 /** The editor-facing callbacks the desktop shell relays to the renderer over IPC. */
 export interface WatchHandlers {
-  /** `bodyHash`: the hash of the body that landed, when the CLI recorded one — what a renderer
-   *  reading the edit from somewhere other than `content` checks that copy against. */
-  onExternalChange: (content: string, opts: { viaPlugin: boolean; bodyHash?: string }) => void;
+  onExternalChange: (content: string, opts: { viaPlugin: boolean }) => void;
   onAgentDone: () => void;
   onAgentActive: () => void;
   onProposal: (content: string, id?: string, baseContent?: string, pending?: number, path?: string) => void;

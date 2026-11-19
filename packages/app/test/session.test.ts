@@ -74,14 +74,6 @@ describe("Session.dispatchLog", () => {
       expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { viaPlugin: false });
     });
 
-    it("passes on what landed, so the renderer can check the copy it reads", () => {
-      const h = handlers();
-
-      session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20, via: "plugin", bodyHash: "abc123" })], h);
-
-      expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { viaPlugin: true, bodyHash: "abc123" });
-    });
-
     it("an UNSTAMPED edit reads the working file, exactly as it always did", () => {
       // A CLI that predates the stamp, so the carrier is unknown — and it may have been the plugin,
       // whose path never advances the canonical. An older `wait` still attached across an editor
