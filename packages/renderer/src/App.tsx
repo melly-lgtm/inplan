@@ -548,22 +548,24 @@ export function App(props: EditorProps = {}): JSX.Element {
     let warnedForeignChange = false;
     /** Comments SETTLED from outside the editor — new arrivals, and the revisions that replace
      *  them — are not the human's work, so undo must not be able to remove or rewind them: they
-     *  are written into every undo/redo snapshot, replacing any older version there. Without
-     *  this, undoing one's own comment erased the agent's just-landed question (and undoing past
-     *  a taken correction rewound it to the superseded text), and the next save persisted the
-     *  erasure — the stall this handler's unsaved branch exists to prevent, reopened through the
-     *  undo stack. */
-    const settleExternal = (settled: Comment[]): void => {
-      if (settled.length === 0) return;
+     *  are written into every undo/redo snapshot, replacing any older version there. `removed` is
+     *  the inverse — ids the outside deleted — which must LEAVE the snapshots, or undo resurrects
+     *  them into the shared store. Without this, undoing one's own comment erased the agent's
+     *  just-landed question (and undoing past a taken correction rewound it to the superseded
+     *  text), and the next save persisted the erasure — the stall this handler's unsaved branch
+     *  exists to prevent, reopened through the undo stack. */
+    const settleExternal = (settled: Comment[], removed: Set<string> = new Set()): void => {
+      if (settled.length === 0 && removed.size === 0) return;
       for (const stack of [history.current, future.current]) {
         for (let i = 0; i < stack.length; i++) {
           const snap = stack[i]!;
-          const replaced = snap.comments.map((c) => {
+          const kept = snap.comments.filter((c) => !removed.has(c.id));
+          const replaced = kept.map((c) => {
             const inc = settled.find((x) => x.id === c.id);
             return inc && JSON.stringify(inc) !== JSON.stringify(c) ? inc : c;
           });
-          const missing = settled.filter((x) => !replaced.some((c) => c.id === x.id));
-          if (replaced.some((c, i2) => c !== snap.comments[i2]) || missing.length > 0) stack[i] = { ...snap, comments: [...replaced, ...missing] };
+          const missing = settled.filter((x) => !removed.has(x.id) && !replaced.some((c) => c.id === x.id));
+          if (kept.length !== snap.comments.length || replaced.some((c, i2) => c !== kept[i2]) || missing.length > 0) stack[i] = { ...snap, comments: [...replaced, ...missing] };
         }
       }
     };
@@ -634,6 +636,24 @@ export function App(props: EditorProps = {}): JSX.Element {
         // and leave the body alone — the question reaches the rail immediately, the human's
         // sentence is untouched, and nothing is merged behind anyone's back. The BODY difference
         // stays unreconciled and is #131; the editor says so rather than pretending otherwise.
+        // What SETTLED from the outside, read the way undo will see it — both landing paths
+        // below need this. On a store host the store's own observer may already have flushed
+        // arrivals into the buffer before this event ran, so the LIVE buffer cannot show what
+        // arrived: the newest undo snapshot can, changing only by the human's own actions and by
+        // these landings themselves (after everything has been undone, the redo stack's top is
+        // that snapshot). A comment the human owns (created, edited, deleted here) is never an
+        // arrival, whatever the comparison says — the snapshot a human action pushed predates
+        // that action. Symmetrically, what the outside REMOVED (in the snapshot, gone from the
+        // store, not the human's) must leave the snapshots too, or undo resurrects it.
+        const storeList = commentStore ? commentStore.list() : null;
+        const storeBase = commentStore
+          ? (history.current[history.current.length - 1]?.comments ?? future.current[future.current.length - 1]?.comments ?? prevDoc.comments)
+          : null;
+        const storeBaseIds = new Set((storeBase ?? []).map((c) => c.id));
+        const storeArrivals = storeList ? storeList.filter((c) => !storeBaseIds.has(c.id) && !humanTouchedComments.current.has(c.id)) : null;
+        const storeRemovals = storeList
+          ? new Set([...storeBaseIds].filter((id) => !storeList.some((c) => c.id === id) && !humanTouchedComments.current.has(id)))
+          : new Set<string>();
         // Reachable only where typing can leave unsaved edits — hosts with no `binding.setText`
         // (the file-backed editor; a comment-store-only host whose plugin entry failed to load).
         // A bound editor never marks itself dirty from typing, so there this is dead except the
@@ -664,19 +684,10 @@ export function App(props: EditorProps = {}): JSX.Element {
             .map((c) => (!c.parentId && c.anchor !== "doc" && !prevDoc.body.includes(`](#${c.id})`) ? { ...c, anchor: "doc" as const } : c));
           // A store-backed host owns comments outside the body; its observer keeps the rail
           // current, so there is nothing for us to merge there.
-          const storeList = commentStore ? commentStore.list() : null;
           const withComments = commentStore ? { ...prevDoc, comments: storeList! } : { ...prevDoc, comments: [...revised, ...arriving] };
           // What settled is not the human's work: undo must not be able to remove or rewind it
-          // (above). On a store host the store's own observer may already have flushed the
-          // arrivals into the buffer before this event ran, so the LIVE buffer cannot show what
-          // arrived — the newest undo snapshot can: it changes only by the human's own actions
-          // and by these landings themselves.
-          const storeBase = commentStore ? (history.current[history.current.length - 1]?.comments ?? prevDoc.comments) : null;
-          const storeBaseIds = new Set((storeBase ?? []).map((c) => c.id));
-          // A comment the human owns (created, edited, deleted here) is not an arrival, whatever
-          // the snapshot comparison says — the snapshot a human action pushed predates that action.
-          const storeArrivals = storeList ? storeList.filter((c) => !storeBaseIds.has(c.id) && !humanTouchedComments.current.has(c.id)) : null;
-          settleExternal(storeArrivals ?? [...arriving, ...takenRevisions]);
+          // (the derivation above).
+          settleExternal(storeArrivals ?? [...arriving, ...takenRevisions], storeRemovals);
           setDoc(withComments);
           docRef.current = withComments;
           // Did the AGENT move the body, or is this comments only? Against the human's buffer every
@@ -684,7 +695,9 @@ export function App(props: EditorProps = {}): JSX.Element {
           // comparison is the last saved baseline, which is what both sides diverged from.
           let bodyMoved = true;
           try {
-            bodyMoved = savedRef.current !== "" && incoming.body !== parse(savedRef.current).body;
+            // No saved baseline yet (a brand-new document, never saved): no version of the body
+            // is being withheld, so call it moved only if the landing carries one at all.
+            bodyMoved = savedRef.current !== "" ? incoming.body !== parse(savedRef.current).body : incoming.body.trim() !== "";
           } catch {
             /* unparseable baseline: say the more cautious thing */
           }
@@ -697,15 +710,31 @@ export function App(props: EditorProps = {}): JSX.Element {
           return;
         }
         setDoc(next);
-        // Undo must not be able to remove or rewind these either. And a wholesale take discards
-        // the human's buffer, so their ownership markers reference versions just thrown away.
+        // Undo must not be able to remove or rewind these either: on a store host the arrivals
+        // come from the snapshot derivation above (the observer may have flushed them into the
+        // buffer already, and this clean path is a bound store host's common case — it is never
+        // dirty from typing); elsewhere, whatever the landing changed against the buffer it
+        // replaced.
         settleExternal(
-          next.comments.filter((c) => {
-            const p = prevDoc.comments.find((q) => q.id === c.id);
-            return !p || JSON.stringify(p) !== JSON.stringify(c); // new, or revised since
+          [
+            ...(storeArrivals ?? []),
+            ...next.comments.filter((c) => {
+              const p = prevDoc.comments.find((q) => q.id === c.id);
+              return !p || JSON.stringify(p) !== JSON.stringify(c); // new, or revised since
+            }),
+          ],
+          storeRemovals,
+        );
+        // A wholesale take discards the human's buffer, so their ownership markers reference
+        // versions just thrown away — but only where the landing actually replaced them: a
+        // comment it carried through unchanged still IS their version.
+        humanTouchedComments.current = new Set(
+          [...humanTouchedComments.current].filter((id) => {
+            const inc = next.comments.find((c) => c.id === id);
+            const buf = prevDoc.comments.find((c) => c.id === id);
+            return !!inc && !!buf && JSON.stringify(inc) === JSON.stringify(buf);
           }),
         );
-        humanTouchedComments.current = new Set();
         savedRef.current = serialize(next);
         setDirty(false);
         // Collab: the binding owns the SOURCE pane (the controlled value is ignored once a binding is
@@ -1016,11 +1045,13 @@ export function App(props: EditorProps = {}): JSX.Element {
       const prevDoc = docRef.current;
       const commentOnly = next.body === prevDoc.body; // body unchanged ⇒ a comment-thread change
       const prevComments = prevDoc.comments;
+      // The editor's own automatic actions (auto-resolve) are not the human's: they neither own a
+      // comment (a thread auto-resolved must still take the agent's later correction) nor earn
+      // the immediate-persist right below.
+      const auto = (action?.payload as { auto?: boolean } | undefined)?.auto === true;
       // Which comments THIS action changed: the human owns those now, and a later agent revision
-      // of one (landing while the buffer is unsaved) must not overwrite their version. The
-      // editor's own automatic actions don't count — a thread it auto-resolved is not the
-      // human's answer, and the agent's later correction of it must still be taken.
-      if ((action?.payload as { auto?: boolean } | undefined)?.auto !== true) {
+      // of one (landing while the buffer is unsaved) must not overwrite their version.
+      if (!auto) {
         for (const c of next.comments) {
           const before = prevComments.find((q) => q.id === c.id);
           if (!before || JSON.stringify(before) !== JSON.stringify(c)) humanTouchedComments.current.add(c.id);
@@ -1038,6 +1069,13 @@ export function App(props: EditorProps = {}): JSX.Element {
       if (syncExternalDoc(next, prevComments, prevDoc.body)) {
         setDirty(false);
       } else if (commentOnly) {
+        if (auto && dirtyRef.current) {
+          // An automatic comment change (auto-resolve) while the human is mid-sentence must not
+          // take the immediate-persist path: that saves the WHOLE document — the half-typed body
+          // included — and clears the unsaved marker. The resolve rides in the buffer and
+          // persists with their save.
+          return;
+        }
         // File-backed single-writer. Comment-thread changes are "always applied" — persist them
         // immediately (silent in Turn/Review; canonical in Instant) so they survive reloads/proposals.
         const s = serialize(next);

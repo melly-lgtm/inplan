@@ -47,6 +47,12 @@ const MAY_RESOLVE = JSON.stringify([
 const MAY_REVISED = JSON.stringify([
   { id: "cmt-r1", author: "Agent <a@b>", date: "2026-01-01T00:00:00Z", resolved: false, anchor: "doc", text: "Incorporated your feedback — and one more thing (corrected)." },
 ]);
+/** The resolved question, unchanged, plus an unrelated new one: a landing that carries the
+ *  human's version through untouched must not erase their ownership of it. */
+const RESOLVED_AND_NEW = JSON.stringify([
+  { id: "cmt-q1", author: "Agent <a@b>", date: "2026-01-01T00:00:00Z", resolved: true, anchor: "doc", text: "Which datastore should this use?" },
+  { id: "cmt-n1", author: "Agent <a@b>", date: "2026-01-02T00:00:00Z", resolved: false, anchor: "doc", text: "An unrelated new question." },
+]);
 /** The question as saved once the human resolved it. */
 const RESOLVED = JSON.stringify([
   { id: "cmt-q1", author: "Agent <a@b>", date: "2026-01-01T00:00:00Z", resolved: true, anchor: "doc", text: "Which datastore should this use?" },
@@ -64,6 +70,7 @@ const SPAN_REVISED_ASKED = `# Plan\n\nThe plan should [use Postgres](#cmt-s1).\n
 const MAY_ASKED = `# Plan\n\nThe original body.\n\n<!--inplan v1\n${MAY_RESOLVE}\n-->\n`;
 const MAY_REVISED_ASKED = `# Plan\n\nThe original body.\n\n<!--inplan v1\n${MAY_REVISED}\n-->\n`;
 const ASKED_RESOLVED = `# Plan\n\nThe original body.\n\n<!--inplan v1\n${RESOLVED}\n-->\n`;
+const BOTH_ASKED = `# Plan\n\nThe original body.\n\n<!--inplan v1\n${RESOLVED_AND_NEW}\n-->\n`;
 const NEXT = "# Next\n\nThe document navigated to.\n\n<!--inplan v1\n[]\n-->\n";
 const MINE = "# Plan\n\nThe human's own sentence, not yet saved.\n";
 let agent: MemoryAgent;
@@ -557,6 +564,158 @@ describe("an agent edit landing on an unsaved buffer", () => {
     expect(document.body.textContent).not.toContain("My own note."); // undone — it was the human's
     expect(document.body.textContent).toContain("and by when? (corrected)"); // the correction stands
     expect(document.body.textContent).not.toContain("Which datastore should this use?");
+  });
+
+  it("on a store host, a CLEAN landing whose observer flushed first is protected too", async () => {
+    // A bound store host is never dirty from typing — this is its common landing path. Reading
+    // the arrivals from the live buffer meant they were never noted, and undo then handed the
+    // reconciler a pre-arrival state that DELETED the agent's comment from the shared store.
+    document.body.innerHTML = '<div id="root"></div>';
+    const session = createMemoryApi({ content: DOC });
+    const store = createMemoryCommentStore([]);
+    (window as unknown as { api: unknown }).api = { ...session.api, commentStore: store };
+    agent = session.agent;
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("The original body."));
+    await act(async () => {
+      screen.getByRole("button", { name: /comment on doc/i }).click(); // an app-level action…
+    });
+    const ta = await screen.findByPlaceholderText(/Add a comment/i);
+    await act(async () => {
+      fireEvent.change(ta, { target: { value: "My own note." } });
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /^comment$/i }).click();
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("My own note."));
+    await act(async () => {
+      store.add({ id: "cmt-q1", author: "Agent <a@b>", date: "2026-01-01T00:00:00Z", resolved: false, anchor: "doc", text: "Which datastore should this use?" });
+    }); // the observer flushes — a SEPARATE task before the event
+    await act(async () => {
+      agent.externalChange(DOC); // clean buffer: the store host's common landing
+    });
+
+    await act(async () => {
+      fireEvent.keyDown(document.body, { key: "z", metaKey: true }); // undo MY comment
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /^Comments$/ }).click();
+    });
+
+    expect(document.body.textContent).not.toContain("My own note."); // undone — it was the human's
+    expect(document.body.textContent).toContain("Which datastore should this use?"); // still here…
+    expect(store.list().some((c) => c.id === "cmt-q1")).toBe(true); // …and still in the shared store
+  });
+
+  it("undo cannot resurrect a comment the agent deleted", async () => {
+    document.body.innerHTML = '<div id="root"></div>';
+    const session = createMemoryApi({ content: DOC });
+    const store = createMemoryCommentStore([]);
+    (window as unknown as { api: unknown }).api = { ...session.api, commentStore: store };
+    agent = session.agent;
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("The original body."));
+    await act(async () => {
+      screen.getByRole("button", { name: /comment on doc/i }).click();
+    });
+    const ta = await screen.findByPlaceholderText(/Add a comment/i);
+    await act(async () => {
+      fireEvent.change(ta, { target: { value: "My own note." } });
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /^comment$/i }).click();
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("My own note."));
+    await act(async () => {
+      store.add({ id: "cmt-q1", author: "Agent <a@b>", date: "2026-01-01T00:00:00Z", resolved: false, anchor: "doc", text: "Which datastore should this use?" });
+    });
+    await act(async () => {
+      agent.externalChange(DOC); // the question lands (noted into the snapshots)
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("Which datastore should this use?"));
+    await act(async () => {
+      store.replaceAll(store.list().filter((c) => c.id !== "cmt-q1")); // the agent deletes it…
+    });
+    await act(async () => {
+      agent.externalChange(DOC); // …and the landing sees the deletion
+    });
+    await waitFor(() => expect(document.body.textContent).not.toContain("Which datastore should this use?"));
+
+    await act(async () => {
+      fireEvent.keyDown(document.body, { key: "z", metaKey: true }); // undo MY comment
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /^Comments$/ }).click();
+    });
+
+    expect(document.body.textContent).not.toContain("My own note."); // the undo did its own work…
+    expect(document.body.textContent).not.toContain("Which datastore should this use?"); // …without resurrecting the deletion
+    expect(store.list().some((c) => c.id === "cmt-q1")).toBe(false); // …in the buffer OR the shared store
+  });
+
+  it("an auto-resolve while the human is typing does not save their half-typed body", async () => {
+    document.body.innerHTML = '<div id="root"></div>';
+    const session = createMemoryApi({ content: DOC, settings: { autoResolve: true } });
+    (window as unknown as { api: unknown }).api = session.api;
+    agent = session.agent;
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("The original body."));
+    await act(async () => {
+      screen.getByRole("button", { name: /^Source$/ }).click();
+    });
+    await waitFor(() => expect(emitEdit).toBeTruthy());
+    await act(async () => {
+      emitEdit?.(MINE); // mid-sentence, unsaved
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("unsaved"));
+
+    await act(async () => {
+      agent.externalChange(MAY_ASKED); // a may_resolve comment lands on the dirty buffer
+    });
+    await waitFor(() => expect(document.body.textContent).not.toContain("Incorporated your feedback")); // auto-resolved
+
+    expect(document.body.textContent).toContain("unsaved"); // still theirs to save — the resolve rode along
+    const persisted = await (window as unknown as { api: { load: () => Promise<{ content: string }> } }).api.load();
+    expect(persisted.content).not.toContain("The human's own sentence"); // nothing half-typed on disk
+  });
+
+  it("a clean landing that carries the human's version through unchanged keeps their ownership", async () => {
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("The original body."));
+    await act(async () => {
+      agent.externalChange(ASKED); // the question lands
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /^Comments$/ }).click();
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Resolve thread" }).click(); // the human resolves it
+    });
+    await waitFor(() => expect(document.body.textContent).not.toContain("Which datastore should this use?"));
+    await act(async () => {
+      agent.externalChange(BOTH_ASKED); // a clean landing carrying their resolve through, plus a new one
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("An unrelated new question."));
+    await act(async () => {
+      screen.getByRole("button", { name: /^Source$/ }).click();
+    });
+    await act(async () => {
+      emitEdit?.(MINE); // unsaved, so the next landing falls on the dirty branch
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("unsaved"));
+
+    await act(async () => {
+      agent.externalChange(ASKED_REVISED); // the agent corrects the resolved question
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /^Comments$/ }).click();
+    });
+
+    expect(document.body.textContent).not.toContain("(corrected)"); // their version was carried, so it stands
   });
 
   it("takes the agent's edit outright when the buffer is clean — the normal case is unchanged", async () => {
