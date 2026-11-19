@@ -72,12 +72,11 @@ export interface DocPayload {
   readOnly?: boolean;
   /** Focus this comment on load (a digest email's deep link). Absent = no auto-focus. */
   focusCommentId?: string;
-  /** External change only: a runtime plugin owns the document this content came from, so the file
-   *  it was read from is not the carrier — the plugin overwrites it with its own projection on its
-   *  own schedule. An editor BOUND to that plugin must not push this into the binding (it would
-   *  write possibly-stale text over the shared document); an editor that never bound has nothing
-   *  else, and uses it. */
-  pluginOwned?: boolean;
+  /** External change only: the edit this announces went out through a runtime plugin, so it lives
+   *  in the plugin's shared document rather than in `content`. A renderer holding that plugin's
+   *  binding reads the binding instead; one without a binding has only `content`. Absent on hosts
+   *  with no such distinction. */
+  viaPlugin?: boolean;
 }
 
 export interface SaveOptions {

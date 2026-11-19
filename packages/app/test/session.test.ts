@@ -35,51 +35,68 @@ afterEach(() => {
 });
 
 describe("Session.dispatchLog", () => {
-  it("tells the renderer when a plugin owns the file the content came from", () => {
-    // Main forwards the fact rather than acting on it: whether a plugin-owned file may be used
-    // depends on whether the RENDERER bound to that plugin, which only the renderer knows.
-    const h = handlers();
-
-    session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20, pluginOwned: true })], h);
-
-    expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { pluginOwned: true });
-  });
-
-  it("reads the LAST agent edit in a coalesced batch, not the first", () => {
-    // The control channel debounces a burst of appends into one batch, and the mode is decided per
-    // edit — so a batch can carry both kinds. Only the last one describes what the file is now;
-    // taking the first would describe the file by an edit two writes ago.
-    const h = handlers();
-
-    session.dispatchLog(
-      [entry("agent", LogEventType.DocumentEdited, { bytes: 10 }), entry("agent", LogEventType.DocumentEdited, { bytes: 20, pluginOwned: true })],
-      h,
-    );
-
-    expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { pluginOwned: true });
-  });
-
-  it("…and in the other order too, where the file-backed edit is the one that landed last", () => {
-    // The mirror case, and the one that loses an edit rather than risking a stale read: a
-    // file-backed edit lives only in the .md, so describing the file by the plugin edit before it
-    // would have the renderer withhold the one copy there is. The cursor has already advanced —
-    // nothing replays these entries.
-    const h = handlers();
-
-    session.dispatchLog(
-      [entry("agent", LogEventType.DocumentEdited, { bytes: 20, pluginOwned: true }), entry("agent", LogEventType.DocumentEdited, { bytes: 10 })],
-      h,
-    );
-
-    expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { pluginOwned: false });
-  });
-
   it("an accepted agent edit loads the working file + clears 'thinking'", () => {
+    // No canonical sidecar yet (nothing has loaded or gated this doc): the working file is the
+    // only copy there is.
     const h = handlers();
     session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20 }), entry("agent", LogEventType.AgentRevised)], h);
-    expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { pluginOwned: false });
+    expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { viaPlugin: false });
     expect(h.onAgentActive).toHaveBeenCalled();
     expect(h.onProposal).not.toHaveBeenCalled();
+  });
+
+  describe("which copy of an agent edit the editor is handed", () => {
+    const LANDED = "# Plan\n\nThe text the gate landed.\n";
+    const PROJECTED = "# Plan\n\nA plugin's older projection, written over the working file.\n";
+
+    it("a file-backed edit is read from the CANONICAL, which a plugin cannot have overwritten", () => {
+      // The gate advances the canonical to exactly the text it accepted. A live plugin overwrites
+      // the WORKING file with its own projection on its own schedule, so by the time this runs
+      // that file can hold pre-revision text — which the editor would push into its binding, over
+      // the revision that just landed. This is the commonest path, not an edge: the first `open`
+      // reads the plugin session before the editor publishes one, so its wait is file-backed
+      // while the editor is already bound.
+      writeFileSync(session.paths.canonicalPath, LANDED);
+      writeFileSync(session.paths.file, PROJECTED);
+      const h = handlers();
+
+      session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20 })], h);
+
+      expect(h.onExternalChange).toHaveBeenCalledWith(LANDED, { viaPlugin: false });
+    });
+
+    it("an edit that went through the plugin sends the working file, flagged — the renderer decides", () => {
+      // The edit is in the shared document; the canonical was not advanced. A renderer bound to
+      // the plugin reads its binding and ignores this content; one that never bound has only it.
+      writeFileSync(session.paths.canonicalPath, "# Plan\n\nA canonical the plugin path never advances.\n");
+      const h = handlers();
+
+      session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20, via: "plugin" })], h);
+
+      expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { viaPlugin: true });
+    });
+
+    it("the LAST agent edit in a coalesced batch decides — file-backed after plugin", () => {
+      // The channel coalesces a burst of appends, the carrier is chosen per edit, and the cursor
+      // has already advanced: describing the batch by its first edit would drop the newest one.
+      writeFileSync(session.paths.canonicalPath, LANDED);
+      const h = handlers();
+
+      session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 1, via: "plugin" }), entry("agent", LogEventType.DocumentEdited, { bytes: 2 })], h);
+
+      expect(h.onExternalChange).toHaveBeenCalledTimes(1);
+      expect(h.onExternalChange).toHaveBeenCalledWith(LANDED, { viaPlugin: false });
+    });
+
+    it("…and plugin after file-backed", () => {
+      writeFileSync(session.paths.canonicalPath, LANDED);
+      const h = handlers();
+
+      session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 1 }), entry("agent", LogEventType.DocumentEdited, { bytes: 2, via: "plugin" })], h);
+
+      expect(h.onExternalChange).toHaveBeenCalledTimes(1);
+      expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { viaPlugin: true });
+    });
   });
 
   it("relays each agent message (text + ts) to onAgentMessage, in order", () => {

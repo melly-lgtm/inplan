@@ -505,31 +505,6 @@ describe("live fill — the agent's edits during a blocked wait", () => {
     }
   });
 
-  it("marks the edit as the plugin's even when this CLI has no gate at all", async () => {
-    // The gate fails soft for reasons that say nothing about ownership — logged out, the
-    // entitlement probe unreachable, a verify failure. An entitled editor can be bound to its
-    // plugin while this process has no gate, and the working file is still the plugin's: an
-    // editor that adopts it would push a possibly-stale projection over the shared document.
-    const h = harness(DRAFT);
-    await h.store.setCanonical(DRAFT);
-    try {
-      const run = waitCycle(h.backend, null, new Set(), undefined, null, { liveFill: true, pluginOwnsFile: true });
-      await waitUntil(async () => (await count(h.channel, LogEventType.AgentRevised)) >= 1);
-
-      await h.store.saveDoc(COMMENTED); // a comment-only edit: the live path lands it
-      await waitUntil(async () => (await count(h.channel, LogEventType.DocumentEdited)) >= 1);
-
-      const edit = (await h.channel.readSince(0)).entries.find((e) => e.type === LogEventType.DocumentEdited)!;
-      expect((edit.payload as { pluginOwned?: boolean }).pluginOwned).toBe(true);
-      expect(h.stderr()).toMatch(/plugin owns this document/); // …and the agent is told its write may not survive
-
-      await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
-      await run;
-    } finally {
-      h.restore();
-    }
-  });
-
   it("holds a fill when the hub reads empty but we remember the document having content", async () => {
     // An empty base waives review — there is nothing of the human's to overwrite. On the plugin
     // path that base is an opaque hub read, and a document whose shared state has not loaded yet

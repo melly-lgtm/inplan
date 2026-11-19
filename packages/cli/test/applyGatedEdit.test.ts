@@ -162,30 +162,30 @@ describe("applyGatedEdit — plugin path (a plugin gate is connected)", () => {
   });
 });
 
-describe("who owns the working file", () => {
-  const payloadOf = async (ch: MemoryControlChannel) => ((await ch.readSince(0)).entries[0]!.payload as { pluginOwned?: boolean });
+describe("which carrier an edit went out on", () => {
+  const payloadOf = async (ch: MemoryControlChannel) => (await ch.readSince(0)).entries[0]!.payload as { via?: string };
 
-  it("marks an edit on a plugin-owned document, and leaves a file-backed one unmarked", async () => {
-    const owned = new MemoryControlChannel();
-    await applyGatedEdit(new MemoryDocumentStore("body"), owned, ev({ changed: true }), { current: "body", canonicalText: "canon", quarantine: false, gate: fakeGate(), pluginOwns: true });
-    const plain = new MemoryControlChannel();
-    await applyGatedEdit(new MemoryDocumentStore("body"), plain, ev({ changed: true }), { current: "body", canonicalText: "canon", quarantine: false, gate: null });
+  it("stamps an edit applied through the plugin, and leaves a file-backed one unmarked", async () => {
+    // The one fact about an edit only this process knows, and knows exactly. The editor uses it to
+    // decide where to READ the edit from — the shared document, or the canonical the gate
+    // advanced — because the working file is not a safe answer once a plugin is alive.
+    const viaGate = new MemoryControlChannel();
+    const gate = fakeGate();
+    await applyGatedEdit(new MemoryDocumentStore("body"), viaGate, ev({ changed: true }), { current: "body", canonicalText: "canon", quarantine: false, gate });
+    const viaFile = new MemoryControlChannel();
+    const store = new MemoryDocumentStore("body");
+    await applyGatedEdit(store, viaFile, ev({ changed: true }), { current: "body", canonicalText: "canon", quarantine: false, gate: null });
 
-    expect((await payloadOf(owned)).pluginOwned).toBe(true);
-    expect((await payloadOf(plain)).pluginOwned).toBeUndefined();
+    expect((await payloadOf(viaGate)).via).toBe("plugin");
+    expect(gate.applyRevision).toHaveBeenCalledWith("body"); // the stamp is true: it did go through the plugin
+    expect((await payloadOf(viaFile)).via).toBeUndefined();
+    expect(await store.getCanonical()).toBe("body"); // …and an unmarked edit IS in the canonical, where the editor will look
   });
 
-  it("marks it even when the write fell back to the file — ownership is not which branch ran", async () => {
-    // A hub read that times out routes this write to the file while the plugin keeps running and
-    // keeps overwriting that file. That is where a stale read is MOST likely, and a flag keyed on
-    // "did it go through the gate" would be absent exactly there.
-    const store = new MemoryDocumentStore("body");
+  it("stamps a confirmed deletion the same way", async () => {
     const channel = new MemoryControlChannel();
-
-    await applyGatedEdit(store, channel, ev({ changed: true }), { current: "body", canonicalText: "canon", quarantine: false, gate: null, pluginOwns: true });
-
-    expect((await payloadOf(channel)).pluginOwned).toBe(true);
-    expect(await store.getCanonical()).toBe("body"); // …and it really did write the file path
+    await applyGatedEdit(new MemoryDocumentStore("body"), channel, ev({ changed: true, removedIds: ["cmt-aaa111"], acceptedText: "accepted" }), { current: "body", canonicalText: "canon", quarantine: false, gate: fakeGate() });
+    expect((await payloadOf(channel)).via).toBe("plugin");
   });
 });
 

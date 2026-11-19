@@ -4,6 +4,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { AppRoot, setHostApi, type Api } from "@inplan/renderer";
 import "@inplan/renderer/styles.css";
+import { createPluginActivator, type PluginRendererModule } from "./pluginActivation";
 import * as cmState from "@codemirror/state";
 import * as cmView from "@codemirror/view";
 
@@ -24,7 +25,6 @@ import * as cmView from "@codemirror/view";
 // capabilities it returns (binding / comment store / extra modes) onto the host api via `setHostApi`
 // (`window.api` is a frozen contextBridge property and can't be reassigned). Any failure falls back
 // to the plain file-backed editor.
-type PluginExt = { binding?: Api["binding"]; commentStore?: Api["commentStore"]; extraModes?: Api["extraModes"]; sidePanels?: Api["sidePanels"]; dispose: () => void };
 interface PluginWindow {
   __inplanPlugin?: () => Promise<{ session: string; rendererUrl: string } | null>;
   // Desktop only: main fires this after an in-window navigation swapped the doc (+ restarted the
@@ -32,46 +32,20 @@ interface PluginWindow {
   __inplanOnReactivate?: (cb: () => void) => () => void;
   api?: Api;
 }
-interface PluginRendererModule {
-  activate: (session: string) => PluginExt | null;
-}
 
 const w = window as unknown as PluginWindow;
-let pluginMod: PluginRendererModule | null = null; // imported once; activate() is re-callable per doc
-let currentExt: PluginExt | null = null;
 
-/** (Re)activate the runtime plugin against the CURRENT session (the per-doc hub). Imports the
+/** (Re)activates the runtime plugin against the CURRENT session (the per-doc hub): imports the
  *  verified renderer entry once, then on each call disposes the previous activation and re-binds —
- *  so a navigation re-points the binding to the new doc's hub without a full renderer reload. */
-async function activatePlugin(): Promise<void> {
-  try {
-    const info = w.__inplanPlugin ? await w.__inplanPlugin() : null;
-    if (!info || !w.api) {
-      currentExt = null;
-      return;
-    }
-    if (!pluginMod) pluginMod = (await import(/* @vite-ignore */ info.rendererUrl)) as PluginRendererModule;
-    try {
-      currentExt?.dispose();
-    } catch {
-      /* best-effort teardown of the previous doc's binding */
-    }
-    currentExt = pluginMod.activate(info.session);
-    // A failed activation must REPLACE the installed api, not leave the previous document's one
-    // in place: its binding belongs to a document we have navigated away from, and anything that
-    // asks "am I bound?" would get yes and act on a binding that writes to the wrong doc.
-    if (!currentExt) setHostApi({ ...w.api });
-    if (currentExt) {
-      setHostApi({ ...w.api, binding: currentExt.binding, commentStore: currentExt.commentStore, extraModes: currentExt.extraModes, sidePanels: currentExt.sidePanels });
-    }
-  } catch (err) {
-    // A plugin wiring failure must never block the editor — fall back to the file-backed api, and
-    // install it, so no stale binding from a previous document survives the failure.
-    console.error("[inplan] plugin unavailable; using the file-backed editor", err);
-    currentExt = null;
-    if (w.api) setHostApi({ ...w.api });
-  }
-}
+ *  so a navigation re-points the binding to the new doc's hub without a full renderer reload, and
+ *  a document with NO plugin gets the file-backed api back (see pluginActivation.ts for the rule). */
+const plugin = createPluginActivator({
+  getInfo: async () => (w.__inplanPlugin ? await w.__inplanPlugin() : null),
+  importModule: async (url) => (await import(/* @vite-ignore */ url)) as PluginRendererModule,
+  baseApi: () => w.api,
+  install: setHostApi,
+  onError: (err) => console.error("[inplan] plugin unavailable; using the file-backed editor", err),
+});
 
 /** Wrapper that re-mounts <AppRoot> (via a key bump) when the host signals a navigation re-bind —
  *  the editor binds its CodeMirror at mount, so a fresh mount picks up the re-activated binding +
@@ -80,15 +54,9 @@ function Shell(): JSX.Element {
   const [epoch, setEpoch] = React.useState(0);
   React.useEffect(() => {
     const off = w.__inplanOnReactivate?.(() => {
-      void activatePlugin().then(() => setEpoch((e) => e + 1));
+      void plugin.activate().then(() => setEpoch((e) => e + 1));
     });
-    const onUnload = (): void => {
-      try {
-        currentExt?.dispose();
-      } catch {
-        /* best-effort */
-      }
-    };
+    const onUnload = (): void => plugin.dispose();
     window.addEventListener("beforeunload", onUnload);
     return () => {
       off?.();
@@ -99,7 +67,7 @@ function Shell(): JSX.Element {
 }
 
 async function bootstrap(): Promise<void> {
-  await activatePlugin();
+  await plugin.activate();
   const root = document.getElementById("root");
   if (root) {
     createRoot(root).render(

@@ -539,31 +539,38 @@ export function App(props: EditorProps = {}): JSX.Element {
     // Collect every host subscription's disposer so a remount (e.g. Replay tutorial)
     // can't stack ipcRenderer listeners and double-handle events.
     const subs: Array<(() => void) | void> = [
-      hostApi().onExternalChange(({ content, pluginOwned }) => {
-        // A plugin owns the document this was read from, and we are bound to that plugin: it is
-        // already delivering the change through the binding, and the file it came from is one the
-        // plugin overwrites with its own projection on its own schedule — so adopting it would
-        // write possibly-stale text over the shared document and undo the turn that just landed.
-        // Without a binding this is the only copy we have, so it is used.
-        //
-        // Not adopting is not the same as ignoring. Two things still have to happen here, and a
-        // bare `return` skipped both: the agent is no longer thinking, and an OPEN review's base
-        // has to be rebased — its frozen base would otherwise make Apply publish a body computed
-        // before this change, wiping it for every collaborator. Only the adoption is skipped.
-        if (pluginOwned && hostApi().binding?.setText) {
-          setAgentThinking(false);
-          const openReview = proposalRef.current;
-          if (openReview?.raw !== undefined && openReview.base !== undefined) {
-            showProposal(openReview.raw, openReview.id, openReview.base, queueCountRef.current, reviewOpenRef.current);
-          }
-          setStatus(t("msg.agentUpdated"));
-          return;
-        }
+      hostApi().onExternalChange(({ content, viaPlugin }) => {
         const prevDoc = docRef.current;
-        const parsed = parse(content);
-        // Store-backed (plugin): comments are owned by the external store, not the rewritten
-        // body — keep them from the store so an agent/body refresh can't blank/stale the rail.
-        const next = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
+        // Where is this edit? An edit that went out THROUGH the plugin is in the shared document,
+        // and we are looking at that document through our binding — so when we hold one, the
+        // binding is the copy to read, not `content`. The host read `content` from disk, and a
+        // live plugin overwrites that file with its own projection on its own schedule: it can be
+        // pre-revision text, and adopting it below would push that into the binding, over the
+        // revision that just landed. Reading the binding also refreshes the preview in layouts
+        // where no source pane is mounted to do it (nothing else observes the binding there).
+        //
+        // Every other case reads `content` exactly as before: no binding (it is the only copy we
+        // have, even if the plugin delivered the edit elsewhere), or an edit that did NOT go
+        // through the plugin (the host sends the text the gate landed, which then has to be
+        // pushed into the binding to reach the shared document at all).
+        const held = hostApi().binding;
+        const binding = held != null && viaPlugin === true ? held : null; // null/undefined both mean "not bound"
+        const fromBinding = binding !== null;
+        let next: ParsedDocument;
+        if (binding) {
+          try {
+            // Unified: the binding holds the bare body and the store owns comments. Legacy collab:
+            // the binding holds the whole serialized document.
+            next = commentStore ? { body: binding.getText(), comments: commentStore.list() } : parse(binding.getText());
+          } catch {
+            next = prevDoc; // a legacy document caught mid-edit — keep what we show until it parses
+          }
+        } else {
+          const parsed = parse(content);
+          // Store-backed (plugin): comments are owned by the external store, not the rewritten
+          // body — keep them from the store so an agent/body refresh can't blank/stale the rail.
+          next = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
+        }
         setAgentThinking(false);
         // The human may be mid-sentence. Replacing the buffer would delete those keystrokes, and
         // they exist in no other copy — while the incoming text is already on disk and can be read
@@ -586,8 +593,9 @@ export function App(props: EditorProps = {}): JSX.Element {
         // updates only the preview and the source stays stale (and a server edit that didn't broadcast,
         // e.g. a version-history restore, reverts on reload). Idempotent: a no-op when a provider
         // broadcast already delivered the body (normal auto-accept turns). File-backed editors have no
-        // binding and keep using the controlled value.
-        syncExternalDoc(next, prevDoc.comments, prevDoc.body);
+        // binding and keep using the controlled value. (Skipped when `next` was READ from the
+        // binding: there is nothing to push back, and nothing here came from the file.)
+        if (!fromBinding) syncExternalDoc(next, prevDoc.comments, prevDoc.body);
         // Sync the ref for EVERY replacement (it normally follows on render): any pending
         // proposal read resolving after this must build its review against the fresh text, or
         // applying it could overwrite this very change.

@@ -11,6 +11,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import type { Acceptance, Cadence, SaveOptions, Settings } from "@inplan/renderer";
 import { isOnboarded, markOnboarded, parse, readStatus, serialize, widenConnectAttemptBudget, type Comment } from "@inplan/core/node";
 import { Session } from "./session";
+import { navigationSignal } from "./navSignal";
 import { createI18nController } from "./i18nController";
 import { track, type TelemetryProps } from "./telemetry";
 import { registerPluginScheme, handlePluginScheme, pluginInfo, startDesktopPlugin, stopDesktopPlugin } from "./desktopPlugin";
@@ -328,7 +329,7 @@ function watchSession(): (() => void) | null {
   if (!session) return null;
   const s = session;
   return s.watch({
-    onExternalChange: (content, { pluginOwned }) => win?.webContents.send("doc:external-change", { path: s.paths.file, content, pluginOwned }),
+    onExternalChange: (content, { viaPlugin }) => win?.webContents.send("doc:external-change", { path: s.paths.file, content, viaPlugin }),
     onAgentDone: () => win?.webContents.send("agent:done"),
     onAgentActive: () => win?.webContents.send("agent:active"),
     onProposal: (content, id, baseContent, pending, path) => win?.webContents.send("doc:proposal", { content, ...(id ? { id } : {}), ...(baseContent !== undefined ? { baseContent } : {}), ...(pending !== undefined ? { pending } : {}), ...(path !== undefined ? { path } : {}) }),
@@ -385,10 +386,13 @@ async function refreshPluginAndView(file: string): Promise<void> {
   // navigation can replace `session` in that window — a stale refresh must never send the OLD
   // document as `doc:navigated` for the new one.
   const forSession = session;
+  const hadPlugin = pluginInfo() !== null; // before the stop: is the renderer holding a binding to drop?
   await stopDesktopPlugin();
   await startDesktopPlugin(file, pluginToken);
   if (!win || !session || session !== forSession) return;
-  if (pluginInfo()) win.webContents.send("plugin:reactivate"); // renderer re-binds + re-mounts the editor
+  // renderer re-runs activation + re-mounts the editor — also when the plugin was active for the
+  // PREVIOUS doc and failed for this one, so the old binding is dropped (see navigationSignal).
+  if (navigationSignal(hadPlugin, pluginInfo() !== null) === "reactivate") win.webContents.send("plugin:reactivate");
   else {
     const payload = await session.load();
     if (!win || session !== forSession) return; // replaced while loading — the newer refresh owns the send
