@@ -328,7 +328,7 @@ function watchSession(): (() => void) | null {
   if (!session) return null;
   const s = session;
   return s.watch({
-    onExternalChange: (content) => win?.webContents.send("doc:external-change", { path: s.paths.file, content }),
+    onExternalChange: (content, { pluginOwned }) => win?.webContents.send("doc:external-change", { path: s.paths.file, content, pluginOwned }),
     onAgentDone: () => win?.webContents.send("agent:done"),
     onAgentActive: () => win?.webContents.send("agent:active"),
     onProposal: (content, id, baseContent, pending, path) => win?.webContents.send("doc:proposal", { content, ...(id ? { id } : {}), ...(baseContent !== undefined ? { baseContent } : {}), ...(pending !== undefined ? { pending } : {}), ...(path !== undefined ? { path } : {}) }),

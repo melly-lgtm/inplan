@@ -279,25 +279,23 @@ export class Session {
         console.warn("inplan: could not read the pending proposal for review dispatch:", e);
       });
     }
-    // An accepted agent edit: the working file holds the agent's revision, so load it — this
-    // replaces the old raw working-file watch.
+    // An accepted agent edit: load the working file — this replaces the old raw working-file watch.
     //
-    // …unless the event says the PLUGIN applied it. Then the plugin owns the working file and
-    // overwrites it with its own projection on its own schedule, so what is there now can be
-    // pre-revision text — and the renderer pushes whatever it is handed into the binding, writing
-    // that over the shared document and undoing the turn that just landed. The plugin delivers its
-    // own changes through its own channel; this event carries nothing it hasn't.
+    // `findLast`, not `find`: the control channel coalesces a burst of appends into one batch, so
+    // a batch can carry several agent edits, and only the LAST one describes what the file is now.
     //
-    // Keyed on the EVENT, not on "a plugin session is published for this doc". Those are different
-    // facts: the CLI decides per process and reads that status moments after spawning the editor,
-    // before the editor has published one — so a file-backed turn routinely runs with a session
-    // appearing mid-flight, and a stale session (editor crashed) is explicitly tolerated elsewhere
-    // precisely because the gate falls back to the file. Suppressing on either would hide real
-    // file-backed edits. The applier knows; it says so.
-    const applied = entries.find((e) => e.actor === "agent" && e.type === LogEventType.DocumentEdited);
-    if (applied && (applied.payload as { via?: string } | undefined)?.via !== "plugin" && existsSync(this.paths.file)) {
+    // The `pluginOwned` flag rides along rather than being acted on here. When a plugin owns the
+    // document it overwrites this file with its own projection on its own schedule, so the content
+    // may be pre-revision — but whether that matters depends on something only the RENDERER knows:
+    // if it bound to the plugin, the plugin is already delivering the change and this file must not
+    // be pushed into that binding; if it never bound (the import can fail, and then live-collab
+    // silently doesn't load), this file is the only copy it has and withholding it shows nothing
+    // at all. Main cannot tell those apart; the renderer can.
+    const applied = [...entries].reverse().find((e) => e.actor === "agent" && e.type === LogEventType.DocumentEdited);
+    if (applied && existsSync(this.paths.file)) {
+      const pluginOwned = (applied.payload as { pluginOwned?: boolean } | undefined)?.pluginOwned === true;
       try {
-        handlers.onExternalChange(readFileSync(this.paths.file, "utf8"));
+        handlers.onExternalChange(readFileSync(this.paths.file, "utf8"), { pluginOwned });
       } catch {
         /* file mid-write — the next event will resync */
       }
@@ -311,7 +309,7 @@ export class Session {
 
 /** The editor-facing callbacks the desktop shell relays to the renderer over IPC. */
 export interface WatchHandlers {
-  onExternalChange: (content: string) => void;
+  onExternalChange: (content: string, opts: { pluginOwned: boolean }) => void;
   onAgentDone: () => void;
   onAgentActive: () => void;
   onProposal: (content: string, id?: string, baseContent?: string, pending?: number, path?: string) => void;

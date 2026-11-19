@@ -496,7 +496,9 @@ export async function waitCycle(
   };
   const quarantine = (await suspectEmptyBase(usePlugin, canonicalText)) || shouldQuarantine(acceptanceFrom(history), canonicalText, current);
   // `usePlugin ? gate : null` — only route through the plugin when its read succeeded.
-  const applied = await applyGatedEdit(store, channel, ev, { current, canonicalText, quarantine, gate: usePlugin ? gate : null });
+  // `gate: usePlugin ? gate : null` routes the write; `pluginOwns: gate !== null` describes the
+  // DOCUMENT. A failed hub read nulls the first and not the second — the plugin still owns the file.
+  const applied = await applyGatedEdit(store, channel, ev, { current, canonicalText, quarantine, gate: usePlugin ? gate : null, pluginOwns: gate !== null });
   // A parked proposal must be unmistakable in the moment (#88): the canonical is unchanged BY
   // DESIGN, and an agent that reads silence as loss may destroy its own work. Say so on stderr
   // now, and carry the fact in the wait output below (the durable record is the gate path's job).
@@ -766,7 +768,7 @@ export async function waitCycle(
       // `onlyIfUnmoved`: this decision was made against a snapshot while the human may be saving,
       // so the write re-checks the document first and skips if it moved. The turn path never asks
       // for it — there the human has handed the turn over and is not writing.
-      liveApplied = await applyGatedEdit(store, channel, liveEv, { current: text, canonicalText: base, quarantine: false, gate: viaPlugin ? gate : null, onlyIfUnmoved: true });
+      liveApplied = await applyGatedEdit(store, channel, liveEv, { current: text, canonicalText: base, quarantine: false, gate: viaPlugin ? gate : null, onlyIfUnmoved: true, pluginOwns: gate !== null });
     } catch (e) {
       // The hook's rejection is DISCARDED by the poll that calls it — by design, so a hook can
       // never kill a wait — which means anything thrown here is silence unless we say it. The

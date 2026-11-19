@@ -539,7 +539,13 @@ export function App(props: EditorProps = {}): JSX.Element {
     // Collect every host subscription's disposer so a remount (e.g. Replay tutorial)
     // can't stack ipcRenderer listeners and double-handle events.
     const subs: Array<(() => void) | void> = [
-      hostApi().onExternalChange(({ content }) => {
+      hostApi().onExternalChange(({ content, pluginOwned }) => {
+        // A plugin owns the document this was read from, and we are bound to that plugin: it is
+        // already delivering the change through the binding, and the file it came from is one the
+        // plugin overwrites with its own projection on its own schedule — so pushing it into the
+        // binding below would write possibly-stale text over the shared document and undo the turn
+        // that just landed. Without a binding this is the only copy we have, so it is used.
+        if (pluginOwned && hostApi().binding?.setText) return;
         const prevDoc = docRef.current;
         const parsed = parse(content);
         // Store-backed (plugin): comments are owned by the external store, not the rewritten

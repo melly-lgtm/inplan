@@ -26,9 +26,9 @@ export async function applyGatedEdit(
   store: DocumentStore,
   channel: ControlChannel,
   ev: AgentEditEvaluation,
-  ctx: { current: string; canonicalText: string; quarantine: boolean; gate: PluginGate | null; onlyIfUnmoved?: boolean },
+  ctx: { current: string; canonicalText: string; quarantine: boolean; gate: PluginGate | null; onlyIfUnmoved?: boolean; pluginOwns?: boolean },
 ): Promise<{ proposed: boolean; proposalId?: string; parkFailed?: boolean; eventLogged?: boolean; withdrew?: boolean; stale?: boolean }> {
-  const { current, canonicalText, quarantine, gate, onlyIfUnmoved } = ctx;
+  const { current, canonicalText, quarantine, gate, onlyIfUnmoved, pluginOwns } = ctx;
   /**
    * Has the document moved under this decision? Only a caller that does not own the turn asks —
    * the live watcher, which decides against a snapshot while the human may be saving.
@@ -58,7 +58,7 @@ export async function applyGatedEdit(
       await store.setCanonical(ev.acceptedText);
       withdrew = await withdrawOwnPending(store, canonicalText, ev.acceptedText);
     }
-    if (!(await logEdit(channel, { removed: ev.removedIds }, gate !== null))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
+    if (!(await logEdit(channel, { removed: ev.removedIds }, pluginOwns === true))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
   } else if (ev.changed && quarantine) {
     // Quarantine: park the proposal for the human to accept/reject in the editor. The proposal
     // sidecar is file-based either way; on the file path also revert the working file to canonical
@@ -119,7 +119,7 @@ export async function applyGatedEdit(
       await store.setCanonical(current);
       withdrew = await withdrawOwnPending(store, canonicalText, current);
     }
-    if (!(await logEdit(channel, { bytes: utf8Bytes(current) }, gate !== null))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
+    if (!(await logEdit(channel, { bytes: utf8Bytes(current) }, pluginOwns === true))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
   }
   return { proposed: false, ...(withdrew ? { withdrew } : {}) };
 }
@@ -211,15 +211,17 @@ function revertWouldWipe(canonicalText: string, current: string): boolean {
  * anyone. The park path has reported this as `eventLogged: false` since #88; a landing deserves the
  * same, because the consequence is the same: the human's editor won't show it until it reloads.
  */
-async function logEdit(channel: ControlChannel, payload: Record<string, unknown>, viaPlugin = false): Promise<boolean> {
-  // `via: "plugin"` says WHO applied this edit, so a reader does not have to infer it. The editor
-  // uses it to know the working file is not the carrier for this one: the plugin owns that file and
-  // overwrites it with its own projection on its own schedule, so reading it can hand back
-  // pre-revision text. Inferring the same thing from "a plugin session is published" is wrong —
-  // the CLI decides per process, and it can be file-backed with a session published (it reads the
-  // status moments after spawning the editor, before the editor has published one) or
-  // plugin-backed with none visible.
-  if (viaPlugin) payload = { ...payload, via: "plugin" };
+async function logEdit(channel: ControlChannel, payload: Record<string, unknown>, pluginOwnsFile = false): Promise<boolean> {
+  // `pluginOwned` answers the editor's actual question: does the WORKING FILE carry this edit?
+  // When a runtime plugin owns the document it overwrites that file with its own projection on
+  // its own schedule, so the answer is no — whatever is there may be pre-revision text, and an
+  // editor that reads it and pushes it into its binding writes that over the shared document.
+  //
+  // Keyed on ownership, not on which branch ran. Those differ exactly when it matters: a hub read
+  // that times out makes this apply fall back to the file (`usePlugin` false) while the plugin is
+  // still running and still overwriting it — the case where a stale read is most likely, and the
+  // one a "did it go through the gate" flag would miss.
+  if (pluginOwnsFile) payload = { ...payload, pluginOwned: true };
   try {
     await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload });
     return true;

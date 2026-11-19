@@ -35,37 +35,34 @@ afterEach(() => {
 });
 
 describe("Session.dispatchLog", () => {
-  it("does NOT load the working file for an edit the PLUGIN applied", () => {
-    // The plugin owns that file and overwrites it with its own projection on its own schedule, so
-    // what is there now can be pre-revision text — and the renderer pushes what it is handed into
-    // the binding, writing it over the shared document and undoing the turn that just landed.
+  it("tells the renderer when a plugin owns the file the content came from", () => {
+    // Main forwards the fact rather than acting on it: whether a plugin-owned file may be used
+    // depends on whether the RENDERER bound to that plugin, which only the renderer knows.
     const h = handlers();
 
-    session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20, via: "plugin" })], h);
+    session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20, pluginOwned: true })], h);
 
-    expect(h.onExternalChange).not.toHaveBeenCalled();
-    expect(h.onAgentActive).toHaveBeenCalled(); // the turn marker still clears "thinking"
+    expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { pluginOwned: true });
   });
 
-  it("DOES load it for a file-backed edit, even while a plugin session is published", () => {
-    // These are different facts, and conflating them hides real edits. The CLI reads the status
-    // moments after spawning this editor — before it can have published a session — so the first
-    // fill of a freshly opened document is routinely file-backed with a session appearing
-    // mid-flight. A stale session (editor crashed) is tolerated elsewhere for the same reason:
-    // the gate times out and falls back to the file. Either would suppress an edit that IS in the
-    // file, which is the failure this editor exists to avoid.
-    writeStatus(session.paths.statusPath, { ...readStatus(session.paths.statusPath), pluginSession: "ws://127.0.0.1:1234" });
+  it("reads the LAST agent edit in a coalesced batch, not the first", () => {
+    // The control channel debounces a burst of appends into one batch, and the mode is decided per
+    // edit — so a batch can carry both kinds. Only the last one describes what the file is now;
+    // taking the first would describe the file by an edit two writes ago.
     const h = handlers();
 
-    session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20 })], h);
+    session.dispatchLog(
+      [entry("agent", LogEventType.DocumentEdited, { bytes: 10 }), entry("agent", LogEventType.DocumentEdited, { bytes: 20, pluginOwned: true })],
+      h,
+    );
 
-    expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n");
+    expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { pluginOwned: true });
   });
 
   it("an accepted agent edit loads the working file + clears 'thinking'", () => {
     const h = handlers();
     session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20 }), entry("agent", LogEventType.AgentRevised)], h);
-    expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n");
+    expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { pluginOwned: false });
     expect(h.onAgentActive).toHaveBeenCalled();
     expect(h.onProposal).not.toHaveBeenCalled();
   });
