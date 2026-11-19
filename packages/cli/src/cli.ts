@@ -626,6 +626,11 @@ export async function waitCycle(
   // and swallowed every later one, so an agent told its revision was safely held then corrupted the
   // comment block and heard nothing — the exact silence the parse guard below exists to end.
   let lastDecline: string | null = null;
+  // A store that rejects an apply may take the same edit a moment later, so a failure never gates
+  // the text — it just spaces out the retries, rather than hammering a store that is evidently
+  // struggling once per poll.
+  let applyFailures = 0;
+  let retryNotBefore = 0;
   /** Mark `text` as gated and move on. `disk` is what the decision left on disk (the same text
    *  whenever we wrote nothing). */
   const markGated = (text: string, disk = text): void => {
@@ -643,6 +648,7 @@ export async function waitCycle(
       settling = null;
       return;
     }
+    if (Date.now() < retryNotBefore) return; // backing off after a failed apply
     // Never gate a half-written file: a write we catch between truncate and flush would be landed
     // as a truncated document. Two identical reads a poll apart means it settled.
     if (settling !== text) {
@@ -709,6 +715,16 @@ export async function waitCycle(
     } catch {
       /* unknown — proceed, exactly as the wait's own supersede probe does */
     }
+    // Everything between the settle and here is awaits — the base read, the history read, the lock
+    // probe — and the human can save in any of them. Our evaluation would then be of a document
+    // that is no longer on disk, and applying it writes a snapshot older than their save: the
+    // confirmed-deletion path writes the FILE, so it would overwrite their text outright. Re-read
+    // last thing; a change means the next poll settles on what is actually there.
+    try {
+      if ((await store.loadDoc()) !== text) return;
+    } catch {
+      return;
+    }
     let liveApplied: Awaited<ReturnType<typeof applyGatedEdit>>;
     try {
       liveApplied = await applyGatedEdit(store, channel, liveEv, { current: text, canonicalText: base, quarantine: false, gate: viaPlugin ? gate : null });
@@ -716,9 +732,16 @@ export async function waitCycle(
       // The hook's rejection is DISCARDED by the poll that calls it — by design, so a hook can
       // never kill a wait — which means anything thrown here is silence unless we say it. The
       // working copy still holds the edit either way; the agent's next `wait` evaluates it afresh.
-      declined(`inplan: your edit could not be applied (${(e as Error).message}) — it stays in the working copy, and the next wait retries it.\n`, text);
+      // NOT `declined`: gating this text would leave the human looking at the document the editor
+      // was launched on for the rest of the wait — the very failure this watcher exists to end —
+      // even once the store recovers. Say it once, back off, and come back to it.
+      applyFailures += 1;
+      retryNotBefore = Date.now() + Math.min(30_000, 500 * 2 ** (applyFailures - 1));
+      sayOnce(`inplan: your edit could not be applied (${(e as Error).message}) — it stays in the working copy and will be retried.\n`);
       return;
     }
+    applyFailures = 0;
+    retryNotBefore = 0;
     if (liveApplied.eventLogged === false) process.stderr.write(UNANNOUNCED);
     // The landing signal (#88) belongs to the proposal the TURN parked, and a live fill never parks
     // one of its own — so the ONLY thing that may change it here is a retraction. applyGatedEdit
@@ -732,14 +755,18 @@ export async function waitCycle(
     markGated(text, liveEv.removedIds.length > 0 ? liveEv.acceptedText : text);
   });
   /** Say why an edit was not applied — once per REASON, so a repeated decline is quiet but a new
-   *  one is never swallowed — and mark it gated so the agent's next write (the fix, or the next
-   *  revision) is evaluated afresh rather than re-reported every poll. Nothing was written, so the
-   *  working copy still holds `text`. */
+   *  one is never swallowed. */
+  function sayOnce(message: string): void {
+    if (lastDecline === message) return;
+    lastDecline = message;
+    process.stderr.write(message);
+  }
+  /** A decision NOT to apply this text: say why, and mark it gated so the agent's next write (the
+   *  fix, or the next revision) is evaluated afresh rather than re-reported every poll. Nothing was
+   *  written, so the working copy still holds `text`. Only for decisions that re-reading cannot
+   *  change — a FAILURE must stay eligible for a retry instead (see the apply's catch). */
   function declined(message: string, text: string): void {
-    if (lastDecline !== message) {
-      lastDecline = message;
-      process.stderr.write(message);
-    }
+    sayOnce(message);
     markGated(text);
   }
 

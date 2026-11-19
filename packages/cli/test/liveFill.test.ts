@@ -370,6 +370,73 @@ describe("live fill — the agent's edits during a blocked wait", () => {
     }
   });
 
+  it("does not write a snapshot older than a save that landed mid-decision", async () => {
+    // Between the settle and the write there are awaits — the base read, the history read, the
+    // lock probe — and the human can save in any of them. The confirmed-deletion path writes the
+    // FILE, so applying the stale evaluation would overwrite their text outright.
+    const HUMAN = "# Plan\n\nThe human's own save, made mid-decision.\n\n<!--inplan\n[]\n-->\n";
+    const h = harness(SPAN_DOC);
+    await h.store.setCanonical(SPAN_DOC);
+    await h.channel.append({ actor: "user", type: LogEventType.SettingsChanged, payload: { acceptance: "auto" } });
+    let armed = false;
+    const history = h.backend.history;
+    h.backend.history = async () => {
+      const entries = await history();
+      if (armed) {
+        armed = false;
+        await h.store.saveDoc(HUMAN); // the human saves while we are mid-decision
+        await h.store.setCanonical(HUMAN);
+      }
+      return entries;
+    };
+    try {
+      const run = waitCycle(h.backend, null, new Set(["cmt-q1"]), undefined, null, { liveFill: true });
+      await waitUntil(async () => (await count(h.channel, LogEventType.AgentRevised)) >= 1);
+      armed = true;
+      await h.store.saveDoc(SPAN_ORPHANED);
+
+      await waitUntil(async () => (await h.store.loadDoc()) === HUMAN);
+      await sleep(POLL_MS * 20);
+      expect(await h.store.loadDoc()).toBe(HUMAN); // their save stands
+      expect(await count(h.channel, LogEventType.DocumentEdited)).toBe(0); // the stale snapshot never landed
+
+      await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
+      await run;
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("retries a write that failed once, without waiting for the next wait", async () => {
+    // Gating a FAILED apply would leave the human looking at the document the editor was launched
+    // on for the rest of the wait — the very failure this watcher exists to end — even once the
+    // store recovers. A failure backs off; it does not give up.
+    const h = harness(EMPTY);
+    let fail = true;
+    const setCanonical = h.store.setCanonical.bind(h.store);
+    vi.spyOn(h.store, "setCanonical").mockImplementation(async (content: string) => {
+      // Only the agent's fill, not the turn's seeding of the empty base.
+      if (fail && content === DRAFT) {
+        fail = false;
+        throw new Error("the store is briefly unavailable");
+      }
+      return setCanonical(content);
+    });
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, null, { liveFill: true });
+      await waitUntil(async () => (await count(h.channel, LogEventType.AgentRevised)) >= 1);
+
+      await h.store.saveDoc(DRAFT);
+      await waitUntil(() => /could not be applied/.test(h.stderr()));
+      await waitUntil(async () => (await h.store.getCanonical()) === DRAFT, 8000); // …and it lands on the retry
+
+      await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
+      await run;
+    } finally {
+      h.restore();
+    }
+  }, 15_000);
+
   it("says why an edit was declined once per REASON, not once per wait", async () => {
     // A single "have we spoken yet" latch kept the first reason and swallowed every later one: an
     // agent told its revision was safely held then corrupted the comment block and heard nothing —
