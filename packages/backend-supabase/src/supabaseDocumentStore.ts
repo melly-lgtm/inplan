@@ -16,7 +16,7 @@ export interface ProposerIdentity {
   clientId: string;
 }
 
-/** The `proposals` table row shape (see the proposals-v1 migration in the cloud repo). */
+/** The `proposals` table row shape (proposals v1 — created by the cloud edition's migrations). */
 interface DbProposalRow {
   id: string;
   content: string;

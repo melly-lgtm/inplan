@@ -68,7 +68,7 @@ export interface VersionMeta {
 /** How a proposal's life ends (or hasn't yet). Terminal states are immutable. */
 export type ProposalState = "pending" | "accepted" | "partially_accepted" | "rejected" | "superseded" | "withdrawn";
 
-/** What a proposer parks (proposals v1 — see docs/proposals-v1.plan.md in the cloud repo). */
+/** What a proposer parks (proposals v1 — the `proposals` row shape the cloud edition stores). */
 export interface ProposalInput {
   /** Client-minted uuid. Re-parking with the SAME id is an idempotent upsert (a retried park
    *  converges even when an earlier response was lost). When omitted, identical still-pending

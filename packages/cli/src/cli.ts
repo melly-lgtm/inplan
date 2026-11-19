@@ -2481,10 +2481,10 @@ export async function doUpload(file: string, args: string[]): Promise<void> {
   output({ status: "uploaded", cloudDocId, ...(org?.slug ? { locator: { org: org.slug, repo, path } } : {}) });
 }
 
-/** Extensions this uploader accepts, mapped to their Storage `Content-Type` — mirrors the cloud
- *  edition's own asset MIME map and the `doc-images` bucket's allowed types, which an upload is
- *  rejected by if the two drift. Anything else falls back to png, same as the local `asset:save`
- *  write path. */
+/** Extensions this uploader accepts, mapped to their Storage `Content-Type` — kept in step with
+ *  the cloud edition's own asset MIME map and with the `doc-images` bucket's allowed types. An
+ *  extension this map offers but the bucket does not allow is rejected at upload; an extension the
+ *  bucket allows but this map omits falls back to png, same as the local `asset:save` write path. */
 const ASSET_MIME_BY_EXT: Record<string, string> = {
   png: "image/png",
   jpg: "image/jpeg",
@@ -2502,8 +2502,9 @@ const ASSET_BUCKET = "doc-images";
  *  an orphaned upload if the caller's body commit doesn't land) and public URL, or null on a real
  *  (non-collision) failure. */
 async function uploadAssetBytes(db: SupabaseClient, orgId: string, docId: string, bytes: Buffer, ext: string): Promise<{ path: string; url: string } | null> {
-  // hasOwnProperty, not a truthy lookup — see the identical guard in the cloud web app's
-  // saveAsset (ASSET_MIME_BY_EXT[ext] is truthy for inherited Object.prototype names too).
+  // hasOwnProperty, not a truthy lookup: ASSET_MIME_BY_EXT[ext] is truthy for inherited
+  // Object.prototype names too ("constructor", "toString"), which would pick a bogus extension.
+  // The cloud edition's own uploader guards this the same way.
   const safeExt = Object.prototype.hasOwnProperty.call(ASSET_MIME_BY_EXT, ext) ? ext : "png";
   const contentType = ASSET_MIME_BY_EXT[safeExt]!;
   const stamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14); // YYYYMMDDHHMMSS
@@ -2560,8 +2561,8 @@ export async function doAssetUploadForDoc(cloudDocId: string, args: string[]): P
     process.stderr.write("inplan: not logged in (or session expired) — run `inplan login`\n");
     process.exit(1);
   }
-  // The bucket's insert policy checks the path's org segment against `documents.org_id` itself
-  // (20260804000000_doc_images_bucket.sql), so this lookup doubles as the ownership check — an
+  // The bucket's insert policy checks the path's org segment against `documents.org_id` itself,
+  // so this lookup doubles as the ownership check — an
   // upload for a doc this session can't write to fails the RLS check with the wrong org anyway.
   // That holds for the `--remote` entry point too: an id the session can't read resolves to no
   // org and stops here, so passing an arbitrary doc id grants nothing.

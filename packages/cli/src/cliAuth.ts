@@ -389,9 +389,11 @@ export type CachedSessionCheck = "ok" | "absent" | SessionFailure;
  *    spend it. A long `wait` can therefore still meet a dead refresh token at expiry. That
  *    residual belonged to credentials that were a COPY of the browser's session — the page sealed
  *    its own refresh token into the handoff, so the two of them spent one rotation chain in
- *    turns. Current pages mint the CLI a session of its OWN family at the rendezvous,
- *    server-side, so the residual applies only to credentials issued by pages older than that
- *    change: re-running `inplan login` retires them.
+ *    turns. Since 2026-11-04 the login page mints the CLI a session of its OWN family at the
+ *    rendezvous, server-side, so the residual applies only to credentials issued by pages older
+ *    than that date: re-running `inplan login` retires them. (The date is the handle for deciding
+ *    when the older-page branch below — optional `access`/`expiresAt`, route 2 of
+ *    primeSessionOrFail — is safe to delete.)
  *
  * Returns `absent` when there is no cached token the normal fast path would use, which is the
  * signal for the caller to fall back to proving the credential the expensive way.

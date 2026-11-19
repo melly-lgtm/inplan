@@ -338,8 +338,8 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
           } else if (alive === false && sawEditorAlive) {
             // A single `false` is NOT proof the editor is gone, and treating it as proof is what
             // reported a normal turn as `crashed_or_killed` (#110). The heartbeat behind
-            // presence() is a browser `setInterval` (cloud web app, HEARTBEAT_MS 7s) read against
-            // a 15s TTL — so it survives exactly one missed beat. Browsers throttle timers in
+            // presence() is a browser `setInterval` beating every 7s in the cloud editor, read
+            // against a 15s TTL — so it survives exactly one missed beat. Browsers throttle timers in
             // HIDDEN tabs to a minute or more, so a human who merely switches tabs (the normal
             // thing to do right after handing the turn back) stalls the heartbeat past the TTL
             // while sitting right there. Same for a network blip or a slow write.
