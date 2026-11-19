@@ -66,6 +66,7 @@ export const EN: Catalog = {
   "topbar.noAgent": "Connect an agent (open this doc with a local or cloud agent) to use this",
   // settings menu
   "settings.title": "Settings",
+  "msg.onboardingFinishTurn": "That hands the turn to your agent — there isn't one on this sample. Finish the tour and it works on your real plan.",
   "settings.telemetry": "Share anonymous data",
   "settings.telemetryHint": "Off by default. Sends only anonymous, aggregate usage events — never your documents.",
   "settings.agentMode": "Agent mode",

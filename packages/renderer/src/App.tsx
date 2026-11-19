@@ -1062,6 +1062,16 @@ export function App(props: EditorProps = {}): JSX.Element {
       return;
     }
     nudgedAnswersRef.current.clear();
+    // The tour runs over a throwaway sample with no agent behind it, and the tour's own step list
+    // says so: the Finish-turn step is informational, "spotlight + explain … rather than force the
+    // action". Handing the turn over here would set `agentThinking` with nothing on the other side
+    // to clear it, locking the composer, the comment actions and the source editor — so every
+    // gated step after it becomes unsatisfiable and the tour cannot be completed, only skipped.
+    // The spotlight still points at the button; pressing it simply has nothing to hand over to.
+    if (props.onboarding) {
+      setStatus(t("msg.onboardingFinishTurn"));
+      return;
+    }
     const content = serialize(docRef.current);
     // Canonical save → advance both baselines (savedRef and the any-store checkpoint).
     void hostApi().save(content, { kind: "canonical", cadence: "turn" }).then(() => setCheckpoint(content));
@@ -1070,7 +1080,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     setAgentThinking(true);
     hostApi().telemetry?.("turn_finished"); // activation funnel (opt-in, gated by the host)
     setStatus(t("msg.turnFinished"));
-  }, [setQuestionPending]);
+  }, [setQuestionPending, props.onboarding, t]);
 
   const [quitOpen, setQuitOpen] = useState(false);
   // At the host's active-doc cap, create() returns {status:"limit"}; we ask the user to deactivate the

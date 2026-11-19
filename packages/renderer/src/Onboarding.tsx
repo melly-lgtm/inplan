@@ -6,7 +6,7 @@
 // them practice for real. The comment/answer steps gate Next until the user actually
 // does the thing (counts come in via `signals`); a Skip link always escapes.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { MOD_KEY } from "./platform";
 import { useT } from "./i18n";
 
@@ -46,6 +46,45 @@ const STEPS: Step[] = [
 ];
 
 const SPOTLIGHT = "ap-coach-target";
+const BLINK = "ap-coach-blink";
+/** Slightly longer than the 0.45s animation in styles.css, so a pulse is never cut short. */
+const BLINK_MS = 600;
+
+/** The editor the tour runs in. It polices clicks in here, and nowhere else. */
+const ROOT = ".ap-app";
+/** Surfaces inside the editor that are never a distraction: the coach card, the transient
+ *  interaction surfaces a step legitimately leads to, any DIALOG (by any of its spellings), and
+ *  the banners that announce something actionable. */
+const ALLOW =
+  ".ap-coach-card, .ap-ctxmenu, .ap-composer, .ap-profile, .ap-banner, " +
+  "[role='dialog'], [role='alertdialog'], dialog, [aria-modal='true']";
+
+/**
+ * Is this click a distraction the tour should nudge about? `nodes` is the click's composed path
+ * (or just its target when a path isn't available), and `stepTarget` the control the current step
+ * points at.
+ *
+ * The answer only ever decides whether the coach card BLINKS. The tour does not swallow clicks:
+ * the card says it is non-blocking, and a guard that cancels events is as blocking as a modal
+ * without the backdrop that would admit it. Cancelling is also what let the tour deadlock a user
+ * against a consent banner it had no way to recognise — the fix for that was to stop cancelling,
+ * not to enumerate every surface worth sparing.
+ *
+ * Two rules still bound the nudge, because blinking at the wrong moment is noise:
+ *
+ *  1. Only inside the editor. Anything outside `ROOT` belongs to the host app — its consent
+ *     banner, its nav, its toasts — and the tour has no business commenting on those clicks.
+ *  2. Inside the editor, a surface that is ASKING the user something is not a distraction: a
+ *     dialog by any of its spellings, and the banners that announce something actionable. The
+ *     user answering one is not wandering off.
+ */
+export function distracts(nodes: readonly Element[], stepTarget: Element | null): boolean {
+  // An empty list falls out here too: nothing to match `ROOT`, so nothing to nudge about.
+  if (!nodes.some((n) => n.closest(ROOT))) return false; // the host app's own chrome
+  if (nodes.some((n) => n.closest(ALLOW))) return false; // the card, a dialog, an actionable banner
+  if (stepTarget && nodes.some((n) => stepTarget.contains(n))) return false; // this step's own control
+  return true;
+}
 
 export function Onboarding({
   signals,
@@ -69,43 +108,58 @@ export function Onboarding({
   const isLast = idx === STEPS.length - 1;
   const done = step.gate ? step.gate(signals, base) : true;
   const cardRef = useRef<HTMLDivElement>(null);
+  const blinkTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Pulse the coach card, and make sure the pulse ENDS. Under `prefers-reduced-motion` the class
+   *  is a static ring with no animation (styles.css), so leaving it on would light the card once
+   *  and make every later nudge invisible — and the nudge is now the only feedback a stray click
+   *  gets, since nothing is cancelled. */
+  const blink = useCallback(() => {
+    const card = cardRef.current;
+    if (!card) return;
+    if (blinkTimer.current) clearTimeout(blinkTimer.current);
+    card.classList.remove(BLINK);
+    void card.offsetWidth; // reflow so the animation restarts on rapid repeats
+    card.classList.add(BLINK);
+    blinkTimer.current = setTimeout(() => card.classList.remove(BLINK), BLINK_MS);
+  }, []);
+  useEffect(() => () => void (blinkTimer.current && clearTimeout(blinkTimer.current)), []);
 
   // Re-baseline the counts whenever the step changes (capture the latest, not stale).
   useEffect(() => setBase(signalsRef.current), [idx]);
 
-  // Keep the user on the current step. The coach card is non-blocking, so a first-run
-  // user can wander off and click unrelated controls; intercept any click that isn't on
-  // the step's spotlighted control (or a surface that legitimately follows from it — the
-  // context menu, the composer, the profile menu) and the coach card itself: swallow it
-  // and blink the card to redirect attention here.
+  // Keep the user on the current step by BLINKING the coach card when they wander — and only
+  // that. The click itself is never cancelled: the tour runs over a throwaway sample, so there is
+  // nothing here to protect by force, and a guard that cancels can trap the user against anything
+  // it fails to recognise. `distracts` decides whether to nudge; this effect is the DOM glue.
   useEffect(() => {
-    const ALLOW = ".ap-coach-card, .ap-ctxmenu, .ap-composer, .ap-profile";
-    const guard = (e: MouseEvent) => {
-      const node = e.target as Element | null;
-      if (!node || typeof node.closest !== "function") return;
-      if (node.closest(ALLOW)) return; // the card + transient interaction surfaces
-      const target = step.target ? document.querySelector(step.target) : null;
-      if (target && target.contains(node)) return; // this step's own control
-      // A distraction: ignore the click and pulse the coach card.
-      e.preventDefault();
-      e.stopPropagation();
-      const card = cardRef.current;
-      if (card) {
-        card.classList.remove("ap-coach-blink");
-        void card.offsetWidth; // reflow so the animation restarts on rapid repeats
-        card.classList.add("ap-coach-blink");
-      }
+    const onClick = (e: MouseEvent) => {
+      // Duck-typed, not `instanceof Element`: the path can cross realms (an iframe, a test DOM),
+      // and a failed instanceof would quietly empty this list — turning the nudge off, silently.
+      const isEl = (n: unknown): n is Element => !!n && typeof (n as Element).closest === "function";
+      // The PATH, not the target: a click inside a shadow root (how consent platforms and embedded
+      // widgets are built) retargets `e.target` to the shadow HOST, so matching the target alone
+      // judges the wrong element.
+      const path = (typeof e.composedPath === "function" ? e.composedPath() : []).filter(isEl);
+      const nodes = path.length > 0 ? path : [e.target].filter(isEl);
+      if (!distracts(nodes, step.target ? document.querySelector(step.target) : null)) return;
+      blink();
     };
-    document.addEventListener("click", guard, true); // capture: run before React's handlers
-    return () => document.removeEventListener("click", guard, true);
+    // Capture, so the nudge still happens for a click some handler stops on the way up. It only
+    // ever reads the event.
+    document.addEventListener("click", onClick, true);
+    return () => document.removeEventListener("click", onClick, true);
   }, [step.target]);
 
-  // Spotlight the current step's target control with a pulsing outline.
+  // Spotlight the current step's target control with a pulsing outline. Re-applied when the LAYOUT
+  // changes, not only when the step does: a step's target can live in a pane the user collapses
+  // (the source step forces 3 panes; collapsing to 1 unmounts `[data-onboard="source"]`), and the
+  // element that comes back is a new one without the class. Keyed on the selector alone, the
+  // spotlight would be gone for the rest of the step with no way to bring it back.
   useEffect(() => {
     const el = step.target ? document.querySelector(step.target) : null;
     el?.classList.add(SPOTLIGHT);
     return () => el?.classList.remove(SPOTLIGHT);
-  }, [step.target]);
+  }, [step.target, signals.panes]);
 
   // Tell the editor which step is active, so it can reveal step-specific UI (e.g. open the
   // settings menu on the "settings" step so its controls are visible while we explain them).

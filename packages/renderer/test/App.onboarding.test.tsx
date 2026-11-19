@@ -28,6 +28,27 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("AppRoot onboarding gate", () => {
+  it("Finish turn during the tour does not lock the editor against the rest of it", async () => {
+    // The tour's own step list calls the Finish-turn step informational: triggering it for real
+    // would "hand the turn to an agent that isn't there". Nothing cancels clicks any more, so a
+    // first-run user can press it on step one — and the lock it used to set has nothing behind it
+    // to clear it, leaving every gated step after it unsatisfiable and the tour only skippable.
+    const { AppRoot } = await import("../src/App");
+    render(<AppRoot />);
+    await waitFor(() => expect(screen.getByText(/welcome to inplan/i)).toBeTruthy());
+
+    const finish = document.querySelector('[data-onboard="finishturn"]') as HTMLButtonElement | null;
+    expect(finish).not.toBeNull();
+    await act(async () => {
+      finish!.click();
+    });
+
+    // Not locked: no agent-turn state, and the tour is still usable.
+    expect(document.body.textContent).not.toContain("Agent is thinking");
+    expect(screen.getByRole("button", { name: /^next$/i })).toBeTruthy();
+    expect(screen.getByText(/welcome to inplan/i)).toBeTruthy();
+  });
+
   it("first run shows the tour on the sample, then opens the real doc when skipped", async () => {
     const { AppRoot } = await import("../src/App");
     render(<AppRoot />);
