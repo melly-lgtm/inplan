@@ -46,14 +46,15 @@ export function createNavTracker(): NavTracker {
  * A plugin refresh is stop-then-start, two awaits on shared state. Run concurrently, a second
  * refresh's stop finds nothing to stop (the first has not started its plugin yet), and whichever
  * start resolves last wins — which need not be the newest document. A job that throws does not
- * stall the ones behind it.
+ * stall the ones behind it, and is reported to `onError` rather than lost: the queue is run
+ * un-awaited, so nothing else would ever hear of it.
  */
-export function createSerialQueue(): { run: (job: () => Promise<void>) => Promise<void> } {
+export function createSerialQueue(onError: (err: unknown) => void = () => {}): { run: (job: () => Promise<void>) => Promise<void> } {
   let tail: Promise<void> = Promise.resolve();
   return {
     run: (job) => {
-      tail = tail.then(job, job);
-      return tail.catch(() => {});
+      tail = tail.then(job).catch(onError);
+      return tail;
     },
   };
 }

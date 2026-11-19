@@ -66,7 +66,7 @@ function resolveTargetFile(): string | null {
 
 /** Whether the renderer may be holding a plugin activation (see navSignal.ts). */
 const nav = createNavTracker();
-const pluginRefreshes = createSerialQueue();
+const pluginRefreshes = createSerialQueue((err) => console.error("[inplan] refreshing the plugin after a navigation failed", err));
 let session: Session | null = null;
 let win: BrowserWindow | null = null;
 let stopWatching: (() => void) | null = null;
@@ -394,6 +394,7 @@ async function refreshPluginAndView(file: string, forSession: Session): Promise<
   // stale refresh must never start a plugin for, or send, a document that is no longer on screen.
   if (session !== forSession) return; // superseded before it began — the newer refresh does the work
   await stopDesktopPlugin();
+  if (session !== forSession) return; // superseded during the stop — do not start a plugin for a document already left
   await startDesktopPlugin(file, pluginToken);
   if (!win || !session || session !== forSession) return; // overtaken: nothing sent, so the renderer holds what it held
   // The renderer re-runs activation + re-mounts the editor — also when it is still bound to a

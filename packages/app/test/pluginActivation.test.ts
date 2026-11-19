@@ -158,6 +158,30 @@ describe("plugin activation — ordering", () => {
   });
 });
 
+describe("the plugin's renderer entry is imported once", () => {
+  it("overlapping activations share one import; a failed one can be tried again", async () => {
+    let imports = 0;
+    let fail = true;
+    const activator = createPluginActivator({
+      getInfo: async () => INFO,
+      importModule: async () => {
+        imports += 1;
+        if (fail) throw new Error("network");
+        return { activate: () => ext("doc") };
+      },
+      baseApi: () => BASE,
+      install: () => {},
+    });
+
+    await activator.activate(); // fails, and is forgotten…
+    fail = false;
+    await Promise.all([activator.activate(), activator.activate()]); // …so these try again — once between them
+    await activator.activate();
+
+    expect(imports).toBe(2);
+  });
+});
+
 describe("what the renderer was last told", () => {
   it("survives an overtaken refresh: A (plugin) → B → C with no plugin still re-activates", () => {
     // Main's own plugin state is the wrong thing to ask: a navigation stops the running plugin
@@ -194,12 +218,16 @@ describe("plugin refreshes run one at a time", () => {
     expect(log).toEqual(["B starts", "B done", "C runs"]);
   });
 
-  it("a refresh that throws does not stall the ones behind it", async () => {
-    const q = createSerialQueue();
+  it("a refresh that throws does not stall the ones behind it — and is reported, not lost", async () => {
+    // The queue is run un-awaited: an error nobody is told about leaves the window on the old
+    // document, the session swapped underneath it, and nothing in the logs.
+    const errors: unknown[] = [];
+    const q = createSerialQueue((e) => errors.push(e));
     const ran: string[] = [];
     await q.run(async () => Promise.reject(new Error("plugin failed to stop")));
     await q.run(async () => void ran.push("next"));
     expect(ran).toEqual(["next"]);
+    expect(errors.map(String)).toEqual(["Error: plugin failed to stop"]);
   });
 });
 

@@ -48,7 +48,14 @@ export interface PluginActivator {
 }
 
 export function createPluginActivator(deps: PluginActivatorDeps): PluginActivator {
-  let mod: PluginRendererModule | null = null;
+  /** The import, started at most once and shared by every call — overlapping activations must not
+   *  each start their own. A failed import is forgotten so a later activation can try again. */
+  let importing: Promise<PluginRendererModule> | null = null;
+  const importOnce = (url: string): Promise<PluginRendererModule> =>
+    (importing ??= deps.importModule(url).catch((err: unknown) => {
+      importing = null;
+      throw err;
+    }));
   let current: PluginExt | null = null;
   /** Bumped by every `activate()`. A call that finds it moved while it was awaiting has been
    *  overtaken, and must touch nothing: the newer call owns the outcome. */
@@ -82,7 +89,7 @@ export function createPluginActivator(deps: PluginActivatorDeps): PluginActivato
         // setText, a getText) until its replacement is ready. Tearing it down before these awaits
         // left the mounted editor holding a disposed binding for as long as they took.
         const info = await deps.getInfo();
-        if (info && !mod) mod = await deps.importModule(info.rendererUrl);
+        const mod = info ? await importOnce(info.rendererUrl) : null;
         if (mine !== generation) return false; // overtaken while awaiting — the newer call decides
 
         // From here to the end is synchronous: dispose → activate → install, with no gap in which

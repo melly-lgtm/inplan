@@ -52,7 +52,7 @@ import { createMemoryApi } from "./memoryApi";
 import { useT } from "./i18n";
 import { applySegments, isChange, lineSegments, wordDiff, type DiffSegment, type WordPart } from "./textdiff";
 import { merge3 } from "./merge3";
-import { readWhenCaughtUp } from "./bindingRead";
+import { whenCaughtUp } from "./bindingRead";
 
 const USER_AUTHOR = "You";
 const EMPTY: ParsedDocument = { body: "", comments: [] };
@@ -462,9 +462,11 @@ export function App(props: EditorProps = {}): JSX.Element {
     const commentStore = hostApi().commentStore ?? null;
 
     const loadGen = docGenRef.current; // navigation before load resolves must win over the older result
+    let loadSettled = false; // until it is, there is no document here for an agent's edit to replace
     hostApi()
       .load()
       .then(({ content, path, readOnly: ro, focusCommentId }) => {
+        loadSettled = true;
         if (docGenRef.current !== loadGen) return; // a navigation already installed a newer document
         docPathRef.current = path;
         setReadOnly(!!ro);
@@ -490,7 +492,10 @@ export function App(props: EditorProps = {}): JSX.Element {
             /* best-effort — the proposal re-surfaces on the next park event or launch */
           });
       })
-      .catch(() => setLoaded(true));
+      .catch(() => {
+        loadSettled = true;
+        setLoaded(true);
+      });
 
     // Auto-accept (and review-mode comment-only changes) arrive as a file rewrite.
     // Navigation processing, extracted so the subscription can DEFER it: host-initiated
@@ -621,13 +626,22 @@ export function App(props: EditorProps = {}): JSX.Element {
         // Unified: the binding holds the bare body and the store owns comments. Legacy collab: the
         // binding holds the whole serialized document — unreadable while its comment block is
         // mid-edit, and then nothing was read, so nothing is adopted or announced.
+        //
+        // Not readable before this mount's own load has settled, either: load installs the document
+        // it was handed (from the file) when it resolves, and would replace whatever was adopted
+        // ahead of it with exactly the copy this handler exists to avoid.
         const read = (): ParsedDocument | null => {
+          if (!loadSettled) return null;
           try {
             return commentStore ? { body: binding.getText(), comments: commentStore.list() } : parse(binding.getText());
           } catch {
             return null;
           }
         };
+        // (The hash is of the body alone. A comment-only edit therefore matches at once — which is
+        // right for this shape, where the store delivers comments and its observer keeps them
+        // current. A whole-document binding would adopt its comment block unchecked; no host
+        // pairs that shape with a plugin-carried edit.)
         if (bodyHash === undefined) {
           // Nothing says what landed (an older CLI), so there is nothing to wait for.
           const now = read();
@@ -636,12 +650,19 @@ export function App(props: EditorProps = {}): JSX.Element {
         }
         // The event and the plugin's own delivery are not ordered: wait until the binding holds
         // the body that landed, rather than adopting whatever it holds this instant (bindingRead.ts).
-        const gen = docGenRef.current;
+        //
+        // Abandoned by a newer event or unmount (cancelled), a re-bind, or another document on
+        // screen. Deliberately NOT by the document generation: this mount's own load bumps it when
+        // it resolves, and an event that arrived just before would then never be adopted at all.
+        const forPath = docPathRef.current;
         let cancelled = false;
         cancelBindingRead = () => (cancelled = true);
-        const abandoned = (): boolean => cancelled || docGenRef.current !== gen || hostApi().binding !== binding;
-        void readWhenCaughtUp(read, bodyHash, abandoned).then((caughtUp) => {
-          if (caughtUp && !abandoned()) adoptExternal(caughtUp, false);
+        const abandoned = (): boolean => cancelled || hostApi().binding !== binding || (forPath !== "" && docPathRef.current !== forPath);
+        void whenCaughtUp(read, bodyHash, abandoned).then((ready) => {
+          // Read NOW, not what the wait looked at: its hashing awaits, and a keystroke that landed
+          // in the binding meanwhile must be in what is adopted.
+          const now = ready ? read() : null;
+          if (now) adoptExternal(now, false);
         });
       }),
       // Review-mode body changes arrive parked, as a proposal to accept/reject.

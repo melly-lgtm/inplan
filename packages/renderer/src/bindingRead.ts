@@ -30,36 +30,39 @@ export interface CaughtUpOptions {
 }
 
 /**
- * Read a document from a binding once its body is the one that landed.
+ * Resolve once a binding's body is the one that landed — the moment to read it.
  *
  * `read` returns the binding's document, or null when it cannot be read right now (a legacy
- * binding caught mid-edit). Resolves the first read whose body hashes to `bodyHash`; null as soon
- * as `abandoned()` says the caller has moved on (navigated, re-bound, a newer event).
+ * binding caught mid-edit, or a caller not ready to adopt anything yet). Resolves true as soon as
+ * a read's body hashes to `bodyHash`; false as soon as `abandoned()` says the caller has moved on
+ * (a newer event, a re-bind, another document).
  *
- * When the wait runs out it resolves the LAST readable document anyway. A mismatch that outlives
- * the wait is far more likely the binding being AHEAD — someone typed after the revision landed,
- * so its hash will never be seen again — than behind, and in both cases the binding is the live
- * shared document and the only copy this editor can show. Never resolving would freeze the
- * preview on the text from before the turn.
+ * It resolves a SIGNAL, never the document it looked at. Hashing awaits, and a keystroke landing
+ * in the binding during that await would make any document handed back here already stale — the
+ * very thing this exists to prevent. The caller reads again, synchronously, when told to.
+ *
+ * When the wait runs out it resolves true anyway. A mismatch that outlives the wait is far more
+ * likely the binding being AHEAD — someone typed after the revision landed, so its hash will
+ * never be seen again — than behind, and in both cases the binding is the live shared document
+ * and the only copy this editor can show. Never resolving would freeze the preview on the text
+ * from before the turn.
  */
-export async function readWhenCaughtUp<T extends { body: string }>(
-  read: () => T | null,
+export async function whenCaughtUp(
+  read: () => { body: string } | null,
   bodyHash: string,
   abandoned: () => boolean,
   opts: CaughtUpOptions = {},
-): Promise<T | null> {
+): Promise<boolean> {
   const { intervalMs = 100, retries = 20, hash = sha256Hex, sleep = (ms) => new Promise<void>((r) => setTimeout(r, ms)) } = opts;
-  let last: T | null = null;
   for (let attempt = 0; ; attempt++) {
-    if (abandoned()) return null;
+    if (abandoned()) return false;
     const doc = read();
     if (doc) {
-      last = doc;
       const h = await hash(doc.body);
-      if (abandoned()) return null;
-      if (h === null || h === bodyHash) return doc; // null: nothing to check with — as if unstamped
+      if (abandoned()) return false;
+      if (h === null || h === bodyHash) return true; // null: nothing to check with — as if unstamped
     }
-    if (attempt >= retries) return last;
+    if (attempt >= retries) return true;
     await sleep(intervalMs);
   }
 }
