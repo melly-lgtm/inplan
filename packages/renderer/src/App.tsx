@@ -395,6 +395,9 @@ export function App(props: EditorProps = {}): JSX.Element {
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const history = useRef<ParsedDocument[]>([]); // undo stack of doc snapshots
   const future = useRef<ParsedDocument[]>([]); // redo stack
+  // Comments the human has themselves changed on this document (created, edited, resolved,
+  // deleted) — their version wins over an agent's later revision of the same comment.
+  const humanTouchedComments = useRef<Set<string>>(new Set());
   // Per-doc undo/redo, kept across in-window navigation: leaving a doc stashes its stacks here,
   // returning restores them — so back/forward (or re-following a link) doesn't lose history.
   const historyByDoc = useRef<Map<string, { undo: ParsedDocument[]; redo: ParsedDocument[] }>>(new Map());
@@ -466,6 +469,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       .then(({ content, path, readOnly: ro, focusCommentId }) => {
         if (docGenRef.current !== loadGen) return; // a navigation already installed a newer document
         docPathRef.current = path;
+        humanTouchedComments.current = new Set(); // ownership of comments is per document
         setReadOnly(!!ro);
         setPendingFocusCommentId(focusCommentId ?? null);
         const parsed = parse(content);
@@ -503,6 +507,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       // another doc's content — but the history now survives navigation instead of being dropped.
       if (docPathRef.current) historyByDoc.current.set(docPathRef.current, { undo: history.current, redo: future.current });
       docPathRef.current = path;
+      humanTouchedComments.current = new Set(); // ownership of comments is per document
       // A navigation installs a document, so the loading screen comes down for it. This mount's
       // own load may have been overtaken by it (and then returns without doing so), or may never
       // come back at all.
@@ -541,6 +546,22 @@ export function App(props: EditorProps = {}): JSX.Element {
     processNavigatedRef.current = processNavigated;
 
     let warnedForeignChange = false;
+    /** Comments that arrived from OUTSIDE the editor are not the human's work, so undo must not
+     *  be able to remove them: they are written into every undo/redo snapshot that predates them.
+     *  Without this, undoing one's own comment also erased the agent's just-landed question, and
+     *  the next save persisted the erasure — the stall this handler's unsaved branch exists to
+     *  prevent, reopened through the undo stack. */
+    const noteExternalArrivals = (arrived: Comment[]): void => {
+      if (arrived.length === 0) return;
+      for (const stack of [history.current, future.current]) {
+        for (let i = 0; i < stack.length; i++) {
+          const snap = stack[i]!;
+          const missing = arrived.filter((a) => !snap.comments.some((c) => c.id === a.id));
+          if (missing.length > 0) stack[i] = { ...snap, comments: [...snap.comments, ...missing] };
+        }
+      }
+    };
+
     // Collect every host subscription's disposer so a remount (e.g. Replay tutorial)
     // can't stack ipcRenderer listeners and double-handle events.
     const subs: Array<(() => void) | void> = [
@@ -607,17 +628,38 @@ export function App(props: EditorProps = {}): JSX.Element {
         // and leave the body alone — the question reaches the rail immediately, the human's
         // sentence is untouched, and nothing is merged behind anyone's back. The BODY difference
         // stays unreconciled and is #131; the editor says so rather than pretending otherwise.
+        // Reachable only where typing can leave unsaved edits — hosts with no `binding.setText`
+        // (the file-backed editor; a comment-store-only host whose plugin entry failed to load).
+        // A bound editor never marks itself dirty from typing, so there this is dead except the
+        // brief window after applying a proposal, before persistence confirms.
         if (dirtyRef.current) {
           const mine = new Set(prevDoc.comments.map((c) => c.id));
+          // A REVISION of a comment already in the buffer (the agent correcting its own earlier
+          // question) is taken too — unless the human has changed that comment themselves, in
+          // which case their version wins. Dropping it silently let the next save overwrite the
+          // correction on disk, unseen by anyone.
+          const revised = prevDoc.comments.map((c) => {
+            const inc = incoming.comments.find((i) => i.id === c.id);
+            return inc && !humanTouchedComments.current.has(c.id) ? inc : c;
+          });
+          const revisedCount = revised.filter((c, i) => c !== prevDoc.comments[i]).length;
           // An incoming SPAN comment anchors into the incoming body, which we are not taking — so
-          // its link may not exist here. Demote rather than carry a dangling anchor, the same rule
-          // the proposal-apply path uses for a comment whose anchor didn't survive.
+          // its link may not exist here. Demote rather than carry a dangling anchor (the rail
+          // hides an unanchored span), the same rule the proposal-apply path uses. Real anchors
+          // only: the extractor the rail itself uses, so a link quoted inside a code sample in
+          // the buffer doesn't count as an anchor.
+          // (A link inside a code sample COUNTS as an anchor here, as in the rail itself: a
+          // comment anchoring a fenced block is a supported feature, not a documentation example.)
           const arriving = incoming.comments
             .filter((c) => !mine.has(c.id))
             .map((c) => (!c.parentId && c.anchor !== "doc" && !prevDoc.body.includes(`](#${c.id})`) ? { ...c, anchor: "doc" as const } : c));
-          // A store-backed host owns comments outside the body; its observer keeps the rail current,
-          // so there is nothing for us to merge there.
-          const withComments = commentStore ? { ...prevDoc, comments: commentStore.list() } : { ...prevDoc, comments: [...prevDoc.comments, ...arriving] };
+          // A store-backed host owns comments outside the body; its observer keeps the rail
+          // current, so there is nothing for us to merge there.
+          const storeList = commentStore ? commentStore.list() : null;
+          const withComments = commentStore ? { ...prevDoc, comments: storeList! } : { ...prevDoc, comments: [...revised, ...arriving] };
+          // What arrived is not the human's work: undo must not be able to remove it (above). On a
+          // store host the arrivals are whatever the store now holds that the buffer did not.
+          noteExternalArrivals(commentStore ? (storeList ?? []).filter((c) => !mine.has(c.id)) : arriving);
           setDoc(withComments);
           docRef.current = withComments;
           // Did the AGENT move the body, or is this comments only? Against the human's buffer every
@@ -629,10 +671,16 @@ export function App(props: EditorProps = {}): JSX.Element {
           } catch {
             /* unparseable baseline: say the more cautious thing */
           }
-          setStatus(t(arriving.length > 0 ? (bodyMoved ? "msg.agentCommentedAndChanged" : "msg.agentCommented") : "msg.agentUpdatedUnsaved"));
+          // Announce what the RAIL gained: on a store host the rail shows the store's list, and
+          // during the projection race the file's own comment block can lag it — counting the
+          // file's comments could stay silent about a question that is already visible, or claim
+          // one that isn't there yet.
+          const gained = commentStore ? (storeList ?? []).filter((c) => !mine.has(c.id)).length : arriving.length + revisedCount;
+          setStatus(t(gained > 0 ? (bodyMoved ? "msg.agentCommentedAndChanged" : "msg.agentCommented") : "msg.agentUpdatedUnsaved"));
           return;
         }
         setDoc(next);
+        noteExternalArrivals(next.comments.filter((c) => !prevDoc.comments.some((p) => p.id === c.id))); // undo must not remove these either
         savedRef.current = serialize(next);
         setDirty(false);
         // Collab: the binding owns the SOURCE pane (the controlled value is ignored once a binding is
@@ -943,6 +991,12 @@ export function App(props: EditorProps = {}): JSX.Element {
       const prevDoc = docRef.current;
       const commentOnly = next.body === prevDoc.body; // body unchanged ⇒ a comment-thread change
       const prevComments = prevDoc.comments;
+      // Which comments THIS action changed: the human owns those now, and a later agent revision
+      // of one (landing while the buffer is unsaved) must not overwrite their version.
+      for (const c of next.comments) {
+        const before = prevComments.find((q) => q.id === c.id);
+        if (!before || JSON.stringify(before) !== JSON.stringify(c)) humanTouchedComments.current.add(c.id);
+      }
       setDoc(next);
       if (action) void hostApi().logAction(action.type, action.payload);
       // Collaborative: push to the external owners — comments → store, body → binding. A SPAN
