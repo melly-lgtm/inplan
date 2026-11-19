@@ -6,7 +6,7 @@
 // them practice for real. The comment/answer steps gate Next until the user actually
 // does the thing (counts come in via `signals`); a Skip link always escapes.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { MOD_KEY } from "./platform";
 import { useT } from "./i18n";
 
@@ -46,6 +46,9 @@ const STEPS: Step[] = [
 ];
 
 const SPOTLIGHT = "ap-coach-target";
+const BLINK = "ap-coach-blink";
+/** Slightly longer than the 0.45s animation in styles.css, so a pulse is never cut short. */
+const BLINK_MS = 600;
 
 /** The editor the tour runs in. It polices clicks in here, and nowhere else. */
 const ROOT = ".ap-app";
@@ -76,7 +79,7 @@ const ALLOW =
  *     user answering one is not wandering off.
  */
 export function distracts(nodes: readonly Element[], stepTarget: Element | null): boolean {
-  if (nodes.length === 0) return false; // nothing identifiable to judge — never nudge blind
+  // An empty list falls out here too: nothing to match `ROOT`, so nothing to nudge about.
   if (!nodes.some((n) => n.closest(ROOT))) return false; // the host app's own chrome
   if (nodes.some((n) => n.closest(ALLOW))) return false; // the card, a dialog, an actionable banner
   if (stepTarget && nodes.some((n) => stepTarget.contains(n))) return false; // this step's own control
@@ -105,6 +108,21 @@ export function Onboarding({
   const isLast = idx === STEPS.length - 1;
   const done = step.gate ? step.gate(signals, base) : true;
   const cardRef = useRef<HTMLDivElement>(null);
+  const blinkTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Pulse the coach card, and make sure the pulse ENDS. Under `prefers-reduced-motion` the class
+   *  is a static ring with no animation (styles.css), so leaving it on would light the card once
+   *  and make every later nudge invisible — and the nudge is now the only feedback a stray click
+   *  gets, since nothing is cancelled. */
+  const blink = useCallback(() => {
+    const card = cardRef.current;
+    if (!card) return;
+    if (blinkTimer.current) clearTimeout(blinkTimer.current);
+    card.classList.remove(BLINK);
+    void card.offsetWidth; // reflow so the animation restarts on rapid repeats
+    card.classList.add(BLINK);
+    blinkTimer.current = setTimeout(() => card.classList.remove(BLINK), BLINK_MS);
+  }, []);
+  useEffect(() => () => void (blinkTimer.current && clearTimeout(blinkTimer.current)), []);
 
   // Re-baseline the counts whenever the step changes (capture the latest, not stale).
   useEffect(() => setBase(signalsRef.current), [idx]);
@@ -124,12 +142,7 @@ export function Onboarding({
       const path = (typeof e.composedPath === "function" ? e.composedPath() : []).filter(isEl);
       const nodes = path.length > 0 ? path : [e.target].filter(isEl);
       if (!distracts(nodes, step.target ? document.querySelector(step.target) : null)) return;
-      const card = cardRef.current;
-      if (card) {
-        card.classList.remove("ap-coach-blink");
-        void card.offsetWidth; // reflow so the animation restarts on rapid repeats
-        card.classList.add("ap-coach-blink");
-      }
+      blink();
     };
     // Capture, so the nudge still happens for a click some handler stops on the way up. It only
     // ever reads the event.
@@ -137,12 +150,16 @@ export function Onboarding({
     return () => document.removeEventListener("click", onClick, true);
   }, [step.target]);
 
-  // Spotlight the current step's target control with a pulsing outline.
+  // Spotlight the current step's target control with a pulsing outline. Re-applied when the LAYOUT
+  // changes, not only when the step does: a step's target can live in a pane the user collapses
+  // (the source step forces 3 panes; collapsing to 1 unmounts `[data-onboard="source"]`), and the
+  // element that comes back is a new one without the class. Keyed on the selector alone, the
+  // spotlight would be gone for the rest of the step with no way to bring it back.
   useEffect(() => {
     const el = step.target ? document.querySelector(step.target) : null;
     el?.classList.add(SPOTLIGHT);
     return () => el?.classList.remove(SPOTLIGHT);
-  }, [step.target]);
+  }, [step.target, signals.panes]);
 
   // Tell the editor which step is active, so it can reveal step-specific UI (e.g. open the
   // settings menu on the "settings" step so its controls are visible while we explain them).
