@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { appendLog, CONTROL_LOG_VERSION, FsControlChannel, FsDocumentStore, type LogEntry, LogEventType, readGlobalSettings, readLog, readStatus, writeGlobalSettings } from "@inplan/core/node";
+import { appendLog, CONTROL_LOG_VERSION, FsControlChannel, FsDocumentStore, type LogEntry, LogEventType, readGlobalSettings, readLog, writeGlobalSettings } from "@inplan/core/node";
 import type { Settings } from "@inplan/renderer";
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -220,19 +220,6 @@ export class Session {
     }
   }
 
-  /** Is a runtime plugin the owner of this document's body right now? The desktop publishes the
-   *  session on the doc's status when it loads one, and clears it when it stops; the CLI reads the
-   *  same field to decide whether to gate through the plugin. Read fresh each time — a plugin can
-   *  start or stop while the window is open. Unreadable status ⇒ no plugin (the file-backed
-   *  behaviour, which is what this editor does without one). */
-  private pluginOwnsDoc(): boolean {
-    try {
-      return readStatus(this.paths.statusPath).pluginSession !== undefined;
-    } catch {
-      return false;
-    }
-  }
-
   /** Record why the session ended (logged at most once) so the agent's `wait` can report it. */
   logClose(reason: "completed" | "window_closed"): void {
     if (this.closed) return;
@@ -292,18 +279,23 @@ export class Session {
         console.warn("inplan: could not read the pending proposal for review dispatch:", e);
       });
     }
-    // An accepted agent edit: the working file holds the agent's revision (the gate
-    // set canonical to it). Load it — this replaces the old raw working-file watch.
+    // An accepted agent edit: the working file holds the agent's revision, so load it — this
+    // replaces the old raw working-file watch.
     //
-    // …unless a runtime PLUGIN owns this document. Then the gate applied the revision through the
-    // plugin and deliberately did not write the .md (applyGatedEdit's `if (gate)` branch), so the
-    // file is whatever the plugin last projected to it — which `applyRevision` resolving says
-    // nothing about: the gate contract promises the revision reached the plugin, not that the file
-    // has caught up. Reading it here hands the renderer stale text, and the renderer pushes what
-    // it is handed into the binding — writing a pre-revision body over the shared document and
-    // undoing the turn that just landed. The plugin delivers its own changes through its own
-    // channel; this event carries nothing it hasn't.
-    if (entries.some((e) => e.actor === "agent" && e.type === LogEventType.DocumentEdited) && !this.pluginOwnsDoc() && existsSync(this.paths.file)) {
+    // …unless the event says the PLUGIN applied it. Then the plugin owns the working file and
+    // overwrites it with its own projection on its own schedule, so what is there now can be
+    // pre-revision text — and the renderer pushes whatever it is handed into the binding, writing
+    // that over the shared document and undoing the turn that just landed. The plugin delivers its
+    // own changes through its own channel; this event carries nothing it hasn't.
+    //
+    // Keyed on the EVENT, not on "a plugin session is published for this doc". Those are different
+    // facts: the CLI decides per process and reads that status moments after spawning the editor,
+    // before the editor has published one — so a file-backed turn routinely runs with a session
+    // appearing mid-flight, and a stale session (editor crashed) is explicitly tolerated elsewhere
+    // precisely because the gate falls back to the file. Suppressing on either would hide real
+    // file-backed edits. The applier knows; it says so.
+    const applied = entries.find((e) => e.actor === "agent" && e.type === LogEventType.DocumentEdited);
+    if (applied && (applied.payload as { via?: string } | undefined)?.via !== "plugin" && existsSync(this.paths.file)) {
       try {
         handlers.onExternalChange(readFileSync(this.paths.file, "utf8"));
       } catch {

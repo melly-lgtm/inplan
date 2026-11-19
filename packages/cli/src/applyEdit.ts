@@ -58,7 +58,7 @@ export async function applyGatedEdit(
       await store.setCanonical(ev.acceptedText);
       withdrew = await withdrawOwnPending(store, canonicalText, ev.acceptedText);
     }
-    if (!(await logEdit(channel, { removed: ev.removedIds }))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
+    if (!(await logEdit(channel, { removed: ev.removedIds }, gate !== null))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
   } else if (ev.changed && quarantine) {
     // Quarantine: park the proposal for the human to accept/reject in the editor. The proposal
     // sidecar is file-based either way; on the file path also revert the working file to canonical
@@ -119,7 +119,7 @@ export async function applyGatedEdit(
       await store.setCanonical(current);
       withdrew = await withdrawOwnPending(store, canonicalText, current);
     }
-    if (!(await logEdit(channel, { bytes: utf8Bytes(current) }))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
+    if (!(await logEdit(channel, { bytes: utf8Bytes(current) }, gate !== null))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
   }
   return { proposed: false, ...(withdrew ? { withdrew } : {}) };
 }
@@ -211,7 +211,15 @@ function revertWouldWipe(canonicalText: string, current: string): boolean {
  * anyone. The park path has reported this as `eventLogged: false` since #88; a landing deserves the
  * same, because the consequence is the same: the human's editor won't show it until it reloads.
  */
-async function logEdit(channel: ControlChannel, payload: Record<string, unknown>): Promise<boolean> {
+async function logEdit(channel: ControlChannel, payload: Record<string, unknown>, viaPlugin = false): Promise<boolean> {
+  // `via: "plugin"` says WHO applied this edit, so a reader does not have to infer it. The editor
+  // uses it to know the working file is not the carrier for this one: the plugin owns that file and
+  // overwrites it with its own projection on its own schedule, so reading it can hand back
+  // pre-revision text. Inferring the same thing from "a plugin session is published" is wrong —
+  // the CLI decides per process, and it can be file-backed with a session published (it reads the
+  // status moments after spawning the editor, before the editor has published one) or
+  // plugin-backed with none visible.
+  if (viaPlugin) payload = { ...payload, via: "plugin" };
   try {
     await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload });
     return true;

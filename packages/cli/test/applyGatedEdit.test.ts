@@ -162,6 +162,23 @@ describe("applyGatedEdit — plugin path (a plugin gate is connected)", () => {
   });
 });
 
+describe("who applied it", () => {
+  it("stamps an edit applied through the plugin, and leaves a file-backed one unmarked", async () => {
+    // The editor reads this to know whether the working file carries the edit. It cannot infer the
+    // same thing from "a plugin session is published": the CLI decides per process and reads that
+    // status moments after spawning the editor, so a file-backed turn routinely runs with a
+    // session appearing mid-flight.
+    const viaGate = new MemoryControlChannel();
+    await applyGatedEdit(new MemoryDocumentStore("body"), viaGate, ev({ changed: true }), { current: "body", canonicalText: "canon", quarantine: false, gate: fakeGate() });
+    const viaFile = new MemoryControlChannel();
+    await applyGatedEdit(new MemoryDocumentStore("body"), viaFile, ev({ changed: true }), { current: "body", canonicalText: "canon", quarantine: false, gate: null });
+
+    const payload = async (ch: MemoryControlChannel) => ((await ch.readSince(0)).entries[0]!.payload as { via?: string });
+    expect((await payload(viaGate)).via).toBe("plugin");
+    expect((await payload(viaFile)).via).toBeUndefined();
+  });
+});
+
 describe("onlyIfUnmoved — writing against a document that may have moved", () => {
   it("skips the write when the document moved after the caller read it", async () => {
     // The live watcher decides against a snapshot while the human may be saving. Its file re-read
