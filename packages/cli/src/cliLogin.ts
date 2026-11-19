@@ -554,8 +554,7 @@ async function unsealHandoff(privateKeyPkcs8: string, sealed: { epk: string; iv:
      *
      *  It proves the session works now, not that the refresh token is still live; the only test for
      *  that is to spend it. See primeSessionOrFail for that residual — historical now for handoffs
-     *  from current pages, which mint this CLI its own session family server-side (inplan-cloud
-     *  #263, `mint_cli_session`).
+     *  from current pages, which mint this CLI its own session family server-side.
      *
      *  Absent on older pages, so both fields stay optional and the flow degrades to the
      *  forced-refresh route. */

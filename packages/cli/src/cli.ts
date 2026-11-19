@@ -910,8 +910,8 @@ function canAttemptBrowserLaunch(): boolean {
  * does NOT prove the refresh token is still live, because the only way to test that is to spend it.
  * So a long `wait` can still meet a dead refresh token when the access token expires. That
  * residual was inherent to credentials that copied the browser's session; the page now mints the
- * CLI its own family at the rendezvous (inplan-cloud #263, `mint_cli_session`), so it applies
- * only to credentials from pages older than that deploy — and a re-login retires those.
+ * CLI its own family at the rendezvous, server-side, so it applies only to credentials from pages
+ * older than that change — and a re-login retires those.
  */
 export async function primeSessionOrFail(retryDelayMs = 750): Promise<void> {
   // A verdict is only worth acting on when we know which kind it is. authedSession collapses every
@@ -2482,9 +2482,9 @@ export async function doUpload(file: string, args: string[]): Promise<void> {
 }
 
 /** Extensions this uploader accepts, mapped to their Storage `Content-Type` — mirrors the cloud
- *  web app's ASSET_MIME_BY_EXT and the `doc-images` bucket's allowed_mime_types (inplan-cloud's
- *  `20260804000000_doc_images_bucket.sql`). Anything else falls back to png, same as the local
- *  `asset:save` write path. */
+ *  edition's own asset MIME map and the `doc-images` bucket's allowed types, which an upload is
+ *  rejected by if the two drift. Anything else falls back to png, same as the local `asset:save`
+ *  write path. */
 const ASSET_MIME_BY_EXT: Record<string, string> = {
   png: "image/png",
   jpg: "image/jpeg",

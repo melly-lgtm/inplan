@@ -120,14 +120,13 @@ export function announcePresence(docId: string, token: string | (() => Promise<s
       },
     });
     armAuthCheck(); // attach-time arm: covers a connection that never even opens
-    // CROSS-REPO CONTRACT: this exact shape — {kind:"agent", agentLocation:"local", model?} — is
-    // read verbatim by two places in the proprietary `inplan-cloud` repo: the web's
-    // computeAgent() in packages/web/src/supabaseApi.ts (drives the connected-agent badge +
-    // Finish-turn availability) and the collab server's noteAwareness() in
-    // packages/collab/src/agentTrigger.ts (makes the managed cloud agent stand down while a local
-    // CLI holds the turn). There is no shared type across the AGPL/cloud boundary, so a field
-    // rename on either side breaks the OTHER side silently — this whole call is best-effort and
-    // swallows failures by design. If you change this shape, grep both consumers first.
+    // PUBLISHED CONTRACT: this exact shape — {kind:"agent", agentLocation:"local", model?} — is
+    // read verbatim by the proprietary cloud edition, in two places: its web client (which drives
+    // the connected-agent badge and Finish-turn availability) and its collab server (which makes
+    // the managed cloud agent stand down while a local CLI holds the turn). There is no shared
+    // type across that boundary, so a field rename on either side breaks the OTHER side silently
+    // — and this whole call is best-effort and swallows failures by design. Treat the shape as
+    // frozen: change it only alongside both consumers.
     provider.awareness?.setLocalStateField("inplanPresence", { kind: "agent", agentLocation: "local", ...(model ? { model } : {}) });
     return {
       destroy: () => {
