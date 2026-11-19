@@ -3,7 +3,7 @@
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Onboarding, swallows, type OnboardingSignals } from "../src/Onboarding";
+import { Onboarding, distracts, type OnboardingSignals } from "../src/Onboarding";
 
 afterEach(cleanup);
 
@@ -37,8 +37,10 @@ describe("Onboarding", () => {
   }
   const blinked = () => document.querySelector(".ap-coach-card")!.classList.contains("ap-coach-blink");
 
-  it("swallows an off-step click INSIDE the editor and blinks the coach card (but allows the card itself)", () => {
-    // A stray control the tour doesn't point at — clicks on it should be ignored.
+  it("nudges on an off-step click INSIDE the editor — and lets the click through", () => {
+    // The card blinks to redirect attention. It does NOT cancel the click: the tour runs over a
+    // throwaway sample, so there is nothing to protect by force, and cancelling is what let it
+    // deadlock a user against a surface it could not recognise.
     const root = editor();
     const stray = document.createElement("button");
     stray.textContent = "Distraction";
@@ -48,14 +50,32 @@ describe("Onboarding", () => {
     try {
       render(<Onboarding signals={NONE} onFinish={() => {}} />);
       fireEvent.click(stray);
-      expect(onStray).not.toHaveBeenCalled(); // the guard swallowed it
-      expect(blinked()).toBe(true);
-      // The coach card's own controls still work (allowed region).
+      expect(blinked()).toBe(true); // nudged
+      expect(onStray).toHaveBeenCalled(); // …but never swallowed
+      // The coach card's own controls work and draw no nudge.
       const skip = screen.getByRole("button", { name: /skip tutorial/i });
       const onSkipClick = vi.fn();
       skip.addEventListener("click", onSkipClick);
       fireEvent.click(skip);
-      expect(onSkipClick).toHaveBeenCalled(); // not swallowed
+      expect(onSkipClick).toHaveBeenCalled();
+    } finally {
+      root.remove();
+    }
+  });
+
+  it("cancels nothing, whatever the click is", () => {
+    // The structural property, stated on its own: there is no path through this component that
+    // calls preventDefault or stopPropagation, so it cannot trap a user against anything —
+    // including a surface nobody thought to exempt.
+    const root = editor();
+    const stray = document.createElement("button");
+    root.appendChild(stray);
+    try {
+      render(<Onboarding signals={NONE} onFinish={() => {}} />);
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+      stray.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(false);
+      expect(blinked()).toBe(true); // it was a distraction — it just wasn't stopped
     } finally {
       root.remove();
     }
@@ -80,7 +100,7 @@ describe("Onboarding", () => {
     }
   });
 
-  it("never swallows a dialog's buttons, in any of the spellings a dialog comes in", () => {
+  it("does not nudge at a dialog, in any of the spellings a dialog comes in", () => {
     // A dialog is blocking UI that somebody is waiting on, so redirecting attention away from one
     // is a deadlock, not a nudge. `role="dialog"` is one spelling of it; a native <dialog> and
     // `role="alertdialog"` — the role ARIA prescribes for exactly the interruption-demanding-an-
@@ -103,6 +123,7 @@ describe("Onboarding", () => {
         root.appendChild(el);
         fireEvent.click(el.querySelector("button")!);
         expect(onClick, `${tag} ${JSON.stringify(attrs)}`).toHaveBeenCalled();
+        expect(blinked(), `${tag} ${JSON.stringify(attrs)}`).toBe(false); // answering a question is not wandering off
         el.remove();
       }
     } finally {
@@ -110,7 +131,7 @@ describe("Onboarding", () => {
     }
   });
 
-  it("never swallows a banner's action — the reload banner is closing the window on a timer", () => {
+  it("does not nudge at a banner's action — the reload banner is closing the window on a timer", () => {
     // `.ap-banner-reload` counts down and closes the window at zero. Swallowing its Cancel leaves
     // a first-run user watching an exit they cannot stop, which is worse than the stray click the
     // guard exists to absorb.
@@ -125,6 +146,7 @@ describe("Onboarding", () => {
       render(<Onboarding signals={NONE} onFinish={() => {}} />);
       fireEvent.click(banner.querySelector("button")!);
       expect(onCancel).toHaveBeenCalled();
+      expect(blinked()).toBe(false);
     } finally {
       root.remove();
     }
@@ -176,7 +198,7 @@ describe("Onboarding", () => {
   });
 });
 
-describe("swallows — the decision, without the DOM glue", () => {
+describe("distracts — the decision, without the DOM glue", () => {
   /** Build `.ap-app > host > dialog > button` and return the click's composed path, innermost first. */
   function shadowish(): { path: Element[]; host: Element } {
     const root = document.createElement("div");
@@ -198,14 +220,14 @@ describe("swallows — the decision, without the DOM glue", () => {
     // (OneTrust, Cookiebot and friends) gets its buttons swallowed anyway.
     const { path, host } = shadowish();
     try {
-      expect(swallows(path, null)).toBe(false); // the dialog is in the path: allowed
-      expect(swallows([host], null)).toBe(true); // the retargeted host alone: indistinguishable from a stray
+      expect(distracts(path, null)).toBe(false); // the dialog is in the path: not a distraction
+      expect(distracts([host], null)).toBe(true); // the retargeted host alone: indistinguishable from a stray
     } finally {
       document.querySelector(".ap-app")!.remove();
     }
   });
 
-  it("never swallows blind", () => {
-    expect(swallows([], null)).toBe(false); // nothing identifiable to judge
+  it("never nudges blind", () => {
+    expect(distracts([], null)).toBe(false); // nothing identifiable to judge
   });
 });

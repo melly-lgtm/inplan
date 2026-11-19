@@ -57,23 +57,26 @@ const ALLOW =
   "[role='dialog'], [role='alertdialog'], dialog, [aria-modal='true']";
 
 /**
- * Should the tour swallow this click? `nodes` is the click's composed path (or just its target
- * when a path isn't available), and `stepTarget` the control the current step points at.
+ * Is this click a distraction the tour should nudge about? `nodes` is the click's composed path
+ * (or just its target when a path isn't available), and `stepTarget` the control the current step
+ * points at.
  *
- * Swallowing is as blocking as a modal, so two rules bound it — both learned from a user stuck
- * between this tour and a consent banner the host app raised over the editor:
+ * The answer only ever decides whether the coach card BLINKS. The tour does not swallow clicks:
+ * the card says it is non-blocking, and a guard that cancels events is as blocking as a modal
+ * without the backdrop that would admit it. Cancelling is also what let the tour deadlock a user
+ * against a consent banner it had no way to recognise — the fix for that was to stop cancelling,
+ * not to enumerate every surface worth sparing.
+ *
+ * Two rules still bound the nudge, because blinking at the wrong moment is noise:
  *
  *  1. Only inside the editor. Anything outside `ROOT` belongs to the host app — its consent
- *     banner, its nav, its toasts — and the tour has no business calling those clicks
- *     distractions. It could not enumerate them anyway: the banner that caused the deadlock had
- *     no class or role this file could have predicted.
- *  2. Inside the editor, a surface that is ASKING the user something is never a distraction. A
- *     dialog is blocking UI somebody is waiting on, so swallowing its buttons deadlocks instead
- *     of redirecting; and the reload banner counts down to closing the window, so swallowing its
- *     Cancel leaves a first-run user watching an exit they cannot stop.
+ *     banner, its nav, its toasts — and the tour has no business commenting on those clicks.
+ *  2. Inside the editor, a surface that is ASKING the user something is not a distraction: a
+ *     dialog by any of its spellings, and the banners that announce something actionable. The
+ *     user answering one is not wandering off.
  */
-export function swallows(nodes: readonly Element[], stepTarget: Element | null): boolean {
-  if (nodes.length === 0) return false; // nothing identifiable to judge — never swallow blind
+export function distracts(nodes: readonly Element[], stepTarget: Element | null): boolean {
+  if (nodes.length === 0) return false; // nothing identifiable to judge — never nudge blind
   if (!nodes.some((n) => n.closest(ROOT))) return false; // the host app's own chrome
   if (nodes.some((n) => n.closest(ALLOW))) return false; // the card, a dialog, an actionable banner
   if (stepTarget && nodes.some((n) => stepTarget.contains(n))) return false; // this step's own control
@@ -106,21 +109,21 @@ export function Onboarding({
   // Re-baseline the counts whenever the step changes (capture the latest, not stale).
   useEffect(() => setBase(signalsRef.current), [idx]);
 
-  // Keep the user on the current step: intercept a click that is a distraction and blink the card
-  // to redirect attention here. `swallows` decides; this effect is only the DOM glue.
+  // Keep the user on the current step by BLINKING the coach card when they wander — and only
+  // that. The click itself is never cancelled: the tour runs over a throwaway sample, so there is
+  // nothing here to protect by force, and a guard that cancels can trap the user against anything
+  // it fails to recognise. `distracts` decides whether to nudge; this effect is the DOM glue.
   useEffect(() => {
-    const guard = (e: MouseEvent) => {
+    const onClick = (e: MouseEvent) => {
       // Duck-typed, not `instanceof Element`: the path can cross realms (an iframe, a test DOM),
-      // and a failed instanceof would quietly empty this list — turning the guard off, silently.
+      // and a failed instanceof would quietly empty this list — turning the nudge off, silently.
       const isEl = (n: unknown): n is Element => !!n && typeof (n as Element).closest === "function";
       // The PATH, not the target: a click inside a shadow root (how consent platforms and embedded
       // widgets are built) retargets `e.target` to the shadow HOST, so matching the target alone
-      // tests the wrong element and swallows a dialog's buttons anyway.
+      // judges the wrong element.
       const path = (typeof e.composedPath === "function" ? e.composedPath() : []).filter(isEl);
       const nodes = path.length > 0 ? path : [e.target].filter(isEl);
-      if (!swallows(nodes, step.target ? document.querySelector(step.target) : null)) return;
-      e.preventDefault();
-      e.stopPropagation();
+      if (!distracts(nodes, step.target ? document.querySelector(step.target) : null)) return;
       const card = cardRef.current;
       if (card) {
         card.classList.remove("ap-coach-blink");
@@ -128,8 +131,10 @@ export function Onboarding({
         card.classList.add("ap-coach-blink");
       }
     };
-    document.addEventListener("click", guard, true); // capture: run before React's handlers
-    return () => document.removeEventListener("click", guard, true);
+    // Capture, so the nudge still happens for a click some handler stops on the way up. It only
+    // ever reads the event.
+    document.addEventListener("click", onClick, true);
+    return () => document.removeEventListener("click", onClick, true);
   }, [step.target]);
 
   // Spotlight the current step's target control with a pulsing outline.
