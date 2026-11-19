@@ -709,6 +709,22 @@ export async function waitCycle(
       );
       return;
     }
+    // A confirmed comment deletion is the ONE landing that writes the working FILE (applyGatedEdit
+    // persists `ev.acceptedText` over it, the orphaned comment objects dropped). Everything else
+    // the live path can land touches only the canonical. That file write is also the one thing
+    // here that can destroy the human's work: the re-read below narrows the window between
+    // deciding and writing, but a window it remains, and a save that lands inside it is simply
+    // overwritten. So the live path does not take that branch at all — it defers, like any other
+    // edit it will not apply, and the turn boundary (where the agent has stopped and the human is
+    // not mid-save) handles it as it always did. With this, nothing the live path does writes the
+    // working copy, so there is no window left to lose a save in.
+    if (liveEv.removedIds.length > 0) {
+      declined(
+        "inplan: your edit removes anchored comment(s) you confirmed, so it was NOT applied mid-turn — it stays in the working copy, and the next wait applies it.\n",
+        text,
+      );
+      return;
+    }
     // A body change that review mode would park: defer it to the turn boundary (see above). The
     // working copy keeps the agent's text — this path writes NOTHING — so the agent's next edit
     // builds on its own work, and the next `wait` parks the result for the human.
@@ -769,10 +785,7 @@ export async function waitCycle(
     // landing now leaves the parked revision standing, and clearing the signal for it would tell
     // the agent its work was gone while the human still has it in review.
     if (liveApplied.withdrew) proposalOut = {};
-    // A confirmed deletion writes the ACCEPTED text (the orphaned comment objects dropped), not
-    // what the agent wrote — so that, not `text`, is what the gate left on disk. Passing `text`
-    // sent the next poll off to re-gate the gate's own write.
-    markGated(text, liveEv.removedIds.length > 0 ? liveEv.acceptedText : text);
+    markGated(text); // the live path writes no file, so the disk still holds exactly what we read
   });
   /** Say why an edit was not applied — once per REASON, so a repeated decline is quiet but a new
    *  one is never swallowed. */

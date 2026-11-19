@@ -365,27 +365,23 @@ describe("live fill — the agent's edits during a blocked wait", () => {
     }
   });
 
-  it("does not re-gate its own write after a confirmed comment deletion", async () => {
-    // A confirmed deletion writes the ACCEPTED text — the orphaned comment objects dropped — not
-    // what the agent wrote. Recording the agent's text as the disk state sent the next poll off to
-    // settle and re-evaluate the gate's own write.
+  it("defers a confirmed comment deletion — the one landing that would write the working file", async () => {
+    // `applyGatedEdit` persists `ev.acceptedText` OVER the working copy on that branch, and it is
+    // the only live landing that writes the file at all; everything else touches just the
+    // canonical. Since a decision cannot be made atomic with its write, the branch that writes the
+    // file is the branch that can overwrite a human save — so the live path does not take it.
     const h = harness(SPAN_DOC);
     await h.store.setCanonical(SPAN_DOC);
-    // Auto acceptance: a confirmed deletion rewrites the body, which review mode would defer — so
-    // the landing path this guards is only reachable where bodies land.
     await h.channel.append({ actor: "user", type: LogEventType.SettingsChanged, payload: { acceptance: "auto" } });
     try {
       const run = waitCycle(h.backend, null, new Set(["cmt-q1"]), undefined, null, { liveFill: true });
       await waitUntil(async () => (await count(h.channel, LogEventType.AgentRevised)) >= 1);
 
-      await h.store.saveDoc(SPAN_ORPHANED); // confirmed, so it lands with the comment dropped
-      await waitUntil(async () => (await count(h.channel, LogEventType.DocumentEdited)) >= 1);
-      const onDisk = await h.store.loadDoc();
-      expect(onDisk).not.toBe(SPAN_ORPHANED); // the gate rewrote it
-
-      const basesRead = vi.spyOn(h.store, "getCanonical");
+      await h.store.saveDoc(SPAN_ORPHANED);
+      await waitUntil(() => /removes anchored comment/.test(h.stderr()));
       await sleep(POLL_MS * 20);
-      expect(basesRead).not.toHaveBeenCalled(); // …and that rewrite is not an agent edit
+      expect(await h.store.loadDoc()).toBe(SPAN_ORPHANED); // left exactly as the agent wrote it
+      expect(await count(h.channel, LogEventType.DocumentEdited)).toBe(0);
 
       await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
       await run;
@@ -393,15 +389,14 @@ describe("live fill — the agent's edits during a blocked wait", () => {
       h.restore();
     }
   });
-
-  it("does not write a snapshot older than a save that landed mid-decision", async () => {
+  it("leaves a save that lands mid-decision alone, because it writes no file at all", async () => {
     // Between the settle and the write there are awaits — the base read, the history read, the
-    // lock probe — and the human can save in any of them. The confirmed-deletion path writes the
-    // FILE, so applying the stale evaluation would overwrite their text outright.
+    // lock probe — and the human can save in any of them. The re-read before applying narrows that
+    // window but cannot close it; what closes it is the live path never writing the working copy.
+    // Here the human's save lands inside the window and survives it.
     const HUMAN = "# Plan\n\nThe human's own save, made mid-decision.\n\n<!--inplan\n[]\n-->\n";
-    const h = harness(SPAN_DOC);
-    await h.store.setCanonical(SPAN_DOC);
-    await h.channel.append({ actor: "user", type: LogEventType.SettingsChanged, payload: { acceptance: "auto" } });
+    const h = harness(DRAFT);
+    await h.store.setCanonical(DRAFT);
     let armed = false;
     const history = h.backend.history;
     h.backend.history = async () => {
@@ -414,15 +409,14 @@ describe("live fill — the agent's edits during a blocked wait", () => {
       return entries;
     };
     try {
-      const run = waitCycle(h.backend, null, new Set(["cmt-q1"]), undefined, null, { liveFill: true });
+      const run = waitCycle(h.backend, null, new Set(), undefined, null, { liveFill: true });
       await waitUntil(async () => (await count(h.channel, LogEventType.AgentRevised)) >= 1);
       armed = true;
-      await h.store.saveDoc(SPAN_ORPHANED);
+      await h.store.saveDoc(COMMENTED); // a comment-only edit: the live path would land this
 
       await waitUntil(async () => (await h.store.loadDoc()) === HUMAN);
       await sleep(POLL_MS * 20);
       expect(await h.store.loadDoc()).toBe(HUMAN); // their save stands
-      expect(await count(h.channel, LogEventType.DocumentEdited)).toBe(0); // the stale snapshot never landed
 
       await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
       await run;
@@ -430,7 +424,6 @@ describe("live fill — the agent's edits during a blocked wait", () => {
       h.restore();
     }
   });
-
   it("retries a write that failed once, without waiting for the next wait", async () => {
     // Gating a FAILED apply would leave the human looking at the document the editor was launched
     // on for the rest of the wait — the very failure this watcher exists to end — even once the
