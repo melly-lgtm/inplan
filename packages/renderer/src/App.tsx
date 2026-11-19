@@ -178,6 +178,10 @@ interface Proposal {
   /** The proposal's stored base serialization (see Api.getProposal), kept so an external change
    *  landing mid-review can REBASE the open review against the fresh document. */
   base?: string;
+  /** LOCAL review: an external change shown against the human's unsaved buffer, with no proposal
+   *  row behind it. Deciding one settles nothing and logs no decision — there is nothing to settle
+   *  and nobody waiting on the answer; it is just the human choosing what their buffer becomes. */
+  local?: true;
 }
 
 /**
@@ -455,6 +459,28 @@ export function App(props: EditorProps = {}): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- setters/refs are stable; t matches the mount effect's stale-t tolerance
   }, []);
 
+  /**
+   * Show an incoming external change as a review against the human's CURRENT buffer.
+   *
+   * Used when an agent edit lands while they have unsaved work. Replacing the buffer would delete
+   * their keystrokes; keeping it silently drops the agent's version at their next save. Neither is
+   * ours to choose, and the editor already has the instrument for "two versions, a human decides" —
+   * so the incoming text rides in as a review, diffed against what is on screen.
+   *
+   * Deliberately NOT merge3'd first: the base here is the human's buffer, and in the flow that
+   * matters most (the first fill of a new document) a three-way merge's base is empty, which makes
+   * every block a conflict and hands the whole document to one side.
+   */
+  const showIncoming = useCallback((content: string) => {
+    if (proposalRef.current?.raw === content) return; // already reviewing exactly this
+    setProposal({ baseBody: docRef.current.body, next: parse(content), raw: content, local: true });
+    setQueueCount(undefined);
+    setReviewOpen(true);
+    setAgentThinking(false);
+    setStatus(t("msg.agentUpdatedReview"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setters/refs are stable; t as in showProposal
+  }, []);
+
   // --- load + agent signals ---
   useEffect(() => {
 
@@ -591,17 +617,16 @@ export function App(props: EditorProps = {}): JSX.Element {
           next = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
         }
         setAgentThinking(false);
-        // The human may be mid-sentence. Replacing the buffer would delete those keystrokes, and
-        // they exist in no other copy — while the incoming text is already on disk and can be read
-        // back at any time. So when there are unsaved edits, keep them and say the document
-        // changed underneath; the agent's text is not lost, it is just not shown yet.
+        // The human may be mid-sentence. Replacing the buffer deletes those keystrokes, which
+        // exist in no other copy; keeping the buffer silently drops the agent's version at their
+        // next save, and they never see what they dropped — in a tool where the agent ASKS things
+        // by leaving comments, the thing dropped can be a question, and the loop stalls on an
+        // answer to something nobody read.
         //
-        // Deliberately NOT merged here. The obvious three-way merge is wrong in this spot: the
-        // base is empty in the flow that matters most (the first fill of a new document), and an
-        // empty base makes every block a conflict, so one side's work disappears entirely.
-        // Reconciling the two properly — including what a save does afterwards — is #131.
+        // So neither: the incoming version comes in as a REVIEW against what is on screen, and the
+        // human decides, hunk by hunk. Nothing is merged behind their back and nothing is lost.
         if (dirtyRef.current) {
-          setStatus(t("msg.agentUpdatedUnsaved"));
+          showIncoming(content);
           return;
         }
         setDoc(next);
@@ -1544,6 +1569,21 @@ export function App(props: EditorProps = {}): JSX.Element {
       let finalDoc: ParsedDocument = { body, comments };
       let serialized = serialize(finalDoc);
       const acceptedCount = accepted.filter(Boolean).length;
+      // A LOCAL review has no row to settle, no queue behind it and nobody waiting on the answer:
+      // it is the human choosing what their own unsaved buffer becomes. So none of the
+      // settle-before-publish machinery below applies — publish straight into the buffer and leave
+      // it dirty, which is what it is. The agent's version is already the canonical on disk, so
+      // accepting everything converges and accepting nothing changes nothing.
+      if (proposal.local) {
+        setDoc(finalDoc);
+        docRef.current = finalDoc;
+        setDirty(true);
+        setProposal(null);
+        setReviewOpen(false);
+        syncExternalDoc(finalDoc, prevDoc.comments, prevDoc.body);
+        setStatus(t(acceptedCount === 0 ? "msg.keptYours" : "msg.appliedRevision", { accepted: acceptedCount, total: accepted.length }));
+        return;
+      }
       // Decision made → push the accepted doc to the collaborative owners (comments → store, body →
       // the binding that owns the SOURCE pane + the shared/persisted doc). WITHOUT this, a collab
       // accept updated only the React preview: the binding-owned source stayed stale and the change
