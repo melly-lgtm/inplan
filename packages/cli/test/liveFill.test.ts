@@ -19,6 +19,13 @@ import { proposedContent } from "./helpers";
 const EMPTY = "";
 const DRAFT = "# Plan\n\nThe body the human has to be able to see.\n\n<!--inplan\n[]\n-->\n";
 const REVISED = "# Plan\n\nA second pass over the body.\n\n<!--inplan\n[]\n-->\n";
+const SPAN_DOC =
+  "# Plan\n\nThe [datastore choice](#cmt-q1) needs a decision.\n\n<!--inplan\n" +
+  JSON.stringify([{ id: "cmt-q1", author: "a", date: "2026-01-01T00:00:00Z", resolved: false, text: "Which datastore?" }]) +
+  "\n-->\n";
+/** SPAN_DOC with the anchor link rewritten away — the comment is orphaned, which needs the agent's
+ *  own confirmation before it can be accepted. */
+const SPAN_ORPHANED = SPAN_DOC.replace("The [datastore choice](#cmt-q1) needs a decision.", "The datastore choice is settled.");
 const COMMENT_BLOCK = '<!--inplan\n[{"id":"cmt-aaa111","author":"a","date":"2026-01-01T00:00:00Z","resolved":false,"anchor":"doc","text":"q"}]\n-->';
 /** DRAFT with a document-level comment added — a comment-only change, which lands in review mode. */
 const COMMENTED = DRAFT.replace("<!--inplan\n[]\n-->", COMMENT_BLOCK);
@@ -259,6 +266,57 @@ describe("live fill — the agent's edits during a blocked wait", () => {
       // …and the agent's FIX is evaluated afresh rather than written off with the broken version.
       await h.store.saveDoc(DRAFT);
       await waitUntil(async () => (await h.store.getCanonical()) === DRAFT);
+      await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
+      await run;
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("says why an edit was declined once per REASON, not once per wait", async () => {
+    // A single "have we spoken yet" latch kept the first reason and swallowed every later one: an
+    // agent told its revision was safely held then corrupted the comment block and heard nothing —
+    // the exact silence the parse guard exists to end.
+    const h = harness(DRAFT);
+    await h.store.setCanonical(DRAFT);
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, null, { liveFill: true });
+      await waitUntil(async () => (await count(h.channel, LogEventType.AgentRevised)) >= 1);
+
+      await h.store.saveDoc(REVISED); // decline #1: held for review
+      await waitUntil(() => /held for review/.test(h.stderr()));
+      await h.store.saveDoc("# Plan\n\nHalf-written.\n\n<!--inplan\n[{ broken json\n-->\n"); // #2: a DIFFERENT reason
+      await waitUntil(() => /could not be parsed/.test(h.stderr()));
+
+      // …and a repeat of a reason already given stays quiet.
+      const before = h.stderr();
+      await h.store.saveDoc("# Plan\n\nStill half-written.\n\n<!--inplan\n[{ broken json\n-->\n");
+      await sleep(POLL_MS * 20);
+      expect(h.stderr()).toBe(before);
+
+      await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
+      await run;
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("declines an edit that orphans an anchored comment, naming the remedy", async () => {
+    // Accepting this needs --confirmed-comment-deletion, which is a STATUS with a non-zero exit —
+    // and this wait is holding the human's turn, so it cannot report one without ending their turn
+    // for them. The file is left exactly as the agent wrote it for the next wait to report on.
+    const h = harness(SPAN_DOC);
+    await h.store.setCanonical(SPAN_DOC);
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, null, { liveFill: true });
+      await waitUntil(async () => (await count(h.channel, LogEventType.AgentRevised)) >= 1);
+
+      await h.store.saveDoc(SPAN_ORPHANED);
+      await waitUntil(() => /confirmed-comment-deletion/.test(h.stderr()));
+      expect(await h.store.loadDoc()).toBe(SPAN_ORPHANED); // untouched
+      expect(await h.store.getCanonical()).toBe(SPAN_DOC); // nothing landed
+      expect(await count(h.channel, LogEventType.DocumentEdited)).toBe(0);
+
       await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
       await run;
     } finally {

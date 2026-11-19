@@ -617,7 +617,10 @@ export async function waitCycle(
   let gatedText = current;
   let gatedDisk = applied.proposed && !usePlugin ? canonicalText : current;
   let settling: string | null = null; // a changed read awaiting a second, identical one
-  let liveWarned = false;
+  // The last decline said, not a bare "have we spoken yet": a boolean latch kept the FIRST reason
+  // and swallowed every later one, so an agent told its revision was safely held then corrupted the
+  // comment block and heard nothing — the exact silence the parse guard below exists to end.
+  let lastDecline: string | null = null;
   /** Mark `text` as gated and move on. `disk` is what the decision left on disk (the same text
    *  whenever we wrote nothing). */
   const markGated = (text: string, disk = text): void => {
@@ -685,7 +688,7 @@ export async function waitCycle(
       );
       return;
     }
-    liveWarned = false;
+    lastDecline = null; // a clean edit ends the run; the same reason may be worth saying again later
     // Last check before we write: a newer waiter may have claimed the doc since the settle, and a
     // stale waiter that advanced the canonical after stepping down would be writing to a document
     // it no longer speaks for. Lock unreadable ⇒ assume it is still ours — the wait's own poll
@@ -710,12 +713,13 @@ export async function waitCycle(
     if (liveEv.changed || liveEv.removedIds.length > 0) proposalOut = reportApplied(liveApplied, text);
     markGated(text);
   };
-  /** Say once why an edit was not applied, and mark it gated so the agent's NEXT write (the fix, or
-   *  the next revision) is evaluated afresh rather than re-reported every poll. Nothing was written,
-   *  so the working copy still holds `text`. */
+  /** Say why an edit was not applied — once per REASON, so a repeated decline is quiet but a new
+   *  one is never swallowed — and mark it gated so the agent's next write (the fix, or the next
+   *  revision) is evaluated afresh rather than re-reported every poll. Nothing was written, so the
+   *  working copy still holds `text`. */
   function declined(message: string, text: string): void {
-    if (!liveWarned) {
-      liveWarned = true;
+    if (lastDecline !== message) {
+      lastDecline = message;
       process.stderr.write(message);
     }
     markGated(text);
