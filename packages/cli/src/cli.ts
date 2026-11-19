@@ -679,7 +679,10 @@ export async function waitCycle(
     // working copy keeps the agent's text — this path writes NOTHING — so the agent's next edit
     // builds on its own work, and the next `wait` parks the result for the human.
     if (shouldQuarantine(acceptanceFrom(await backend.history()), base, text)) {
-      declined("inplan: your body revision is held for review and will be proposed to the human at the end of this turn — it stays in the working copy until then, not a sync failure.\n", text);
+      declined(
+        "inplan: your body revision is held for review, so it was NOT applied — it stays in the working copy exactly as you wrote it, and the NEXT `wait` you run (after this turn ends) proposes it to the human. Not a sync failure.\n",
+        text,
+      );
       return;
     }
     liveWarned = false;

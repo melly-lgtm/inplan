@@ -320,6 +320,28 @@ describe("waitForActions — the onPoll hook's lifetime", () => {
     expect(hookDone).toBe(true);
   });
 
+  it("keeps calling a hook that threw before it returned", async () => {
+    // The hook type allows a plain `void` function, so it can throw synchronously — ahead of the
+    // assignment that records the in-flight run. Clearing the slot from inside the run was undone
+    // by that assignment, and the hook was never called again for the rest of the wait.
+    const channel = new MemoryControlChannel();
+    let calls = 0;
+    const wait = waitForActions({
+      channel,
+      cursor: 0,
+      debounceMs: 1,
+      pollMs: 1,
+      watchEditor: false,
+      onPoll: () => {
+        calls += 1;
+        throw new Error("hook blew up before returning");
+      },
+    });
+    await waitUntil(() => calls >= 3); // …not stuck at 1
+    await channel.append({ actor: "user", type: LogEventType.TurnEnded });
+    await wait;
+  });
+
   it("but does not hang on one that never settles — the status still goes out", async () => {
     // Waiting for the hook is right; waiting forever is the failure the grace budgets exist to
     // rule out. A wedged hook would otherwise leave the agent with no status and no exit code.

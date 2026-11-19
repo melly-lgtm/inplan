@@ -424,15 +424,21 @@ export function waitForActions(opts: WaitOptions): Promise<WaitResult> {
 
     const onPoll = () => {
       if (pendingPoll || done || !opts.onPoll) return;
-      pendingPoll = (async () => {
+      // `onPoll` is typed to allow a plain `void` hook, so it can throw BEFORE it returns — the
+      // IIFE's catch then runs synchronously, ahead of the assignment below. Clearing the slot from
+      // inside would be undone by that assignment, leaving `pendingPoll` set forever and the hook
+      // never called again. Clear by identity, after the slot holds this run.
+      const run = (async () => {
         try {
           await opts.onPoll!();
         } catch {
           /* the hook reports its own failures; a wait must never die of one */
-        } finally {
-          pendingPoll = null;
         }
       })();
+      pendingPoll = run;
+      void run.finally(() => {
+        if (pendingPoll === run) pendingPoll = null;
+      });
     };
 
     const timer = setInterval(() => {
