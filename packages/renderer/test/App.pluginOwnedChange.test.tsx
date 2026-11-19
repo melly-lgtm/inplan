@@ -65,19 +65,21 @@ describe("an external change from a plugin-owned file", () => {
     await waitFor(() => expect(document.body.textContent).toContain("Read from the file the plugin owns."));
   });
 
-  it("still clears 'thinking' and rebases an open review, rather than going silent", async () => {
-    // Not adopting is not ignoring. A review open over the pre-change base would otherwise have
-    // Apply publish a body computed before this change, wiping it for every collaborator — and a
-    // bare return would also leave the agent-thinking indicator up forever.
+  it("still reports, rather than going silent", async () => {
+    // Not adopting must not mean ignoring: a bare return left the agent-thinking indicator up
+    // forever and told the human nothing had happened.
+    //
+    // The same branch also re-shows an open review so its frozen base cannot make Apply publish a
+    // body computed before this change. That part is NOT pinned here and the name does not claim
+    // it: in this path the document is deliberately not adopted, so `docRef` has not moved and the
+    // re-show recomputes an identical base — observably a no-op. It only bites once the BINDING
+    // has moved the document, which this harness cannot drive.
     const setText = vi.fn();
     (window as unknown as { api: { binding: unknown } }).api.binding = { setText };
     await mount();
-    const agent = (window as unknown as { api: { getProposal?: unknown } }).api;
-    void agent;
 
     act(() => emit!({ path: "p.md", content: INCOMING, pluginOwned: true }));
 
-    // The status says the agent acted, which is how the human learns anything happened at all.
     await waitFor(() => expect(document.body.textContent).toContain("agent updated the document"));
     expect(setText).not.toHaveBeenCalled();
   });
