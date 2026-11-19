@@ -59,6 +59,21 @@ describe("Session.dispatchLog", () => {
     expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { pluginOwned: true });
   });
 
+  it("…and in the other order too, where the file-backed edit is the one that landed last", () => {
+    // The mirror case, and the one that loses an edit rather than risking a stale read: a
+    // file-backed edit lives only in the .md, so describing the file by the plugin edit before it
+    // would have the renderer withhold the one copy there is. The cursor has already advanced —
+    // nothing replays these entries.
+    const h = handlers();
+
+    session.dispatchLog(
+      [entry("agent", LogEventType.DocumentEdited, { bytes: 20, pluginOwned: true }), entry("agent", LogEventType.DocumentEdited, { bytes: 10 })],
+      h,
+    );
+
+    expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { pluginOwned: false });
+  });
+
   it("an accepted agent edit loads the working file + clears 'thinking'", () => {
     const h = handlers();
     session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20 }), entry("agent", LogEventType.AgentRevised)], h);
