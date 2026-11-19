@@ -8,7 +8,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Api } from "@inplan/renderer";
 import { createPluginActivator, type PluginExt } from "../src/renderer/pluginActivation";
-import { createNavTracker, navigationSignal } from "../src/main/navSignal";
+import { createNavTracker, createSerialQueue, navigationSignal } from "../src/main/navSignal";
 
 const BASE = { load: async () => ({ path: "p", content: "" }) } as unknown as Api;
 const ext = (name: string): PluginExt & { dispose: ReturnType<typeof vi.fn> } => ({
@@ -146,8 +146,11 @@ describe("plugin activation — ordering", () => {
     const second = g.activator.activate();
     g.waiters.shift()!(INFO); // the FIRST call's info resolves…
     g.waiters.shift()!(INFO);
-    await Promise.all([first, second]);
+    const settled = await Promise.all([first, second]);
 
+    // The overtaken call says so: its caller re-mounts the editor on a settled activation, and
+    // re-mounting on this one would load the new document over the previous document's binding.
+    expect(settled).toEqual([false, true]);
     // …but it was overtaken, so exactly one activation exists: the one the newer call made.
     expect(g.exts).toHaveLength(1); // only one activate() was ever invoked
     expect(g.installed()?.binding?.getText()).toBe("first call's"); // (the first ext handed out, to the surviving call)
@@ -166,6 +169,37 @@ describe("what the renderer was last told", () => {
     expect(nav.signalFor(false)).toBe("reactivate"); // refresh for C, whose plugin failed to start
     nav.rendererActivated(false);
     expect(nav.signalFor(false)).toBe("navigated"); // and from there, plain navigation again
+  });
+});
+
+describe("plugin refreshes run one at a time", () => {
+  it("in the order they were queued, each finishing before the next begins", async () => {
+    // A refresh is stop-then-start. Interleaved, the second's stop finds nothing running (the
+    // first has not started its plugin yet) and whichever start resolves LAST wins — which need
+    // not be the document on screen.
+    const q = createSerialQueue();
+    const log: string[] = [];
+    let releaseB!: () => void;
+    const b = q.run(async () => {
+      log.push("B starts");
+      await new Promise<void>((r) => (releaseB = r));
+      log.push("B done");
+    });
+    const c = q.run(async () => void log.push("C runs"));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(log).toEqual(["B starts"]); // C waits, however quickly it could have finished
+
+    releaseB();
+    await Promise.all([b, c]);
+    expect(log).toEqual(["B starts", "B done", "C runs"]);
+  });
+
+  it("a refresh that throws does not stall the ones behind it", async () => {
+    const q = createSerialQueue();
+    const ran: string[] = [];
+    await q.run(async () => Promise.reject(new Error("plugin failed to stop")));
+    await q.run(async () => void ran.push("next"));
+    expect(ran).toEqual(["next"]);
   });
 });
 

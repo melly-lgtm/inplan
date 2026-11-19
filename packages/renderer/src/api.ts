@@ -77,6 +77,9 @@ export interface DocPayload {
    *  binding reads the binding instead; one without a binding has only `content`. Absent on hosts
    *  with no such distinction. */
   viaPlugin?: boolean;
+  /** External change only: sha-256 (hex) of the BODY that landed, when the host knows it. Lets a
+   *  renderer that reads the edit from its binding tell that the binding has not caught up yet. */
+  bodyHash?: string;
 }
 
 export interface SaveOptions {

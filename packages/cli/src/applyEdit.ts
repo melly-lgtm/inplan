@@ -52,13 +52,14 @@ export async function applyGatedEdit(
   if (ev.removedIds.length > 0) {
     // Confirmed deletions: drop the orphaned comment objects. On the plugin path push the result
     // into the plugin's doc (it owns the .md); otherwise write the file + canonical.
-    if (gate) await gate.applyRevision(ev.acceptedText);
+    let viaPlugin = false;
+    if (gate) viaPlugin = (await gate.applyRevision(ev.acceptedText)) !== "local";
     else {
       await store.saveDoc(ev.acceptedText);
       await store.setCanonical(ev.acceptedText);
       withdrew = await withdrawOwnPending(store, canonicalText, ev.acceptedText);
     }
-    if (!(await logEdit(channel, { removed: ev.removedIds }, gate !== null))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
+    if (!(await logEdit(channel, { removed: ev.removedIds }, ev.acceptedText, viaPlugin))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
   } else if (ev.changed && quarantine) {
     // Quarantine: park the proposal for the human to accept/reject in the editor. The proposal
     // sidecar is file-based either way; on the file path also revert the working file to canonical
@@ -114,12 +115,13 @@ export async function applyGatedEdit(
     // Auto-accept (auto mode, or review mode with comment-only changes): advance the base. On the
     // plugin path that means pushing into the plugin's doc; otherwise advance the persisted canonical.
     if (await moved()) return { proposed: false, stale: true };
-    if (gate) await gate.applyRevision(current);
+    let viaPlugin = false;
+    if (gate) viaPlugin = (await gate.applyRevision(current)) !== "local";
     else {
       await store.setCanonical(current);
       withdrew = await withdrawOwnPending(store, canonicalText, current);
     }
-    if (!(await logEdit(channel, { bytes: utf8Bytes(current) }, gate !== null))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
+    if (!(await logEdit(channel, { bytes: utf8Bytes(current) }, current, viaPlugin))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
   }
   return { proposed: false, ...(withdrew ? { withdrew } : {}) };
 }
@@ -211,7 +213,7 @@ function revertWouldWipe(canonicalText: string, current: string): boolean {
  * anyone. The park path has reported this as `eventLogged: false` since #88; a landing deserves the
  * same, because the consequence is the same: the human's editor won't show it until it reloads.
  */
-async function logEdit(channel: ControlChannel, payload: Record<string, unknown>, viaPlugin: boolean): Promise<boolean> {
+async function logEdit(channel: ControlChannel, payload: Record<string, unknown>, text: string, viaPlugin: boolean): Promise<boolean> {
   // `via` records which of the two carriers this edit went out on — the one fact about it that
   // only this process knows, and knows exactly. Through the plugin, the text is in the shared
   // document and nowhere this process wrote; file-backed, it is in the canonical sidecar, which
@@ -229,12 +231,31 @@ async function logEdit(channel: ControlChannel, payload: Record<string, unknown>
   // attempts stamped those and were wrong each time: this process reads the plugin session once,
   // moments after spawning the editor and before the editor has published one, and its gate fails
   // soft for reasons unrelated to ownership. What it did is all it can vouch for.
-  payload = { ...payload, via: viaPlugin ? "plugin" : "file" };
+  //
+  // `viaPlugin` is therefore "the push into the plugin succeeded", not "a gate was loaded": a
+  // wrapped gate that caught a failed push lands the text in the local files instead, and that
+  // edit is file-backed in every way that matters to a reader.
+  //
+  // `bodyHash` says WHAT landed, so a reader can check the copy it was pointed at instead of
+  // adopting whatever is there: an editor reading the shared document through its binding can
+  // tell that the revision has not reached it yet. It is the hash of the body alone — the shared
+  // document holds the body and keeps comments apart, so the whole text would never match it.
+  payload = { ...payload, via: viaPlugin ? "plugin" : "file", ...bodyHashOf(text) };
   try {
     await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload });
     return true;
   } catch {
     return false;
+  }
+}
+
+/** `{ bodyHash }` for a landed text, or nothing when its body cannot be told apart from its
+ *  comment block — a reader given no hash simply does not check. */
+function bodyHashOf(text: string): { bodyHash?: string } {
+  try {
+    return { bodyHash: hashBody(parse(text).body) };
+  } catch {
+    return {};
   }
 }
 

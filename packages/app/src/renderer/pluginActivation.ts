@@ -39,8 +39,10 @@ export interface PluginActivatorDeps {
 }
 
 export interface PluginActivator {
-  /** (Re)activate against the current document. Never rejects. */
-  activate: () => Promise<void>;
+  /** (Re)activate against the current document. Never rejects. Resolves whether THIS call decided
+   *  what is installed: false means a newer call overtook it and it changed nothing — so there is
+   *  nothing new for the caller to mount an editor on yet. */
+  activate: () => Promise<boolean>;
   /** Tear down the current activation (page unload). */
   dispose: () => void;
 }
@@ -72,7 +74,7 @@ export function createPluginActivator(deps: PluginActivatorDeps): PluginActivato
 
   return {
     dispose: disposeCurrent,
-    async activate(): Promise<void> {
+    async activate(): Promise<boolean> {
       const mine = ++generation;
       try {
         // Everything that awaits happens FIRST, with the previous activation still installed and
@@ -81,21 +83,25 @@ export function createPluginActivator(deps: PluginActivatorDeps): PluginActivato
         // left the mounted editor holding a disposed binding for as long as they took.
         const info = await deps.getInfo();
         if (info && !mod) mod = await deps.importModule(info.rendererUrl);
-        if (mine !== generation) return; // overtaken while awaiting — the newer call decides
+        if (mine !== generation) return false; // overtaken while awaiting — the newer call decides
 
         // From here to the end is synchronous: dispose → activate → install, with no gap in which
         // two activations are alive or none is installed.
         const base = deps.baseApi();
-        if (!info || !base || !mod) return fallBack();
-        disposeCurrent();
-        const ext = mod.activate(info.session);
-        if (!ext) return fallBack();
+        const ext = info && base && mod ? (disposeCurrent(), mod.activate(info.session)) : null;
+        if (!ext || !base) {
+          fallBack();
+          return true;
+        }
         current = ext;
         deps.install({ ...base, binding: ext.binding, commentStore: ext.commentStore, extraModes: ext.extraModes, sidePanels: ext.sidePanels });
+        return true;
       } catch (err) {
         // A plugin wiring failure must never block the editor — fall back to the file-backed api.
         deps.onError?.(err);
-        if (mine === generation) fallBack();
+        if (mine !== generation) return false;
+        fallBack();
+        return true;
       }
     },
   };

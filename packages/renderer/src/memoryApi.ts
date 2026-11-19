@@ -16,11 +16,8 @@ import { LogEventType, MemoryControlChannel, MemoryDocumentStore, type LogEntry 
 // proposal metadata is format-compatible with what durable stores and the CLI record. Falls back
 // to a marked FNV fingerprint only where WebCrypto is missing entirely.
 async function harnessHash(text: string): Promise<string> {
-  const subtle = (globalThis as { crypto?: { subtle?: SubtleCrypto } }).crypto?.subtle;
-  if (subtle) {
-    const digest = await subtle.digest("SHA-256", new TextEncoder().encode(text));
-    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
-  }
+  const sha = await sha256Hex(text);
+  if (sha !== null) return sha;
   let h = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) {
     h ^= text.charCodeAt(i);
@@ -30,6 +27,7 @@ async function harnessHash(text: string): Promise<string> {
 }
 import type { Acceptance, Api, Cadence, DocPayload, SaveOptions, Settings } from "./api";
 import type { ModePolicy } from "./mode";
+import { sha256Hex } from "./bindingRead";
 
 /** The scripted "agent" side of an in-memory session, for tests / harnesses. */
 export interface MemoryAgent {

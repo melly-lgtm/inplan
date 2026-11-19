@@ -39,3 +39,21 @@ export function createNavTracker(): NavTracker {
     },
   };
 }
+
+/**
+ * Runs async jobs strictly one after another, in the order they were queued.
+ *
+ * A plugin refresh is stop-then-start, two awaits on shared state. Run concurrently, a second
+ * refresh's stop finds nothing to stop (the first has not started its plugin yet), and whichever
+ * start resolves last wins — which need not be the newest document. A job that throws does not
+ * stall the ones behind it.
+ */
+export function createSerialQueue(): { run: (job: () => Promise<void>) => Promise<void> } {
+  let tail: Promise<void> = Promise.resolve();
+  return {
+    run: (job) => {
+      tail = tail.then(job, job);
+      return tail.catch(() => {});
+    },
+  };
+}

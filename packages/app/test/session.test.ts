@@ -6,7 +6,7 @@
 // is NOT adopted as an external change (so the diff baseline never moves — the fix
 // for the empty-diff race).
 
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -63,6 +63,23 @@ describe("Session.dispatchLog", () => {
       session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20, via: "file" })], h);
 
       expect(h.onExternalChange).toHaveBeenCalledWith(LANDED, { viaPlugin: false });
+    });
+
+    it("a file-backed edit with no canonical yet falls back to the working file", () => {
+      rmSync(session.paths.canonicalPath, { force: true });
+      const h = handlers();
+
+      session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20, via: "file" })], h);
+
+      expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { viaPlugin: false });
+    });
+
+    it("passes on what landed, so the renderer can check the copy it reads", () => {
+      const h = handlers();
+
+      session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20, via: "plugin", bodyHash: "abc123" })], h);
+
+      expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n", { viaPlugin: true, bodyHash: "abc123" });
     });
 
     it("an UNSTAMPED edit reads the working file, exactly as it always did", () => {

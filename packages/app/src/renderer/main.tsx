@@ -54,7 +54,10 @@ function Shell(): JSX.Element {
   const [epoch, setEpoch] = React.useState(0);
   React.useEffect(() => {
     const off = w.__inplanOnReactivate?.(() => {
-      void plugin.activate().then(() => setEpoch((e) => e + 1));
+      // Re-mount only when this call decided what is installed. An overtaken call changed nothing:
+      // re-mounting on it would load the NEW document into an editor still bound to the previous
+      // one's binding, for as long as the call that overtook it takes to finish.
+      void plugin.activate().then((settled) => settled && setEpoch((e) => e + 1));
     });
     const onUnload = (): void => plugin.dispose();
     window.addEventListener("beforeunload", onUnload);
