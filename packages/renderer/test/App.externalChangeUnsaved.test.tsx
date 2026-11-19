@@ -3,9 +3,9 @@
 //
 // An agent edit that LANDS arrives as an external change. Live fill (CLI) means that now happens
 // while the human may be typing, which it never did before — landings used to fall on turn
-// boundaries, when nobody was mid-sentence. Replacing the buffer deletes keystrokes that exist in
-// no other copy; keeping the buffer drops the agent's version at the human's next save, unseen.
-// So it arrives as a REVIEW against what is on screen, and the human decides.
+// boundaries. Replacing the buffer deletes keystrokes that exist in no other copy; keeping it
+// wholesale drops what the agent just wrote, and the agent writes QUESTIONS. Comments cannot
+// conflict with prose, so they are taken and the body is left alone.
 
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { forwardRef, useImperativeHandle } from "react";
@@ -23,8 +23,14 @@ vi.mock("../src/SourceEditor", () => ({
   }),
 }));
 
+const COMMENT = JSON.stringify([
+  { id: "cmt-q1", author: "Agent <a@b>", date: "2026-01-01T00:00:00Z", resolved: false, text: "Which datastore should this use?" },
+]);
 const DOC = "# Plan\n\nThe original body.\n\n<!--inplan v1\n[]\n-->\n";
-const AGENT = "# Plan\n\nThe agent's landed revision.\n\n<!--inplan v1\n[]\n-->\n";
+/** The agent asks a question: a comment-only landing, the case that motivates all of this. */
+const ASKED = `# Plan\n\nThe original body.\n\n<!--inplan v1\n${COMMENT}\n-->\n`;
+/** …and one that also rewrites the body. */
+const ASKED_AND_REWROTE = `# Plan\n\nThe agent's rewritten body.\n\n<!--inplan v1\n${COMMENT}\n-->\n`;
 const MINE = "# Plan\n\nThe human's own sentence, not yet saved.\n";
 let agent: MemoryAgent;
 
@@ -40,7 +46,7 @@ afterEach(() => {
   emitEdit = null;
 });
 
-async function mount() {
+async function mountAndType() {
   const { App } = await import("../src/App");
   render(<App />);
   await waitFor(() => expect(document.body.textContent).toContain("The original body."));
@@ -48,79 +54,54 @@ async function mount() {
     screen.getByRole("button", { name: /^Source$/ }).click(); // mount the stub, capture onChange
   });
   await waitFor(() => expect(emitEdit).toBeTruthy());
-}
-
-/** Type without saving, then have an agent edit land on top of it. */
-async function collide() {
-  await mount();
   await act(async () => {
-    emitEdit?.(MINE);
+    emitEdit?.(MINE); // typed, NOT saved
   });
   expect(document.body.textContent).toContain("unsaved");
-  await act(async () => {
-    agent.externalChange(AGENT);
-  });
-  await waitFor(() => expect(document.body.textContent).toContain("Agent proposed changes"));
 }
 
 describe("an agent edit landing on an unsaved buffer", () => {
-  it("opens a review instead of choosing for the human", async () => {
-    await collide();
-    // Their text is untouched while they decide, and the agent's version is in front of them.
+  it("takes the agent's question, and leaves the human's sentence alone", async () => {
+    await mountAndType();
+
+    await act(async () => {
+      agent.externalChange(ASKED);
+    });
+
+    expect(document.body.textContent).toContain("The agent left a comment"); // said, not silent
+    await act(async () => {
+      screen.getByRole("button", { name: /^Comments$/ }).click(); // the rail renders on its own tab
+    });
+    expect(document.body.textContent).toContain("Which datastore should this use?"); // it is really there
+    expect(document.body.textContent).toContain("The human's own sentence"); // untouched
+    expect(document.body.textContent).toContain("unsaved"); // still theirs to save
+  });
+
+  it("keeps the human's body when the agent rewrote it too, and says so", async () => {
+    await mountAndType();
+
+    await act(async () => {
+      agent.externalChange(ASKED_AND_REWROTE);
+    });
+
+    expect(document.body.textContent).toContain("changed the body"); // and says the body is not shown
     expect(document.body.textContent).toContain("The human's own sentence");
-  });
-
-  it("accepting takes the agent's version, and it stays unsaved work", async () => {
-    await collide();
-    expect(document.querySelector(".ap-tri--accept")).toBeTruthy(); // defaults to accept-all
     await act(async () => {
-      screen.getByRole("button", { name: /^apply$/i }).click();
+      screen.getByRole("button", { name: /^Comments$/ }).click();
     });
-
-    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"));
-    expect(document.body.textContent).toContain("The agent's landed revision.");
-    expect(document.body.textContent).toContain("unsaved"); // the human's to save, as it was
-  });
-
-  it("deciding settles nothing, because there is no proposal behind it", async () => {
-    // A local review has no row: settling one would throw ("no pending proposal to settle") and
-    // logging a decision would record one nobody made.
-    await collide();
-    const settle = vi.spyOn(window.api as { clearProposal: () => Promise<void> }, "clearProposal");
-    await act(async () => {
-      screen.getByRole("button", { name: /^apply$/i }).click();
-    });
-    await waitFor(() => expect(document.body.textContent).not.toContain("Agent proposed changes"));
-    expect(settle).not.toHaveBeenCalled();
-  });
-
-  it("does not take away a review the human is already working through", async () => {
-    // A row-backed review on screen is the human's work in progress — hunk selections included —
-    // and the row behind it would stay pending but invisible until a reload. One review at a time.
-    await mount();
-    await act(async () => {
-      agent.proposeRevision("# Plan\n\nThe agent's PARKED revision.\n\n<!--inplan v1\n[]\n-->\n");
-    });
-    await waitFor(() => expect(document.body.textContent).toContain("Agent proposed changes"));
-    await act(async () => {
-      emitEdit?.(MINE); // …and the human starts typing while it is open
-    });
-
-    await act(async () => {
-      agent.externalChange(AGENT); // something else lands
-    });
-
-    expect(document.body.textContent).toContain("The agent's PARKED revision."); // still the row review
-    expect(document.body.textContent).not.toContain("The agent's landed revision."); // not replaced by a local one
-    expect(document.body.textContent).toContain("unsaved"); // …and their typing is still unsaved work, not discarded
+    expect(document.body.textContent).toContain("Which datastore should this use?"); // the question still arrives
+    expect(document.body.textContent).not.toContain("The agent's rewritten body."); // not shown: see #131
   });
 
   it("takes the agent's edit outright when the buffer is clean — the normal case is unchanged", async () => {
-    await mount();
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("The original body."));
+
     await act(async () => {
-      agent.externalChange(AGENT);
+      agent.externalChange(ASKED_AND_REWROTE);
     });
-    await waitFor(() => expect(document.body.textContent).toContain("The agent's landed revision."));
-    expect(document.body.textContent).not.toContain("Agent proposed changes"); // no review needed
+
+    await waitFor(() => expect(document.body.textContent).toContain("The agent's rewritten body."));
   });
 });
