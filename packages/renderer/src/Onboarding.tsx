@@ -47,6 +47,39 @@ const STEPS: Step[] = [
 
 const SPOTLIGHT = "ap-coach-target";
 
+/** The editor the tour runs in. It polices clicks in here, and nowhere else. */
+const ROOT = ".ap-app";
+/** Surfaces inside the editor that are never a distraction: the coach card, the transient
+ *  interaction surfaces a step legitimately leads to, any DIALOG (by any of its spellings), and
+ *  the banners that announce something actionable. */
+const ALLOW =
+  ".ap-coach-card, .ap-ctxmenu, .ap-composer, .ap-profile, .ap-banner, " +
+  "[role='dialog'], [role='alertdialog'], dialog, [aria-modal='true']";
+
+/**
+ * Should the tour swallow this click? `nodes` is the click's composed path (or just its target
+ * when a path isn't available), and `stepTarget` the control the current step points at.
+ *
+ * Swallowing is as blocking as a modal, so two rules bound it — both learned from a user stuck
+ * between this tour and a consent banner the host app raised over the editor:
+ *
+ *  1. Only inside the editor. Anything outside `ROOT` belongs to the host app — its consent
+ *     banner, its nav, its toasts — and the tour has no business calling those clicks
+ *     distractions. It could not enumerate them anyway: the banner that caused the deadlock had
+ *     no class or role this file could have predicted.
+ *  2. Inside the editor, a surface that is ASKING the user something is never a distraction. A
+ *     dialog is blocking UI somebody is waiting on, so swallowing its buttons deadlocks instead
+ *     of redirecting; and the reload banner counts down to closing the window, so swallowing its
+ *     Cancel leaves a first-run user watching an exit they cannot stop.
+ */
+export function swallows(nodes: readonly Element[], stepTarget: Element | null): boolean {
+  if (nodes.length === 0) return false; // nothing identifiable to judge — never swallow blind
+  if (!nodes.some((n) => n.closest(ROOT))) return false; // the host app's own chrome
+  if (nodes.some((n) => n.closest(ALLOW))) return false; // the card, a dialog, an actionable banner
+  if (stepTarget && nodes.some((n) => stepTarget.contains(n))) return false; // this step's own control
+  return true;
+}
+
 export function Onboarding({
   signals,
   onFinish,
@@ -73,27 +106,19 @@ export function Onboarding({
   // Re-baseline the counts whenever the step changes (capture the latest, not stale).
   useEffect(() => setBase(signalsRef.current), [idx]);
 
-  // Keep the user on the current step. The coach card is non-blocking, so a first-run
-  // user can wander off and click unrelated controls; intercept any click that isn't on
-  // the step's spotlighted control (or a surface that legitimately follows from it — the
-  // context menu, the composer, the profile menu) and the coach card itself: swallow it
-  // and blink the card to redirect attention here.
-  //
-  // A DIALOG is never a distraction. It is blocking UI that is asking the user something, and
-  // whoever raised it is waiting for an answer — so swallowing its buttons does not redirect
-  // attention, it deadlocks: the dialog can't be dismissed, the tour can't be satisfied, and the
-  // only feedback is the card blinking. That includes dialogs this tour knows nothing about, such
-  // as a consent banner the host app puts over the editor on a first visit — which is exactly when
-  // the tour is running too.
+  // Keep the user on the current step: intercept a click that is a distraction and blink the card
+  // to redirect attention here. `swallows` decides; this effect is only the DOM glue.
   useEffect(() => {
-    const ALLOW = ".ap-coach-card, .ap-ctxmenu, .ap-composer, .ap-profile, [role='dialog']";
     const guard = (e: MouseEvent) => {
-      const node = e.target as Element | null;
-      if (!node || typeof node.closest !== "function") return;
-      if (node.closest(ALLOW)) return; // the card + transient interaction surfaces
-      const target = step.target ? document.querySelector(step.target) : null;
-      if (target && target.contains(node)) return; // this step's own control
-      // A distraction: ignore the click and pulse the coach card.
+      // Duck-typed, not `instanceof Element`: the path can cross realms (an iframe, a test DOM),
+      // and a failed instanceof would quietly empty this list — turning the guard off, silently.
+      const isEl = (n: unknown): n is Element => !!n && typeof (n as Element).closest === "function";
+      // The PATH, not the target: a click inside a shadow root (how consent platforms and embedded
+      // widgets are built) retargets `e.target` to the shadow HOST, so matching the target alone
+      // tests the wrong element and swallows a dialog's buttons anyway.
+      const path = (typeof e.composedPath === "function" ? e.composedPath() : []).filter(isEl);
+      const nodes = path.length > 0 ? path : [e.target].filter(isEl);
+      if (!swallows(nodes, step.target ? document.querySelector(step.target) : null)) return;
       e.preventDefault();
       e.stopPropagation();
       const card = cardRef.current;
