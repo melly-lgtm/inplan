@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { appendLog, CONTROL_LOG_VERSION, FsControlChannel, FsDocumentStore, type LogEntry, LogEventType, readGlobalSettings, readLog, writeGlobalSettings } from "@inplan/core/node";
+import { appendLog, CONTROL_LOG_VERSION, FsControlChannel, FsDocumentStore, type LogEntry, LogEventType, readGlobalSettings, readLog, readStatus, writeGlobalSettings } from "@inplan/core/node";
 import type { Settings } from "@inplan/renderer";
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -220,6 +220,19 @@ export class Session {
     }
   }
 
+  /** Is a runtime plugin the owner of this document's body right now? The desktop publishes the
+   *  session on the doc's status when it loads one, and clears it when it stops; the CLI reads the
+   *  same field to decide whether to gate through the plugin. Read fresh each time — a plugin can
+   *  start or stop while the window is open. Unreadable status ⇒ no plugin (the file-backed
+   *  behaviour, which is what this editor does without one). */
+  private pluginOwnsDoc(): boolean {
+    try {
+      return readStatus(this.paths.statusPath).pluginSession !== undefined;
+    } catch {
+      return false;
+    }
+  }
+
   /** Record why the session ended (logged at most once) so the agent's `wait` can report it. */
   logClose(reason: "completed" | "window_closed"): void {
     if (this.closed) return;
@@ -281,7 +294,16 @@ export class Session {
     }
     // An accepted agent edit: the working file holds the agent's revision (the gate
     // set canonical to it). Load it — this replaces the old raw working-file watch.
-    if (entries.some((e) => e.actor === "agent" && e.type === LogEventType.DocumentEdited) && existsSync(this.paths.file)) {
+    //
+    // …unless a runtime PLUGIN owns this document. Then the gate applied the revision through the
+    // plugin and deliberately did not write the .md (applyGatedEdit's `if (gate)` branch), so the
+    // file is whatever the plugin last projected to it — which `applyRevision` resolving says
+    // nothing about: the gate contract promises the revision reached the plugin, not that the file
+    // has caught up. Reading it here hands the renderer stale text, and the renderer pushes what
+    // it is handed into the binding — writing a pre-revision body over the shared document and
+    // undoing the turn that just landed. The plugin delivers its own changes through its own
+    // channel; this event carries nothing it hasn't.
+    if (entries.some((e) => e.actor === "agent" && e.type === LogEventType.DocumentEdited) && !this.pluginOwnsDoc() && existsSync(this.paths.file)) {
       try {
         handlers.onExternalChange(readFileSync(this.paths.file, "utf8"));
       } catch {

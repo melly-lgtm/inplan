@@ -10,7 +10,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FsDocumentStore, hashBody, LogEventType, type LogEntry } from "@inplan/core/node";
+import { FsDocumentStore, hashBody, LogEventType, readStatus, writeStatus, type LogEntry } from "@inplan/core/node";
 import { Session } from "../src/main/session";
 
 let dir: string;
@@ -35,6 +35,36 @@ afterEach(() => {
 });
 
 describe("Session.dispatchLog", () => {
+  it("does NOT load the working file when a runtime plugin owns the document", () => {
+    // On the plugin path the gate applies the revision through the plugin and deliberately does
+    // not write the .md, and `applyRevision` resolving says nothing about the file having caught
+    // up — the plugin projects to it on its own schedule. Reading it here hands the renderer stale
+    // text, which the renderer pushes into the binding: a pre-revision body written over the
+    // shared document, undoing the turn that just landed.
+    writeStatus(session.paths.statusPath, { ...readStatus(session.paths.statusPath), pluginSession: "ws://127.0.0.1:1234" });
+    const h = handlers();
+
+    session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20 })], h);
+
+    expect(h.onExternalChange).not.toHaveBeenCalled();
+    expect(h.onAgentActive).toHaveBeenCalled(); // the turn marker still clears "thinking"
+  });
+
+  it("loads it again once the plugin session is gone", () => {
+    // The plugin can stop while the window is open (entitlement lapse, hub restart), and the
+    // document goes back to being file-backed — so this is read fresh, not latched at construction.
+    writeStatus(session.paths.statusPath, { ...readStatus(session.paths.statusPath), pluginSession: "ws://127.0.0.1:1234" });
+    const h = handlers();
+    session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20 })], h);
+    expect(h.onExternalChange).not.toHaveBeenCalled();
+
+    const { pluginSession: _gone, ...rest } = readStatus(session.paths.statusPath);
+    writeStatus(session.paths.statusPath, rest);
+    session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20 })], h);
+
+    expect(h.onExternalChange).toHaveBeenCalledWith("# Plan\n\nACCEPTED body.\n");
+  });
+
   it("an accepted agent edit loads the working file + clears 'thinking'", () => {
     const h = handlers();
     session.dispatchLog([entry("agent", LogEventType.DocumentEdited, { bytes: 20 }), entry("agent", LogEventType.AgentRevised)], h);
