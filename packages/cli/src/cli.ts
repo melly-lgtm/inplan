@@ -763,7 +763,10 @@ export async function waitCycle(
     }
     let liveApplied: Awaited<ReturnType<typeof applyGatedEdit>>;
     try {
-      liveApplied = await applyGatedEdit(store, channel, liveEv, { current: text, canonicalText: base, quarantine: false, gate: viaPlugin ? gate : null });
+      // `onlyIfUnmoved`: this decision was made against a snapshot while the human may be saving,
+      // so the write re-checks the document first and skips if it moved. The turn path never asks
+      // for it — there the human has handed the turn over and is not writing.
+      liveApplied = await applyGatedEdit(store, channel, liveEv, { current: text, canonicalText: base, quarantine: false, gate: viaPlugin ? gate : null, onlyIfUnmoved: true });
     } catch (e) {
       // The hook's rejection is DISCARDED by the poll that calls it — by design, so a hook can
       // never kill a wait — which means anything thrown here is silence unless we say it. The
@@ -778,6 +781,7 @@ export async function waitCycle(
     }
     applyFailures = 0;
     retryNotBefore = 0;
+    if (liveApplied.stale) return; // the document moved under us; the next poll settles on what is there now
     if (liveApplied.eventLogged === false) process.stderr.write(UNANNOUNCED);
     // The landing signal (#88) belongs to the proposal the TURN parked, and a live fill never parks
     // one of its own — so the ONLY thing that may change it here is a retraction. applyGatedEdit

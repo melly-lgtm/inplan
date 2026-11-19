@@ -162,6 +162,59 @@ describe("applyGatedEdit — plugin path (a plugin gate is connected)", () => {
   });
 });
 
+describe("onlyIfUnmoved — writing against a document that may have moved", () => {
+  it("skips the write when the document moved after the caller read it", async () => {
+    // The live watcher decides against a snapshot while the human may be saving. Its file re-read
+    // happens before the apply, so a save landing after it would still have had the canonical
+    // overwritten with the older snapshot — and in review mode the next wait then reads the
+    // human's own saved text as an agent revision and parks it back at them.
+    const store = new MemoryDocumentStore("the agent's text");
+    await store.setCanonical("canon");
+    const channel = new MemoryControlChannel();
+    await store.saveDoc("the human saved this instead"); // …the document moves under the decision
+
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), {
+      current: "the agent's text",
+      canonicalText: "canon",
+      quarantine: false,
+      gate: null,
+      onlyIfUnmoved: true,
+    });
+
+    expect(applied.stale).toBe(true);
+    expect(await store.getCanonical()).toBe("canon"); // nothing written
+    expect(await types(channel)).toEqual([]); // and nothing logged
+  });
+
+  it("skips it when the CANONICAL moved, which is how the editor's own save shows up", async () => {
+    const store = new MemoryDocumentStore("the agent's text");
+    await store.setCanonical("a newer canonical the human just saved");
+    const channel = new MemoryControlChannel();
+
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), {
+      current: "the agent's text",
+      canonicalText: "canon", // what the decision was made against
+      quarantine: false,
+      gate: null,
+      onlyIfUnmoved: true,
+    });
+
+    expect(applied.stale).toBe(true);
+    expect(await store.getCanonical()).toBe("a newer canonical the human just saved");
+  });
+
+  it("writes when nothing moved, and the turn path never asks for the check", async () => {
+    const store = new MemoryDocumentStore("the agent's text");
+    await store.setCanonical("canon");
+    const channel = new MemoryControlChannel();
+
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "the agent's text", canonicalText: "canon", quarantine: false, gate: null, onlyIfUnmoved: true });
+
+    expect(applied.stale).toBeUndefined();
+    expect(await store.getCanonical()).toBe("the agent's text");
+  });
+});
+
 describe("a landing edit and someone else's parked revision", () => {
   const WITH_COMMENT = 'canon\n\n<!--inplan\n[{"id":"cmt-aaa111","author":"a","date":"2026-01-01T00:00:00Z","resolved":false,"anchor":"doc","text":"q"}]\n-->\n';
 

@@ -26,9 +26,28 @@ export async function applyGatedEdit(
   store: DocumentStore,
   channel: ControlChannel,
   ev: AgentEditEvaluation,
-  ctx: { current: string; canonicalText: string; quarantine: boolean; gate: PluginGate | null },
-): Promise<{ proposed: boolean; proposalId?: string; parkFailed?: boolean; eventLogged?: boolean; withdrew?: boolean }> {
-  const { current, canonicalText, quarantine, gate } = ctx;
+  ctx: { current: string; canonicalText: string; quarantine: boolean; gate: PluginGate | null; onlyIfUnmoved?: boolean },
+): Promise<{ proposed: boolean; proposalId?: string; parkFailed?: boolean; eventLogged?: boolean; withdrew?: boolean; stale?: boolean }> {
+  const { current, canonicalText, quarantine, gate, onlyIfUnmoved } = ctx;
+  /**
+   * Has the document moved under this decision? Only a caller that does not own the turn asks —
+   * the live watcher, which decides against a snapshot while the human may be saving.
+   *
+   * The editor's save writes the file and then the canonical, so checking BOTH as late as possible
+   * catches it from either side. It is a check, not a lock: the store has no compare-and-set, so a
+   * save landing between this read and the write below is still possible. What it buys is that the
+   * only surviving window is instants wide and no longer spans the base read, the history read and
+   * the lock probe — and the caller skips rather than overwrites whenever it is caught.
+   */
+  const moved = async (): Promise<boolean> => {
+    if (!onlyIfUnmoved) return false;
+    try {
+      const [doc, canonical] = await Promise.all([store.loadDoc(), store.getCanonical()]);
+      return doc !== current || (canonical !== null && canonical !== canonicalText);
+    } catch {
+      return true; // cannot vouch for the document ⇒ do not write over it
+    }
+  };
   let withdrew = false;
   if (ev.removedIds.length > 0) {
     // Confirmed deletions: drop the orphaned comment objects. On the plugin path push the result
@@ -94,6 +113,7 @@ export async function applyGatedEdit(
   } else if (ev.changed) {
     // Auto-accept (auto mode, or review mode with comment-only changes): advance the base. On the
     // plugin path that means pushing into the plugin's doc; otherwise advance the persisted canonical.
+    if (await moved()) return { proposed: false, stale: true };
     if (gate) await gate.applyRevision(current);
     else {
       await store.setCanonical(current);

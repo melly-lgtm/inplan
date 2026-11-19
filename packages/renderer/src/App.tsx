@@ -297,6 +297,13 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [cmtW, setCmtW] = useState(() => { const w = readLayout().cmtW; return typeof w === "number" ? Math.min(900, Math.max(220, w)) : 380; }); // comments pane width (px) — drag-resizable
   const [zoom, setZoom] = useState(() => { const z = readLayout().zoom; return typeof z === "number" ? Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z)) : 1; });
   const [dirty, setDirty] = useState(false);
+  // Read inside subscription callbacks, which capture state at mount. Deliberately the EXISTING
+  // dirty flag rather than a fresh `savedRef` comparison: a binding-backed (collab) host stops
+  // advancing savedRef once the binding owns the text, so comparing against it reads as
+  // permanently unsaved there — which would mark clean documents dirty and arm the autosave
+  // beside the CRDT. `dirty` stays false on that host, which is correct: the text is persisted.
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
   const [status, setStatus] = useState("");
   const [agentThinking, setAgentThinking] = useState(false);
   const [agentDone, setAgentDone] = useState(false);
@@ -539,6 +546,19 @@ export function App(props: EditorProps = {}): JSX.Element {
         // body — keep them from the store so an agent/body refresh can't blank/stale the rail.
         const next = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
         setAgentThinking(false);
+        // The human may be mid-sentence. Replacing the buffer would delete those keystrokes, and
+        // they exist in no other copy — while the incoming text is already on disk and can be read
+        // back at any time. So when there are unsaved edits, keep them and say the document
+        // changed underneath; the agent's text is not lost, it is just not shown yet.
+        //
+        // Deliberately NOT merged here. The obvious three-way merge is wrong in this spot: the
+        // base is empty in the flow that matters most (the first fill of a new document), and an
+        // empty base makes every block a conflict, so one side's work disappears entirely.
+        // Reconciling the two properly — including what a save does afterwards — is #131.
+        if (dirtyRef.current) {
+          setStatus(t("msg.agentUpdatedUnsaved"));
+          return;
+        }
         setDoc(next);
         savedRef.current = serialize(next);
         setDirty(false);
