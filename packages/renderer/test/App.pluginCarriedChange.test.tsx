@@ -165,6 +165,72 @@ describe("where an agent's edit is read from", () => {
     await waitFor(() => expect(document.body.textContent).toContain("as the shared document holds it"));
   });
 
+  it("a FILE-backed edit announced during load is held too — pushed and adopted after it, not before", async () => {
+    // Pushed into the binding ahead of load, it left the editor's own copy — which load then
+    // replaces from the file — behind the binding it had just written.
+    const binding = bind(DOC);
+    const release = await mountHeld();
+
+    act(() => emit!({ path: PATH, content: LANDED }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(binding.setText).not.toHaveBeenCalled(); // nothing goes into the shared document yet
+    release();
+
+    await waitFor(() => expect(document.body.textContent).toContain("The text the gate landed")); // load did not replace it
+    expect(binding.setText).toHaveBeenCalledTimes(1);
+  });
+
+  it("held edits run in the order they arrived", async () => {
+    const binding = bind(DOC);
+    const release = await mountHeld();
+    const second = LANDED.replace("file-backed.", "file-backed. Then a second one.");
+
+    act(() => emit!({ path: PATH, content: LANDED }));
+    act(() => emit!({ path: PATH, content: second }));
+    release();
+
+    await waitFor(() => expect(document.body.textContent).toContain("Then a second one."));
+    expect(binding.setText.mock.calls.map((c) => String(c[0]).includes("Then a second one."))).toEqual([false, true]);
+  });
+
+  it("a held edit for another document is dropped when a different one loads", async () => {
+    const binding = bind(DOC);
+    const release = await mountHeld();
+
+    act(() => emit!({ path: "/another/document.plan.md", content: LANDED }));
+    release();
+    await waitFor(() => expect(document.body.textContent).toContain("The original body."));
+
+    expect(binding.setText).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain("The text the gate landed");
+  });
+
+  it("a navigation installs a document too: what was held does not wait on a load that never comes back", async () => {
+    const binding = bind(DOC);
+    await mountHeld(); // …and never released
+    act(() => host.agent.navigate("# Next\n\nThe document navigated to.\n\n<!--inplan v1\n[]\n-->\n"));
+    await waitFor(() => expect(document.body.textContent).toContain("The document navigated to."));
+
+    act(() => emit!({ path: "memory://doc2", content: LANDED }));
+
+    await waitFor(() => expect(document.body.textContent).toContain("The text the gate landed"));
+    expect(binding.setText).toHaveBeenCalledTimes(1);
+  });
+
+  it("a load that fails still releases what was held", async () => {
+    const api = (window as unknown as { api: { load: () => Promise<unknown> } }).api;
+    api.load = async () => Promise.reject(new Error("the document could not be read"));
+    const binding = bind(DOC);
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(emit).toBeTruthy());
+
+    act(() => emit!({ path: PATH, content: LANDED }));
+
+    await waitFor(() => expect(document.body.textContent).toContain("The text the gate landed"));
+    expect(binding.setText).toHaveBeenCalledTimes(1);
+  });
+
   it("a wait does not outlive its binding", async () => {
     let text = DOC;
     const first = bind(DOC);
@@ -244,12 +310,19 @@ describe("where an agent's edit is read from", () => {
     // pushed through this binding into the wrong shared document.
     const binding = bind(DOC);
     await mount();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
+    act(() => emit!({ path: "/somewhere/else.plan.md", content: LANDED }));
     act(() => emit!({ path: "/somewhere/else.plan.md", content: LANDED }));
 
     expect(document.body.textContent).toContain("The original body.");
     expect(document.body.textContent).not.toContain("The text the gate landed");
     expect(binding.setText).not.toHaveBeenCalled();
+    // …and it says so, once: a host whose paths merely differ in spelling would otherwise have
+    // every agent edit vanish with nothing to go on.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain("/somewhere/else.plan.md");
+    warn.mockRestore();
   });
 
   it("an unreadable binding is not an edit: nothing is adopted or announced", async () => {
