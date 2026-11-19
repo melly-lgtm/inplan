@@ -489,7 +489,12 @@ export async function waitCycle(
   // Shared with the live-fill watcher below, which runs the SAME pipeline for an edit that lands
   // mid-wait: a park is a park whether the agent wrote the file before the turn or during it, and
   // the agent must hear about it the same way either way.
+  const UNANNOUNCED =
+    "inplan: your edit WAS applied, but its notification event could not be logged (the control log is write-degraded) — the human's editor may not show it until they reload. The document itself is fine.\n";
   const reportApplied = (a: Awaited<ReturnType<typeof applyGatedEdit>>, text: string): ProposalOut => {
+    // A landing nobody could announce: the canonical moved, the editor is driven by the log, so
+    // without this line neither party learns that the two have diverged.
+    if (!a.proposed && a.eventLogged === false) process.stderr.write(UNANNOUNCED);
     if (a.proposed) {
       // One coherent line per outcome — the with-event and without-event messages must not
       // contradict each other about whether agent_revision_proposed was logged.
@@ -704,14 +709,27 @@ export async function waitCycle(
     } catch {
       /* unknown — proceed, exactly as the wait's own supersede probe does */
     }
-    const liveApplied = await applyGatedEdit(store, channel, liveEv, { current: text, canonicalText: base, quarantine: false, gate: viaPlugin ? gate : null });
+    let liveApplied: Awaited<ReturnType<typeof applyGatedEdit>>;
+    try {
+      liveApplied = await applyGatedEdit(store, channel, liveEv, { current: text, canonicalText: base, quarantine: false, gate: viaPlugin ? gate : null });
+    } catch (e) {
+      // The hook's rejection is DISCARDED by the poll that calls it — by design, so a hook can
+      // never kill a wait — which means anything thrown here is silence unless we say it. The
+      // working copy still holds the edit either way; the agent's next `wait` evaluates it afresh.
+      declined(`inplan: your edit could not be applied (${(e as Error).message}) — it stays in the working copy, and the next wait retries it.\n`, text);
+      return;
+    }
+    if (liveApplied.eventLogged === false) process.stderr.write(UNANNOUNCED);
     // The landing signal (#88) belongs to the proposal the TURN parked, and a live fill never parks
     // one of its own — so the ONLY thing that may change it here is a retraction. applyGatedEdit
     // reports that explicitly rather than us inferring it from "something landed": a comment-only
     // landing now leaves the parked revision standing, and clearing the signal for it would tell
     // the agent its work was gone while the human still has it in review.
     if (liveApplied.withdrew) proposalOut = {};
-    markGated(text);
+    // A confirmed deletion writes the ACCEPTED text (the orphaned comment objects dropped), not
+    // what the agent wrote — so that, not `text`, is what the gate left on disk. Passing `text`
+    // sent the next poll off to re-gate the gate's own write.
+    markGated(text, liveEv.removedIds.length > 0 ? liveEv.acceptedText : text);
   });
   /** Say why an edit was not applied — once per REASON, so a repeated decline is quiet but a new
    *  one is never swallowed — and mark it gated so the agent's next write (the fix, or the next

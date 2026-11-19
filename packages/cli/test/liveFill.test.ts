@@ -296,6 +296,80 @@ describe("live fill — the agent's edits during a blocked wait", () => {
     }
   });
 
+  it("says so when an edit lands but its announcement cannot be logged", async () => {
+    // The write happens before the announcement, so a degraded control log leaves the canonical
+    // advanced and the editor — which is driven by that log — none the wiser. The hook's rejection
+    // is discarded by the poll that calls it, so without a word here it is silence on both sides.
+    const h = harness(DRAFT);
+    await h.store.setCanonical(DRAFT);
+    const append = h.channel.append.bind(h.channel);
+    vi.spyOn(h.channel, "append").mockImplementation(async (e: Parameters<typeof append>[0]) => {
+      if (e.type === LogEventType.DocumentEdited) throw new Error("control log is write-degraded");
+      return append(e);
+    });
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, null, { liveFill: true });
+      await waitUntil(async () => (await count(h.channel, LogEventType.AgentRevised)) >= 1);
+
+      await h.store.saveDoc(COMMENTED); // a comment-only edit: it lands
+      await waitUntil(async () => (await h.store.getCanonical()) === COMMENTED);
+      await waitUntil(() => /could not be logged/.test(h.stderr()));
+
+      await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
+      await run;
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("says so when the apply itself throws, rather than letting the poll swallow it", async () => {
+    const h = harness(DRAFT);
+    await h.store.setCanonical(DRAFT);
+    vi.spyOn(h.store, "setCanonical").mockRejectedValue(new Error("disk is full"));
+    try {
+      const run = waitCycle(h.backend, null, new Set(), undefined, null, { liveFill: true });
+      await waitUntil(async () => (await count(h.channel, LogEventType.AgentRevised)) >= 1);
+
+      await h.store.saveDoc(COMMENTED);
+      await waitUntil(() => /could not be applied/.test(h.stderr()));
+      expect(await h.store.loadDoc()).toBe(COMMENTED); // kept where the agent put it
+
+      await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
+      await run;
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("does not re-gate its own write after a confirmed comment deletion", async () => {
+    // A confirmed deletion writes the ACCEPTED text — the orphaned comment objects dropped — not
+    // what the agent wrote. Recording the agent's text as the disk state sent the next poll off to
+    // settle and re-evaluate the gate's own write.
+    const h = harness(SPAN_DOC);
+    await h.store.setCanonical(SPAN_DOC);
+    // Auto acceptance: a confirmed deletion rewrites the body, which review mode would defer — so
+    // the landing path this guards is only reachable where bodies land.
+    await h.channel.append({ actor: "user", type: LogEventType.SettingsChanged, payload: { acceptance: "auto" } });
+    try {
+      const run = waitCycle(h.backend, null, new Set(["cmt-q1"]), undefined, null, { liveFill: true });
+      await waitUntil(async () => (await count(h.channel, LogEventType.AgentRevised)) >= 1);
+
+      await h.store.saveDoc(SPAN_ORPHANED); // confirmed, so it lands with the comment dropped
+      await waitUntil(async () => (await count(h.channel, LogEventType.DocumentEdited)) >= 1);
+      const onDisk = await h.store.loadDoc();
+      expect(onDisk).not.toBe(SPAN_ORPHANED); // the gate rewrote it
+
+      const basesRead = vi.spyOn(h.store, "getCanonical");
+      await sleep(POLL_MS * 20);
+      expect(basesRead).not.toHaveBeenCalled(); // …and that rewrite is not an agent edit
+
+      await h.channel.append({ actor: "user", type: LogEventType.TurnEnded });
+      await run;
+    } finally {
+      h.restore();
+    }
+  });
+
   it("says why an edit was declined once per REASON, not once per wait", async () => {
     // A single "have we spoken yet" latch kept the first reason and swallowed every later one: an
     // agent told its revision was safely held then corrupted the comment block and heard nothing —

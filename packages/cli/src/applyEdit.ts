@@ -39,7 +39,7 @@ export async function applyGatedEdit(
       await store.setCanonical(ev.acceptedText);
       withdrew = await withdrawOwnPending(store, canonicalText, ev.acceptedText);
     }
-    await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { removed: ev.removedIds } });
+    if (!(await logEdit(channel, { removed: ev.removedIds }))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
   } else if (ev.changed && quarantine) {
     // Quarantine: park the proposal for the human to accept/reject in the editor. The proposal
     // sidecar is file-based either way; on the file path also revert the working file to canonical
@@ -99,7 +99,7 @@ export async function applyGatedEdit(
       await store.setCanonical(current);
       withdrew = await withdrawOwnPending(store, canonicalText, current);
     }
-    await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload: { bytes: utf8Bytes(current) } });
+    if (!(await logEdit(channel, { bytes: utf8Bytes(current) }))) return { proposed: false, eventLogged: false, ...(withdrew ? { withdrew } : {}) };
   }
   return { proposed: false, ...(withdrew ? { withdrew } : {}) };
 }
@@ -174,6 +174,24 @@ function isBlank(text: string): boolean {
  */
 function revertWouldWipe(canonicalText: string, current: string): boolean {
   return isBlank(canonicalText) && !isBlank(current);
+}
+
+/**
+ * Announce a landed edit, reporting a failure rather than throwing it.
+ *
+ * The write has already happened by the time this runs, so a throw here would unwind a caller that
+ * has nothing left to undo — and on the live-fill path it unwound into a catch that discards it,
+ * leaving the edit on disk, absent from the control log the editor is driven by, and unmentioned to
+ * anyone. The park path has reported this as `eventLogged: false` since #88; a landing deserves the
+ * same, because the consequence is the same: the human's editor won't show it until it reloads.
+ */
+async function logEdit(channel: ControlChannel, payload: Record<string, unknown>): Promise<boolean> {
+  try {
+    await channel.append({ actor: "agent", type: LogEventType.DocumentEdited, payload });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
