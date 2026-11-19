@@ -571,11 +571,16 @@ export function App(props: EditorProps = {}): JSX.Element {
         // pushed into the binding to reach the shared document at all).
         const binding = (viaPlugin === true && hostApi().binding) || null; // null: read `content`
         let next: ParsedDocument;
+        // What ARRIVED, as written: `next` with its comments still the incoming ones, before a
+        // comment store's own list replaces them. The unsaved-buffer branch below reads the
+        // agent's comments and body from this.
+        let incoming: ParsedDocument;
         if (binding) {
           try {
             // Unified: the binding holds the bare body and the store owns comments. Legacy collab:
             // the binding holds the whole serialized document.
             next = commentStore ? { body: binding.getText(), comments: commentStore.list() } : parse(binding.getText());
+            incoming = next;
           } catch {
             // A legacy document caught mid-edit: nothing was read, so nothing is adopted. Falling
             // through with the old document would still reset the saved baseline, clear dirty,
@@ -586,6 +591,7 @@ export function App(props: EditorProps = {}): JSX.Element {
           }
         } else {
           const parsed = parse(content);
+          incoming = parsed;
           // Store-backed (plugin): comments are owned by the external store, not the rewritten
           // body — keep them from the store so an agent/body refresh can't blank/stale the rail.
           next = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
@@ -606,7 +612,7 @@ export function App(props: EditorProps = {}): JSX.Element {
           // An incoming SPAN comment anchors into the incoming body, which we are not taking — so
           // its link may not exist here. Demote rather than carry a dangling anchor, the same rule
           // the proposal-apply path uses for a comment whose anchor didn't survive.
-          const arriving = parsed.comments
+          const arriving = incoming.comments
             .filter((c) => !mine.has(c.id))
             .map((c) => (!c.parentId && c.anchor !== "doc" && !prevDoc.body.includes(`](#${c.id})`) ? { ...c, anchor: "doc" as const } : c));
           // A store-backed host owns comments outside the body; its observer keeps the rail current,
@@ -619,7 +625,7 @@ export function App(props: EditorProps = {}): JSX.Element {
           // comparison is the last saved baseline, which is what both sides diverged from.
           let bodyMoved = true;
           try {
-            bodyMoved = savedRef.current !== "" && parsed.body !== parse(savedRef.current).body;
+            bodyMoved = savedRef.current !== "" && incoming.body !== parse(savedRef.current).body;
           } catch {
             /* unparseable baseline: say the more cautious thing */
           }
