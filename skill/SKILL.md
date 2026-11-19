@@ -251,9 +251,18 @@ the plan, then call `wait`.** Do not pass `--cursor` and do not hand-manage it.
    re-invoke yourself when it returns.
 2. **Fill the document in**: write `<name>.plan.md` — the plan body plus your open
    questions as comments (use `question` + `choices` where the answer is a choice).
-   The open editor reflects your writes live (a brand-new doc auto-applies; once the
-   plan is established, body revisions follow the acceptance mode — see § The loop
-   step 4). Then wait for the human (step 3).
+   Then wait for the human (step 3).
+
+   The running `open`/`wait` gates what you write **while it waits**, so the human sees
+   it without you doing anything: a brand-new document's first content lands (there is
+   nothing of theirs to overwrite), and so does a comment-only change. A **body
+   revision** to a document that already has content is **held**, not shown — review
+   mode has to put it in front of the human, and parking it mid-turn would rewrite the
+   file you are still working in. It stays in your working copy exactly as you wrote it,
+   and your NEXT `wait` proposes it to them. Everything after a held revision is held
+   with it (the document as a whole is now ahead of what they have accepted), so the
+   live echo stops until the turn ends — that is the normal shape, not a failure.
+   Anything declined is said once on stderr, with the reason.
 
    **Pass `--model <your-model-name>`** on `open`/`wait` (e.g. `--model "Opus 4.8"`)
    so the editor shows which model is attached and stamps your comments with a

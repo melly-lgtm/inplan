@@ -59,6 +59,12 @@ function sidecarPath(name: string): string | null {
 
 const waitForSidecar = (name: string, timeoutMs: number): Promise<boolean> => waitFor(() => sidecarPath(name) !== null, timeoutMs);
 
+/** The control log's raw text (empty before the first entry) — what the editor is driven by. */
+function logText(): string {
+  const p = sidecarPath("log.jsonl");
+  return p === null ? "" : readFileSync(p, "utf8");
+}
+
 describe("inplan open", () => {
   it("creates an empty doc for a fresh path (open-then-fill), not 'file not found'", async () => {
     const file = join(home, "nested", "fresh.plan.md");
@@ -85,11 +91,68 @@ describe("inplan open", () => {
     expect(existsSync(file)).toBe(false); // wait never creates the file
   });
 
+  it("the agent's fill DURING a blocked open reaches the editor (landed + logged), not just the file", async () => {
+    // The open-then-fill flow the skill documents: `open` creates the empty doc, launches the
+    // editor and blocks; the agent writes the plan afterwards. The editor is driven by the control
+    // log, so an ungated fill is invisible to the human — they sit in front of the empty document
+    // the editor was launched on while the agent waits for a turn that has no reason to come.
+    const file = join(home, "fill.plan.md");
+    const plan = "# The plan\n\nThe body the human has to be able to see.\n";
+
+    const child = spawn(process.execPath, [CLI, "open", file], { env });
+    try {
+      expect(await waitForSidecar("canonical.md", 10_000)).toBe(true);
+      expect(readFileSync(sidecarPath("canonical.md")!, "utf8")).toBe(""); // nothing written yet
+
+      writeFileSync(file, plan); // the agent fills the doc in, with the wait already blocked
+
+      // document_edited is what Session.dispatchLog turns into the editor's reload — the signal
+      // that the human's window now holds the plan.
+      expect(await waitFor(() => logText().includes('"document_edited"'), 10_000)).toBe(true);
+      expect(readFileSync(sidecarPath("canonical.md")!, "utf8")).toBe(plan); // and it LANDED: this is the doc now
+      expect(readFileSync(file, "utf8")).toBe(plan);
+    } finally {
+      child.kill("SIGKILL");
+    }
+  }, 30_000);
+
+  it("a brand-new doc's first content lands; a later revision waits for the turn boundary", async () => {
+    // Review mode protects the human's document from being overwritten unseen — so the first
+    // content of an empty doc, which has no human text to protect, lands. A revision to the
+    // document that now exists is held instead: parking it mid-turn would revert the working copy
+    // under an agent that is still editing, and its next read-modify-write would compose from the
+    // reverted file. It stays exactly where the agent wrote it until the turn ends.
+    const file = join(home, "revise.plan.md");
+    const first = "# Draft one\n\nBody one.\n";
+    const second = "# Draft two\n\nBody two, rewritten.\n";
+
+    const child = spawn(process.execPath, [CLI, "open", file], { env });
+    let stderr = "";
+    child.stderr.on("data", (d) => (stderr += String(d)));
+    try {
+      expect(await waitForSidecar("canonical.md", 10_000)).toBe(true);
+      writeFileSync(file, first);
+      expect(await waitFor(() => readFileSync(sidecarPath("canonical.md")!, "utf8") === first, 10_000)).toBe(true);
+
+      writeFileSync(file, second);
+      expect(await waitFor(() => /held for review/.test(stderr), 10_000)).toBe(true);
+      expect(readFileSync(file, "utf8")).toBe(second); // never reverted under the agent
+      expect(readFileSync(sidecarPath("canonical.md")!, "utf8")).toBe(first); // and not landed either
+      expect(logText()).not.toContain("agent_revision_proposed"); // the park waits for the turn boundary
+    } finally {
+      child.kill("SIGKILL");
+    }
+  }, 30_000);
+
   it("SIGTERM before the first human action never clobbers the file to the empty canonical (#95)", async () => {
     // The live incident: `open` on a fresh path seeded an EMPTY canonical; the agent filled the
     // file; a relaunched waiter parked the fill as a review proposal and reverted the working
     // file to the empty canonical; SIGTERM landed before any human action — the doc was 0 bytes
-    // on disk, recoverable only from the proposed sidecar. The original bytes must survive.
+    // on disk, recoverable only from the proposed sidecar. The original bytes must survive both
+    // waiter deaths. (The park against a blank canonical is now prevented at the source — the
+    // first content of an empty doc lands instead — so this run asserts the outcome, not the
+    // mechanism: whatever the gate decides, an open/wait never writes the file emptier than it
+    // read it. The revert guard itself is still exercised directly in applyGatedEdit.test.ts.)
     const file = join(home, "clobber.plan.md");
     const plan = `# The plan\n\n${"A paragraph of real content that must survive.\n".repeat(40)}`;
 
@@ -105,30 +168,25 @@ describe("inplan open", () => {
       first.kill("SIGTERM"); // the incident's first waiter death
     }
     // JOIN the first process before relaunching: both runs key the SAME sidecar dir (waitlock,
-    // log.jsonl), so overlapping teardown would make the lifecycle timing-dependent — and a park
-    // the dying first run manages to squeeze in must be counted as PRE-EXISTING, not mistaken
-    // for the second run's.
+    // log.jsonl), so overlapping teardown would make the lifecycle timing-dependent.
     expect(await waitFor(() => first.exitCode !== null || first.signalCode !== null, 5000)).toBe(true);
-    const parkCount = (): number => {
-      const log = sidecarPath("log.jsonl");
-      return log === null ? 0 : (readFileSync(log, "utf8").match(/agent_revision_proposed/g) ?? []).length;
-    };
-    const parksBefore = parkCount();
 
-    // 3. A relaunched waiter processes the turn: default Review mode parks the fill as a proposal.
-    //    A NEW `agent_revision_proposed` (count increase) means the park — and any revert — has
-    //    already run in the second process; a leftover first-run event can never satisfy this.
+    // 3. A relaunched waiter processes the turn — the second death the incident needed. Count a NEW
+    //    gate decision (the log already carries the first run's events, so presence alone proves
+    //    nothing): only an increase means the second process has run the pipeline and any revert.
+    const gatedCount = (): number => (logText().match(/document_edited|agent_revision_proposed/g) ?? []).length;
+    const gatedBefore = gatedCount();
     const second = spawn(process.execPath, [CLI, "open", file], { env });
     try {
-      expect(await waitFor(() => parkCount() > parksBefore, 10_000)).toBe(true);
+      expect(await waitFor(() => gatedCount() > gatedBefore, 10_000)).toBe(true);
     } finally {
       second.kill("SIGTERM"); // before any human action — the incident's second waiter death
     }
     expect(await waitFor(() => second.exitCode !== null || second.signalCode !== null, 5000)).toBe(true);
 
-    // 4. The park is real (the proposal sidecar holds the text) AND the working file kept its bytes.
-    expect(readFileSync(sidecarPath("proposed.md")!, "utf8")).toBe(plan);
+    // 4. The working file kept its bytes, and the plan is the document now (not a 0-byte file).
     expect(readFileSync(file, "utf8")).toBe(plan); // never materialized emptier content than it read
+    expect(readFileSync(sidecarPath("canonical.md")!, "utf8")).toBe(plan);
   }, 30_000);
 
   it("deprecates `open --remote` and runs it as `wait --remote`", () => {

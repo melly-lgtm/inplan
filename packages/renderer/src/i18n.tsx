@@ -146,6 +146,7 @@ export const EN: Catalog = {
   // transient status messages
   "msg.proposedReview": "agent proposed changes — review below",
   "msg.agentUpdated": "agent updated the document",
+  "msg.agentUpdatedUnsaved": "The agent updated the document — your unsaved edits are kept here. Save or reopen to see its version.",
   "msg.agentTook": "agent took its turn — your move",
   "msg.nothingUndo": "nothing to undo",
   "msg.undid": "undid last change",

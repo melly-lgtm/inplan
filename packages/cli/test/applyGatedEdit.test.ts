@@ -2,7 +2,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { MemoryControlChannel, MemoryDocumentStore, LogEventType } from "@inplan/core";
-import { applyGatedEdit } from "../src/applyEdit";
+import { applyGatedEdit, shouldQuarantine } from "../src/applyEdit";
 import type { AgentEditEvaluation } from "../src/gate";
 import type { PluginGate } from "../src/pluginGate";
 import { proposedContent } from "./helpers";
@@ -159,5 +159,145 @@ describe("applyGatedEdit — plugin path (a plugin gate is connected)", () => {
     expect(await store.loadDoc()).toBe("agent body"); // NOT reverted to canon
     expect(gate.applyRevision).not.toHaveBeenCalled();
     expect(await types(channel)).toEqual([LogEventType.AgentRevisionProposed]);
+  });
+});
+
+describe("onlyIfUnmoved — writing against a document that may have moved", () => {
+  it("skips the write when the document moved after the caller read it", async () => {
+    // The live watcher decides against a snapshot while the human may be saving. Its file re-read
+    // happens before the apply, so a save landing after it would still have had the canonical
+    // overwritten with the older snapshot — and in review mode the next wait then reads the
+    // human's own saved text as an agent revision and parks it back at them.
+    const store = new MemoryDocumentStore("the agent's text");
+    await store.setCanonical("canon");
+    const channel = new MemoryControlChannel();
+    await store.saveDoc("the human saved this instead"); // …the document moves under the decision
+
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), {
+      current: "the agent's text",
+      canonicalText: "canon",
+      quarantine: false,
+      gate: null,
+      onlyIfUnmoved: true,
+    });
+
+    expect(applied.stale).toBe(true);
+    expect(await store.getCanonical()).toBe("canon"); // nothing written
+    expect(await types(channel)).toEqual([]); // and nothing logged
+  });
+
+  it("skips it when the CANONICAL moved, which is how the editor's own save shows up", async () => {
+    const store = new MemoryDocumentStore("the agent's text");
+    await store.setCanonical("a newer canonical the human just saved");
+    const channel = new MemoryControlChannel();
+
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), {
+      current: "the agent's text",
+      canonicalText: "canon", // what the decision was made against
+      quarantine: false,
+      gate: null,
+      onlyIfUnmoved: true,
+    });
+
+    expect(applied.stale).toBe(true);
+    expect(await store.getCanonical()).toBe("a newer canonical the human just saved");
+  });
+
+  it("writes when nothing moved, and the turn path never asks for the check", async () => {
+    const store = new MemoryDocumentStore("the agent's text");
+    await store.setCanonical("canon");
+    const channel = new MemoryControlChannel();
+
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "the agent's text", canonicalText: "canon", quarantine: false, gate: null, onlyIfUnmoved: true });
+
+    expect(applied.stale).toBeUndefined();
+    expect(await store.getCanonical()).toBe("the agent's text");
+  });
+});
+
+describe("a landing edit and someone else's parked revision", () => {
+  const WITH_COMMENT = 'canon\n\n<!--inplan\n[{"id":"cmt-aaa111","author":"a","date":"2026-01-01T00:00:00Z","resolved":false,"anchor":"doc","text":"q"}]\n-->\n';
+
+  it("a comment-only landing leaves a parked body revision standing", async () => {
+    // The park reverted the working copy, so the agent's next write — a comment added mid-turn —
+    // is composed WITHOUT the parked revision's body. Retracting the proposal on that write
+    // deleted the revision outright: reverted off disk, withdrawn from the pending set, never
+    // decided by the human.
+    const store = new MemoryDocumentStore(WITH_COMMENT);
+    await store.setCanonical("canon");
+    const { id } = await store.createProposal({ content: "the agent's rewritten body", baseHash: "h", baseContent: "canon" });
+    const channel = new MemoryControlChannel();
+
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: WITH_COMMENT, canonicalText: "canon", quarantine: false, gate: null });
+
+    expect(applied.withdrew).toBeUndefined();
+    expect((await store.myPendingProposal())?.id).toBe(id); // still the human's to decide
+    expect(await store.getCanonical()).toBe(WITH_COMMENT); // …and the comment still landed
+  });
+
+  it("retracts it only when what landed IS that proposal's body", async () => {
+    // Retracting is destructive — the proposal is the only copy of a revision the park reverted off
+    // disk — so it takes the proposal's OWN body landing, which makes accepting it a no-op.
+    const store = new MemoryDocumentStore("the proposed body");
+    await store.setCanonical("canon");
+    await store.createProposal({ content: "the proposed body", baseHash: "h", baseContent: "canon" });
+    const channel = new MemoryControlChannel();
+
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "the proposed body", canonicalText: "canon", quarantine: false, gate: null });
+
+    expect(applied.withdrew).toBe(true);
+    expect(await store.myPendingProposal()).toBeNull();
+  });
+
+  it("leaves a proposal alone when a DIFFERENT body lands", async () => {
+    // "The body changed at all" was the old test, and it fails quietly in the case that matters:
+    // `inplan comment --span` writes its anchor link INTO the body, so under auto acceptance a span
+    // comment counts as a body edit — and would retract a revision it has nothing to do with,
+    // which the park had already reverted off disk. The proposal stands; the reviewer rebases a
+    // stale one against the current canonical, so leaving it is safe where retracting is not.
+    const store = new MemoryDocumentStore("canon with [an anchor](#cmt-aaa111)");
+    await store.setCanonical("canon");
+    const { id } = await store.createProposal({ content: "an entirely different revision", baseHash: "h", baseContent: "canon" });
+    const channel = new MemoryControlChannel();
+
+    const applied = await applyGatedEdit(store, channel, ev({ changed: true }), { current: "canon with [an anchor](#cmt-aaa111)", canonicalText: "canon", quarantine: false, gate: null });
+
+    expect(applied.withdrew).toBeUndefined();
+    expect((await store.myPendingProposal())?.id).toBe(id); // still the human's to decide
+  });
+
+});
+
+describe("shouldQuarantine — park for the human, or land", () => {
+  const withComments = (body: string): string => `${body}\n\n<!--inplan\n[{"id":"cmt-aaa111","author":"a","date":"2026-01-01T00:00:00Z","resolved":false,"text":"q"}]\n-->\n`;
+
+  it("lands the first content of a brand-new doc: an empty base has no human text to protect", () => {
+    // `open` seeds an EMPTY canonical and the agent fills the doc in. Parking that fill leaves the
+    // human looking at the empty document the editor was launched on.
+    expect(shouldQuarantine("review", "", "# The plan\n\nBody.\n")).toBe(false);
+  });
+
+  it("a blank body that carries a document-level comment is NOT an empty document: it parks", () => {
+    // The human opens the empty doc and writes what they want covered. detectLostComments only
+    // reports orphaned SPAN comments, so a fill that drops a doc-level comment passes the confirm
+    // gate untouched — landing it would delete the human's words with no review and no prompt.
+    expect(shouldQuarantine("review", withComments(""), "# The plan\n\nBody.\n")).toBe(true);
+  });
+
+  it("an unparseable base is not provably empty, so it parks", () => {
+    expect(shouldQuarantine("review", "<!--inplan\nnot json\n-->\n", "# The plan\n\nBody.\n")).toBe(true);
+  });
+
+  it("parks a body change once the document has content", () => {
+    expect(shouldQuarantine("review", "# The plan\n\nBody one.\n", "# The plan\n\nBody two.\n")).toBe(true);
+  });
+
+  it("never parks a comment-only change", () => {
+    expect(shouldQuarantine("review", "# The plan\n", withComments("# The plan"))).toBe(false);
+  });
+
+  it("never parks in auto mode, including the first fill", () => {
+    expect(shouldQuarantine("auto", "# The plan\n\nBody one.\n", "# The plan\n\nBody two.\n")).toBe(false);
+    expect(shouldQuarantine("auto", "", "# The plan\n")).toBe(false);
   });
 });

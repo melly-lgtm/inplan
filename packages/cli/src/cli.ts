@@ -35,7 +35,7 @@ import { BrowserDidNotOpenError, LoginSessionExpiredError, clearPendingLogin, cr
 import { resolveIdentity, setManualProfile, writeLocalProfile } from "./cliProfile";
 import { checkForUpdate, selfUpdate, UPDATE_PKG, warnIfOutdated } from "./update";
 import { runningEditorPid } from "./editorProcess";
-import { applyGatedEdit } from "./applyEdit";
+import { applyGatedEdit, emptyBody, shouldQuarantine } from "./applyEdit";
 import { evaluateAgentEdit } from "./gate";
 import { addComment, AddCommentError } from "./commentAdd";
 import { docPaths, sidecarRoot, type DocPaths } from "./paths";
@@ -43,7 +43,7 @@ import { loadPluginGate, loadPluginGateOutcome, resolveHubUrl, type PluginAbsenc
 import { demoteSource, shouldHydrateWorkFile, pendingRequiresReplay, postTurnAction, trackGateDegradations, type WaitOutcome } from "./liveSync";
 import { RemoteDocState, isDecidedProposalCorpse, utf8Bytes } from "./remoteDocState";
 import { announcePresence, presenceTokenResolver } from "./presence";
-import { awaitReopen, wakePredicate, waitForActions } from "./wait";
+import { awaitReopen, onceAtATime, wakePredicate, waitForActions } from "./wait";
 import { versionFromModule } from "./version";
 import { toolActivityText } from "./relayActivity";
 import { ensureDocFile } from "./ensureDoc";
@@ -415,7 +415,17 @@ export function resolveWaitStatus(input: { closeReason: string | null; editorGon
   return { status: input.locksEditor ? "your_turn" : "activity" };
 }
 
-export async function waitCycle(backend: WaitBackend, explicitCursor: number | null, confirmed: Set<string>, model?: string, gate: PluginGate | null = null): Promise<WaitOutcome> {
+/** The landing signal for a Review-mode park, carried on every terminal wait output (see #88). */
+type ProposalOut = { proposal?: { state: "pending_review" | "park_failed"; id?: string; bytes: number; hash: string } };
+
+export async function waitCycle(
+  backend: WaitBackend,
+  explicitCursor: number | null,
+  confirmed: Set<string>,
+  model?: string,
+  gate: PluginGate | null = null,
+  opts: { liveFill?: boolean } = {},
+): Promise<WaitOutcome> {
   const { channel, store } = backend;
   const history = await backend.history();
 
@@ -429,24 +439,24 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
   // published a session for this doc — the plugin owns it, so we apply through it, never writing the
   // .md). A plugin read failure (editor closed / unreachable) falls back to the file model. Without
   // a plugin it's the persisted canonical (seeded from the file on first run).
-  let usePlugin = false;
-  let canonicalText: string;
-  if (gate) {
-    try {
-      canonicalText = await gate.readCanonical();
-      usePlugin = true;
-    } catch {
-      canonicalText = (await store.getCanonical()) ?? current;
+  const resolveCanonical = async (text: string): Promise<{ canonicalText: string; usePlugin: boolean; gateFailed?: true }> => {
+    if (gate) {
+      try {
+        return { canonicalText: await gate.readCanonical(), usePlugin: true };
+      } catch {
+        // `?? text` makes the agent's OWN text the base when nothing was ever persisted locally
+        // (the plugin path never seeds a local canonical) — "no change", which is the right answer
+        // for a turn that must emit a status regardless, and the wrong one for a live fill that can
+        // simply try again. gateFailed lets the live path tell those two apart.
+        return { canonicalText: (await store.getCanonical()) ?? text, usePlugin: false, gateFailed: true };
+      }
     }
-  } else {
     const persisted = await store.getCanonical();
-    if (persisted === null) {
-      canonicalText = current;
-      await store.setCanonical(current);
-    } else {
-      canonicalText = persisted;
-    }
-  }
+    if (persisted !== null) return { canonicalText: persisted, usePlugin: false };
+    await store.setCanonical(text); // first run on this doc: seed the base from the file
+    return { canonicalText: text, usePlugin: false };
+  };
+  const { canonicalText, usePlugin } = await resolveCanonical(current);
 
   const ev = evaluateAgentEdit(canonicalText, current, confirmed);
   if (ev.unconfirmed.length > 0) {
@@ -469,41 +479,69 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
   // accepts/rejects in the editor (which then writes canonical). This makes the
   // file the source of truth WITHOUT auto-applying — killing the app before a
   // decision leaves the proposal pending, never silently accepted.
-  const acceptance = acceptanceFrom(history);
-  const quarantine = acceptance === "review" && parse(canonicalText).body !== parse(current).body;
+  // An EMPTY base is the one thing that waives review — there is nothing of the human's to
+  // overwrite. On the plugin path that base is whatever an opaque hub read returned, and a document
+  // whose shared state has not loaded yet reads empty too, so the waiver could push a body revision
+  // into a document that was never empty.
+  //
+  // But refusing the waiver on every empty hub read would cost plugin users the thing this whole
+  // change is for — the first fill of a genuinely new document landing where the human can see it.
+  // So it takes EVIDENCE, not suspicion: only when we locally remember the document having content
+  // is an empty hub read treated as a doc that hasn't loaded. No local memory, or a local memory
+  // that is also empty, and the empty base is taken at its word.
+  const suspectEmptyBase = async (viaPlugin: boolean, base: string): Promise<boolean> => {
+    if (!viaPlugin || !emptyBody(base)) return false;
+    const remembered = await store.getCanonical().catch(() => null);
+    return remembered !== null && !emptyBody(remembered);
+  };
+  const quarantine = (await suspectEmptyBase(usePlugin, canonicalText)) || shouldQuarantine(acceptanceFrom(history), canonicalText, current);
   // `usePlugin ? gate : null` — only route through the plugin when its read succeeded.
   const applied = await applyGatedEdit(store, channel, ev, { current, canonicalText, quarantine, gate: usePlugin ? gate : null });
   // A parked proposal must be unmistakable in the moment (#88): the canonical is unchanged BY
   // DESIGN, and an agent that reads silence as loss may destroy its own work. Say so on stderr
   // now, and carry the fact in the wait output below (the durable record is the gate path's job).
-  if (applied.proposed) {
-    // One coherent line per outcome — the with-event and without-event messages must not
-    // contradict each other about whether agent_revision_proposed was logged.
-    process.stderr.write(
-      applied.eventLogged === false
-        ? "inplan: review mode — your edit was parked as a proposal, but its notification event could NOT be logged: the proposal is safely stored, and the human's editor may not show it until they reload. Not a sync failure.\n"
-        : "inplan: review mode — your edit was parked as a proposal (agent_revision_proposed); the canonical body is unchanged until the human accepts. This is normal, not a sync failure.\n",
-    );
-  }
-  if (applied.parkFailed) {
-    process.stderr.write("inplan: pushing your edit as a review proposal FAILED — the edit is kept in the working copy and will be re-pushed on the next run.\n");
-  }
-  // Rides every terminal output below, so the agent sees the park no matter how the wait ends —
-  // including wait_failed and superseded, where mistaking a parked edit for a failed sync is
-  // exactly the misread this field exists to prevent. A FAILED park is machine-readable too
-  // (state "park_failed"): an agent parsing only the JSON must never read a failed push as a
-  // no-change turn — stderr alone is not a signal contract. The id makes the later audit a
-  // lookup (getProposal / the .proposed.json record share it); a failed park has no confirmed
-  // identity of its own, so it carries the STILL-PENDING prior proposal's id when one exists
-  // (the failed re-push left that proposal live) and omits the field otherwise. The id comes
-  // from LOCAL state only (backend.localPendingProposalId) — never a remote read, which would
-  // stall the park_failed report on the very outage it is reporting.
-  const parkFailedId = applied.parkFailed ? backend.localPendingProposalId?.() : undefined;
-  const proposalOut: { proposal?: { state: "pending_review" | "park_failed"; id?: string; bytes: number; hash: string } } = applied.proposed
-    ? { proposal: { state: "pending_review", ...(applied.proposalId ? { id: applied.proposalId } : {}), bytes: utf8Bytes(current), hash: hashBody(current) } }
-    : applied.parkFailed
-      ? { proposal: { state: "park_failed", ...(parkFailedId ? { id: parkFailedId } : {}), bytes: utf8Bytes(current), hash: hashBody(current) } }
-      : {};
+  //
+  // Shared with the live-fill watcher below, which runs the SAME pipeline for an edit that lands
+  // mid-wait: a park is a park whether the agent wrote the file before the turn or during it, and
+  // the agent must hear about it the same way either way.
+  const UNANNOUNCED =
+    "inplan: your edit WAS applied, but its notification event could not be logged (the control log is write-degraded) — the human's editor may not show it until they reload. The document itself is fine.\n";
+  const reportApplied = (a: Awaited<ReturnType<typeof applyGatedEdit>>, text: string): ProposalOut => {
+    // A landing nobody could announce: the canonical moved, the editor is driven by the log, so
+    // without this line neither party learns that the two have diverged.
+    if (!a.proposed && a.eventLogged === false) process.stderr.write(UNANNOUNCED);
+    if (a.proposed) {
+      // One coherent line per outcome — the with-event and without-event messages must not
+      // contradict each other about whether agent_revision_proposed was logged.
+      process.stderr.write(
+        a.eventLogged === false
+          ? "inplan: review mode — your edit was parked as a proposal, but its notification event could NOT be logged: the proposal is safely stored, and the human's editor may not show it until they reload. Not a sync failure.\n"
+          : "inplan: review mode — your edit was parked as a proposal (agent_revision_proposed); the canonical body is unchanged until the human accepts. This is normal, not a sync failure.\n",
+      );
+    }
+    if (a.parkFailed) {
+      process.stderr.write("inplan: pushing your edit as a review proposal FAILED — the edit is kept in the working copy and will be re-pushed on the next run.\n");
+    }
+    // Rides every terminal output below, so the agent sees the park no matter how the wait ends —
+    // including wait_failed and superseded, where mistaking a parked edit for a failed sync is
+    // exactly the misread this field exists to prevent. A FAILED park is machine-readable too
+    // (state "park_failed"): an agent parsing only the JSON must never read a failed push as a
+    // no-change turn — stderr alone is not a signal contract. The id makes the later audit a
+    // lookup (getProposal / the .proposed.json record share it); a failed park has no confirmed
+    // identity of its own, so it carries the STILL-PENDING prior proposal's id when one exists
+    // (the failed re-push left that proposal live) and omits the field otherwise. The id comes
+    // from LOCAL state only (backend.localPendingProposalId) — never a remote read, which would
+    // stall the park_failed report on the very outage it is reporting.
+    const parkFailedId = a.parkFailed ? backend.localPendingProposalId?.() : undefined;
+    return a.proposed
+      ? { proposal: { state: "pending_review", ...(a.proposalId ? { id: a.proposalId } : {}), bytes: utf8Bytes(text), hash: hashBody(text) } }
+      : a.parkFailed
+        ? { proposal: { state: "park_failed", ...(parkFailedId ? { id: parkFailedId } : {}), bytes: utf8Bytes(text), hash: hashBody(text) } }
+        : {};
+  };
+  // `let`: a mid-wait fill can park a proposal of its own, and the status this wait finally prints
+  // has to carry THAT park, not the (absent) one from the turn's opening evaluation.
+  let proposalOut = reportApplied(applied, current);
 
   // Signal the agent has (re)engaged this round so the editor can clear its
   // "Agent is thinking…" indicator even when the agent made no body change. Guarded: with the
@@ -563,6 +601,212 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
   const errorGraceParsed = Number(process.env.INPLAN_ERROR_GRACE_MS);
   const errorGraceMs = process.env.INPLAN_ERROR_GRACE_MS && Number.isFinite(errorGraceParsed) && errorGraceParsed >= 0 ? errorGraceParsed : undefined;
 
+  // ── Live fill: the agent's edits DURING the wait ──────────────────────────────────────────────
+  //
+  // The turn pipeline above runs once, at the top of the wait. In the documented open-then-fill
+  // flow that is BEFORE the agent has written anything: `inplan open <new path>` creates an empty
+  // doc, launches the editor and blocks here, and the agent fills the file in afterwards. The
+  // editor is driven by the control log (Session.watch — deliberately not a raw file watch, so it
+  // never adopts a body write before the gate has decided), so with nothing gated there is nothing
+  // logged, and the human sits in front of the empty document the editor was launched on while the
+  // agent waits for a human action that has no reason to come.
+  //
+  // So keep gating while we wait — but only as far as LANDING an edit. A park is a write of its
+  // own: it reverts the working copy to the base. At a turn boundary that is safe, because the
+  // agent has stopped editing and will re-read before it writes again. Mid-turn it is not: the
+  // agent is still working, and its tools read-modify-write the file (`inplan comment` is a
+  // readFileSync/writeFileSync pair), so it would compose its next write from a file we reverted
+  // under it — losing its own body revision, and then LANDING that comment-only write, which
+  // withdraws the parked proposal. The revision would exist nowhere: not on disk, not as a
+  // proposal, never seen by the human.
+  //
+  // So an edit that would be quarantined is DEFERRED, not parked: it stays in the working copy
+  // exactly as the agent wrote it, and the next `wait` — by which time the turn has ended and the
+  // agent has stopped — parks it the way it always did. Nothing regresses relative to not having
+  // this watcher at all; what we add is the edits that can land, which is every first fill of an
+  // empty document and every comment the agent writes while the human is reading.
+  //
+  // Two states count as "already gated", and a read matching EITHER is not a new agent edit:
+  //  • gatedText — the text the pipeline last evaluated (landed, deferred or declined);
+  //  • gatedDisk — what that decision was expected to leave on disk. The TURN's park reverts the
+  //    working copy to the base, which is the gate's own write, not an edit; and when that revert
+  //    fails (applyGatedEdit swallows it, by design) the file still holds gatedText, which is also
+  //    already gated — so neither outcome is re-gated on a loop.
+  // Neither is ever adopted from a post-apply re-read: that would silently swallow a write another
+  // process slipped in after the decision, leaving text no one evaluated skipped for the whole wait.
+  let gatedText = current;
+  // What the TURN left on disk: canonical if it parked and reverted; the ACCEPTED text if it landed
+  // confirmed comment deletions (applyGatedEdit writes `ev.acceptedText`, the orphaned comment
+  // objects dropped — not what the agent wrote); else what the agent wrote. Getting this wrong only
+  // costs a wasted pipeline pass over the gate's own write, but it is the same mistake the live
+  // path's own markGated exists to avoid.
+  let gatedDisk = applied.proposed && !usePlugin ? canonicalText : ev.removedIds.length > 0 && !usePlugin ? ev.acceptedText : current;
+  let settling: string | null = null; // a changed read awaiting a second, identical one
+  // The last decline said, not a bare "have we spoken yet": a boolean latch kept the FIRST reason
+  // and swallowed every later one, so an agent told its revision was safely held then corrupted the
+  // comment block and heard nothing — the exact silence the parse guard below exists to end.
+  let lastDecline: string | null = null;
+  // A store that rejects an apply may take the same edit a moment later, so a failure never gates
+  // the text — it just spaces out the retries, rather than hammering a store that is evidently
+  // struggling once per poll.
+  let applyFailures = 0;
+  let retryNotBefore = 0;
+  /** Mark `text` as gated and move on. `disk` is what the decision left on disk (the same text
+   *  whenever we wrote nothing). */
+  const markGated = (text: string, disk = text): void => {
+    gatedText = text;
+    gatedDisk = disk;
+  };
+  const liveFill = onceAtATime(async (): Promise<void> => {
+    let text: string;
+    try {
+      text = await store.loadDoc();
+    } catch {
+      return; // mid-write or transiently unreadable — the next tick re-reads
+    }
+    if (text === gatedText || text === gatedDisk) {
+      settling = null;
+      return;
+    }
+    if (Date.now() < retryNotBefore) return; // backing off after a failed apply
+    // Never gate a half-written file: a write we catch between truncate and flush would be landed
+    // as a truncated document. Two identical reads a poll apart means it settled.
+    if (settling !== text) {
+      settling = text;
+      return;
+    }
+    settling = null;
+    // Read the base only AFTER the settle, never from the same instant as the file read. The
+    // editor's own save writes the file and then the canonical, and sampling between those two
+    // writes would read the HUMAN's save as an agent edit. A poll's worth of delay puts that
+    // microsecond window firmly in the past.
+    const { canonicalText: base, usePlugin: viaPlugin, gateFailed } = await resolveCanonical(text);
+    // The plugin's projection IS the base on that path, so a hub blip leaves us with no base to
+    // judge against. A turn has to emit a status and takes the local fallback; a live fill can just
+    // try again — and must NOT mark the text gated, or a momentary outage would hide the agent's
+    // edit for the rest of the wait, long after the hub came back.
+    if (gateFailed) return;
+    let liveEv: ReturnType<typeof evaluateAgentEdit>;
+    try {
+      liveEv = evaluateAgentEdit(base, text, confirmed);
+    } catch (e) {
+      // `parse` THROWS on a comment block that isn't valid JSON (an unterminated block, a half-
+      // written array), so a malformed document never reaches the integrity branch below. Without
+      // this, onPoll's catch swallowed it and the agent got no signal at all for the whole wait.
+      declined(`inplan: your edit's comment block could not be parsed, so it was NOT applied (${(e as Error).message}) — fix the document; the next wait reports it.\n`, text);
+      return;
+    }
+    // An edit needing the AGENT's decision — unconfirmed comment deletions, a broken comment block —
+    // is reported as a status with a non-zero exit, and this wait is holding the human's turn: it
+    // cannot report one without ending their turn for them. Leave the file untouched; the agent's
+    // next `wait` evaluates the same text and reports it properly.
+    if (liveEv.unconfirmed.length > 0 || !liveEv.integrityOk) {
+      declined(
+        liveEv.unconfirmed.length > 0
+          ? "inplan: your edit removes anchored comment(s), so it was NOT applied while the human's turn is open — re-run wait with --confirmed-comment-deletion=<ids>.\n"
+          : "inplan: your edit breaks the comment grammar, so it was NOT applied — fix the document; the next wait reports the errors.\n",
+        text,
+      );
+      return;
+    }
+    // A confirmed comment deletion is the ONE landing that writes the working FILE (applyGatedEdit
+    // persists `ev.acceptedText` over it, the orphaned comment objects dropped). Everything else
+    // the live path can land touches only the canonical. That file write is also the one thing
+    // here that can destroy the human's work: the re-read below narrows the window between
+    // deciding and writing, but a window it remains, and a save that lands inside it is simply
+    // overwritten. So the live path does not take that branch at all — it defers, like any other
+    // edit it will not apply, and the turn boundary (where the agent has stopped and the human is
+    // not mid-save) handles it as it always did. With this, nothing the live path does writes the
+    // working copy, so there is no window left to lose a save in.
+    if (liveEv.removedIds.length > 0) {
+      declined(
+        "inplan: your edit removes anchored comment(s) you confirmed, so it was NOT applied mid-turn — it stays in the working copy, and the next wait applies it.\n",
+        text,
+      );
+      return;
+    }
+    // A body change that review mode would park: defer it to the turn boundary (see above). The
+    // working copy keeps the agent's text — this path writes NOTHING — so the agent's next edit
+    // builds on its own work, and the next `wait` parks the result for the human.
+    if ((await suspectEmptyBase(viaPlugin, base)) || shouldQuarantine(acceptanceFrom(await backend.history()), base, text)) {
+      declined(
+        "inplan: your body revision is held for review, so it was NOT applied — it stays in the working copy exactly as you wrote it, and the NEXT `wait` you run (after this turn ends) proposes it to the human. Not a sync failure.\n",
+        text,
+      );
+      return;
+    }
+    lastDecline = null; // a clean edit ends the run; the same reason may be worth saying again later
+    // Last check before we write: a newer waiter may have claimed the doc since the settle, and a
+    // stale waiter that advanced the canonical after stepping down would be writing to a document
+    // it no longer speaks for. Lock unreadable ⇒ assume it is still ours — the wait's own poll
+    // steps down on the next tick either way.
+    //
+    // NOT atomic with the write, and it cannot be here: the wait-lock lives on the ControlChannel
+    // and the write goes through the DocumentStore, so a claim can still land in between. The
+    // residual window is convergent rather than conflicting: landing is idempotent (the same text
+    // over the same canonical), and it is the same decision the new waiter reaches from the same
+    // working copy.
+    try {
+      if (await channel.isSuperseded(lockToken)) return;
+    } catch {
+      /* unknown — proceed, exactly as the wait's own supersede probe does */
+    }
+    // Everything between the settle and here is awaits — the base read, the history read, the lock
+    // probe — and the human can save in any of them. Our evaluation would then be of a document
+    // that is no longer on disk, and applying it writes a snapshot older than their save: the
+    // confirmed-deletion path writes the FILE, so it would overwrite their text outright. Re-read
+    // last thing; a change means the next poll settles on what is actually there.
+    try {
+      if ((await store.loadDoc()) !== text) return;
+    } catch {
+      return;
+    }
+    let liveApplied: Awaited<ReturnType<typeof applyGatedEdit>>;
+    try {
+      // `onlyIfUnmoved`: this decision was made against a snapshot while the human may be saving,
+      // so the write re-checks the document first and skips if it moved. The turn path never asks
+      // for it — there the human has handed the turn over and is not writing.
+      liveApplied = await applyGatedEdit(store, channel, liveEv, { current: text, canonicalText: base, quarantine: false, gate: viaPlugin ? gate : null, onlyIfUnmoved: true });
+    } catch (e) {
+      // The hook's rejection is DISCARDED by the poll that calls it — by design, so a hook can
+      // never kill a wait — which means anything thrown here is silence unless we say it. The
+      // working copy still holds the edit either way; the agent's next `wait` evaluates it afresh.
+      // NOT `declined`: gating this text would leave the human looking at the document the editor
+      // was launched on for the rest of the wait — the very failure this watcher exists to end —
+      // even once the store recovers. Say it once, back off, and come back to it.
+      applyFailures += 1;
+      retryNotBefore = Date.now() + Math.min(30_000, 500 * 2 ** (applyFailures - 1));
+      sayOnce(`inplan: your edit could not be applied (${(e as Error).message}) — it stays in the working copy and will be retried.\n`);
+      return;
+    }
+    applyFailures = 0;
+    retryNotBefore = 0;
+    if (liveApplied.stale) return; // the document moved under us; the next poll settles on what is there now
+    if (liveApplied.eventLogged === false) process.stderr.write(UNANNOUNCED);
+    // The landing signal (#88) belongs to the proposal the TURN parked, and a live fill never parks
+    // one of its own — so the ONLY thing that may change it here is a retraction. applyGatedEdit
+    // reports that explicitly rather than us inferring it from "something landed": a comment-only
+    // landing now leaves the parked revision standing, and clearing the signal for it would tell
+    // the agent its work was gone while the human still has it in review.
+    if (liveApplied.withdrew) proposalOut = {};
+    markGated(text); // the live path writes no file, so the disk still holds exactly what we read
+  });
+  /** Say why an edit was not applied — once per REASON, so a repeated decline is quiet but a new
+   *  one is never swallowed. */
+  function sayOnce(message: string): void {
+    if (lastDecline === message) return;
+    lastDecline = message;
+    process.stderr.write(message);
+  }
+  /** A decision NOT to apply this text: say why, and mark it gated so the agent's next write (the
+   *  fix, or the next revision) is evaluated afresh rather than re-reported every poll. Nothing was
+   *  written, so the working copy still holds `text`. Only for decisions that re-reading cannot
+   *  change — a FAILURE must stay eligible for a retry instead (see the apply's catch). */
+  function declined(message: string, text: string): void {
+    sayOnce(message);
+    markGated(text);
+  }
+
   let waitCursor = cursor;
   let historyForMode = history;
   for (;;) {
@@ -571,7 +815,16 @@ export async function waitCycle(backend: WaitBackend, explicitCursor: number | n
     // (history is re-read on resume), so a mode switched just before the reload is honoured.
     const mode = modeFrom(historyForMode);
     const isActionable = wakePredicate(mode.wake);
-    const result = await waitForActions({ channel, cursor: waitCursor, debounceMs, pollMs, isActionable, token: lockToken, ...(errorGraceMs !== undefined ? { errorGraceMs } : {}) });
+    const result = await waitForActions({
+      channel,
+      cursor: waitCursor,
+      debounceMs,
+      pollMs,
+      isActionable,
+      token: lockToken,
+      ...(errorGraceMs !== undefined ? { errorGraceMs } : {}),
+      ...(opts.liveFill ? { onPoll: liveFill } : {}),
+    });
 
     // The wait gave up after a streak of failed polls — an expired session is the common cause.
     // Report it as a status the agent can act on and exit non-zero. It used to reach here as an
@@ -3138,7 +3391,11 @@ export async function main(): Promise<void> {
     const session = await authedSession();
     gate = await loadPluginGate(pluginSession, { token: session?.session.access_token ?? null });
   }
-  await waitCycle(fsBackend(file), explicitCursor, confirmed, model, gate);
+  // liveFill: this is the local editor path, where `open` blocks here while the agent fills the
+  // document in — those writes have to keep reaching the editor (see waitCycle's live-fill block).
+  // Not the remote path: there the working copy's lifecycle belongs to runRemote's hydrate/re-sync,
+  // and the agent edits between runs rather than during one.
+  await waitCycle(fsBackend(file), explicitCursor, confirmed, model, gate, { liveFill: true });
 }
 
 // Run the CLI only when this module IS the invoked program — i.e. `node dist/cli.js …` or the
