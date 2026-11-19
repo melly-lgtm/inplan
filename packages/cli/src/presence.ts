@@ -125,8 +125,9 @@ export function announcePresence(docId: string, token: string | (() => Promise<s
     // the connected-agent badge and Finish-turn availability) and its collab server (which makes
     // the managed cloud agent stand down while a local CLI holds the turn). There is no shared
     // type across that boundary, so a field rename on either side breaks the OTHER side silently
-    // — and this whole call is best-effort and swallows failures by design. If you change this
-    // shape, grep both consumers for `inplanPresence` first.
+    // — and this whole call is best-effort and swallows failures by design. Treat the shape as
+    // published: `inplanPresence` is the search term for it, and changing a field here is a
+    // breaking change for a reader you cannot see from this repository.
     provider.awareness?.setLocalStateField("inplanPresence", { kind: "agent", agentLocation: "local", ...(model ? { model } : {}) });
     return {
       destroy: () => {
