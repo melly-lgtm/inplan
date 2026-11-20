@@ -403,6 +403,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   const tryAddCommentRef = useRef<() => void>(() => {}); // latest ⌘/Ctrl+/ handler (the keydown effect calls via this)
   const commentRangeRef = useRef<Range | null>(null); // the selection range being commented on (kept highlighted while composing)
   const docPathRef = useRef<string>(""); // current doc's locator path, for resolving relative links
+  const docLinkRef = useRef<string>(""); // shareable address for this doc (host-supplied, else the path)
   const railRef = useRef<HTMLElement>(null);
   const editorRef = useRef<SourceEditorHandle>(null);
   // A load()/onNavigated-supplied deep-link comment id, focused once the destination doc + rail
@@ -483,10 +484,13 @@ export function App(props: EditorProps = {}): JSX.Element {
     const loadGen = docGenRef.current; // navigation before load resolves must win over the older result
     hostApi()
       .load()
-      .then(({ content, path, readOnly: ro, focusCommentId }) => {
+      .then(({ content, path, readOnly: ro, focusCommentId, shareLink }) => {
         if (docGenRef.current !== loadGen) return; // a navigation already installed a newer document
         docPathRef.current = path;
         humanTouchedComments.current = new Set(); // ownership of comments is per document
+        // Host-supplied address if there is one, else the path — which on desktop IS the file.
+        // Blank counts as absent: a normalized-empty column must not hide a usable path.
+        docLinkRef.current = shareLink?.trim() ? shareLink : path;
         setReadOnly(!!ro);
         setPendingFocusCommentId(focusCommentId ?? null);
         const parsed = parse(content);
@@ -518,12 +522,15 @@ export function App(props: EditorProps = {}): JSX.Element {
     // in flight would let the generation guard drop a WON settlement's accepted content (the
     // row is already terminal; it would never resurface). The flush effect below runs it once
     // the settle completes.
-    const processNavigated = ({ content, path, readOnly: ro, focusCommentId }: { content: string; path: string; readOnly?: boolean; focusCommentId?: string }): void => {
+    const processNavigated = ({ content, path, readOnly: ro, focusCommentId, shareLink }: { content: string; path: string; readOnly?: boolean; focusCommentId?: string; shareLink?: string }): void => {
       // Undo/redo is per-doc: stash the leaving doc's stacks so returning restores them, and load
       // the destination's own (empty on first visit). Per-doc still holds — an undo can never pull
       // another doc's content — but the history now survives navigation instead of being dropped.
       if (docPathRef.current) historyByDoc.current.set(docPathRef.current, { undo: history.current, redo: future.current, touched: humanTouchedComments.current });
       docPathRef.current = path;
+      // The link belongs to the document that just arrived, not the one this mount loaded first:
+      // leaving the old value here copied the PREVIOUS document's address after every navigation.
+      docLinkRef.current = shareLink?.trim() ? shareLink : path;
       // A navigation installs a document, so the loading screen comes down for it. This mount's
       // own load may have been overtaken by it (and then returns without doing so), or may never
       // come back at all.
@@ -2662,6 +2669,8 @@ export function App(props: EditorProps = {}): JSX.Element {
                   onResolve={(r) => apply(setResolved(docRef.current, o.thread.root.id, r), { type: "comment_resolved", payload: { id: o.thread.root.id, resolved: r } })}
                   onEdit={(id, text) => apply(editCommentText(docRef.current, id, text), { type: "comment_modified", payload: { id } })}
                   onDelete={(id) => apply(deleteComment(docRef.current, id), { type: "comment_deleted", payload: { id } })}
+                  docLink={() => docLinkRef.current}
+                  onCopyOutcome={(ok) => setStatus(t(ok ? "msg.copyDocLinkDone" : "msg.copyDocLinkFailed"))}
                 />
               </Fragment>
             ))}
@@ -3388,6 +3397,12 @@ function ThreadCard(props: {
   onResolve: (resolved: boolean) => void;
   onEdit: (id: string, text: string) => void;
   onDelete: (id: string) => void;
+  /** Read at click time, not render time: the link lives in a ref that navigation mutates, so a
+   *  captured value could belong to the document the reader just left. */
+  docLink: () => string;
+  /** Report the copy's outcome on the status line (the menu closes on click, so its own label
+   *  cannot carry the result). */
+  onCopyOutcome: (ok: boolean) => void;
 }): JSX.Element {
   const { thread, body, disabled, orphaned } = props;
   const t = useT();
@@ -3460,6 +3475,22 @@ function ThreadCard(props: {
               </button>
               {menuOpenId === c.id && (
                 <div className="ap-cmenu-pop" onClick={(e) => e.stopPropagation()}>
+                  {props.docLink() !== "" && (
+                    <button
+                      onClick={() => {
+                        // The write can FAIL (no clipboard-write permission, no document focus),
+                        // and `void`ing the promise made the menu close looking successful while
+                        // the clipboard was untouched — the user pasted whatever was there before.
+                        // Both outcomes are said on the status line, which outlives the menu.
+                        const write = navigator.clipboard?.writeText?.(props.docLink());
+                        if (write) void write.then(() => props.onCopyOutcome(true), () => props.onCopyOutcome(false));
+                        else props.onCopyOutcome(false);
+                        setMenuOpenId(null);
+                      }}
+                    >
+                      {t("thread.copyDocLink")}
+                    </button>
+                  )}
                   <button
                     onClick={() => {
                       setEditingId(c.id);

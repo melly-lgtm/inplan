@@ -77,6 +77,12 @@ export interface DocPayload {
    *  binding reads the binding instead; one without a binding has only `content`. Absent on hosts
    *  with no such distinction. */
   viaPlugin?: boolean;
+  /** A shareable address for this document, for the comment menu's "copy link". Only the host
+   *  knows what that is — a cloud host serves it over https, a desktop host has a file on disk —
+   *  so open-core must not guess (hardcoding a cloud origin here would be wrong for every other
+   *  host). Absent ⇒ the renderer falls back to {@link DocPayload.path}, which is already the
+   *  file path on desktop, so a local document needs no host change to get a useful link. */
+  shareLink?: string;
 }
 
 export interface SaveOptions {
