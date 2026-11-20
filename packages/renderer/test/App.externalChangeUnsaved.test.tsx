@@ -1026,6 +1026,27 @@ describe("an agent edit landing on an unsaved buffer", () => {
     expect(text.indexOf("The earlier-dated arrival.")).toBeLessThan(text.indexOf("The older, loaded comment.")); // canonical, not appended
   });
 
+  it("a re-delivered demoted span does not re-announce: it is compared as this buffer holds it", async () => {
+    // The buffer holds the demoted doc copy; the re-delivered incoming is the raw span. Compared
+    // raw, nothing matched and a no-op turn was announced as a new comment.
+    await mountAndType();
+    await act(async () => {
+      agent.externalChange(SPAN_ASKED);
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("The agent left a comment"));
+
+    await act(async () => {
+      agent.externalChange(SPAN_ASKED); // the same turn, re-delivered unchanged
+    });
+
+    expect(document.body.textContent).not.toContain("The agent left a comment"); // nothing new
+    expect(document.body.textContent).toContain("Save or reopen");
+    await act(async () => {
+      screen.getByRole("button", { name: /^Comments$/ }).click(); // the rail is where it shows
+    });
+    expect(document.body.textContent).toContain("Question about this span."); // …and it stayed
+  });
+
   it("a re-ordered copy of a comment is the same comment, not a revision", async () => {
     // Comments cross store boundaries where JSON key order is not preserved; a raw stringify
     // comparison re-announced a semantically identical landing as a new revision.

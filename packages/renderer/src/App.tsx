@@ -701,16 +701,17 @@ export function App(props: EditorProps = {}): JSX.Element {
           const revised = prevDoc.comments.map((c) => {
             const inc = incoming.comments.find((i) => i.id === c.id);
             if (!inc || humanTouchedComments.current.has(c.id)) return c;
+            // The copy THIS buffer would hold: a span whose anchor link lives only in the
+            // incoming body would be hidden by the rail, so it is demoted like any arrival —
+            // the corrected question must not arrive invisible.
+            const asHere = !inc.parentId && inc.anchor !== "doc" && !prevDoc.body.includes(`](#${inc.id})`) ? { ...inc, anchor: "doc" as const } : inc;
             const b = baseById.get(c.id);
-            if (b && sameComment(b, inc)) return c; // the outside said nothing new: a re-delivery must not revert local state (e.g. a resolve that rode unsaved)
-            // A taken revision is substituted into THIS buffer: a span whose anchor link lives
-            // only in the incoming body would be hidden by the rail, so it is demoted like any
-            // arrival — the corrected question must not arrive invisible.
-            return !inc.parentId && inc.anchor !== "doc" && !prevDoc.body.includes(`](#${inc.id})`) ? { ...inc, anchor: "doc" as const } : inc;
+            if (b && sameComment(b, asHere)) return c; // the outside said nothing new: a re-delivery must not revert local state (a resolve that rode unsaved, or this buffer's own earlier demotion)
+            return asHere;
           });
           // Reference inequality is exact here: the map returns either the same object or a
-          // freshly built one, so this counts exactly the takes (never a content-identical
-          // re-delivery — the base comparison above refused those).
+          // freshly built one, so this counts exactly the takes. Content-identical re-deliveries
+          // are refused above — including a re-delivered span, compared as this buffer holds it.
           const takenRevisions = revised.filter((c, i) => c !== prevDoc.comments[i]);
           // An incoming SPAN comment anchors into the incoming body, which we are not taking — so
           // its link may not exist here. Demote rather than carry a dangling anchor (the rail
@@ -729,7 +730,14 @@ export function App(props: EditorProps = {}): JSX.Element {
           const withComments = commentStore ? { ...prevDoc, comments: storeList! } : { ...prevDoc, comments: orderComments([...revised, ...arriving]) };
           // What settled is not the human's work: undo must not be able to remove or rewind it
           // (the derivation above).
-          settleExternal(commentStore ? settledDelta : [...settledDelta, ...arriving, ...takenRevisions], settledRemovals);
+          // One entry per id, the delta's copy first: settleExternal demotes per snapshot body,
+          // so a raw and a buffer-demoted copy yield the same anchored result — but WHICH copy
+          // is offered must not rest on a spread-order coincidence with orderComments' dedup.
+          const settleList: Comment[] = [];
+          for (const c of [...settledDelta, ...arriving, ...takenRevisions]) {
+            if (!settleList.some((x) => x.id === c.id)) settleList.push(c);
+          }
+          settleExternal(commentStore ? settledDelta : settleList, settledRemovals);
           setDoc(withComments);
           docRef.current = withComments;
           // Did the AGENT move the body, or is this comments only? Against the human's buffer every
