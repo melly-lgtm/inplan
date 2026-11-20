@@ -296,6 +296,9 @@ export const EN: Catalog = {
   "thread.cancel": "Cancel",
   "thread.save": "Save",
   "thread.more": "More",
+  "thread.copyDocLink": "Copy link to document",
+  "msg.copyDocLinkDone": "Link copied to the clipboard.",
+  "msg.copyDocLinkFailed": "Copying the link failed — nothing was placed on the clipboard.",
   "thread.modify": "Modify",
   "thread.delete": "Delete",
 };
