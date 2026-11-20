@@ -23,7 +23,9 @@ import {
   readGlobalSettings,
   readLog,
   readStatus,
+  serialize,
   settingsFromEntries,
+  stampImpossibleDates,
   stripAnchors,
   widenConnectAttemptBudget,
   writeStatus,
@@ -295,6 +297,27 @@ function spawnApp(file: string): number | null {
   return null;
 }
 
+/** What a stored text becomes after stamping, without the report — for comparing, not repairing. */
+function stampQuietly(text: string): string {
+  const doc = parse(text);
+  const { comments } = stampImpossibleDates(doc.comments);
+  return serialize({ ...doc, comments });
+}
+
+/** Apply {@link stampImpossibleDates} to a serialized document, preserving it byte-for-byte when
+ *  nothing needed repair (so an untouched file never looks like an edit). Reports on stderr: a
+ *  silent rewrite of someone's timestamp would be worse than the bug it fixes. */
+function stampAgentDates(text: string): string {
+  const doc = parse(text);
+  const { comments, repaired } = stampImpossibleDates(doc.comments);
+  if (repaired.length === 0) return text;
+  process.stderr.write(
+    `inplan: ${repaired.length} comment date(s) were absent or in the future and have been stamped from this machine's clock (${repaired.join(", ")}) — ` +
+      "a date in the future sorts a reply after the replies that answered it.\n",
+  );
+  return serialize({ ...doc, comments });
+}
+
 /** The doc's current collaboration mode from the protocol history. The CLI is mode-agnostic: it
  *  reads the gate policy (wake/lock) the editor recorded into the latest mode_changed, never a
  *  specific mode by name. Defaults to the turn-taking policy (the open-core built-in). */
@@ -433,7 +456,14 @@ export async function waitCycle(
   // getCursor() returns 0 when unset, so `|| maxSeqFrom` means begin at the latest seq.
   const cursor = explicitCursor ?? ((await channel.getCursor()) || maxSeqFrom(history));
 
-  const current = await store.loadDoc();
+  // Repair comment dates that cannot be true BEFORE anything reads this text. `date` is whatever
+  // the author wrote, and agents hand-write it on cloud docs because `inplan comment` refuses them
+  // — round-hour guesses in the future are the result. orderComments sorts by (date, id) at every
+  // projection, so one fabricated future date strands that reply at the end of its thread forever,
+  // after the replies that answered it. Stamping here means the stored value is already sane; the
+  // repair cannot live in orderComments, which has to stay byte-identical across peers.
+  const rawDoc = await store.loadDoc();
+  const current = stampAgentDates(rawDoc);
 
   // The gate's canonical base: the plugin's projection when an entitled plugin is active (the editor
   // published a session for this doc — the plugin owns it, so we apply through it, never writing the
@@ -457,6 +487,20 @@ export async function waitCycle(
     return { canonicalText: text, usePlugin: false };
   };
   const { canonicalText, usePlugin } = await resolveCanonical(current);
+
+  // The repair must LAND, or every wait re-repairs against a fresh now — a phantom agent edit
+  // per turn and an ever-drifting canonical, on the incident's own document class (local files).
+  // On the file model the stamped text is persisted to the working file quietly, with NO
+  // document_edited event: the agent did not edit anything, and the editor's own file watch
+  // shows the change. The canonical advances only when stamping it reproduces the file exactly —
+  // any other difference is real work this turn still has to evaluate. Through a live plugin the
+  // .md is the plugin's projection and is never written; the shared document's dates are
+  // repaired at its own write boundary (the renderer clamps display order meanwhile).
+  if (current !== rawDoc && !usePlugin) {
+    await store.saveDoc(current);
+    const persistedBase = await store.getCanonical();
+    if (persistedBase !== null && stampQuietly(persistedBase) === current) await store.setCanonical(current);
+  }
 
   const ev = evaluateAgentEdit(canonicalText, current, confirmed);
   if (ev.unconfirmed.length > 0) {
