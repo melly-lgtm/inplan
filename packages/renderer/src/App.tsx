@@ -73,6 +73,23 @@ function anchoredText(body: string, id: string): string | null {
   return m ? m[1]! : null;
 }
 
+/** Equality that survives a store round-trip: comments cross process boundaries where JSON key
+ *  order is not preserved, so a raw JSON.stringify comparison calls a re-ordered copy a revision
+ *  (re-announcing it, re-settling it) or drops the human's ownership of it. Canonical field
+ *  order first — the same normalization the serializer applies at projection boundaries
+ *  (core keeps its own, unexported; this mirrors it, in the Comment interface's order). */
+const COMMENT_KEY_ORDER: (keyof Comment)[] = ["id", "parentId", "anchor", "text", "author", "date", "resolved", "may_resolve", "question", "selected", "agent", "mentions"];
+function canonicalComment(c: Comment): Comment {
+  const rec = c as unknown as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const k of COMMENT_KEY_ORDER) if (rec[k] !== undefined) out[k] = rec[k];
+  for (const k of Object.keys(rec).sort()) if (!(k in out) && rec[k] !== undefined) out[k] = rec[k];
+  return out as unknown as Comment;
+}
+function sameComment(a: Comment, b: Comment): boolean {
+  return JSON.stringify(canonicalComment(a)) === JSON.stringify(canonicalComment(b));
+}
+
 /** 0-based source line of a comment's anchor link, or null. */
 function anchorLine(body: string, id: string): number | null {
   const idx = body.indexOf(`](#${id})`);
@@ -560,11 +577,17 @@ export function App(props: EditorProps = {}): JSX.Element {
         for (let i = 0; i < stack.length; i++) {
           const snap = stack[i]!;
           const kept = snap.comments.filter((c) => !removed.has(c.id));
+          // What lands in a snapshot must be anchored in THAT snapshot's body: a snapshot's body
+          // predates the landing, so a span whose link exists only in the landed body would sit
+          // there anchorless — hidden by the rail, and persisted as invalid by an undo's
+          // autosave. Demote against the snapshot's own body, exactly as the live paths demote
+          // against the buffer's.
+          const settledHere = settled.map((c) => (!c.parentId && c.anchor !== "doc" && !snap.body.includes(`](#${c.id})`) ? { ...c, anchor: "doc" as const } : c));
           const replaced = kept.map((c) => {
-            const inc = settled.find((x) => x.id === c.id);
-            return inc && JSON.stringify(inc) !== JSON.stringify(c) ? inc : c;
+            const inc = settledHere.find((x) => x.id === c.id);
+            return inc && !sameComment(inc, c) ? inc : c;
           });
-          const missing = settled.filter((x) => !removed.has(x.id) && !replaced.some((c) => c.id === x.id));
+          const missing = settledHere.filter((x) => !removed.has(x.id) && !replaced.some((c) => c.id === x.id));
           if (kept.length !== snap.comments.length || replaced.some((c, i2) => c !== kept[i2]) || missing.length > 0) {
             // Canonical order: a patched snapshot that serializes in a different comment order
             // than the file reads back as changed when it is not, flagging dirty and churning
@@ -660,7 +683,7 @@ export function App(props: EditorProps = {}): JSX.Element {
         const settledDelta = landingComments.filter((c) => {
           if (humanTouchedComments.current.has(c.id)) return false;
           const b = baseById.get(c.id);
-          return !b || JSON.stringify(b) !== JSON.stringify(c); // arrived, or revised
+          return !b || !sameComment(b, c); // arrived, or revised
         });
         const settledRemovals = new Set(
           [...baseById.keys()].filter((id) => !landingById.has(id) && !humanTouchedComments.current.has(id)), // deleted out there
@@ -679,7 +702,7 @@ export function App(props: EditorProps = {}): JSX.Element {
             const inc = incoming.comments.find((i) => i.id === c.id);
             if (!inc || humanTouchedComments.current.has(c.id)) return c;
             const b = baseById.get(c.id);
-            if (b && JSON.stringify(b) === JSON.stringify(inc)) return c; // the outside said nothing new: a re-delivery must not revert local state (e.g. a resolve that rode unsaved)
+            if (b && sameComment(b, inc)) return c; // the outside said nothing new: a re-delivery must not revert local state (e.g. a resolve that rode unsaved)
             // A taken revision is substituted into THIS buffer: a span whose anchor link lives
             // only in the incoming body would be hidden by the rail, so it is demoted like any
             // arrival — the corrected question must not arrive invisible.
@@ -700,7 +723,10 @@ export function App(props: EditorProps = {}): JSX.Element {
             .map((c) => (!c.parentId && c.anchor !== "doc" && !prevDoc.body.includes(`](#${c.id})`) ? { ...c, anchor: "doc" as const } : c));
           // A store-backed host owns comments outside the body; its observer keeps the rail
           // current, so there is nothing for us to merge there.
-          const withComments = commentStore ? { ...prevDoc, comments: storeList! } : { ...prevDoc, comments: [...revised, ...arriving] };
+          // Canonical comment order here too: the snapshots are canonicalized, and a buffer in
+          // insertion order serializes differently — saving then undoing would flag dirty on an
+          // order-only difference and autosave would churn the comment block for a no-op turn.
+          const withComments = commentStore ? { ...prevDoc, comments: storeList! } : { ...prevDoc, comments: orderComments([...revised, ...arriving]) };
           // What settled is not the human's work: undo must not be able to remove or rewind it
           // (the derivation above).
           settleExternal(commentStore ? settledDelta : [...settledDelta, ...arriving, ...takenRevisions], settledRemovals);
@@ -737,7 +763,7 @@ export function App(props: EditorProps = {}): JSX.Element {
           [...humanTouchedComments.current].filter((id) => {
             const inc = next.comments.find((c) => c.id === id);
             const buf = prevDoc.comments.find((c) => c.id === id);
-            return !!inc && !!buf && JSON.stringify(inc) === JSON.stringify(buf);
+            return !!inc && !!buf && sameComment(inc, buf);
           }),
         );
         savedRef.current = serialize(next);
@@ -1059,7 +1085,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       if (!auto) {
         for (const c of next.comments) {
           const before = prevComments.find((q) => q.id === c.id);
-          if (!before || JSON.stringify(before) !== JSON.stringify(c)) humanTouchedComments.current.add(c.id);
+          if (!before || !sameComment(before, c)) humanTouchedComments.current.add(c.id);
         }
         for (const c of prevComments) {
           if (!next.comments.some((q) => q.id === c.id)) humanTouchedComments.current.add(c.id); // a deletion is owned too: a re-delivered turn must not resurrect it

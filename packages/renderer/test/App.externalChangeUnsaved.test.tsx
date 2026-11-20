@@ -79,6 +79,9 @@ const C1 = JSON.stringify([{ id: "cmt-c1", author: "Agent <a@b>", date: "2026-06
 const DOC_C1 = `# Plan\n\nThe original body.\n\n<!--inplan v1\n${C1}\n-->\n`;
 /** An arriving comment dated BEFORE the loaded one — canonical order puts it first. */
 const EARLY = JSON.stringify([{ id: "cmt-early", author: "Agent <a@b>", date: "2025-01-01T00:00:00Z", resolved: false, anchor: "doc", text: "The earlier-dated arrival." }]);
+/** The same question with its JSON keys in a different order — semantically identical. */
+const REORDERED = JSON.stringify([{ resolved: false, text: "Which datastore should this use?", id: "cmt-q1", anchor: "doc", date: "2026-01-01T00:00:00Z", author: "Agent <a@b>" }]);
+const ASKED_REORDERED = `# Plan\n\nThe original body.\n\n<!--inplan v1\n${REORDERED}\n-->\n`;
 /** The same landing with both: the arrival is dated BEFORE the loaded one — canonical order puts it first. */
 const C1_AND_EARLY = JSON.stringify([
   { id: "cmt-c1", author: "Agent <a@b>", date: "2026-06-01T00:00:00Z", resolved: false, anchor: "doc", text: "The older, loaded comment." },
@@ -914,6 +917,130 @@ describe("an agent edit landing on an unsaved buffer", () => {
     const text = document.body.textContent ?? "";
     expect(text.indexOf("The earlier-dated arrival.")).toBeGreaterThanOrEqual(0);
     expect(text.indexOf("The earlier-dated arrival.")).toBeLessThan(text.indexOf("The older, loaded comment.")); // canonical, not appended
+  });
+
+  it("undo cannot hide a demoted SPAN question: what lands in a snapshot is anchored in THAT snapshot's body", async () => {
+    // The settle list carried the raw incoming span while the buffer got the demoted copy, so
+    // the snapshot held an anchorless span — undo hid the question and autosave could persist
+    // the invalid state.
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("The original body."));
+    await act(async () => {
+      screen.getByRole("button", { name: /comment on doc/i }).click(); // an app-level action…
+    });
+    const ta = await screen.findByPlaceholderText(/Add a comment/i);
+    await act(async () => {
+      fireEvent.change(ta, { target: { value: "My own note." } });
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /^comment$/i }).click();
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("My own note."));
+    await act(async () => {
+      screen.getByRole("button", { name: /^Source$/ }).click();
+    });
+    await waitFor(() => expect(emitEdit).toBeTruthy());
+    await act(async () => {
+      emitEdit?.(MINE); // …then typing, unsaved
+    });
+    await act(async () => {
+      agent.externalChange(SPAN_ASKED); // a span question lands, demoted into the buffer
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /^Comments$/ }).click();
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("Question about this span."));
+
+    await act(async () => {
+      fireEvent.keyDown(document.body, { key: "z", metaKey: true }); // undo MY comment
+    });
+
+    expect(document.body.textContent).not.toContain("My own note."); // undone — it was the human's
+    expect(document.body.textContent).toContain("Question about this span."); // …not the agent's
+  });
+
+  it("…nor on a clean landing, when the snapshot's body predates the anchor link", async () => {
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("The original body."));
+    await act(async () => {
+      screen.getByRole("button", { name: /comment on doc/i }).click();
+    });
+    const ta = await screen.findByPlaceholderText(/Add a comment/i);
+    await act(async () => {
+      fireEvent.change(ta, { target: { value: "My own note." } });
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /^comment$/i }).click();
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("My own note."));
+    await act(async () => {
+      agent.externalChange(SPAN_ASKED); // clean landing: the body AND the span arrive together
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("Question about this span."));
+
+    await act(async () => {
+      fireEvent.keyDown(document.body, { key: "z", metaKey: true }); // undo MY comment → a body without the link
+    });
+
+    expect(document.body.textContent).not.toContain("My own note.");
+    expect(document.body.textContent).toContain("Question about this span."); // demoted for that body, still visible
+  });
+
+  it("the dirty buffer's comments are kept in canonical order too, not insertion order", async () => {
+    document.body.innerHTML = '<div id="root"></div>';
+    const session = createMemoryApi({ content: DOC_C1 });
+    (window as unknown as { api: unknown }).api = session.api;
+    agent = session.agent;
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("The older, loaded comment."));
+    await act(async () => {
+      screen.getByRole("button", { name: /comment on doc/i }).click();
+    });
+    const ta = await screen.findByPlaceholderText(/Add a comment/i);
+    await act(async () => {
+      fireEvent.change(ta, { target: { value: "My own note." } });
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /^comment$/i }).click();
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("My own note."));
+    await act(async () => {
+      screen.getByRole("button", { name: /^Source$/ }).click();
+    });
+    await waitFor(() => expect(emitEdit).toBeTruthy());
+    await act(async () => {
+      emitEdit?.(MINE);
+    });
+    await act(async () => {
+      agent.externalChange(EARLY_ASKED); // an earlier-dated comment lands on the dirty buffer
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /^Comments$/ }).click();
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("The earlier-dated arrival."));
+
+    const text = document.body.textContent ?? "";
+    expect(text.indexOf("The earlier-dated arrival.")).toBeLessThan(text.indexOf("The older, loaded comment.")); // canonical, not appended
+  });
+
+  it("a re-ordered copy of a comment is the same comment, not a revision", async () => {
+    // Comments cross store boundaries where JSON key order is not preserved; a raw stringify
+    // comparison re-announced a semantically identical landing as a new revision.
+    await mountAndType();
+    await act(async () => {
+      agent.externalChange(ASKED);
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("The agent left a comment"));
+
+    await act(async () => {
+      agent.externalChange(ASKED_REORDERED); // same values, keys in a different order
+    });
+
+    expect(document.body.textContent).not.toContain("The agent left a comment"); // nothing new
+    expect(document.body.textContent).toContain("Save or reopen");
   });
 
   it("takes the agent's edit outright when the buffer is clean — the normal case is unchanged", async () => {
