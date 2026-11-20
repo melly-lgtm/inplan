@@ -72,6 +72,19 @@ const MAY_REVISED_ASKED = `# Plan\n\nThe original body.\n\n<!--inplan v1\n${MAY_
 const ASKED_RESOLVED = `# Plan\n\nThe original body.\n\n<!--inplan v1\n${RESOLVED}\n-->\n`;
 const BOTH_ASKED = `# Plan\n\nThe original body.\n\n<!--inplan v1\n${RESOLVED_AND_NEW}\n-->\n`;
 const NEXT = "# Next\n\nThe document navigated to.\n\n<!--inplan v1\n[]\n-->\n";
+/** A body-only landing: no comments at all. */
+const BODY_ONLY = "# Plan\n\nThe agent rewrote the body and left no comments.\n\n<!--inplan v1\n[]\n-->\n";
+/** A loaded document that already carries one comment (dated mid-2026). */
+const C1 = JSON.stringify([{ id: "cmt-c1", author: "Agent <a@b>", date: "2026-06-01T00:00:00Z", resolved: false, anchor: "doc", text: "The older, loaded comment." }]);
+const DOC_C1 = `# Plan\n\nThe original body.\n\n<!--inplan v1\n${C1}\n-->\n`;
+/** An arriving comment dated BEFORE the loaded one — canonical order puts it first. */
+const EARLY = JSON.stringify([{ id: "cmt-early", author: "Agent <a@b>", date: "2025-01-01T00:00:00Z", resolved: false, anchor: "doc", text: "The earlier-dated arrival." }]);
+/** The same landing with both: the arrival is dated BEFORE the loaded one — canonical order puts it first. */
+const C1_AND_EARLY = JSON.stringify([
+  { id: "cmt-c1", author: "Agent <a@b>", date: "2026-06-01T00:00:00Z", resolved: false, anchor: "doc", text: "The older, loaded comment." },
+  { id: "cmt-early", author: "Agent <a@b>", date: "2025-01-01T00:00:00Z", resolved: false, anchor: "doc", text: "The earlier-dated arrival." },
+]);
+const EARLY_ASKED = `# Plan\n\nThe original body.\n\n<!--inplan v1\n${C1_AND_EARLY}\n-->\n`;
 const MINE = "# Plan\n\nThe human's own sentence, not yet saved.\n";
 let agent: MemoryAgent;
 
@@ -716,6 +729,191 @@ describe("an agent edit landing on an unsaved buffer", () => {
     });
 
     expect(document.body.textContent).not.toContain("(corrected)"); // their version was carried, so it stands
+  });
+
+  it("on a store host, undo cannot rewind a REVISED comment out of the shared store", async () => {
+    // The delta used to compare id-sets only, so a revision to an existing id was never settled:
+    // every snapshot kept the superseded text, and undo wrote it back to the shared store.
+    document.body.innerHTML = '<div id="root"></div>';
+    const session = createMemoryApi({ content: DOC });
+    const store = createMemoryCommentStore([]);
+    (window as unknown as { api: unknown }).api = { ...session.api, commentStore: store };
+    agent = session.agent;
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("The original body."));
+    await act(async () => {
+      screen.getByRole("button", { name: /comment on doc/i }).click();
+    });
+    const ta = await screen.findByPlaceholderText(/Add a comment/i);
+    await act(async () => {
+      fireEvent.change(ta, { target: { value: "My own note." } });
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /^comment$/i }).click();
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("My own note."));
+    await act(async () => {
+      store.add({ id: "cmt-q1", author: "Agent <a@b>", date: "2026-01-01T00:00:00Z", resolved: false, anchor: "doc", text: "Which datastore should this use?" });
+    });
+    await act(async () => {
+      agent.externalChange(DOC); // the question lands
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("Which datastore should this use?"));
+    await act(async () => {
+      store.replaceAll(store.list().map((c) => (c.id === "cmt-q1" ? { ...c, text: "Which datastore — and by when? (corrected)" } : c))); // the agent corrects it
+    });
+    await act(async () => {
+      agent.externalChange(DOC); // …and the landing sees the correction
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("and by when? (corrected)"));
+
+    await act(async () => {
+      fireEvent.keyDown(document.body, { key: "z", metaKey: true }); // undo MY comment
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /^Comments$/ }).click();
+    });
+
+    expect(document.body.textContent).not.toContain("My own note."); // undone — it was the human's
+    expect(document.body.textContent).toContain("and by when? (corrected)"); // the correction stands…
+    const stored = store.list().find((c) => c.id === "cmt-q1");
+    expect(stored?.text).toContain("(corrected)"); // …in the buffer AND the shared store
+  });
+
+  it("on a FILE host too, undo cannot resurrect a comment the agent deleted", async () => {
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("The original body."));
+    await act(async () => {
+      agent.externalChange(ASKED); // the question lands
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /^Comments$/ }).click();
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("Which datastore should this use?"));
+    await act(async () => {
+      screen.getByRole("button", { name: /comment on doc/i }).click(); // an app-level action after it
+    });
+    const ta = await screen.findByPlaceholderText(/Add a comment/i);
+    await act(async () => {
+      fireEvent.change(ta, { target: { value: "My own note." } });
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /^comment$/i }).click();
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("My own note."));
+    await act(async () => {
+      agent.externalChange(DOC); // the agent's next turn carries no comment: it deleted it
+    });
+    await waitFor(() => expect(document.body.textContent).not.toContain("Which datastore should this use?"));
+
+    await act(async () => {
+      fireEvent.keyDown(document.body, { key: "z", metaKey: true }); // undo MY comment
+    });
+
+    expect(document.body.textContent).not.toContain("My own note."); // the undo did its own work…
+    expect(document.body.textContent).not.toContain("Which datastore should this use?"); // …without resurrecting the deletion
+  });
+
+  it("a re-delivered turn does not re-announce a comment the rail already holds", async () => {
+    await mountAndType();
+    await act(async () => {
+      agent.externalChange(ASKED);
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("The agent left a comment"));
+
+    await act(async () => {
+      agent.externalChange(ASKED); // the channel re-delivers the same turn
+    });
+
+    expect(document.body.textContent).not.toContain("The agent left a comment"); // nothing new arrived
+    expect(document.body.textContent).toContain("Save or reopen"); // the honest fallback
+  });
+
+  it("a body-only landing on an unsaved buffer keeps the sentence and says so plainly", async () => {
+    await mountAndType();
+
+    await act(async () => {
+      agent.externalChange(BODY_ONLY);
+    });
+
+    expect(document.body.textContent).toContain("Save or reopen"); // no comment to point at
+    expect(document.body.textContent).not.toContain("The agent left a comment");
+    expect(document.body.textContent).toContain("The human's own sentence");
+    expect(document.body.textContent).not.toContain("rewrote the body and left no comments");
+  });
+
+  it("a re-delivered turn does not revert a resolve that rode unsaved", async () => {
+    // The auto-resolve persisted nothing (it must not, while the human is mid-sentence), so the
+    // file still holds the unresolved copy — re-delivering it used to pop the thread back open,
+    // and it could never auto-resolve again.
+    document.body.innerHTML = '<div id="root"></div>';
+    const session = createMemoryApi({ content: DOC, settings: { autoResolve: true } });
+    (window as unknown as { api: unknown }).api = session.api;
+    agent = session.agent;
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("The original body."));
+    await act(async () => {
+      screen.getByRole("button", { name: /^Source$/ }).click();
+    });
+    await waitFor(() => expect(emitEdit).toBeTruthy());
+    await act(async () => {
+      emitEdit?.(MINE); // mid-sentence, unsaved
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("unsaved"));
+    await act(async () => {
+      agent.externalChange(MAY_ASKED); // a may_resolve comment lands and is auto-resolved
+    });
+    await waitFor(() => expect(document.body.textContent).not.toContain("Incorporated your feedback"));
+
+    await act(async () => {
+      agent.externalChange(MAY_ASKED); // the same turn re-delivered, still unsaved
+    });
+
+    expect(document.body.textContent).not.toContain("Incorporated your feedback"); // still resolved
+    expect(document.body.textContent).toContain("Save or reopen"); // and nothing claimed to arrive again
+    expect(document.body.textContent).toContain("unsaved");
+  });
+
+  it("a patched snapshot keeps canonical comment order, not arrival order", async () => {
+    // A snapshot patched by appending serialized the arrival LAST even when it sorts FIRST, so
+    // undoing to it read back as a change that was only order — a spurious dirty flag and an
+    // autosave churning the comment block.
+    document.body.innerHTML = '<div id="root"></div>';
+    const session = createMemoryApi({ content: DOC_C1 });
+    (window as unknown as { api: unknown }).api = session.api;
+    agent = session.agent;
+    const { App } = await import("../src/App");
+    render(<App />);
+    await waitFor(() => expect(document.body.textContent).toContain("The older, loaded comment."));
+    await act(async () => {
+      screen.getByRole("button", { name: /comment on doc/i }).click(); // an app-level action…
+    });
+    const ta = await screen.findByPlaceholderText(/Add a comment/i);
+    await act(async () => {
+      fireEvent.change(ta, { target: { value: "My own note." } });
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /^comment$/i }).click();
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("My own note."));
+    await act(async () => {
+      agent.externalChange(EARLY_ASKED); // …then an earlier-dated comment lands
+    });
+    await waitFor(() => expect(document.body.textContent).toContain("The earlier-dated arrival."));
+
+    await act(async () => {
+      fireEvent.keyDown(document.body, { key: "z", metaKey: true }); // undo MY comment
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /^Comments$/ }).click();
+    });
+
+    const text = document.body.textContent ?? "";
+    expect(text.indexOf("The earlier-dated arrival.")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("The earlier-dated arrival.")).toBeLessThan(text.indexOf("The older, loaded comment.")); // canonical, not appended
   });
 
   it("takes the agent's edit outright when the buffer is clean — the normal case is unchanged", async () => {
