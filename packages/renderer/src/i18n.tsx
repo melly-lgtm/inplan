@@ -147,6 +147,8 @@ export const EN: Catalog = {
   "msg.proposedReview": "agent proposed changes — review below",
   "msg.agentUpdated": "agent updated the document",
   "msg.agentUpdatedUnsaved": "The agent updated the document — your unsaved edits are kept here. Save or reopen to see its version.",
+  "msg.agentCommented": "The agent left a comment — it is in the rail. Your unsaved edits are untouched.",
+  "msg.agentCommentedAndChanged": "The agent left a comment (now in the rail) and changed the body — your unsaved edits are kept, so its version is not shown.",
   "msg.agentTook": "agent took its turn — your move",
   "msg.nothingUndo": "nothing to undo",
   "msg.undid": "undid last change",
