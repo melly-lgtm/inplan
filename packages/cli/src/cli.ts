@@ -243,7 +243,11 @@ function resolveBundledApp(): BundledApp {
 }
 
 function spawnApp(file: string): number | null {
-  const env = { ...process.env, INPLAN_CLI: process.argv[1] ?? "" };
+  // Never hand the editor ELECTRON_RUN_AS_NODE: the desktop app runs this CLI with it set (so its own
+  // Electron binary acts as Node), and an editor inheriting it starts as plain Node and exits at once
+  // — no window. That is exactly the path the app's Restart takes (launch-editor, below).
+  const { ELECTRON_RUN_AS_NODE: _runAsNode, ...inherited } = process.env;
+  const env = { ...inherited, INPLAN_CLI: process.argv[1] ?? "" };
   // Prefer an explicit override (dev: points at electron-vite or a chosen Electron).
   const override = process.env.INPLAN_APP_CMD;
   if (override) {
@@ -3190,6 +3194,30 @@ export async function main(): Promise<void> {
     return;
   }
   // Self-update over npm (inplan ships as a global npm install).
+  // Internal (the desktop app's Restart): start an editor on <file> and return at once — no wait, no
+  // agent-side loop. Run through the CLI on disk, so after a self-update it is the NEW install that
+  // resolves the NEW Electron: Electron's own app.relaunch() re-ran the binary the old process came
+  // from, which the update had just replaced.
+  if (cmd === "launch-editor") {
+    const target = argv[1] ? resolve(argv[1]) : "";
+    if (!target || !existsSync(target)) {
+      output({ status: "launch_failed", message: `file not found: ${target || "(none)"}` });
+      process.exitCode = 1;
+      return;
+    }
+    const pid = spawnApp(target);
+    if (pid === null) {
+      output({ status: "launch_failed", message: "the editor could not be started" });
+      process.exitCode = 1;
+      return;
+    }
+    const p = docPaths(target);
+    mkdirSync(p.controlDir, { recursive: true });
+    await new FsControlChannel(p).append({ actor: "agent", type: LogEventType.EditorPid, payload: { pid, v: CONTROL_LOG_VERSION } });
+    output({ status: "launched", pid });
+    return;
+  }
+
   if (cmd === "update") {
     const updArgs = argv.slice(1);
     const pkg = getFlag(updArgs, "pkg") ?? UPDATE_PKG;
