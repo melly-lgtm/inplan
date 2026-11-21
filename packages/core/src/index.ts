@@ -4,6 +4,7 @@ export * from "./types";
 export * from "./ids";
 export * from "./anchors";
 export * from "./document";
+export * from "./docLinks";
 export * from "./integrity";
 export * from "./diff";
 export * from "./controlLog";

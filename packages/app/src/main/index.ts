@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import type { Acceptance, Cadence, SaveOptions, Settings } from "@inplan/renderer";
-import { isOnboarded, markOnboarded, parse, readStatus, serialize, widenConnectAttemptBudget, type Comment } from "@inplan/core/node";
+import { decodeLinkPath, isOnboarded, markOnboarded, parse, readStatus, serialize, widenConnectAttemptBudget, type Comment } from "@inplan/core/node";
 import { Session } from "./session";
 import { createNavTracker, createSerialQueue } from "./navSignal";
 import { createI18nController } from "./i18nController";
@@ -669,7 +669,11 @@ function registerIpc(): void {
     // `target` is the link path the renderer resolved against the current doc
     // (joined + `..`-normalized, relative to the filesystem root). Recover the
     // absolute path and swap the window to it if it's an existing .md file.
-    const abs = resolve("/", target);
+    // The renderer hands the link over as markdown-it parsed it — percent-encoded — so a file named
+    // "my doc.md" arrives as "my%20doc.md". Decode it; fall back to the path as written for a file
+    // whose name really contains an escape-like "%20".
+    const decoded = resolve("/", decodeLinkPath(target));
+    const abs = existsSync(decoded) ? decoded : resolve("/", target);
     if (!abs.endsWith(".md") || !existsSync(abs)) {
       process.stderr.write(`[inplan] open-doc: no such .md file: ${abs}\n`);
       return;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { genId, type Comment, type ParsedDocument, type Question } from "@inplan/core";
+import { escapeLinkText, genId, markdownLink, type Comment, type ParsedDocument, type Question } from "@inplan/core";
 
 export function nowIso(): string {
   return new Date().toISOString();
@@ -251,7 +251,9 @@ export function spanSource(body: string, selected: string, span?: SourceSpan): s
 export function linkSelectionToDoc(body: string, selected: string, span: SourceSpan | undefined, target: string): string | null {
   const r = locateCleanSpan(body, selected, span);
   if (!r) return null;
-  return body.slice(0, r.start) + `[${body.slice(r.start, r.end)}](${target})` + body.slice(r.end);
+  // The selection is Markdown already, so it is the link text as-is; the target is a file path and
+  // must be encoded, or a name with a space or a parenthesis would not be a link at all.
+  return body.slice(0, r.start) + markdownLink(body.slice(r.start, r.end), target) + body.slice(r.end);
 }
 
 /** Move Text to New Doc: replace the selection with `[title](target)` and carry its span-comment
@@ -320,7 +322,7 @@ export function moveSelectionToDoc(
   if (after === "") sep = sep ? "\n" : ""; // at end-of-doc, don't leave a dangling blank line
   const remaining: ParsedDocument = {
     ...doc,
-    body: before + prefix + `[${title}](${target})` + sep + after,
+    body: before + prefix + markdownLink(escapeLinkText(title), target) + sep + after,
     comments: doc.comments.filter((c) => !moved.has(c.id)),
   };
   return { remaining, movedBody, movedComments: doc.comments.filter((c) => moved.has(c.id)) };
