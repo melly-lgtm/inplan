@@ -177,7 +177,10 @@ export function stampImpossibleDates(comments: Comment[], now: number = Date.now
  *  differ between peers. Matches the Comment interface declaration order. */
 const COMMENT_KEY_ORDER: (keyof Comment)[] = ["id", "parentId", "anchor", "text", "author", "date", "resolved", "may_resolve", "question", "selected", "agent", "mentions"];
 
-function canonicalizeComment(c: Comment): Comment {
+/** A comment with its fields in canonical order (known keys in {@link COMMENT_KEY_ORDER}, then any
+ *  unknown keys sorted; undefined fields dropped) — the form the canonical serializer writes, and
+ *  the one to compare comments in when they may have crossed a store that loses key order. */
+export function canonicalizeComment(c: Comment): Comment {
   const out: Record<string, unknown> = {};
   const rec = c as unknown as Record<string, unknown>;
   for (const k of COMMENT_KEY_ORDER) if (rec[k] !== undefined) out[k] = rec[k];
