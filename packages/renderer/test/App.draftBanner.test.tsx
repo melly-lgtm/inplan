@@ -87,5 +87,17 @@ describe("the 'agent may be writing the first draft' banner", () => {
     await act(async () => mem.agent.externalChange("# The plan\n\nDrafted by the agent.\n"));
     await waitFor(() => expect(document.body.textContent).toContain("Drafted by the agent."));
     expect(screen.queryByText(BANNER)).toBeNull();
+    // Gone for good, not merely hidden behind the content: an empty page again does not revive it.
+    await act(async () => mem.agent.externalChange(""));
+    await waitFor(() => expect(document.body.textContent).not.toContain("Drafted by the agent."));
+    expect(screen.queryByText(BANNER)).toBeNull();
+  });
+
+  it("goes when the draft arrives as a proposal to review instead of landing", async () => {
+    const mem = mount("", { model: "Opus 5.5" });
+    await renderApp();
+    expect(screen.getByText(BANNER)).toBeTruthy();
+    await act(async () => mem.agent.proposeRevision("# The plan\n\nParked for review.\n"));
+    await waitFor(() => expect(screen.queryByText(BANNER)).toBeNull());
   });
 });

@@ -66,7 +66,11 @@ export class Session {
   }
 
   /** The model an agent named when it created this document with `inplan open`, while its first
-   *  draft is still to come: a DraftPending entry with no agent edit after it. Null otherwise. */
+   *  draft is still to come. Null otherwise. The log is never reset, so the entry must be retired by
+   *  whatever ends that expectation — not only the draft arriving (as an edit, or parked as a
+   *  proposal), but the session it was raised in closing, or the human saving the document.
+   *  Otherwise an agent that died before writing, or a page the human later cleared, would bring the
+   *  banner back on some later open with no agent anywhere. */
   draftPending(): { model: string } | null {
     const entries = readLog(this.paths.logPath);
     let model: string | null = null;
@@ -74,8 +78,15 @@ export class Session {
       if (e.type === LogEventType.DraftPending) {
         const m = (e.payload as { model?: unknown } | undefined)?.model;
         model = typeof m === "string" && m.trim() ? m : null;
-      } else if (e.actor === "agent" && (e.type === LogEventType.DocumentEdited || e.type === LogEventType.AgentRevised)) {
-        model = null; // the draft has arrived
+      } else if (e.actor === "agent" && (e.type === LogEventType.DocumentEdited || e.type === LogEventType.AgentRevised || e.type === LogEventType.AgentRevisionProposed)) {
+        model = null; // the draft has arrived (landed, or parked for review)
+      } else if (e.type === LogEventType.SessionClosed) {
+        model = null; // that session is over: a later open has no agent drafting on its behalf
+      } else if (e.actor === "user" && (e.type === LogEventType.DocumentEdited || e.type === LogEventType.TurnEnded)) {
+        // The human saved (a save needs a change first). This is read only on a LATER load, so it
+        // never pulls a banner off the screen it is on — it stops one returning on a page the human
+        // wrote in and then cleared. (Not by byte count: an empty document serializes non-empty.)
+        model = null;
       }
     }
     return model ? { model } : null;

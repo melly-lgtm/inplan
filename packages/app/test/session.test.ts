@@ -272,6 +272,18 @@ describe("Session.load reports a first draft the agent has yet to write", () => 
     expect((await session.load()).draftPending).toEqual({ model: "Opus 5.5" });
   });
 
+  it.each([
+    ["the agent's revision", "agent", LogEventType.AgentRevised, undefined],
+    ["the draft parked for review", "agent", LogEventType.AgentRevisionProposed, {}],
+    ["the session closing (an agent that died before writing)", "user", LogEventType.SessionClosed, { reason: "window_closed" }],
+    ["a human save", "user", LogEventType.DocumentEdited, { bytes: 22 }],
+    ["a human turn hand-off", "user", LogEventType.TurnEnded, { bytes: 40 }],
+  ] as const)("drops it after %s, so a later open of a still-empty page shows no banner", async (_, actor, type, payload) => {
+    log("agent", LogEventType.DraftPending, { model: "Opus 5.5" });
+    log(actor, type, payload);
+    expect((await session.load()).draftPending).toBeUndefined();
+  });
+
   it("drops it once the agent's first edit has landed", async () => {
     log("agent", LogEventType.DraftPending, { model: "Opus 5.5" });
     log("agent", LogEventType.DocumentEdited, { bytes: 20 });

@@ -490,6 +490,7 @@ export function App(props: EditorProps = {}): JSX.Element {
   // today's document; the same path covers accepting several queued proposals in sequence.
   // Component-level (not inside the mount effect): the post-decision queue advance calls it too.
   const showProposal = useCallback((content: string, id?: string, baseContent?: string, pending?: number, openPanel = true) => {
+    setDraftPendingModel(null); // the draft arrived — parked for review rather than landed
     const next = parse(content);
     const baseBody = docRef.current.body;
     const baseParsed = baseContent !== undefined ? parse(baseContent).body : undefined;
