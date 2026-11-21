@@ -216,6 +216,24 @@ describe("what the renderer was last told", () => {
 });
 
 describe("plugin refreshes run one at a time", () => {
+  it("an empty job resolves only once the job in flight has finished — what plugin:info waits on", async () => {
+    // The window opens while the first plugin start is still running; plugin:info awaits
+    // run(async () => {}) so the renderer never reads a half-started (or mid-navigation) plugin.
+    const q = createSerialQueue();
+    let release!: () => void;
+    let started = false;
+    void q.run(() => new Promise<void>((r) => ((started = true), (release = r))));
+    let drained = false;
+    const drain = q.run(async () => {}).then(() => (drained = true));
+    await Promise.resolve();
+    expect(started).toBe(true);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(drained).toBe(false); // still waiting on the in-flight start
+    release();
+    await drain;
+    expect(drained).toBe(true);
+  });
+
   it("in the order they were queued, each finishing before the next begins", async () => {
     // A refresh is stop-then-start. Interleaved, the second's stop finds nothing running (the
     // first has not started its plugin yet) and whichever start resolves LAST wins — which need

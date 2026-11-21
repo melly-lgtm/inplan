@@ -69,7 +69,7 @@ function resolveTargetFile(): string | null {
 
 /** Whether the renderer may be holding a plugin activation (see navSignal.ts). */
 const nav = createNavTracker();
-const pluginRefreshes = createSerialQueue((err) => console.error("[inplan] refreshing the plugin after a navigation failed", err));
+const pluginRefreshes = createSerialQueue((err) => console.error("[inplan] starting or refreshing the plugin failed", err));
 let session: Session | null = null;
 let win: BrowserWindow | null = null;
 let stopWatching: (() => void) | null = null;
@@ -818,18 +818,14 @@ function registerIpc(): void {
     // The window opens before the first plugin start finishes (see whenReady); the renderer waits
     // HERE, behind its loading screen, so it still activates against the plugin's real state rather
     // than a half-started one.
-    await pluginReady;
+    // Wait for the plugin queue to drain, not just the first start: a renderer reload during a later
+    // navigation's restart must not read the plugin mid-swap (null, or the previous doc's hub).
+    await pluginRefreshes.run(async () => {});
     const info = pluginInfo();
     nav.rendererActivated(info !== null);
     return info;
   });
 }
-
-/** The first plugin start for the launch document. It runs in the background so the window can open
- *  at once — it took seconds (token mint, entitlement fetch, bundle check) during which there was no
- *  window at all. The renderer's plugin:info waits on it, and it runs on the same serial queue as a
- *  navigation's plugin restart, so a link followed during startup queues behind it instead of racing. */
-let pluginReady: Promise<void> = Promise.resolve();
 
 void app.whenReady().then(async () => {
   // macOS shows the dock icon from the app bundle / running binary (not the window's
@@ -844,7 +840,10 @@ void app.whenReady().then(async () => {
     session.logEditorPid(process.pid);
     navHistory.push(target);
     navIdx = 0;
-    pluginReady = pluginRefreshes.run(() => startDesktopPlugin(target, pluginToken)); // entitlement-gated; fail-soft to no-plugin
+    // In the background, so the window opens at once — this took seconds (token mint, entitlement
+    // fetch, bundle check) with no window at all. plugin:info waits for the queue to drain, and a
+    // navigation's restart queues behind this, so neither can see or race a half-started plugin.
+    void pluginRefreshes.run(() => startDesktopPlugin(target, pluginToken)); // entitlement-gated; fail-soft to no-plugin
     track("app_opened", session.getSettings().telemetry === true); // opt-in only
   }
   registerIpc();
