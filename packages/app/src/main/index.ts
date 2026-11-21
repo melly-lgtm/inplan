@@ -459,11 +459,24 @@ function createWindow(): void {
     height: 800,
     title: "inplan",
     icon: appIcon, // window/taskbar icon on Windows + Linux (macOS uses the dock icon below)
+    // Hidden until the renderer's first paint (below), on the editor's own paper colour: shown at
+    // once, the window sat plain white while the editor bundle loaded.
+    show: false,
+    backgroundColor: "#fdfbf6",
     webPreferences: {
       preload: join(__dirname, "../preload/index.mjs"),
       sandbox: false,
     },
   });
+  // Show on first paint — and never leave it hidden: a renderer that fails to load or dies before
+  // painting still gets its window, or the app would run with nothing on screen.
+  const reveal = (): void => {
+    if (win && !win.isDestroyed() && !win.isVisible()) win.show();
+  };
+  win.once("ready-to-show", reveal);
+  win.webContents.once("did-fail-load", reveal);
+  win.webContents.once("render-process-gone", reveal);
+  setTimeout(reveal, 5_000);
   // The renderer's <title> would otherwise overwrite our window title — keep ours.
   win.on("page-title-updated", (e) => e.preventDefault());
   setDocTitle(session?.paths.file ?? null);

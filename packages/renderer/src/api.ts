@@ -24,6 +24,12 @@ export interface EditorBinding {
    *  (CodeMirror) isn't mounted. Optional: a binding without it simply can't accept programmatic
    *  body edits (open-core's file-backed editor has no binding and uses the controlled value). */
   setText?: (text: string) => void;
+  /** Settles once the external document holds the real content — its first sync. Until then
+   *  `getText` and the paired comment store answer for an EMPTY document: a binding is created
+   *  before its source has synced, so an editor mounted on it straight away showed a blank page
+   *  for the seconds the sync took. The editor keeps its loading screen up until this settles
+   *  (bounded; see BINDING_READY_TIMEOUT_MS). Optional: a binding without it is used at once. */
+  ready?: Promise<void>;
 }
 
 /** Context the renderer hands a {@link SidePanelSpec} on every render: the live document and

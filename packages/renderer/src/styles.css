@@ -42,7 +42,11 @@ body {
    page scrolls, carrying the top bar + banners off-screen. `100dvh` (with a 100vh fallback)
    is self-clamping regardless of the parent, and `overflow:hidden` stops any shell-level scroll. */
 .ap-app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden; }
-.ap-loading { padding: 2rem; color: var(--muted); }
+/* Centred, with a spinner: the old top-left grey "Loading…" read as an empty document. */
+.ap-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; height: 100vh; height: 100dvh; color: var(--muted); }
+.ap-spinner { width: 28px; height: 28px; border: 3px solid var(--line-strong); border-top-color: var(--accent); border-radius: 50%; animation: ap-spin 0.8s linear infinite; }
+@keyframes ap-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ap-spinner { animation-duration: 2.4s; } }
 
 /* top bar */
 .ap-topbar { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--line); background: var(--bg); }

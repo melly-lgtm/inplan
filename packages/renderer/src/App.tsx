@@ -65,6 +65,24 @@ const IMAGE_EXT_BY_MIME: Record<string, string> = {
   "image/avif": "avif",
   "image/svg+xml": "svg",
 };
+/** How long the loading screen waits for a plugin binding's first sync ({@link EditorBinding.ready})
+ *  before showing the editor anyway. Past it the binding fills the editor in when it does sync —
+ *  the old behaviour, now the worst case instead of the only one. Never wait forever: a sync that
+ *  never comes must not hold the document hostage. */
+const BINDING_READY_TIMEOUT_MS = 10_000;
+
+/** Resolves when `ready` settles (either way) or after `ms`, whichever is first. */
+function settleWithin(ready: Promise<void> | undefined, ms: number): Promise<void> {
+  if (!ready) return Promise.resolve();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    ready.catch(() => undefined),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 const ZOOM_MIN = 0.6;
 const ZOOM_MAX = 1.8;
 
@@ -482,9 +500,12 @@ export function App(props: EditorProps = {}): JSX.Element {
     const commentStore = hostApi().commentStore ?? null;
 
     const loadGen = docGenRef.current; // navigation before load resolves must win over the older result
-    hostApi()
-      .load()
-      .then(({ content, path, readOnly: ro, focusCommentId, shareLink }) => {
+    // A plugin binding owns the body (and its store the comments) but is created before its first
+    // sync, so until then both answer for an empty document. Keep the loading screen up until it
+    // has synced — bounded — rather than mounting the editor on a blank page that fills in later.
+    const bindingReady = settleWithin(hostApi().binding?.ready, BINDING_READY_TIMEOUT_MS);
+    Promise.all([hostApi().load(), bindingReady])
+      .then(([{ content, path, readOnly: ro, focusCommentId, shareLink }]) => {
         if (docGenRef.current !== loadGen) return; // a navigation already installed a newer document
         docPathRef.current = path;
         humanTouchedComments.current = new Set(); // ownership of comments is per document
@@ -2144,7 +2165,13 @@ export function App(props: EditorProps = {}): JSX.Element {
     [doc.comments, panes, onboardSourceEdits],
   );
 
-  if (!loaded) return <div className="ap-loading">{t("app.loading")}</div>;
+  if (!loaded)
+    return (
+      <div className="ap-loading" role="status">
+        <span className="ap-spinner" aria-hidden="true" />
+        {t("app.loading")}
+      </div>
+    );
 
   // 1 pane = preview only; 2 panes = preview + one of {source, comments} (tabbed);
   // 3 panes = preview + source + comments.
