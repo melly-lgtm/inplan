@@ -24,6 +24,13 @@ export interface EditorBinding {
    *  (CodeMirror) isn't mounted. Optional: a binding without it simply can't accept programmatic
    *  body edits (open-core's file-backed editor has no binding and uses the controlled value). */
   setText?: (text: string) => void;
+  /** Subscribe to any change of the bound document's text, from any source — a collaborator typing,
+   *  an agent revision the plugin delivered, this editor's own setText. Returns an unsubscribe.
+   *  Without it the editor's copy of the body follows the binding only through the source pane, so
+   *  with no source pane open it goes stale, and the next programmatic edit (a span comment's anchor,
+   *  find/replace, undo, accepting a proposal) is built from stale text and writes the newer change
+   *  away. Optional: a binding without it behaves as before. */
+  observe?: (cb: () => void) => () => void;
   /** Settles once the external document holds the real content — its first sync. Until then
    *  `getText` and the paired comment store answer for an EMPTY document: a binding is created
    *  before its source has synced, so an editor mounted on it straight away showed a blank page

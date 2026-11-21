@@ -901,6 +901,26 @@ export function App(props: EditorProps = {}): JSX.Element {
       // Comment store (plugin): adopt the external store's comments whenever it (or this editor)
       // changes them. Body stays driven by the editor/binding; only `comments` is synced.
       commentStore?.observe(() => setDoc((d) => ({ ...d, comments: commentStore.list() }))),
+      // The binding owns the body. Follow it whether or not a source pane is mounted to report it:
+      // otherwise the editor's copy goes stale whenever the shared text changes from elsewhere, and
+      // every programmatic edit built from that copy writes the change away. Body only, functional
+      // and idempotent: this editor's own setText echoes back here, and must neither re-render nor
+      // touch dirty tracking (a bound editor doesn't track it).
+      hostApi().binding?.observe?.(() => {
+        const binding = hostApi().binding;
+        if (!binding) return;
+        const text = binding.getText();
+        let body: string;
+        if (commentStore) body = text; // unified: the binding holds the bare body
+        else {
+          try {
+            body = parse(text).body; // whole-document shape: comments still come from the document
+          } catch {
+            return; // a document caught mid-edit — the next change will parse
+          }
+        }
+        setDoc((d) => (d.body === body ? d : { ...d, body }));
+      }),
     ];
 
     // Store the RAW selection (untrimmed) so a whitespace-only selection is distinguishable
