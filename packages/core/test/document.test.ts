@@ -138,3 +138,11 @@ describe("parse / serialize", () => {
     expect(() => parse('text\n\n<!--inplan\n{ "id": "cmt-x" }\n-->\n')).toThrow(/must contain a JSON array/);
   });
 });
+
+describe("canonicalizeComment (exported: the renderer compares comments in this form)", () => {
+  it("orders known keys by the Comment interface, then unknown keys sorted, and drops undefined fields", async () => {
+    const { canonicalizeComment } = await import("../src/document");
+    const c = { zeta: 1, text: "t", id: "cmt-1", alpha: 2, anchor: "doc", author: "A", date: "2026-01-01T00:00:00.000Z", resolved: undefined } as unknown as Parameters<typeof canonicalizeComment>[0];
+    expect(Object.keys(canonicalizeComment(c))).toEqual(["id", "anchor", "text", "author", "date", "alpha", "zeta"]);
+  });
+});

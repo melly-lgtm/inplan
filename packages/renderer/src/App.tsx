@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { isDocComment, isSpanComment, LogEventType, parse, serialize, type Comment, type ParsedDocument, type Question } from "@inplan/core";
+import { canonicalizeComment, isDocComment, isSpanComment, LogEventType, parse, serialize, type Comment, type ParsedDocument, type Question } from "@inplan/core";
 import { Fragment, type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hostApi, realHostApi, setApiOverride, type Acceptance, type Api, type Cadence, type ProfileState, type SidePanelSpec } from "./api";
 import { TURN_MODE, resolveMode, type ModeDescriptor } from "./mode";
@@ -97,19 +97,10 @@ function anchoredText(body: string, id: string): string | null {
 
 /** Equality that survives a store round-trip: comments cross process boundaries where JSON key
  *  order is not preserved, so a raw JSON.stringify comparison calls a re-ordered copy a revision
- *  (re-announcing it, re-settling it) or drops the human's ownership of it. Canonical field
- *  order first — the same normalization the serializer applies at projection boundaries
- *  (core keeps its own, unexported; this mirrors it, in the Comment interface's order). */
-const COMMENT_KEY_ORDER: (keyof Comment)[] = ["id", "parentId", "anchor", "text", "author", "date", "resolved", "may_resolve", "question", "selected", "agent", "mentions"];
-function canonicalComment(c: Comment): Comment {
-  const rec = c as unknown as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const k of COMMENT_KEY_ORDER) if (rec[k] !== undefined) out[k] = rec[k];
-  for (const k of Object.keys(rec).sort()) if (!(k in out) && rec[k] !== undefined) out[k] = rec[k];
-  return out as unknown as Comment;
-}
+ *  (re-announcing it, re-settling it) or drops the human's ownership of it. Compared in core's
+ *  canonical form — the same normalization the serializer applies at projection boundaries. */
 function sameComment(a: Comment, b: Comment): boolean {
-  return JSON.stringify(canonicalComment(a)) === JSON.stringify(canonicalComment(b));
+  return JSON.stringify(canonicalizeComment(a)) === JSON.stringify(canonicalizeComment(b));
 }
 
 /** 0-based source line of a comment's anchor link, or null. */
