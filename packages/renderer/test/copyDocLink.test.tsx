@@ -85,6 +85,18 @@ describe("copy link to document", () => {
     expect(document.body.textContent).not.toContain("Link copied");
   });
 
+  it.each([
+    ["no clipboard API at all (an insecure origin, an old browser)", undefined],
+    ["a clipboard without writeText", {}],
+  ])("says the copy failed when there is %s — never a silent no-op", async (_, clipboard) => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+    await openMenu({ path: "/docs/cis/web/plan.md", shareLink: "https://host/docs/a" });
+    fireEvent.click(screen.getByText("Copy link to document"));
+
+    await waitFor(() => expect(document.body.textContent).toContain("Copying the link failed"));
+    expect(document.body.textContent).not.toContain("Link copied");
+  });
+
   it("confirms a successful copy on the status line", async () => {
     await openMenu({ path: "/docs/cis/web/plan.md", shareLink: "https://host/docs/a" });
     fireEvent.click(screen.getByText("Copy link to document"));
