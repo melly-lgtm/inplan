@@ -349,6 +349,16 @@ export function App(props: EditorProps = {}): JSX.Element {
   const [status, setStatus] = useState("");
   const [agentThinking, setAgentThinking] = useState(false);
   const [agentDone, setAgentDone] = useState(false);
+  /** The model an agent named when it created this document, while its first draft is still to
+   *  come — shown as a dismissible banner so the empty page doesn't read as a broken load. Null once
+   *  dismissed, or once the body has anything in it (the human started typing, or the draft landed). */
+  const [draftPendingModel, setDraftPendingModel] = useState<string | null>(null);
+  // Once the body has anything in it — the human typed, or the draft landed — the banner has said
+  // all it had to: drop it for good, so clearing the page again doesn't bring it back.
+  const bodyEmpty = doc.body.trim() === "";
+  useEffect(() => {
+    if (!bodyEmpty) setDraftPendingModel(null);
+  }, [bodyEmpty]);
   const [agentMessages, setAgentMessages] = useState<{ text: string; ts: string }[]>([]);
   const [navState, setNavState] = useState<{ canBack: boolean; canForward: boolean }>({ canBack: false, canForward: false });
   const [reloadReady, setReloadReady] = useState(false); // agent signalled a new build is ready to load
@@ -518,7 +528,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     // has synced — bounded — rather than mounting the editor on a blank page that fills in later.
     const bindingReady = settleWithin(hostApi().binding?.ready, BINDING_READY_TIMEOUT_MS);
     Promise.all([hostApi().load(), bindingReady])
-      .then(([{ content, path, readOnly: ro, focusCommentId, shareLink }, synced]) => {
+      .then(([{ content, path, readOnly: ro, focusCommentId, shareLink, draftPending }, synced]) => {
         if (cancelled || docGenRef.current !== loadGen) return; // unmounted, or a navigation already installed a newer document
         docPathRef.current = path;
         humanTouchedComments.current = new Set(); // ownership of comments is per document
@@ -541,6 +551,9 @@ export function App(props: EditorProps = {}): JSX.Element {
           docRef.current = d;
           savedRef.current = serialize(d);
         }
+        // The banner is load metadata: raised even when a newer update was adopted meanwhile — if that
+        // update has content, the banner's own rule drops it at once.
+        setDraftPendingModel(draftPending?.model ?? null);
         setLoaded(true);
         // Durable re-show: if a proposal was parked (e.g. the app was closed
         // mid-review), surface it again rather than silently accepting it. Generation-guarded:
@@ -561,7 +574,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     // in flight would let the generation guard drop a WON settlement's accepted content (the
     // row is already terminal; it would never resurface). The flush effect below runs it once
     // the settle completes.
-    const processNavigated = ({ content, path, readOnly: ro, focusCommentId, shareLink }: { content: string; path: string; readOnly?: boolean; focusCommentId?: string; shareLink?: string }): void => {
+    const processNavigated = ({ content, path, readOnly: ro, focusCommentId, shareLink, draftPending }: { content: string; path: string; readOnly?: boolean; focusCommentId?: string; shareLink?: string; draftPending?: { model: string } }): void => {
       // Undo/redo is per-doc: stash the leaving doc's stacks so returning restores them, and load
       // the destination's own (empty on first visit). Per-doc still holds — an undo can never pull
       // another doc's content — but the history now survives navigation instead of being dropped.
@@ -597,6 +610,7 @@ export function App(props: EditorProps = {}): JSX.Element {
       setAgentThinking(false);
       setAgentDone(false);
       setAgentMessages([]); // notes belong to the doc we just left — don't carry them over
+      setDraftPendingModel(draftPending?.model ?? null); // the banner belongs to the document it was raised for
       setActivePreviewLine(null); // a synced line belongs to the doc we just left, not this one
       setStatus(`opened ${path.split("/").pop() ?? path}`);
       void hostApi()
@@ -2284,6 +2298,15 @@ export function App(props: EditorProps = {}): JSX.Element {
           onNavigate={navigateMatch}
           onQuery={reportFind}
         />
+      )}
+
+      {draftPendingModel !== null && bodyEmpty && (
+        <div className="ap-banner" role="status">
+          {t("banner.draftPending", { model: draftPendingModel })}{" "}
+          <button className="ap-link" onClick={() => setDraftPendingModel(null)}>
+            {t("banner.dismiss")}
+          </button>
+        </div>
       )}
 
       {agentDone && (

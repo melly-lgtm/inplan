@@ -65,11 +65,29 @@ export class Session {
     }
   }
 
-  async load(): Promise<{ path: string; content: string }> {
+  /** The model an agent named when it created this document with `inplan open`, while its first
+   *  draft is still to come: a DraftPending entry with no agent edit after it. Null otherwise. */
+  draftPending(): { model: string } | null {
+    const entries = readLog(this.paths.logPath);
+    let model: string | null = null;
+    for (const e of entries) {
+      if (e.type === LogEventType.DraftPending) {
+        const m = (e.payload as { model?: unknown } | undefined)?.model;
+        model = typeof m === "string" && m.trim() ? m : null;
+      } else if (e.actor === "agent" && (e.type === LogEventType.DocumentEdited || e.type === LogEventType.AgentRevised)) {
+        model = null; // the draft has arrived
+      }
+    }
+    return model ? { model } : null;
+  }
+
+  async load(): Promise<{ path: string; content: string; draftPending?: { model: string } }> {
+    const pendingDraft = this.draftPending();
+    const withDraft = <T extends { path: string; content: string }>(p: T): T & { draftPending?: { model: string } } => (pendingDraft ? { ...p, draftPending: pendingDraft } : p);
     const content = readFileSync(this.paths.file, "utf8");
     if (!existsSync(this.paths.canonicalPath)) {
       writeFileSync(this.paths.canonicalPath, content);
-      return { path: this.paths.file, content };
+      return withDraft({ path: this.paths.file, content });
     }
     // When the working file IS the pending proposal — the CLI's #95 wipe guard leaves the parked
     // text in place rather than materializing a blank canonical over it — the editor's baseline
@@ -96,9 +114,9 @@ export class Session {
     // and either way the freshest content is what gets served.
     const current = readFileSync(this.paths.file, "utf8");
     if (pending !== null && pending.content === current) {
-      return { path: this.paths.file, content: readFileSync(this.paths.canonicalPath, "utf8") };
+      return withDraft({ path: this.paths.file, content: readFileSync(this.paths.canonicalPath, "utf8") });
     }
-    return { path: this.paths.file, content: current };
+    return withDraft({ path: this.paths.file, content: current });
   }
 
   save(content: string, options: SaveOptions): void {
