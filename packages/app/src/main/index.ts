@@ -715,9 +715,28 @@ function registerIpc(): void {
       return { ok: false };
     }
   });
-  // Relaunch into the freshly-installed version (same doc/argv), bypassing the
-  // quit dialog — the renderer persists any unsaved edits before calling this.
-  ipcMain.handle("app:restart", () => {
+  // Relaunch into the freshly-installed version, bypassing the quit dialog — the renderer persists
+  // any unsaved edits before calling this. The new editor is started by the CLI on disk
+  // (`launch-editor`), on the document open NOW (a followed link changes it), and only once it has
+  // started does this one exit. app.relaunch() re-ran the Electron binary this process came from —
+  // the one the update had just replaced — and on failure exited anyway, leaving no editor at all.
+  // It remains the fallback when the CLI can't launch one.
+  ipcMain.handle("app:restart", async () => {
+    const file = session?.paths.file;
+    if (file) {
+      const r = await runCli(["launch-editor", file], undefined, 20_000);
+      let launched = false;
+      try {
+        launched = (JSON.parse(r.stdout.trim() || "{}") as { status?: string }).status === "launched";
+      } catch {
+        /* unparseable — treat as not launched */
+      }
+      if (launched) {
+        app.exit(0);
+        return;
+      }
+      process.stderr.write(`[inplan] restart: launch-editor failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}\n`);
+    }
     app.relaunch();
     app.exit(0);
   });
