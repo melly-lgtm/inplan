@@ -28,9 +28,12 @@ widenConnectAttemptBudget();
 // entitled, verified plugin bundle is later loaded (startDesktopPlugin).
 registerPluginScheme();
 
-/** Mint the user's token for the plugin entitlement check (the CLI owns auth; logged-out ⇒ null). */
+/** Mint the user's token for the plugin entitlement check (the CLI owns auth; logged-out ⇒ null).
+ *  Bounded: the editor's first paint waits on the plugin start this feeds, and an unbounded CLI call
+ *  could hold it on the loading screen indefinitely. Past the bound the token is null and the plugin
+ *  resolves from its cache, or not at all (the file-backed editor). */
 const pluginToken = (): Promise<string | null> =>
-  runCli(["token"]).then((r) => {
+  runCli(["token"], undefined, 15_000).then((r) => {
     try {
       return (JSON.parse(r.stdout.trim() || "{}") as { token?: string }).token ?? null;
     } catch {
@@ -811,12 +814,22 @@ function registerIpc(): void {
   // Answering this IS telling the renderer what to activate against, so it is recorded here, at
   // the moment of the answer: a refresh that sent the signal earlier may have seen a different
   // plugin state than the one this request is finally served with.
-  ipcMain.handle("plugin:info", () => {
+  ipcMain.handle("plugin:info", async () => {
+    // The window opens before the first plugin start finishes (see whenReady); the renderer waits
+    // HERE, behind its loading screen, so it still activates against the plugin's real state rather
+    // than a half-started one.
+    await pluginReady;
     const info = pluginInfo();
     nav.rendererActivated(info !== null);
     return info;
   });
 }
+
+/** The first plugin start for the launch document. It runs in the background so the window can open
+ *  at once — it took seconds (token mint, entitlement fetch, bundle check) during which there was no
+ *  window at all. The renderer's plugin:info waits on it, and it runs on the same serial queue as a
+ *  navigation's plugin restart, so a link followed during startup queues behind it instead of racing. */
+let pluginReady: Promise<void> = Promise.resolve();
 
 void app.whenReady().then(async () => {
   // macOS shows the dock icon from the app bundle / running binary (not the window's
@@ -831,8 +844,7 @@ void app.whenReady().then(async () => {
     session.logEditorPid(process.pid);
     navHistory.push(target);
     navIdx = 0;
-    await startDesktopPlugin(target, pluginToken); // entitlement-gated; fail-soft to no-plugin
-    nav.rendererActivated(pluginInfo() !== null); // the renderer's bootstrap activates against exactly this
+    pluginReady = pluginRefreshes.run(() => startDesktopPlugin(target, pluginToken)); // entitlement-gated; fail-soft to no-plugin
     track("app_opened", session.getSettings().telemetry === true); // opt-in only
   }
   registerIpc();
