@@ -216,3 +216,65 @@ describe("resolvePluginOutcome — absence reasons", () => {
     expect(await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cacheDir(), publicKey: pub, now: 1000, fetchImpl: fakeFetch(tbl) })).toBeNull();
   });
 });
+
+describe("startup cost: the plugin is not re-downloaded when the cache already holds it", () => {
+  /** fakeFetch that records each URL it was asked for. */
+  function recording(table: Parameters<typeof fakeFetch>[0]): { fetchImpl: typeof fetch; urls: string[] } {
+    const urls: string[] = [];
+    const inner = fakeFetch(table);
+    return { urls, fetchImpl: ((url: string, init?: RequestInit) => (urls.push(String(url)), inner(url, init))) as typeof fetch };
+  }
+
+  it("a second launch with the same bundle fetches only the grant and the manifest, not the files", async () => {
+    const cd = cacheDir();
+    await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
+    const second = recording(happyTable);
+    const r = await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: second.fetchImpl });
+    expect(r?.version).toBe("v1");
+    expect(second.urls).toEqual([`${API}/api/v1/desktop-plugin`, `${BUNDLE}manifest.json`]);
+  });
+
+  it("a redeploy under the SAME version name with new bytes downloads exactly the changed file", async () => {
+    const cd = cacheDir();
+    await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
+    const HUB2 = Buffer.from("export const hub = 2;\n");
+    const tbl = { ...happyTable, [`${BUNDLE}manifest.json`]: { ok: true, json: { version: "v1", files: [entry("desktop.js", DESKTOP), entry("hub.js", HUB2)] } }, [`${BUNDLE}hub.js`]: { ok: true, bytes: HUB2 } };
+    const second = recording(tbl);
+    const r = await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: second.fetchImpl });
+    expect(second.urls).toEqual([`${API}/api/v1/desktop-plugin`, `${BUNDLE}manifest.json`, `${BUNDLE}hub.js`]);
+    expect(readFileSync(r!.files["hub.js"]!, "utf8")).toBe("export const hub = 2;\n");
+  });
+
+  it("a tampered cached file is fetched again, never reused", async () => {
+    const cd = cacheDir();
+    const r1 = await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
+    writeFileSync(r1!.files["desktop.js"]!, "tampered");
+    const second = recording(happyTable);
+    const r = await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: second.fetchImpl });
+    expect(second.urls).toContain(`${BUNDLE}desktop.js`);
+    expect(readFileSync(r!.files["desktop.js"]!, "utf8")).toBe("export const desktop = 1;\n");
+  });
+
+  it("every request carries an abort signal, so a hung network falls back to the cache instead of stalling startup", async () => {
+    const cd = cacheDir();
+    await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 1000, fetchImpl: fakeFetch(happyTable) });
+    const signals: Array<AbortSignal | undefined> = [];
+    const hung = ((_url: string, init?: RequestInit) => {
+      signals.push(init?.signal ?? undefined);
+      return new Promise((_, reject) => {
+        if (init?.signal?.aborted) return reject(new Error("aborted"));
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+    }) as typeof fetch;
+    const realTimeout = AbortSignal.timeout;
+    AbortSignal.timeout = (() => AbortSignal.abort()) as typeof AbortSignal.timeout; // fire at once
+    try {
+      const r = await resolveDesktopPlugin({ apiBase: API, token: "jwt", cacheDir: cd, publicKey: pub, now: 2000, fetchImpl: hung });
+      expect(r?.version).toBe("v1"); // the cached bundle
+    } finally {
+      AbortSignal.timeout = realTimeout;
+    }
+    expect(signals.length).toBeGreaterThan(0);
+    expect(signals.every((s) => s instanceof AbortSignal)).toBe(true);
+  });
+});
