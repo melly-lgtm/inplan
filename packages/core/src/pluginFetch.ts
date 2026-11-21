@@ -72,6 +72,12 @@ export interface ResolvePluginOptions {
 
 const base = (u: string): string => (u.endsWith("/") ? u : `${u}/`);
 
+/** Per-request bound on every plugin network call. The resolve runs on the desktop app's open path,
+ *  before its window appears: an unbounded fetch on a slow or captive network stalled startup with
+ *  no limit. Past it, the request fails and the resolve falls back to the cached bundle. */
+export const PLUGIN_FETCH_TIMEOUT_MS = 8_000;
+const bounded = (): RequestInit => ({ signal: AbortSignal.timeout(PLUGIN_FETCH_TIMEOUT_MS) });
+
 /** Read a cached bundle version and RE-VERIFY it (lease + every file) before returning. Returns
  *  null if the lease is missing/expired/invalid or any file fails verification (tampered cache). */
 function loadCached(cacheDir: string, version: string, publicKey: string, now: number): ResolvedPlugin | null {
@@ -100,7 +106,7 @@ function loadCached(cacheDir: string, version: string, publicKey: string, now: n
  *  null on any fetch / verification failure (nothing unverified is ever cached or returned). */
 async function fetchAndCache(bundleUrl: string, leaseToken: string, opts: Required<Pick<ResolvePluginOptions, "cacheDir" | "publicKey" | "fetchImpl">>): Promise<string | null> {
   const root = base(bundleUrl);
-  const mres = await opts.fetchImpl(`${root}manifest.json`);
+  const mres = await opts.fetchImpl(`${root}manifest.json`, bounded());
   if (!mres.ok) return null;
   const manifest = (await mres.json()) as Manifest;
   if (!manifest?.version || !Array.isArray(manifest.files)) return null;
@@ -115,7 +121,12 @@ async function fetchAndCache(bundleUrl: string, leaseToken: string, opts: Requir
   for (const entry of manifest.files) {
     const filePath = safeJoin(dir, entry.name);
     if (!filePath) return null; // name escapes the version dir
-    const r = await opts.fetchImpl(`${root}${entry.name}`);
+    // Already cached with exactly these bytes? Then there is nothing to download: the bytes on disk
+    // pass the same hash + signature check against THIS manifest that a download would have to.
+    // Keyed on the verification, never on the version name — two deploys can share a version string
+    // with different bytes, and a cached file that no longer verifies is simply fetched again.
+    if (existsSync(filePath) && verifyBundleBytes(readFileSync(filePath), entry, opts.publicKey)) continue;
+    const r = await opts.fetchImpl(`${root}${entry.name}`, bounded());
     if (!r.ok) return null;
     const bytes = Buffer.from(await r.arrayBuffer());
     if (!verifyBundleBytes(bytes, entry, opts.publicKey)) return null; // refuse to cache unverified bytes
@@ -167,7 +178,7 @@ export async function resolvePluginOutcome(options: ResolvePluginOptions): Promi
   // 1. Online check (only when we have a token).
   if (options.token) {
     try {
-      const res = await fetchImpl(`${base(options.apiBase)}api/v1/desktop-plugin`, { headers: { authorization: `Bearer ${options.token}` } });
+      const res = await fetchImpl(`${base(options.apiBase)}api/v1/desktop-plugin`, { ...bounded(), headers: { authorization: `Bearer ${options.token}` } });
       if (res.ok) {
         const grant = (await res.json()) as { entitled?: boolean; lease?: string; bundleUrl?: string };
         // Server says no — don't fall back to a stale cache. This is the ONE path that reports a
