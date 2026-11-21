@@ -89,6 +89,10 @@ export interface DocPayload {
    *  host). Absent ⇒ the renderer falls back to {@link DocPayload.path}, which is already the
    *  file path on desktop, so a local document needs no host change to get a useful link. */
   shareLink?: string;
+  /** An agent created this document and its first draft is still to come (`model` is the name it
+   *  gave). The editor shows a dismissible "may be writing the first draft" banner while the body
+   *  is empty. Absent = nothing pending, which is every document a human created. */
+  draftPending?: { model: string };
 }
 
 export interface SaveOptions {

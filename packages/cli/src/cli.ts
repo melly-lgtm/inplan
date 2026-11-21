@@ -3407,9 +3407,14 @@ export async function main(): Promise<void> {
   }
 
   if (cmd === "open") {
-    ensureDocFile(file); // a fresh path → create an empty doc, so open-then-fill works without a separate write
+    const created = ensureDocFile(file); // a fresh path → create an empty doc, so open-then-fill works without a separate write
     const p = docPaths(file);
     mkdirSync(p.controlDir, { recursive: true });
+    // An agent (it named its model) just created this document and is about to write the first
+    // draft. Logged BEFORE the editor launches so its first load sees it: the editor then says the
+    // agent may be drafting instead of showing a bare empty page. A document the human created —
+    // an existing file, a terminal `open` without --model, the app's New Doc — gets no entry.
+    if (created && model) await new FsControlChannel(p).append({ actor: "agent", type: LogEventType.DraftPending, payload: { model } });
     // Record this local doc's path in its status so the agent-console relay can resolve
     // "the doc being worked on in this CWD" later (doesn't disturb a cloud-promoted status).
     const st = readStatus(p.statusPath);

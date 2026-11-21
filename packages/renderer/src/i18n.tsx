@@ -230,6 +230,7 @@ export const EN: Catalog = {
   "rail.reply": "Reply",
   // banners
   "banner.agentReady": "The agent thinks the plan is ready.",
+  "banner.draftPending": "{model} may be writing the first draft. You can start editing anytime.",
   "banner.dismiss": "dismiss",
   "banner.newBuild": "🔄 A new build is ready —",
   "banner.reloadingIn": "reloading in {n}s",

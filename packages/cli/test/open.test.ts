@@ -200,4 +200,51 @@ describe("inplan open", () => {
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/not logged in/i);
   });
+
+  describe("records that an agent created the doc and owes it a first draft (the editor's banner)", () => {
+    // Logged only when this `open` CREATED the file and an agent named its model: a document the
+    // human created must never claim an agent is drafting it.
+    const draftEntries = (): Array<{ type: string; payload?: { model?: string } }> =>
+      logText()
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => JSON.parse(l) as { type: string; payload?: { model?: string } });
+
+    it("a fresh path with --model: logged with the model, before the editor launches", async () => {
+      const file = join(home, "agent.plan.md");
+      const child = spawn(process.execPath, [CLI, "open", file, "--model", "Opus 5.5"], { env });
+      try {
+        expect(await waitFor(() => logText().includes('"editor_pid"'), 10_000)).toBe(true);
+        const types = draftEntries().map((e) => e.type);
+        expect(types.indexOf("draft_pending")).toBeGreaterThanOrEqual(0);
+        expect(types.indexOf("draft_pending")).toBeLessThan(types.indexOf("editor_pid")); // the editor's first load sees it
+        expect(draftEntries().find((e) => e.type === "draft_pending")!.payload).toEqual({ model: "Opus 5.5" });
+      } finally {
+        child.kill("SIGKILL");
+      }
+    }, 20_000);
+
+    it("a fresh path without --model (a human at a terminal): not logged", async () => {
+      const file = join(home, "human.plan.md");
+      const child = spawn(process.execPath, [CLI, "open", file], { env });
+      try {
+        expect(await waitFor(() => logText().includes('"editor_pid"'), 10_000)).toBe(true);
+        expect(logText()).not.toContain("draft_pending");
+      } finally {
+        child.kill("SIGKILL");
+      }
+    }, 20_000);
+
+    it("an existing (even empty) file with --model: not logged", async () => {
+      const file = join(home, "existing.plan.md");
+      writeFileSync(file, "");
+      const child = spawn(process.execPath, [CLI, "open", file, "--model", "Opus 5.5"], { env });
+      try {
+        expect(await waitFor(() => logText().includes('"editor_pid"'), 10_000)).toBe(true);
+        expect(logText()).not.toContain("draft_pending");
+      } finally {
+        child.kill("SIGKILL");
+      }
+    }, 20_000);
+  });
 });

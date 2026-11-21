@@ -10,7 +10,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FsDocumentStore, hashBody, LogEventType, type LogEntry } from "@inplan/core/node";
+import { appendLog, FsDocumentStore, hashBody, LogEventType, type LogEntry } from "@inplan/core/node";
 import { Session } from "../src/main/session";
 
 let dir: string;
@@ -255,5 +255,44 @@ describe("Session.complete clears the unsaved flag", () => {
     expect(session.hasUnsaved).toBe(false);
     expect(session.pending).toBe("# Plan\n\nsaved on quit.\n");
     expect(readFileSync(join(dir, "PLAN.md"), "utf8")).toBe("# Plan\n\nsaved on quit.\n");
+  });
+});
+
+describe("Session.load reports a first draft the agent has yet to write", () => {
+  // `inplan open` logs DraftPending when an agent creates the document; the editor shows a
+  // dismissible "may be writing the first draft" banner for as long as that is still true.
+  const log = (actor: "user" | "agent", type: string, payload?: unknown): void => {
+    appendLog(session.paths.logPath, { actor, type, ...(payload !== undefined ? { payload } : {}) });
+  };
+
+  it("carries the model while no agent edit has followed the entry", async () => {
+    log("agent", LogEventType.DraftPending, { model: "Opus 5.5" });
+    log("agent", LogEventType.EditorPid, { pid: 1 });
+    log("user", LogEventType.SettingsChanged, {}); // a human event does not deliver the draft
+    expect((await session.load()).draftPending).toEqual({ model: "Opus 5.5" });
+  });
+
+  it.each([
+    ["the agent's revision", "agent", LogEventType.AgentRevised, undefined],
+    ["the draft parked for review", "agent", LogEventType.AgentRevisionProposed, {}],
+    ["the session closing (an agent that died before writing)", "user", LogEventType.SessionClosed, { reason: "window_closed" }],
+    ["a human save", "user", LogEventType.DocumentEdited, { bytes: 22 }],
+    ["a human turn hand-off", "user", LogEventType.TurnEnded, { bytes: 40 }],
+  ] as const)("drops it after %s, so a later open of a still-empty page shows no banner", async (_, actor, type, payload) => {
+    log("agent", LogEventType.DraftPending, { model: "Opus 5.5" });
+    log(actor, type, payload);
+    expect((await session.load()).draftPending).toBeUndefined();
+  });
+
+  it("drops it once the agent's first edit has landed", async () => {
+    log("agent", LogEventType.DraftPending, { model: "Opus 5.5" });
+    log("agent", LogEventType.DocumentEdited, { bytes: 20 });
+    expect((await session.load()).draftPending).toBeUndefined();
+  });
+
+  it("is absent for a document no agent created, and for an entry without a usable model", async () => {
+    expect((await session.load()).draftPending).toBeUndefined();
+    log("agent", LogEventType.DraftPending, { model: "  " });
+    expect((await session.load()).draftPending).toBeUndefined();
   });
 });

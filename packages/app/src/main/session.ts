@@ -65,11 +65,40 @@ export class Session {
     }
   }
 
-  async load(): Promise<{ path: string; content: string }> {
+  /** The model an agent named when it created this document with `inplan open`, while its first
+   *  draft is still to come. Null otherwise. The log is never reset, so the entry must be retired by
+   *  whatever ends that expectation — not only the draft arriving (as an edit, or parked as a
+   *  proposal), but the session it was raised in closing, or the human saving the document.
+   *  Otherwise an agent that died before writing, or a page the human later cleared, would bring the
+   *  banner back on some later open with no agent anywhere. */
+  draftPending(): { model: string } | null {
+    const entries = readLog(this.paths.logPath);
+    let model: string | null = null;
+    for (const e of entries) {
+      if (e.type === LogEventType.DraftPending) {
+        const m = (e.payload as { model?: unknown } | undefined)?.model;
+        model = typeof m === "string" && m.trim() ? m : null;
+      } else if (e.actor === "agent" && (e.type === LogEventType.DocumentEdited || e.type === LogEventType.AgentRevised || e.type === LogEventType.AgentRevisionProposed)) {
+        model = null; // the draft has arrived (landed, or parked for review)
+      } else if (e.type === LogEventType.SessionClosed) {
+        model = null; // that session is over: a later open has no agent drafting on its behalf
+      } else if (e.actor === "user" && (e.type === LogEventType.DocumentEdited || e.type === LogEventType.TurnEnded)) {
+        // The human saved (a save needs a change first). This is read only on a LATER load, so it
+        // never pulls a banner off the screen it is on — it stops one returning on a page the human
+        // wrote in and then cleared. (Not by byte count: an empty document serializes non-empty.)
+        model = null;
+      }
+    }
+    return model ? { model } : null;
+  }
+
+  async load(): Promise<{ path: string; content: string; draftPending?: { model: string } }> {
+    const pendingDraft = this.draftPending();
+    const withDraft = <T extends { path: string; content: string }>(p: T): T & { draftPending?: { model: string } } => (pendingDraft ? { ...p, draftPending: pendingDraft } : p);
     const content = readFileSync(this.paths.file, "utf8");
     if (!existsSync(this.paths.canonicalPath)) {
       writeFileSync(this.paths.canonicalPath, content);
-      return { path: this.paths.file, content };
+      return withDraft({ path: this.paths.file, content });
     }
     // When the working file IS the pending proposal — the CLI's #95 wipe guard leaves the parked
     // text in place rather than materializing a blank canonical over it — the editor's baseline
@@ -96,9 +125,9 @@ export class Session {
     // and either way the freshest content is what gets served.
     const current = readFileSync(this.paths.file, "utf8");
     if (pending !== null && pending.content === current) {
-      return { path: this.paths.file, content: readFileSync(this.paths.canonicalPath, "utf8") };
+      return withDraft({ path: this.paths.file, content: readFileSync(this.paths.canonicalPath, "utf8") });
     }
-    return { path: this.paths.file, content: current };
+    return withDraft({ path: this.paths.file, content: current });
   }
 
   save(content: string, options: SaveOptions): void {

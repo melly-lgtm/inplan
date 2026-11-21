@@ -48,6 +48,11 @@ export const LogEventType = {
    *  the human's agent re-attaches there (the local analogue of save-locally). */
   NavigatedTo: "navigated_to",
   SessionClosed: "session_closed",
+  /** `inplan open` created this document on an agent's behalf (it was passed `--model`) and the
+   *  agent is about to write the first draft. Payload `{ model }`. The editor shows a dismissible
+   *  "may be writing the first draft" banner while the body is still empty, so the empty page
+   *  doesn't read as a broken load. Informational only — not a wake signal. */
+  DraftPending: "draft_pending",
 } as const;
 
 export type LogEventTypeValue = (typeof LogEventType)[keyof typeof LogEventType];
