@@ -94,6 +94,15 @@ function createI18nController(): I18nController {
   };
 }
 
+/** The last "update available" main announced. Main sends it once, as soon as its check finishes —
+ *  which can now land while the editor is still on its loading screen (the window opens before the
+ *  plugin is up), before anything subscribes, and an editor that remounts after a navigation
+ *  subscribes afresh. Kept here so a late subscriber still hears it. */
+let lastUpdate: { current: string; latest: string } | null = null;
+ipcRenderer.on("app:update-available", (_e: unknown, info: { current: string; latest: string }) => {
+  lastUpdate = info;
+});
+
 const api: Api = {
   load: () => ipcRenderer.invoke("doc:load"),
   save: (content: string, options: SaveOptions) => ipcRenderer.invoke("doc:save", content, options),
@@ -179,6 +188,7 @@ const api: Api = {
   onUpdateAvailable: (cb: (info: { current: string; latest: string }) => void) => {
     const h = (_e: unknown, info: { current: string; latest: string }): void => cb(info);
     ipcRenderer.on("app:update-available", h);
+    if (lastUpdate) cb(lastUpdate); // it was announced before this subscriber existed
     return () => ipcRenderer.removeListener("app:update-available", h);
   },
   applyUpdate: () => ipcRenderer.invoke("app:apply-update"),

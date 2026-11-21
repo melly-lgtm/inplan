@@ -28,9 +28,12 @@ widenConnectAttemptBudget();
 // entitled, verified plugin bundle is later loaded (startDesktopPlugin).
 registerPluginScheme();
 
-/** Mint the user's token for the plugin entitlement check (the CLI owns auth; logged-out ⇒ null). */
+/** Mint the user's token for the plugin entitlement check (the CLI owns auth; logged-out ⇒ null).
+ *  Bounded: the editor's first paint waits on the plugin start this feeds, and an unbounded CLI call
+ *  could hold it on the loading screen indefinitely. Past the bound the token is null and the plugin
+ *  resolves from its cache, or not at all (the file-backed editor). */
 const pluginToken = (): Promise<string | null> =>
-  runCli(["token"]).then((r) => {
+  runCli(["token"], undefined, 15_000).then((r) => {
     try {
       return (JSON.parse(r.stdout.trim() || "{}") as { token?: string }).token ?? null;
     } catch {
@@ -66,7 +69,7 @@ function resolveTargetFile(): string | null {
 
 /** Whether the renderer may be holding a plugin activation (see navSignal.ts). */
 const nav = createNavTracker();
-const pluginRefreshes = createSerialQueue((err) => console.error("[inplan] refreshing the plugin after a navigation failed", err));
+const pluginRefreshes = createSerialQueue((err) => console.error("[inplan] starting or refreshing the plugin failed", err));
 let session: Session | null = null;
 let win: BrowserWindow | null = null;
 let stopWatching: (() => void) | null = null;
@@ -811,7 +814,13 @@ function registerIpc(): void {
   // Answering this IS telling the renderer what to activate against, so it is recorded here, at
   // the moment of the answer: a refresh that sent the signal earlier may have seen a different
   // plugin state than the one this request is finally served with.
-  ipcMain.handle("plugin:info", () => {
+  ipcMain.handle("plugin:info", async () => {
+    // The window opens before the first plugin start finishes (see whenReady); the renderer waits
+    // HERE, behind its loading screen, so it still activates against the plugin's real state rather
+    // than a half-started one.
+    // Wait for the plugin queue to drain, not just the first start: a renderer reload during a later
+    // navigation's restart must not read the plugin mid-swap (null, or the previous doc's hub).
+    await pluginRefreshes.run(async () => {});
     const info = pluginInfo();
     nav.rendererActivated(info !== null);
     return info;
@@ -831,8 +840,10 @@ void app.whenReady().then(async () => {
     session.logEditorPid(process.pid);
     navHistory.push(target);
     navIdx = 0;
-    await startDesktopPlugin(target, pluginToken); // entitlement-gated; fail-soft to no-plugin
-    nav.rendererActivated(pluginInfo() !== null); // the renderer's bootstrap activates against exactly this
+    // In the background, so the window opens at once — this took seconds (token mint, entitlement
+    // fetch, bundle check) with no window at all. plugin:info waits for the queue to drain, and a
+    // navigation's restart queues behind this, so neither can see or race a half-started plugin.
+    void pluginRefreshes.run(() => startDesktopPlugin(target, pluginToken)); // entitlement-gated; fail-soft to no-plugin
     track("app_opened", session.getSettings().telemetry === true); // opt-in only
   }
   registerIpc();

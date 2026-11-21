@@ -70,15 +70,23 @@ function Shell(): JSX.Element {
 }
 
 async function bootstrap(): Promise<void> {
+  const el = document.getElementById("root");
+  if (!el) return;
+  const root = createRoot(el);
+  // Paint the loading screen first: the main process may still be starting the plugin, and the window
+  // is shown on the renderer's first paint, so waiting to paint until activation settled would keep
+  // the window hidden (or blank) for the whole plugin start.
+  root.render(
+    <div className="ap-loading" role="status" aria-label="Loading">
+      <span className="ap-spinner" aria-hidden="true" />
+    </div>,
+  );
   await plugin.activate();
-  const root = document.getElementById("root");
-  if (root) {
-    createRoot(root).render(
-      <React.StrictMode>
-        <Shell />
-      </React.StrictMode>,
-    );
-  }
+  root.render(
+    <React.StrictMode>
+      <Shell />
+    </React.StrictMode>,
+  );
 }
 
 void bootstrap();
