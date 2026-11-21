@@ -77,6 +77,11 @@ let quitConfirmed = false;
  *  Until then — or if it crashes — close/quit must NOT block waiting for a dialog that
  *  can never appear, or the window would be impossible to close (force-kill only). */
 let rendererReady = false;
+/** True once the editor has reported its first document state (it does so as soon as a document is
+ *  loaded). While it is still on its loading screen the quit dialog cannot be shown — and must not be:
+ *  its save would write the empty pre-load document over the file — so a close then quits at once,
+ *  saving nothing, instead of hanging on the confirm fallback. */
+let editorReported = false;
 /** One-shot fallback: if the renderer never answers `app:confirm-quit`, close anyway. */
 let quitFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 const QUIT_CONFIRM_TIMEOUT_MS = 8000;
@@ -431,7 +436,7 @@ function quitNow(reason: "completed" | "window_closed"): void {
 
 /** The renderer is present and able to display the quit-confirm dialog. */
 function rendererCanConfirm(): boolean {
-  return !!win && !win.isDestroyed() && !win.webContents.isDestroyed() && !win.webContents.isCrashed() && rendererReady;
+  return !!win && !win.isDestroyed() && !win.webContents.isDestroyed() && !win.webContents.isCrashed() && rendererReady && editorReported;
 }
 
 /** Arm a one-shot fallback so a hung/unresponsive renderer can never trap the user
@@ -454,6 +459,7 @@ function setDocTitle(file: string | null): void {
 
 function createWindow(): void {
   rendererReady = false; // becomes true on did-finish-load (below)
+  editorReported = false; // becomes true on the editor's first doc:report-state
   win = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -470,13 +476,20 @@ function createWindow(): void {
   });
   // Show on first paint — and never leave it hidden: a renderer that fails to load or dies before
   // painting still gets its window, or the app would run with nothing on screen.
+  // One-shot, for THIS window: once shown, nothing here may show it again — on Windows a minimised
+  // window reports not-visible, and a late show() would restore and focus it over the user.
+  const w = win;
+  let revealed = false;
   const reveal = (): void => {
-    if (win && !win.isDestroyed() && !win.isVisible()) win.show();
+    if (revealed) return;
+    revealed = true;
+    clearTimeout(revealFallback);
+    if (!w.isDestroyed()) w.show();
   };
-  win.once("ready-to-show", reveal);
-  win.webContents.once("did-fail-load", reveal);
-  win.webContents.once("render-process-gone", reveal);
-  setTimeout(reveal, 5_000);
+  const revealFallback = setTimeout(reveal, 5_000);
+  w.once("ready-to-show", reveal);
+  w.webContents.once("did-fail-load", reveal);
+  w.webContents.once("render-process-gone", reveal);
   // The renderer's <title> would otherwise overwrite our window title — keep ours.
   win.on("page-title-updated", (e) => e.preventDefault());
   setDocTitle(session?.paths.file ?? null);
@@ -551,6 +564,7 @@ function registerIpc(): void {
     track(event, session?.getSettings().telemetry === true, props);
   });
   ipcMain.handle("doc:report-state", (_e, dirty: boolean, content: string) => {
+    editorReported = true;
     session?.setPending(dirty, content);
   });
   ipcMain.handle("doc:set-mode", (_e, cadence: Cadence, acceptance: Acceptance) => {

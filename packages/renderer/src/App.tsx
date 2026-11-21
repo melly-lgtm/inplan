@@ -71,14 +71,18 @@ const IMAGE_EXT_BY_MIME: Record<string, string> = {
  *  never comes must not hold the document hostage. */
 const BINDING_READY_TIMEOUT_MS = 10_000;
 
-/** Resolves when `ready` settles (either way) or after `ms`, whichever is first. */
-function settleWithin(ready: Promise<void> | undefined, ms: number): Promise<void> {
-  if (!ready) return Promise.resolve();
+/** Resolves when `ready` settles or after `ms`, whichever is first: true only when `ready` itself
+ *  resolved (the binding holds the real content), false for no binding, a failed sync or a timeout. */
+function settleWithin(ready: Promise<void> | undefined, ms: number): Promise<boolean> {
+  if (!ready) return Promise.resolve(false);
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
-    ready.catch(() => undefined),
-    new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, ms);
+    ready.then(
+      () => true,
+      () => false,
+    ),
+    new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), ms);
     }),
   ]).finally(() => clearTimeout(timer));
 }
@@ -302,6 +306,9 @@ function readLayout(): { panes?: unknown; rightTab?: unknown; zoom?: unknown; sh
 export function App(props: EditorProps = {}): JSX.Element {
   const t = useT();
   const [loaded, setLoaded] = useState(false);
+  /** Bumped each time the editor adopts an external change, so a load still waiting can tell that
+   *  something newer than the file it read has already landed. */
+  const externalAdoptedRef = useRef(0);
   const [doc, setDoc] = useState<ParsedDocument>(EMPTY);
   // Host-declared read-only doc (e.g. the cloud archived it over the active-doc cap): editing +
   // turn handoff are blocked; the doc stays viewable + downloadable. Set from the load/navigate
@@ -500,13 +507,19 @@ export function App(props: EditorProps = {}): JSX.Element {
     const commentStore = hostApi().commentStore ?? null;
 
     const loadGen = docGenRef.current; // navigation before load resolves must win over the older result
+    // An unmounted editor's load (a plugin re-activation remounts it) must not touch anything.
+    let cancelled = false;
+    // An external change the editor adopted while this load was still waiting (the binding's sync can
+    // take seconds) is NEWER than the file `load()` read at the start: the load must not put the
+    // older text back over it.
+    const adoptedAtStart = externalAdoptedRef.current;
     // A plugin binding owns the body (and its store the comments) but is created before its first
     // sync, so until then both answer for an empty document. Keep the loading screen up until it
     // has synced — bounded — rather than mounting the editor on a blank page that fills in later.
     const bindingReady = settleWithin(hostApi().binding?.ready, BINDING_READY_TIMEOUT_MS);
     Promise.all([hostApi().load(), bindingReady])
-      .then(([{ content, path, readOnly: ro, focusCommentId, shareLink }]) => {
-        if (docGenRef.current !== loadGen) return; // a navigation already installed a newer document
+      .then(([{ content, path, readOnly: ro, focusCommentId, shareLink }, synced]) => {
+        if (cancelled || docGenRef.current !== loadGen) return; // unmounted, or a navigation already installed a newer document
         docPathRef.current = path;
         humanTouchedComments.current = new Set(); // ownership of comments is per document
         // Host-supplied address if there is one, else the path — which on desktop IS the file.
@@ -514,15 +527,20 @@ export function App(props: EditorProps = {}): JSX.Element {
         docLinkRef.current = shareLink?.trim() ? shareLink : path;
         setReadOnly(!!ro);
         setPendingFocusCommentId(focusCommentId ?? null);
-        const parsed = parse(content);
-        // With an external comment store (plugin) comments are owned by the store, not the
-        // serialized body — source them from the store; its observer keeps them in sync.
-        const d = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
-        setDoc(d);
-        // Sync the ref NOW (it normally follows on render): the re-show below runs in this same
-        // microtask chain and must diff/merge against the doc just loaded, not the initial state.
-        docRef.current = d;
-        savedRef.current = serialize(d);
+        if (externalAdoptedRef.current === adoptedAtStart) {
+          // A synced binding IS the document now (the file `content` was read before the wait, and
+          // the plugin may have moved on since); without one — or past the timeout — the file is.
+          const binding = synced ? hostApi().binding : null;
+          const parsed = binding ? (commentStore ? { body: binding.getText(), comments: [] } : parse(binding.getText())) : parse(content);
+          // With an external comment store (plugin) comments are owned by the store, not the
+          // serialized body — source them from the store; its observer keeps them in sync.
+          const d = commentStore ? { ...parsed, comments: commentStore.list() } : parsed;
+          setDoc(d);
+          // Sync the ref NOW (it normally follows on render): the re-show below runs in this same
+          // microtask chain and must diff/merge against the doc just loaded, not the initial state.
+          docRef.current = d;
+          savedRef.current = serialize(d);
+        }
         setLoaded(true);
         // Durable re-show: if a proposal was parked (e.g. the app was closed
         // mid-review), surface it again rather than silently accepting it. Generation-guarded:
@@ -768,6 +786,7 @@ export function App(props: EditorProps = {}): JSX.Element {
           settleExternal(commentStore ? settledDelta : settleList, settledRemovals);
           setDoc(withComments);
           docRef.current = withComments;
+          externalAdoptedRef.current++;
           // Did the AGENT move the body, or is this comments only? Against the human's buffer every
           // landing looks like a body change — they are the ones who changed it. The honest
           // comparison is the last saved baseline, which is what both sides diverged from.
@@ -788,6 +807,7 @@ export function App(props: EditorProps = {}): JSX.Element {
           return;
         }
         setDoc(next);
+        externalAdoptedRef.current++; // newer than any load still waiting (see the load effect)
         // Undo must not be able to remove or rewind these either — the same delta the dirty
         // branch settles, and this clean path is a bound store host's common case (it is never
         // dirty from typing, so the observer-flushed race lives here).
@@ -882,6 +902,7 @@ export function App(props: EditorProps = {}): JSX.Element {
     const onSel = () => setSelectionText(window.getSelection()?.toString() ?? "");
     document.addEventListener("selectionchange", onSel);
     return () => {
+      cancelled = true;
       document.removeEventListener("selectionchange", onSel);
       for (const dispose of subs) dispose?.();
     };
