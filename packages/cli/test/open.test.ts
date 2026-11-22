@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { scrubAgentEnv } from "../src/cli";
+import { draftPendingFrom, parseLog } from "@inplan/core";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.js");
 // A throwaway "editor" that just stays alive: open() records its pid and blocks in waitCycle, so
@@ -219,6 +220,11 @@ describe("inplan open", () => {
         expect(types.indexOf("draft_pending")).toBeGreaterThanOrEqual(0);
         expect(types.indexOf("draft_pending")).toBeLessThan(types.indexOf("editor_pid")); // the editor's first load sees it
         expect(draftEntries().find((e) => e.type === "draft_pending")!.payload).toEqual({ model: "Opus 5.5" });
+        // End to end, from the log the REAL open wrote: once its wait has logged the agent_revised
+        // turn marker (nothing written yet), the editor's reading must still say a draft is coming.
+        // A hand-built sequence in a unit test missed exactly this, so the banner never showed.
+        expect(await waitFor(() => logText().includes('"agent_revised"'), 10_000)).toBe(true);
+        expect(draftPendingFrom(parseLog(logText()))).toEqual({ model: "Opus 5.5" });
       } finally {
         child.kill("SIGKILL");
       }

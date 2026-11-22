@@ -89,3 +89,32 @@ export function parseLog(text: string): LogEntry[] {
     .filter((l) => l.length > 0)
     .map(parseLogLine);
 }
+
+/** The model an agent named when it created this document with `inplan open`, while its first draft
+ *  is still to come — read off the control log; null otherwise. The log is never reset, so the
+ *  draft_pending entry must be retired by whatever ends that expectation: the draft arriving (the
+ *  agent's document_edited, or agent_revision_proposed when parked for review), the session it was
+ *  raised in closing, or the human saving the document. Otherwise an agent that died before writing,
+ *  or a page the human later cleared, would bring the banner back on some later open.
+ *
+ *  NOT agent_revised: every wait — including the one `inplan open` runs straight after launching the
+ *  editor — logs it as a turn marker whether or not anything was written, so treating it as the
+ *  draft arriving retired the banner before the editor ever loaded. */
+export function draftPendingFrom(entries: readonly LogEntry[]): { model: string } | null {
+  let model: string | null = null;
+  for (const e of entries) {
+    if (e.type === LogEventType.DraftPending) {
+      const m = (e.payload as { model?: unknown } | undefined)?.model;
+      model = typeof m === "string" && m.trim() ? m : null;
+    } else if (e.actor === "agent" && (e.type === LogEventType.DocumentEdited || e.type === LogEventType.AgentRevisionProposed)) {
+      model = null; // the draft has arrived (landed, or parked for review)
+    } else if (e.type === LogEventType.SessionClosed) {
+      model = null; // that session is over: a later open has no agent drafting on its behalf
+    } else if (e.actor === "user" && (e.type === LogEventType.DocumentEdited || e.type === LogEventType.TurnEnded)) {
+      // The human saved (a save needs a change first). Read only on a LATER load, so it never pulls
+      // a banner off the screen it is on. (Not by byte count: an empty document serializes non-empty.)
+      model = null;
+    }
+  }
+  return model ? { model } : null;
+}
