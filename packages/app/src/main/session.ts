@@ -78,8 +78,12 @@ export class Session {
       if (e.type === LogEventType.DraftPending) {
         const m = (e.payload as { model?: unknown } | undefined)?.model;
         model = typeof m === "string" && m.trim() ? m : null;
-      } else if (e.actor === "agent" && (e.type === LogEventType.DocumentEdited || e.type === LogEventType.AgentRevised || e.type === LogEventType.AgentRevisionProposed)) {
-        model = null; // the draft has arrived (landed, or parked for review)
+      } else if (e.actor === "agent" && (e.type === LogEventType.DocumentEdited || e.type === LogEventType.AgentRevisionProposed)) {
+        // The draft has arrived (landed, or parked for review). NOT agent_revised: every wait —
+        // including the one `inplan open` runs straight after launching the editor — logs it as a
+        // turn marker whether or not anything was written, so it retired the banner before the
+        // editor ever loaded and the banner never showed.
+        model = null;
       } else if (e.type === LogEventType.SessionClosed) {
         model = null; // that session is over: a later open has no agent drafting on its behalf
       } else if (e.actor === "user" && (e.type === LogEventType.DocumentEdited || e.type === LogEventType.TurnEnded)) {

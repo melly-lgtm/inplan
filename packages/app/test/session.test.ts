@@ -272,8 +272,18 @@ describe("Session.load reports a first draft the agent has yet to write", () => 
     expect((await session.load()).draftPending).toEqual({ model: "Opus 5.5" });
   });
 
+  it("survives the turn marker `inplan open` logs right after launching the editor (the real sequence)", async () => {
+    // Exactly what a real `inplan open <new> --model X` writes before the editor's first load: the
+    // wait it runs logs agent_revised as a turn marker with nothing written. Treating that as the
+    // draft arriving meant the banner never showed at all.
+    log("agent", LogEventType.DraftPending, { model: "GPT-6" });
+    log("agent", LogEventType.EditorPid, { pid: 41995, v: 1 });
+    log("agent", LogEventType.AgentRevised);
+    log("agent", LogEventType.EditorPid, { pid: 41995, v: 1 });
+    expect((await session.load()).draftPending).toEqual({ model: "GPT-6" });
+  });
+
   it.each([
-    ["the agent's revision", "agent", LogEventType.AgentRevised, undefined],
     ["the draft parked for review", "agent", LogEventType.AgentRevisionProposed, {}],
     ["the session closing (an agent that died before writing)", "user", LogEventType.SessionClosed, { reason: "window_closed" }],
     ["a human save", "user", LogEventType.DocumentEdited, { bytes: 22 }],
