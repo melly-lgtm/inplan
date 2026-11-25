@@ -53,6 +53,17 @@ function relay(args: string[], opts: { stdin?: string; cwd?: string } = {}) {
   });
 }
 
+/** Agent-hook contract: stdout is EXACTLY one JSON object and carries no keys we invent — Codex
+ *  validates a tool hook's output against its own schema and rejects unknown keys as invalid
+ *  hook output (Claude Code ignores stdout, so this is the stricter of the two). Returns the
+ *  parsed reply so a caller can assert it is the bare empty object. */
+function hookReply(r: { stdout: string; status: number | null; stderr?: string }): Record<string, unknown> {
+  expect(r.status, r.stderr).toBe(0);
+  const lines = r.stdout.split("\n").filter((l) => l.trim() !== "");
+  expect(lines).toHaveLength(1);
+  return JSON.parse(lines[0]!) as Record<string, unknown>;
+}
+
 const messages = (): { type: string; payload?: { text?: string } }[] => {
   const log = docPaths(doc).logPath;
   if (!existsSync(log)) return [];
@@ -135,8 +146,7 @@ describe("inplan relay — agent-console hook target", () => {
     const other = mkdtempSync(join(tmpdir(), "inplan-relay-other-"));
     try {
       const r = relay(["--hook", "claude-stop"], { stdin: JSON.stringify({ last_assistant_message: "x" }), cwd: other });
-      expect(r.status).toBe(0);
-      expect(r.stdout).toContain("no_active_doc");
+      expect(hookReply(r)).toEqual({}); // bare object, never our own status keys
       expect(messages()).toHaveLength(0); // nothing relayed
     } finally {
       rmSync(other, { recursive: true, force: true });
@@ -146,8 +156,28 @@ describe("inplan relay — agent-console hook target", () => {
   it("no-ops (no_text) on an empty payload — never errors the agent's turn", () => {
     seedDoc();
     const r = relay(["--hook", "claude-stop"], { stdin: "{}" });
-    expect(r.status).toBe(0);
-    expect(r.stdout).toContain("no_text");
+    expect(hookReply(r)).toEqual({});
     expect(messages()).toHaveLength(0);
+  });
+
+  it("replies a bare {} for every hook outcome (Codex rejects keys it doesn't define)", () => {
+    // relayed — the normal per-tool-call path, the one that fired the error on every command
+    seedDoc();
+    expect(hookReply(relay(["--hook", "codex-tool"], { stdin: JSON.stringify({ tool_name: "Bash" }) }))).toEqual({});
+    expect(messages().map((m) => m.payload?.text)).toContain("▸ Bash"); // still relayed
+    // no_text
+    expect(hookReply(relay(["--hook", "codex-stop"], { stdin: "{}" }))).toEqual({});
+    // no_active_doc
+    const other = mkdtempSync(join(tmpdir(), "inplan-relay-bare-"));
+    try {
+      expect(hookReply(relay(["--hook", "codex-tool"], { stdin: "{}", cwd: other }))).toEqual({});
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the human status line on stdout for --text (no hook mode)", () => {
+    const r = relay(["--text", "hello"]); // no seeded doc under cwd → no_active_doc
+    expect(JSON.parse(r.stdout)).toEqual({ status: "relay_skipped", reason: "no_active_doc" });
   });
 });

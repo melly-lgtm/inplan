@@ -2279,13 +2279,34 @@ async function relayText(file: string, text: string): Promise<void> {
   }
 }
 
+/** Report a relay outcome.
+ *
+ *  In AGENT-HOOK mode (`--hook …`) stdout must be a BARE `{}`. Codex validates a PostToolUse
+ *  hook's stdout against its own output schema and treats an object carrying keys it does not
+ *  define as invalid output — which surfaced as "hook returned invalid post-tool-use JSON
+ *  output" on EVERY tool call, our `{"status":…}` being exactly such an object. An empty object
+ *  has no unknown keys and means "no decision" to both agents' schemas (Claude Code ignores a
+ *  hook's stdout unless it carries a decision field). The status line therefore stays for
+ *  `--text` (human/debug) invocations, and INPLAN_RELAY_DEBUG=1 mirrors it to stderr, which no
+ *  agent parses. */
+function relayStatus(obj: Record<string, unknown>, hookMode: boolean): void {
+  if (!hookMode) {
+    output(obj);
+    return;
+  }
+  process.stdout.write("{}\n");
+  if (process.env.INPLAN_RELAY_DEBUG === "1") process.stderr.write(`inplan: relay ${JSON.stringify(obj)}\n`);
+}
+
 /** `inplan relay` — invoked by an agent hook (see install-skill). Resolves the active plan doc
  *  for the CWD and relays the agent's new prose + tool activity to its editor. Always exits 0
  *  (best-effort). Resolves the doc FIRST so a no-op never advances the transcript cursor. */
 async function doRelay(args: string[]): Promise<void> {
+  // Read before the first status write: `--hook` selects hook mode, `--text` stays human-facing.
+  const hookMode = args.some((a) => a === "--hook" || a.startsWith("--hook="));
   const file = activeDocForCwd(process.cwd());
   if (!file) {
-    output({ status: "relay_skipped", reason: "no_active_doc" });
+    relayStatus({ status: "relay_skipped", reason: "no_active_doc" }, hookMode);
     return;
   }
   const hook = getFlag(args, "hook");
@@ -2308,11 +2329,11 @@ async function doRelay(args: string[]): Promise<void> {
   }
   const clean = notes.map((n) => n.trim().slice(0, 2000)).filter(Boolean); // cap each note
   if (clean.length === 0) {
-    output({ status: "relay_skipped", reason: "no_text" });
+    relayStatus({ status: "relay_skipped", reason: "no_text" }, hookMode);
     return;
   }
   for (const n of clean) await relayText(file, n);
-  output({ status: "relayed", count: clean.length });
+  relayStatus({ status: "relayed", count: clean.length }, hookMode);
 }
 
 function skillTargets(): { name: string; root: string; target: string }[] {
